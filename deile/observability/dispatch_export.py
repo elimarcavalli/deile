@@ -47,6 +47,7 @@ from deile.observability.dispatch_schema import (
     GitPushAttrs,
     get_pod_metadata,
 )
+from deile.observability.dispatch_log_export import emit_log_record
 from deile.observability.tracer import OtlpTracer, get_tracer, otel_available
 
 __all__ = [
@@ -177,18 +178,20 @@ def emit_dispatch_received(
     branch: str = "",
 ) -> None:
     """Abre o root span ``deile.dispatch`` e registra o evento ``dispatch.received``."""
+    schema = DispatchReceivedAttrs(
+        task_id=_safe_str(task_id),
+        session_id=_safe_str(session_id),
+        model=_safe_str(model),
+        branch=_safe_str(branch),
+    )
+    span_ctx = None
     try:
         raw = _get_raw_tracer()
         if raw is None:
             return
-        schema = DispatchReceivedAttrs(
-            task_id=_safe_str(task_id),
-            session_id=_safe_str(session_id),
-            model=_safe_str(model),
-            branch=_safe_str(branch),
-        )
         attrs = {**schema.to_span_attrs(), **_common_attrs()}
         span = raw.start_span(DispatchReceivedAttrs.SPAN_NAME, attributes=attrs)
+        span_ctx = span.get_span_context()
         span.add_event(DispatchReceivedAttrs.EVENT_NAME, attributes=_safe_attrs(schema.to_span_attrs()))
         with _spans_lock:
             existing = _active_spans.pop(task_id, None)
@@ -200,6 +203,7 @@ def emit_dispatch_received(
             _active_spans[task_id] = span
     except Exception:  # noqa: BLE001 — fail open
         _record_drop("emit_error")
+    _try_emit_log(span_ctx, DispatchReceivedAttrs.EVENT_NAME, _safe_attrs(schema.to_span_attrs()))
 
 
 def emit_dispatch_model_resolved(
@@ -207,15 +211,18 @@ def emit_dispatch_model_resolved(
     model: str = "",
 ) -> None:
     """Registra o evento ``dispatch.model_resolved`` no root span."""
+    schema = DispatchModelResolvedAttrs(model=_safe_str(model))
+    span_ctx = None
     try:
         with _spans_lock:
             span = _active_spans.get(task_id)
         if span is None:
             return
-        schema = DispatchModelResolvedAttrs(model=_safe_str(model))
+        span_ctx = span.get_span_context()
         span.add_event(DispatchModelResolvedAttrs.EVENT_NAME, attributes=_safe_attrs(schema.to_event_attrs()))
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
+    _try_emit_log(span_ctx, DispatchModelResolvedAttrs.EVENT_NAME, _safe_attrs(schema.to_event_attrs()))
 
 
 def emit_dispatch_progress(
@@ -224,15 +231,18 @@ def emit_dispatch_progress(
     elapsed_s: float = 0.0,
 ) -> None:
     """Registra o evento ``dispatch.progress`` no root span."""
+    schema = DispatchProgressAttrs(step=_safe_str(step), elapsed_s=float(elapsed_s))
+    span_ctx = None
     try:
         with _spans_lock:
             span = _active_spans.get(task_id)
         if span is None:
             return
-        schema = DispatchProgressAttrs(step=_safe_str(step), elapsed_s=float(elapsed_s))
+        span_ctx = span.get_span_context()
         span.add_event(DispatchProgressAttrs.EVENT_NAME, attributes=_safe_attrs(schema.to_event_attrs()))
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
+    _try_emit_log(span_ctx, DispatchProgressAttrs.EVENT_NAME, _safe_attrs(schema.to_event_attrs()))
 
 
 def emit_dispatch_tool_burst(
@@ -241,15 +251,18 @@ def emit_dispatch_tool_burst(
     count: int = 0,
 ) -> None:
     """Registra o evento ``dispatch.tool_burst`` no root span."""
+    schema = DispatchToolBurstAttrs(tools=_safe_str(tools), count=int(count))
+    span_ctx = None
     try:
         with _spans_lock:
             span = _active_spans.get(task_id)
         if span is None:
             return
-        schema = DispatchToolBurstAttrs(tools=_safe_str(tools), count=int(count))
+        span_ctx = span.get_span_context()
         span.add_event(DispatchToolBurstAttrs.EVENT_NAME, attributes=_safe_attrs(schema.to_event_attrs()))
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
+    _try_emit_log(span_ctx, DispatchToolBurstAttrs.EVENT_NAME, _safe_attrs(schema.to_event_attrs()))
 
 
 def emit_dispatch_completed(
@@ -258,18 +271,21 @@ def emit_dispatch_completed(
     outcome: str = "",
 ) -> None:
     """Fecha o root span com status OK."""
+    schema = DispatchCompletedAttrs(elapsed_s=float(elapsed_s), outcome=_safe_str(outcome))
+    span_ctx = None
     try:
         with _spans_lock:
             span = _active_spans.pop(task_id, None)
         if span is None:
             return
         from opentelemetry.trace import StatusCode  # pylint: disable=import-outside-toplevel
-        schema = DispatchCompletedAttrs(elapsed_s=float(elapsed_s), outcome=_safe_str(outcome))
+        span_ctx = span.get_span_context()
         span.add_event(DispatchCompletedAttrs.EVENT_NAME, attributes=_safe_attrs(schema.to_event_attrs()))
         span.set_status(StatusCode.OK)
         span.end()
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
+    _try_emit_log(span_ctx, DispatchCompletedAttrs.EVENT_NAME, _safe_attrs(schema.to_event_attrs()))
 
 
 def emit_dispatch_failed(
@@ -278,18 +294,21 @@ def emit_dispatch_failed(
     elapsed_s: float = 0.0,
 ) -> None:
     """Fecha o root span com status ERROR."""
+    schema = DispatchFailedAttrs(reason=_safe_str(reason), elapsed_s=float(elapsed_s))
+    span_ctx = None
     try:
         with _spans_lock:
             span = _active_spans.pop(task_id, None)
         if span is None:
             return
         from opentelemetry.trace import StatusCode  # pylint: disable=import-outside-toplevel
-        schema = DispatchFailedAttrs(reason=_safe_str(reason), elapsed_s=float(elapsed_s))
+        span_ctx = span.get_span_context()
         span.add_event(DispatchFailedAttrs.EVENT_NAME, attributes=_safe_attrs(schema.to_event_attrs()))
         span.set_status(StatusCode.ERROR, description=_safe_str(reason))
         span.end()
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
+    _try_emit_log(span_ctx, DispatchFailedAttrs.EVENT_NAME, _safe_attrs(schema.to_event_attrs()))
 
 
 def _emit_child_span(task_id: str, name: str, attrs: Dict[str, Any]) -> None:
@@ -305,7 +324,9 @@ def _emit_child_span(task_id: str, name: str, attrs: Dict[str, Any]) -> None:
     ctx = set_span_in_context(parent)
     all_attrs = {**attrs, **_common_attrs()}
     child = raw.start_span(name, context=ctx, attributes=all_attrs)
+    child_ctx = child.get_span_context()
     child.end()
+    _try_emit_log(child_ctx, name, attrs)
 
 
 def emit_git_commit(
@@ -365,6 +386,21 @@ def emit_forge_pr_review(
 
 
 # ── test helpers ─────────────────────────────────────────────────────────
+
+def _try_emit_log(span_ctx: Any, event_name: str, attrs: Dict[str, Any]) -> None:
+    """Best-effort log emit — separate from span pipeline, never raises."""
+    try:
+        if span_ctx is not None and span_ctx.is_valid:
+            emit_log_record(
+                event_name=event_name,
+                trace_id=span_ctx.trace_id,
+                span_id=span_ctx.span_id,
+                trace_flags=span_ctx.trace_flags,
+                attributes=attrs,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
 
 def reset_dispatch_export() -> None:
     """Reseta estado mutable — apenas para testes."""

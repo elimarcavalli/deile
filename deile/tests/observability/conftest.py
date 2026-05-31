@@ -27,7 +27,8 @@ def otel_sdk_available() -> bool:
 @pytest.fixture(autouse=True)
 def _reset_singletons(monkeypatch):
     """Reseta singletons + limpa envs OTLP antes/depois de cada teste."""
-    from deile.observability import (reset_dispatch_export, reset_metrics,
+    from deile.observability import (reset_dispatch_export,
+                                     reset_dispatch_log_export, reset_metrics,
                                      reset_observability_config, reset_tracer)
 
     for env in (
@@ -37,6 +38,7 @@ def _reset_singletons(monkeypatch):
         "DEILE_OTLP_SERVICE_NAME",
         "DEILE_OTLP_SAMPLE_RATIO",
         "DEILE_OBSERVABILITY_DISABLED",
+        "DEILE_OTLP_LOGS_DISABLED",
         "DEILE_ROLE",
         "HOSTNAME",
     ):
@@ -45,6 +47,7 @@ def _reset_singletons(monkeypatch):
     reset_metrics()
     reset_observability_config()
     reset_dispatch_export()
+    reset_dispatch_log_export()
     try:
         yield
     finally:
@@ -52,6 +55,7 @@ def _reset_singletons(monkeypatch):
         reset_metrics()
         reset_observability_config()
         reset_dispatch_export()
+        reset_dispatch_log_export()
 
 
 @pytest.fixture
@@ -87,6 +91,47 @@ def in_memory_exporter(monkeypatch):
     yield exporter
 
     provider.shutdown()
+
+
+@pytest.fixture
+def in_memory_log_exporter(monkeypatch):
+    """Injeta um LoggerProvider in-memory para inspeção dos log records.
+
+    Substitui ``deile.observability.dispatch_log_export._log_provider`` por um
+    ``LoggerProvider`` com ``InMemoryLogExporter`` via ``SimpleLogRecordProcessor``
+    (sync, sem batch). O teste usa ``exporter.get_finished_logs()`` para inspecionar.
+
+    Requer SDK com suporte a Logs instalado — pula o teste se não houver.
+    """
+    if not otel_sdk_available():
+        pytest.skip("opentelemetry SDK não instalado (pip install -e .[otel])")
+
+    try:
+        from opentelemetry.sdk._logs import LoggerProvider
+        from opentelemetry.sdk._logs.export import (
+            InMemoryLogExporter,
+            SimpleLogRecordProcessor,
+        )
+    except ImportError:
+        pytest.skip("opentelemetry SDK logs não disponível")
+
+    log_exporter = InMemoryLogExporter()
+    log_provider = LoggerProvider()
+    log_provider.add_log_record_processor(SimpleLogRecordProcessor(log_exporter))
+    monkeypatch.setattr(
+        "deile.observability.dispatch_log_export._log_provider", log_provider
+    )
+
+    # Ligar OTLP via env para get_log_provider() não retornar None.
+    monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
+
+    from deile.observability import reset_dispatch_log_export, reset_observability_config
+    reset_observability_config()
+    reset_dispatch_log_export()
+
+    yield log_exporter
+
+    log_provider.shutdown()
 
 
 @pytest.fixture
