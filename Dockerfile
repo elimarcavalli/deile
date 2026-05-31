@@ -180,12 +180,18 @@ RUN ARCH="$(dpkg --print-architecture)" \
 #
 # nodejs ~20 (LTS) via NodeSource (debian-based). Tamanho: ~80MB nodejs +
 # ~30MB claude CLI = ~110MB nesta camada.
+#
+# Versão pinada (não "latest"): reprodutibilidade + garante o keyword trigger
+# de "workflow"/"workflows" que o preset ultracode usa para opt-in no Workflow
+# tool (presente a partir de 2.1.158). Sem pin, o layer cache do Docker servia
+# 2.1.156 indefinidamente. Bump via --build-arg CLAUDE_CODE_VERSION=<x>.
 # -----------------------------------------------------------------------------
+ARG CLAUDE_CODE_VERSION=2.1.158
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && apt-get update \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/* \
- && npm install -g --omit=dev @anthropic-ai/claude-code \
+ && npm install -g --omit=dev "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && claude --version
 
 # Non-root user. UID 10001 is well above the system uid range
