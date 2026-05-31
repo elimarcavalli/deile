@@ -47,10 +47,16 @@ def _clean_logging_handlers():
     tests using caplog.at_level(..., logger=name) receive 0 records even when
     the code does emit — this is the root cause of the 7 TestTickSummary and
     1 test_warns_when_no_tokens ordering failures (issue #432).
+
+    Also restores logging.Manager.disable: deile/cli.py calls logging.disable()
+    to suppress output during CLI runs; without this restore, all subsequent
+    logging.info() / logging.warning() calls return False from isEnabledFor()
+    and are silently dropped — causing deile/tests/log_mgmt/ failures.
     """
     root = logging.root
     root_handlers_before = root.handlers[:]
     root_level_before = root.level
+    manager_disable_before = root.manager.disable
 
     mgr = logging.Logger.manager
     snapshot: dict = {}
@@ -63,6 +69,9 @@ def _clean_logging_handlers():
             }
 
     yield
+
+    if root.manager.disable != manager_disable_before:
+        logging.disable(manager_disable_before)
 
     root.handlers[:] = root_handlers_before
     root.level = root_level_before
