@@ -12,6 +12,18 @@ on the developer's HOME (issue #125 reviewer finding).
 Issue #432: three additional autouse fixtures prevent ordering-dependent
 failures caused by leaked global state (os.environ, logging handlers,
 sys.stdio) across tests that do not use monkeypatch for cleanup.
+
+Issue #471 — Leaker table (bisected during PR #434):
+=======================================================
+Ordering-dependent test         | Leaker source                              | Mechanism
+--------------------------------|--------------------------------------------|------------------------------------------
+test_warns_when_no_tokens       | tests that set GITHUB_TOKEN/GITLAB_TOKEN/  | os.environ mutated via direct assignment,
+                                | GL_TOKEN via direct assignment             | no restore → token present in next test
+TestTickSummary (×7 failures)   | TestFlagSmoke._run_cli() → cli_main()     | logging.disable(CRITICAL) in
+                                | in test_cli_flags.py                       | deile/cli.py:121 leaks
+                                |                                            | logging.root.manager.disable = 50
+test_renderer_task_awaited_     | test that swaps sys.stdout without         | sys.stdout replaced without restore;
+before_stdout_restore           | monkeypatch.setattr                        | next test captures wrong reference
 """
 from __future__ import annotations
 
@@ -104,8 +116,17 @@ def _guard_sys_stdio():
     saved_stderr = sys.stderr
     saved_stdin = sys.stdin
     yield
+    assert sys.stdout is saved_stdout, (
+        f"test mutated sys.stdout without monkeypatch: {sys.stdout!r}"
+    )
     sys.stdout = saved_stdout
+    assert sys.stderr is saved_stderr, (
+        f"test mutated sys.stderr without monkeypatch: {sys.stderr!r}"
+    )
     sys.stderr = saved_stderr
+    assert sys.stdin is saved_stdin, (
+        f"test mutated sys.stdin without monkeypatch: {sys.stdin!r}"
+    )
     sys.stdin = saved_stdin
 
 
