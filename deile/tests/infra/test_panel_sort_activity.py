@@ -70,6 +70,9 @@ def _fake_data(pipeline_events=None, local_events=None):
         data.local_logs.get.return_value = ls
     else:
         data.local_logs = None
+    # Explicitly None so _activity_from_data / _last_activity_caption
+    # use the legacy pipeline+local fallback path (issue #436).
+    data.activity = None
     return data
 
 
