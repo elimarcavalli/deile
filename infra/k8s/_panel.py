@@ -63,7 +63,8 @@ from _panel_data import _fmt_cpu_display, _fmt_mem_display, _pct  # noqa: F401
 from _panel_data import EndpointInfo  # noqa: F401
 from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
-from _panel_data import _SOURCE_COLOR_MAP as _ACTIVITY_COLOR_MAP  # noqa: F401
+from _panel_data import _ROLE_COLOR_MAP as _ACTIVITY_COLOR_MAP  # noqa: F401
+from _panel_data import _ERROR_DETAIL_RE as _ACTIVITY_ERROR_RE  # noqa: F401
 from _panel_data import \
     _audit_dispatch_mode_change as pd_audit_dispatch_mode_change
 from _panel_data import \
@@ -883,12 +884,17 @@ class DashboardView(View):
             for r in rows:
                 # Color by role: look up deploy→color, fall back to dim italic.
                 actor_color = _ACTIVITY_COLOR_MAP.get(r.actor, "dim italic")
+                # AC7: highlight error details in bold red.
+                detail_style = (
+                    "bold red" if _ACTIVITY_ERROR_RE.search(r.detail)
+                    else "dim"
+                )
                 tbl.add_row(
                     r.hhmmss,
                     Text(r.actor, style=f"bold {actor_color}"),
                     r.action,
                     r.target,
-                    Text(r.detail, style="dim"),
+                    Text(r.detail, style=detail_style),
                 )
             body = tbl
         return Panel(body, title="[bold]ACTIVITY[/bold] (últimos 10)",

@@ -26,9 +26,11 @@ Coverage:
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from subprocess import CompletedProcess
 from typing import List
 from unittest.mock import MagicMock, patch
 
@@ -214,17 +216,23 @@ class TestMultiSourceActivityProvider:
                                            enabled=False)
         return p
 
+    def _ok(self, stdout: str = "") -> CompletedProcess:
+        return CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+
+    def _fail(self) -> CompletedProcess:
+        return CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+
     def test_fetch_source_returns_empty_on_none_text(self):
         p = self._make_provider()
         p._kubectl = "/usr/bin/kubectl"
-        with patch("_panel_data._capture_text", return_value=None):
+        with patch("subprocess.run", return_value=self._fail()):
             result = p._fetch_source("deile-pipeline", "pipeline")
         assert result == []
 
     def test_fetch_source_returns_empty_on_empty_string(self):
         p = self._make_provider()
         p._kubectl = "/usr/bin/kubectl"
-        with patch("_panel_data._capture_text", return_value=""):
+        with patch("subprocess.run", return_value=self._ok("")):
             result = p._fetch_source("deile-pipeline", "pipeline")
         assert result == []
 
@@ -233,7 +241,7 @@ class TestMultiSourceActivityProvider:
         p._kubectl = "/usr/bin/kubectl"
         ts = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.000000Z")
         log_text = f"{ts} dispatch.started task=x channel=pipeline-issue-10\n"
-        with patch("_panel_data._capture_text", return_value=log_text):
+        with patch("subprocess.run", return_value=self._ok(log_text)):
             result = p._fetch_source("deile-worker", "deile-worker")
         assert len(result) == 1
         assert result[0].actor == "deile-worker"
@@ -244,7 +252,7 @@ class TestMultiSourceActivityProvider:
         p._kubectl = "/usr/bin/kubectl"
         ts = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.000000Z")
         log_text = f"{ts} worker dispatch starting\n"
-        with patch("_panel_data._capture_text", return_value=log_text):
+        with patch("subprocess.run", return_value=self._ok(log_text)):
             result = p._fetch_source("deile-pipeline", "pipeline")
         assert len(result) == 1
         assert result[0].actor == "pipeline"
@@ -254,7 +262,7 @@ class TestMultiSourceActivityProvider:
         p._kubectl = "/usr/bin/kubectl"
         ts = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.000000Z")
         log_text = f"{ts} GET /v1/health 200\n"
-        with patch("_panel_data._capture_text", return_value=log_text):
+        with patch("subprocess.run", return_value=self._ok(log_text)):
             result = p._fetch_source("deile-pipeline", "pipeline")
         assert result == []
 
@@ -262,19 +270,25 @@ class TestMultiSourceActivityProvider:
         p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
                                            enabled=True)
         p._kubectl = "/usr/bin/kubectl"
-        # Each source returns 60 events; 5 sources × 60 = 300 → capped at 200.
+        # 60 events per source; 5 sources × 60 = 300 → capped at 200.
+        # Patch _BURST_THRESHOLD high so rolling-window cap is tested in isolation.
         ts = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.000000Z")
-        single_line = (f"{ts} dispatch.started task=x "
-                       f"channel=pipeline-issue-1\n") * 60
-        with patch("_panel_data._capture_text", return_value=single_line):
-            state = p._fetch()
+        lines = "".join(
+            f"{ts} dispatch.started task=t{i} channel=pipeline-issue-{i}\n"
+            for i in range(60)
+        )
+        with patch.object(pd, "_BURST_THRESHOLD", 10_000):
+            with patch("subprocess.run",
+                       return_value=CompletedProcess([], 0, lines, "")):
+                state = p._fetch()
         assert len(state.events) == pd._MULTI_BUFFER_CAP
 
     def test_get_returns_multi_source_state(self):
         p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
                                            enabled=True)
         p._kubectl = "/usr/bin/kubectl"
-        with patch("_panel_data._capture_text", return_value=None):
+        with patch("subprocess.run",
+                   return_value=CompletedProcess([], 1, "", "err")):
             state = p.get(force=True)
         assert isinstance(state, pd.MultiSourceActivityState)
         assert state.events == []
@@ -429,23 +443,25 @@ class TestAC18IntermediateState:
                                            enabled=True)
         p._kubectl = "/usr/bin/kubectl"
         ts = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.000000Z")
-        # Only deile-pipeline returns events; other sources return None.
-        def _fake_capture(cmd, timeout=5.0):
+        # Only deile-pipeline returns events; other sources fail.
+        def _fake_run(cmd, **kw):
             if "deploy/deile-pipeline" in cmd:
-                return f"{ts} worker dispatch starting\n"
-            return None
-        with patch("_panel_data._capture_text", side_effect=_fake_capture):
+                return CompletedProcess(cmd, 0,
+                                        f"{ts} worker dispatch starting\n", "")
+            return CompletedProcess(cmd, 1, "", "err")
+        with patch("subprocess.run", side_effect=_fake_run):
             state = p._fetch()
         assert isinstance(state, pd.MultiSourceActivityState)
         # At least the pipeline source contributed one event.
         assert len(state.events) >= 1
-        # No crash even though 4 other sources returned None.
+        # No crash even though 4 other sources failed.
 
     def test_provider_functional_when_all_sources_fail(self):
         p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
                                            enabled=True)
         p._kubectl = "/usr/bin/kubectl"
-        with patch("_panel_data._capture_text", return_value=None):
+        with patch("subprocess.run",
+                   return_value=CompletedProcess([], 1, "", "err")):
             state = p._fetch()
         assert isinstance(state, pd.MultiSourceActivityState)
         assert state.events == []
@@ -455,19 +471,21 @@ class TestAC18IntermediateState:
                                            enabled=True)
         p._kubectl = "/usr/bin/kubectl"
         ts = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.000000Z")
-        def _fake_capture(cmd, timeout=5.0):
+        def _fake_run(cmd, **kw):
             if "deploy/deile-pipeline" in cmd:
-                # Legacy line only
-                return f"{ts} worker dispatch starting\n"
+                return CompletedProcess(cmd, 0,
+                                        f"{ts} worker dispatch starting\n", "")
             if "deploy/deile-worker" in cmd:
-                # Canonical line
-                return (f"{ts} dispatch.started task=x "
-                        f"channel=pipeline-issue-5\n")
+                return CompletedProcess(
+                    cmd, 0,
+                    f"{ts} dispatch.started task=x channel=pipeline-issue-5\n",
+                    "")
             if "deploy/deilebot" in cmd:
-                # Canonical inbound
-                return f"{ts} inbound.mention target=issue:99\n"
-            return None
-        with patch("_panel_data._capture_text", side_effect=_fake_capture):
+                return CompletedProcess(cmd, 0,
+                                        f"{ts} inbound.mention target=issue:99\n",
+                                        "")
+            return CompletedProcess(cmd, 1, "", "err")
+        with patch("subprocess.run", side_effect=_fake_run):
             state = p._fetch()
         actors = {ev.actor for ev in state.events}
         assert "pipeline" in actors      # legacy
