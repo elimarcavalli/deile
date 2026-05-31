@@ -227,6 +227,13 @@ RUN chmod 0555 /app/worker_server.py
 COPY --chown=deile:deile infra/k8s/_worker_resume.py /app/_worker_resume.py
 RUN chmod 0555 /app/_worker_resume.py
 
+# Structured dispatch logger (issue #435). Imported by both worker_server.py
+# and claude_worker_server.py via ``import dispatch_logger as dlog``. Must sit
+# in /app next to them — otherwise the workers crash on import at startup
+# (ModuleNotFoundError: No module named 'dispatch_logger').
+COPY --chown=deile:deile infra/k8s/dispatch_logger.py /app/dispatch_logger.py
+RUN chmod 0555 /app/dispatch_logger.py
+
 # Pipeline status server — HTTP introspection endpoints (issue #347 fix). Roda
 # in-process no wrapper.py mode pipeline (asyncio task no mesmo event loop do
 # monitor). Sem este arquivo no /app o `from pipeline_status_server import ...`
