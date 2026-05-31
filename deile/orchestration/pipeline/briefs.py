@@ -205,6 +205,7 @@ PASSO 2 — Executar a work-list:
 - Review: `{review_post_cmd}` (APPROVE/REQUEST_CHANGES). Merge: `{merge_cmd}` (fallback `{merge_fallback_cmd}`); confirme `{check_merged_cmd}`. Comment: `{comment_pr_cmd}`.
 - Para revisar/mergear: rode a SUÍTE COMPLETA `{full_suite_cmd}` ({pip_guard}). Vermelha por sua mudança = bloqueante; vermelha por testes pré-existentes intocados = documenta e segue.
 - **Suite com failures suspeitas de regressão?** ANTES de votar REQUEST_CHANGES, prove via bisseção empírica: `git checkout $(git merge-base origin/{main} HEAD) -- <arquivos modificados pela PR> && pytest <testes falhando> -q && git checkout HEAD -- <mesmos arquivos>`. Se as failures persistem no baseline sem o diff = **pré-existentes, NÃO bloqueantes** (APPROVE com nota); só introduzidas pela PR = REQUEST_CHANGES.
+- **Quando sou autor+assignee (sou o time):** se zero regressão funcional E ACs abertos são apenas docs/qualidade (não bug funcional) → **APPROVE com ressalvas** + abra UMA sub-issue de follow-up agregada (regra anti-flood) listando os ACs abertos como checklist. REQUEST_CHANGES só quando há bug funcional, regressão real ou requisito CORE não atendido.
 - Se PR fecha issue (`Closes #N` no body): leia `gh issue view N` e confronte entrega vs requisito.
 - Se PR toca `briefs.py`/`*_brief*.py`: rode `pytest deile/tests/orchestration/pipeline/test_briefs* -v` E `grep -E 'CHECKPOINT|SUÍTE COMPLETA|anti-eco|gh pr comment|.deile-progress.md' deile/orchestration/pipeline/briefs.py` — invariantes ausentes = REQUEST_CHANGES cirúrgico.
 
