@@ -1168,11 +1168,23 @@ _WORKER_BUSY_WINDOW_S = 90  # se houve POST /v1/dispatch nos últimos 90s, está
 # worker doing right now" header in :class:`PodWatchView`. Format must
 # stay in sync with the ``logger.info`` calls there; key order is
 # flexible (we extract by regex), but key NAMES are the wire contract.
+# Accepts both the legacy ``dispatch_started`` (snake) and the new
+# ``dispatch.received`` (dot) formats for 1-release overlap (#435).
+# Removal of the legacy compat branch is tracked in issue #444.
 _DISPATCH_STARTED_RE = re.compile(
-    r"dispatch_started\s+(?P<kv>.+)$", re.IGNORECASE,
+    r"dispatch[._](received|started)\s+(?P<kv>.+)$", re.IGNORECASE,
 )
+# Same dual-format compat for the terminal marker: ``dispatch.completed``
+# (new) and ``dispatch_completed`` (legacy).  Removal → #444.
 _DISPATCH_COMPLETED_RE = re.compile(
-    r"dispatch_completed\s+task=(?P<task_id>[a-f0-9]+)(?P<rest>[^\n]*)$",
+    r"dispatch[._](completed)\s+task=(?P<task_id>[a-f0-9]+)(?P<rest>[^\n]*)$",
+    re.IGNORECASE,
+)
+# ``dispatch.failed`` is a new terminal event (#435) signalling task failure
+# (timeout / cancellation / internal error).  Treated identically to a
+# ``dispatch.completed ok=False`` for the purpose of clearing current_task.
+_DISPATCH_FAILED_RE = re.compile(
+    r"dispatch\.failed\s+task=(?P<task_id>[a-f0-9]+)(?P<rest>[^\n]*)$",
     re.IGNORECASE,
 )
 _KV_RE = re.compile(r"(\w+)=(\S+)")
@@ -1271,9 +1283,10 @@ class WorkerProvider(_KubectlProviderMixin):
             ll = _parse_log_line(raw)
             if ll is None:
                 continue
-            # Pareamento started/completed — feito ANTES do dispatch-RE
+            # Pareamento started/completed|failed — feito ANTES do dispatch-RE
             # genérico porque ambos casam com "dispatch" no body.
-            m_done = _DISPATCH_COMPLETED_RE.search(ll.body)
+            # ``dispatch.failed`` (#435) é tratado como terminal igual a completed.
+            m_done = _DISPATCH_COMPLETED_RE.search(ll.body) or _DISPATCH_FAILED_RE.search(ll.body)
             if m_done:
                 tid = m_done.group("task_id")
                 started_task = live_tasks.pop(tid, None)

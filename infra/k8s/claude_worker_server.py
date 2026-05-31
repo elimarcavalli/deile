@@ -47,6 +47,8 @@ from typing import List, Optional
 
 from aiohttp import web
 
+import dispatch_logger as dlog
+
 logger = logging.getLogger("deile.claude_worker_server")
 
 #: ``secrets.token_hex(8)`` gera exatamente 16 chars hex; qualquer outra
@@ -1699,10 +1701,12 @@ async def health_handler(request: web.Request) -> web.Response:
     """
     claude_bin = shutil.which("claude")
     if claude_bin is None:
+        dlog.log_health_probe(request.path, 500)
         return web.json_response(
             {"status": "error", "error": "claude binary not found in PATH"},
             status=500,
         )
+    dlog.log_health_probe(request.path, 200)
     return web.json_response({"status": "ok", "claude_binary": claude_bin})
 
 
@@ -2088,22 +2092,17 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         full_prompt = _ULTRACODE_PREAMBLE + full_prompt
 
     # Structured dispatch marker consumed by WorkerProvider in the panel
-    # (issue #396). Mirrors worker_server.py format so PodWatchView can
+    # (issue #396, #435). Emitted via dispatch_logger so PodWatchView can
     # show WORK/LAST_COMPLETED for claude-worker pods as well.
-    _dispatch_parts = [f"task={task_id}"]
-    if _channel_id:
-        _dispatch_parts.append(f"channel={_channel_id}")
-    if stage:
-        _dispatch_parts.append(f"stage={stage}")
-    if _issue_number is not None:
-        _dispatch_parts.append(f"issue={_issue_number}")
-    if branch:
-        _dispatch_parts.append(f"branch={branch}")
-    if claude_model:
-        _dispatch_parts.append(f"model={claude_model}")
-    if reasoning_effort:
-        _dispatch_parts.append(f"effort={reasoning_effort}")
-    logger.info("dispatch_started %s", " ".join(_dispatch_parts))
+    dlog.dispatch_received(
+        task=task_id,
+        channel=_channel_id or "",
+        stage=stage,
+        issue=_issue_number,
+        branch=branch,
+        model_requested=claude_model,
+        effort=reasoning_effort or None,
+    )
 
     # Mecanismo 2 — Lease: garante que NUNCA dois pods trabalhem no mesmo
     # workspace simultaneamente. Adquirido ANTES do spawn; liberado no finally.
@@ -2273,8 +2272,24 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         # Falha não-auth reportada pelo claude — propaga o erro pra pipeline.
         response["error"] = claude_result["result"][:500]
 
-    # Terminal marker for the panel — pairs with dispatch_started (issue #396).
-    logger.info("dispatch_completed task=%s ok=%s", task_id, ok)
+    # Terminal marker for the panel — pairs with dispatch.received (#435).
+    if ok:
+        dlog.dispatch_completed(
+            task=task_id,
+            ok=True,
+            turns=claude_result.get("num_turns"),
+            cost_usd=claude_result.get("total_cost_usd"),
+            duration_s=result.duration_seconds,
+        )
+    else:
+        _err_code = error_code or ("AUTH_EXPIRED" if auth_expired else None)
+        dlog.dispatch_failed(
+            task=task_id,
+            reason=claude_result.get("result", "")[:120] or "unknown",
+            turns=claude_result.get("num_turns"),
+            duration_s=result.duration_seconds,
+            error_code=_err_code,
+        )
 
     # Libera heartbeat + lease antes de responder (lease liberado apenas aqui
     # no caminho feliz; o caminho de exceção já liberou no handler acima).

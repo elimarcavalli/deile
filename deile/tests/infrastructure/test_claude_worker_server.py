@@ -34,6 +34,10 @@ def claude_worker_module():
     cross-teste (caches, handlers já registrados, etc.).
     """
     repo_root = Path(__file__).resolve().parents[3]
+    k8s_dir = str(repo_root / "infra" / "k8s")
+    # Ensure sibling modules (e.g. dispatch_logger) are importable.
+    if k8s_dir not in sys.path:
+        sys.path.insert(0, k8s_dir)
     server_path = repo_root / "infra" / "k8s" / "claude_worker_server.py"
     spec = importlib.util.spec_from_file_location(
         "claude_worker_server_under_test", str(server_path),
