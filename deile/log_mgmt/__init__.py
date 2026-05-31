@@ -76,6 +76,24 @@ def init_logging(
     # Adiciona nosso handler
     root.addHandler(handler)
 
+    # `deile.dispatch` é o canal de OBSERVABILIDADE estruturada do
+    # dispatch lifecycle (issue #435). Linhas como ``dispatch.received``
+    # / ``dispatch.completed`` / ``dispatch.progress`` / ``health.probe``
+    # alimentam o painel TUI e podem ser silenciadas se o root estiver
+    # em ``WARNING`` (default em pods de produção). Mantemos o logger
+    # em INFO com handler dedicado — sem propagar pro root pra não
+    # duplicar a linha no stdout. Idempotente: remove handlers marcados
+    # de chamadas anteriores antes de re-attach (caso re-init).
+    _MARKER = "_deile_dispatch_marker"
+    dlog = logging.getLogger("deile.dispatch")
+    dlog.setLevel(logging.INFO)
+    dlog.propagate = False
+    for _h in list(dlog.handlers):
+        if getattr(_h, _MARKER, False):
+            dlog.removeHandler(_h)
+    setattr(handler, _MARKER, True)
+    dlog.addHandler(handler)
+
     # Log de inicialização
     root.info(
         "DEILE Logger initialized: pod=%s level=%s max_mb=%s backups=%s",

@@ -51,6 +51,7 @@ from typing import Any, Dict, Optional
 # a plain import resolves it. Done as a module so the git/fingerprint/journal
 # logic is unit-testable without aiohttp.
 import _worker_resume as resume
+import dispatch_logger as dlog
 # aiohttp comes from the deilebot extra (already in the image).
 from aiohttp import web
 
@@ -853,6 +854,7 @@ async def _bearer_auth_mw(request: web.Request, handler):
 
 
 async def health_handler(request: web.Request) -> web.Response:
+    dlog.log_health_probe(request.path, 200)
     return web.json_response(
         {"ok": True, "service": "deile-worker", "version": "0.1.0"}
     )
@@ -978,28 +980,20 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     }
     # Structured one-line dispatch log — single source of truth consumed by
     # ``infra.k8s._panel_data.WorkerProvider`` to populate the Pod Watch
-    # "current task" header (issue #309 fase 2 follow-up). NEVER include the
-    # ``brief`` (untrusted Discord content) or any secret — only the
-    # already-validated routing metadata. Format is ``key=value`` pairs with
-    # absent fields omitted; ``channel_id`` is included because it doubles as
-    # a fallback target hint for pipeline channels (``pipeline-issue-<N>`` /
-    # ``pipeline-pr-<N>`` / ``pipeline-mention-{issue|pr}-<N>``) when the
-    # caller didn't pass ``issue_number`` explicitly. Format change here MUST
-    # be mirrored in ``_DISPATCH_STARTED_RE`` on the panel side.
-    parts = [f"task={task_id}", f"channel={channel_id}"]
-    if stage:
-        parts.append(f"stage={stage}")
-    if action_kind:
-        parts.append(f"kind={action_kind}")
-    if issue_number is not None:
-        parts.append(f"issue={issue_number}")
-    if branch:
-        parts.append(f"branch={branch}")
-    if preferred_model:
-        parts.append(f"model={preferred_model}")
-    if reasoning_effort:
-        parts.append(f"effort={reasoning_effort}")
-    logger.info("dispatch_started %s", " ".join(parts))
+    # "current task" header (issue #309 fase 2 follow-up, #435). NEVER include
+    # the ``brief`` (untrusted Discord content) or any secret — only the
+    # already-validated routing metadata. Format change here MUST be mirrored
+    # in ``_DISPATCH_STARTED_RE`` on the panel side (see _panel_data.py).
+    dlog.dispatch_received(
+        task=task_id,
+        channel=channel_id,
+        stage=stage,
+        kind=action_kind,
+        issue=issue_number,
+        branch=branch,
+        model_requested=preferred_model,
+        effort=reasoning_effort or None,
+    )
 
     wait_for_result = bool(body.get("wait_for_result", True))
     _outer_timeout = (dispatch_timeout_s + 30) if dispatch_timeout_s is not None else (TASK_TIMEOUT_S + 30)
@@ -1014,17 +1008,12 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 timeout=_outer_timeout,
             )
             _TASKS[task_id] = result
-            # Terminal marker for the panel — pairs with the
-            # ``dispatch_started`` line emitted above. Carries only the
-            # task_id and an ``ok`` flag (no brief/result echo: pilar 08).
-            logger.info(
-                "dispatch_completed task=%s ok=%s",
-                task_id, bool(result.get("ok")),
-            )
+            # Terminal marker for the panel — pairs with dispatch.received (#435).
+            dlog.dispatch_completed(task=task_id, ok=bool(result.get("ok")))
             return web.json_response(result)
         except asyncio.TimeoutError:
             _TASKS[task_id] = {**_TASKS[task_id], "ok": False, "error": "outer timeout"}
-            logger.info("dispatch_completed task=%s ok=False", task_id)
+            dlog.dispatch_failed(task=task_id, reason="outer_timeout", error_code="OUTER_TIMEOUT")
             return web.json_response(_TASKS[task_id], status=504)
     else:
         # Fire-and-forget — caller polls /v1/result/{id}
@@ -1038,9 +1027,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                                                   preferred_model=preferred_model,
                                                   reasoning_effort=reasoning_effort,
                                                   task_timeout_s=dispatch_timeout_s)
-                logger.info(
-                    "dispatch_completed task=%s ok=%s",
-                    task_id, bool(_TASKS[task_id].get("ok")),
+                dlog.dispatch_completed(
+                    task=task_id, ok=bool(_TASKS[task_id].get("ok")),
                 )
             except asyncio.CancelledError:
                 _TASKS[task_id] = {
@@ -1048,14 +1036,14 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                     "ok": False,
                     "error": "task cancelled",
                 }
-                logger.info("dispatch_completed task=%s ok=False", task_id)
+                dlog.dispatch_failed(task=task_id, reason="cancelled", error_code="TASK_CANCELLED")
                 raise
             except Exception as exc:
                 _TASKS[task_id] = {
                     "task_id": task_id, "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
-                logger.info("dispatch_completed task=%s ok=False", task_id)
+                dlog.dispatch_failed(task=task_id, reason=type(exc).__name__, error_code="RUNTIME_EXCEPTION")
         # B2 (PR #295 review): guarda strong ref para a task em background.
         # asyncio mantém apenas weak refs internamente; sem o set + callback,
         # o GC pode coletar a task antes de ela completar.
