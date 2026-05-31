@@ -12,9 +12,12 @@ Regras enforced (cada falha bloqueia merge):
 1. Todo ``serviceAccountName: X`` referencia uma SA que existe.
 2. Todo pod que monta um ServiceAccount custom (não-``default``) e cujo
    código invoca ``kubectl exec`` precisa de NetworkPolicy de egress
-   pro Service CIDR do cluster (10.43.0.0/16 em k3s). Heurística:
-   pods com SA ``claude-creds-renewer`` OU labels ``app=deile-pipeline``
-   precisam dessa regra.
+   pro kube-apiserver. NetworkPolicy filtra o IP *pós-DNAT* (endpoint real
+   do apiserver), NÃO o ClusterIP — então o whitelist precisa alcançar o
+   endpoint real (range RFC1918 na porta 443 ou 6443; o ``deploy.py``
+   estreita para o /32 real em runtime). Heurística: pods com SA
+   ``claude-creds-renewer`` OU labels ``app=deile-pipeline`` precisam dessa
+   regra.
 3. Todo manifest YAML carrega sem erro de sintaxe.
 
 Quando este teste falhar, NÃO mude o teste para passar. Mude o manifest.
@@ -22,7 +25,6 @@ Quando este teste falhar, NÃO mude o teste para passar. Mude o manifest.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +32,10 @@ import pytest
 import yaml
 
 MANIFEST_DIR = Path(__file__).resolve().parents[3] / "infra" / "k8s" / "manifests"
-K3S_SERVICE_CIDR = "10.43.0.0/16"
+# Portas válidas para alcançar o kube-apiserver: 6443 (k3s/kubeadm) e 443
+# (EKS/GKE/AKS). NetworkPolicy filtra o IP/porta pós-DNAT (endpoint real), não
+# o ClusterIP — por isso aceitamos qualquer ipBlock RFC1918 nessas portas.
+APISERVER_PORTS = frozenset({443, 6443})
 
 
 def _load_all_docs() -> list[dict[str, Any]]:
@@ -114,13 +119,20 @@ def test_service_account_refs_are_defined(docs: list[dict[str, Any]]) -> None:
 
 
 def test_kubectl_exec_pods_have_apiserver_egress(docs: list[dict[str, Any]]) -> None:
-    """Regra 2 — pods que fazem ``kubectl exec`` precisam de egress pro Service CIDR.
+    """Regra 2 — pods que fazem ``kubectl exec`` precisam de egress pro apiserver.
 
     Heurística: pods que assumem a SA ``claude-creds-renewer`` (definida no
     manifest 51 com permissão ``pods/exec`` no claude-worker) PRECISAM ter
-    NetworkPolicy que permita TCP/443 para ``10.43.0.0/16``. Sem isso, o
-    ``kubectl exec`` invocado falha com ``connection timed out`` — exato bug
-    que ficou em produção por 4 dias após o PR #420.
+    NetworkPolicy de egress que alcance o kube-apiserver — um ``ipBlock`` com
+    CIDR não-vazio na porta 443 ou 6443.
+
+    NOTA pós-mortem (substitui a heurística antiga que fixava o Service CIDR
+    ``10.43.0.0/16``): NetworkPolicy filtra o IP de destino PÓS-DNAT (o endpoint
+    real do apiserver, ex. ``192.168.64.2:6443``), não o ClusterIP. Whitelist do
+    Service CIDR NUNCA casa com o pacote → ``connection refused``. Por isso o
+    manifest carrega um fallback RFC1918 (443+6443) e o ``deploy.py`` estreita
+    para o /32 real em runtime; este teste exige apenas a presença de uma regra
+    de egress que possa alcançar o apiserver, sem pinar CIDR.
     """
     refs = _service_account_refs(docs)
     pods_needing_apiserver = {
@@ -156,26 +168,29 @@ def test_kubectl_exec_pods_have_apiserver_egress(docs: list[dict[str, Any]]) -> 
         for rule in spec.get("egress") or []:
             to_blocks = rule.get("to") or []
             ports = rule.get("ports") or []
-            has_443 = any(p.get("port") == 443 and p.get("protocol", "TCP") == "TCP" for p in ports)
-            if not has_443:
+            reaches_apiserver_port = any(
+                p.get("port") in APISERVER_PORTS and p.get("protocol", "TCP") == "TCP"
+                for p in ports
+            )
+            if not reaches_apiserver_port:
                 continue
-            for to in to_blocks:
-                ip_block = to.get("ipBlock") or {}
-                if ip_block.get("cidr") == K3S_SERVICE_CIDR:
-                    if covers("deile-pipeline"):
-                        apiserver_egress_covered.add("deile-pipeline")
-                    if covers("claude-creds-renewer"):
-                        apiserver_egress_covered.add("claude-creds-renewer")
+            has_ipblock = any((to.get("ipBlock") or {}).get("cidr") for to in to_blocks)
+            if not has_ipblock:
+                continue
+            if covers("deile-pipeline"):
+                apiserver_egress_covered.add("deile-pipeline")
+            if covers("claude-creds-renewer"):
+                apiserver_egress_covered.add("claude-creds-renewer")
 
     required = {"deile-pipeline", "claude-creds-renewer"}
     missing = required - apiserver_egress_covered
     assert not missing, (
-        f"Pods que invocam `kubectl exec` sem NetworkPolicy de egress para o "
-        f"kube-apiserver (Service CIDR {K3S_SERVICE_CIDR}): {sorted(missing)}.\n"
-        "Sem esta regra, `kubectl exec` falha com 'dial tcp 10.43.0.1:443: "
-        "connect: connection timed out' (foi o bug que afetou o PR #420 em "
-        "produção). Adicione/estenda uma NetworkPolicy de egress no manifest "
-        "40-network-policy.yaml cobrindo esses pods. Exemplo de bloco mínimo:\n"
+        "Pods que invocam `kubectl exec` sem NetworkPolicy de egress capaz de "
+        f"alcançar o kube-apiserver (ipBlock + porta 443/6443): {sorted(missing)}.\n"
+        "Lembre: NetworkPolicy filtra o IP PÓS-DNAT (endpoint real do apiserver), "
+        "NÃO o ClusterIP — liberar 10.43.0.0/16 não funciona ('connection "
+        "refused'). Adicione/estenda uma NetworkPolicy de egress no manifest "
+        "40-network-policy.yaml cobrindo esses pods. Exemplo de fallback portátil:\n"
         "  spec:\n"
         "    podSelector:\n"
         "      matchExpressions:\n"
@@ -183,6 +198,9 @@ def test_kubectl_exec_pods_have_apiserver_egress(docs: list[dict[str, Any]]) -> 
         "claude-creds-renewer] }\n"
         "    policyTypes: [\"Egress\"]\n"
         "    egress:\n"
-        "      - to: [{ ipBlock: { cidr: 10.43.0.0/16 } }]\n"
-        "        ports: [{ protocol: TCP, port: 443 }]"
+        "      - to:\n"
+        "          - ipBlock: { cidr: 10.0.0.0/8 }\n"
+        "          - ipBlock: { cidr: 172.16.0.0/12 }\n"
+        "          - ipBlock: { cidr: 192.168.0.0/16 }\n"
+        "        ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }]"
     )

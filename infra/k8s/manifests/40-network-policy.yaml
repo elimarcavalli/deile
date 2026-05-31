@@ -306,19 +306,25 @@ spec:
         - { protocol: TCP, port: 443 }
 ---
 # ---- pipeline + claude-creds-renewer egress: kube-apiserver --------------------
-# Fix do gap do PR #420 (Decisão #46 auto-renew): o pipeline pod e o CronJob
-# `claude-credentials-renew` invocam `kubectl exec` para ler/escrever credenciais
-# OAuth dentro do claude-worker pod. Esse `kubectl exec` precisa falar TCP/443 com
-# o kube-apiserver (ClusterIP 10.43.0.1 em k3s/Rancher Desktop).
+# O pipeline pod, o deile-monitor e o CronJob `claude-credentials-renew` invocam
+# `kubectl exec` para ler/escrever credenciais OAuth dentro do claude-worker pod.
+# Esse `kubectl exec` precisa falar com o kube-apiserver.
 #
-# A regra `deile-egress-https-llm` (acima) permite egress 443 para o mundo MAS
-# EXCEPT 10.0.0.0/8 — e o Service CIDR do k3s (10.43.0.0/16) cai dentro desse
-# bloco bloqueado. Sem esta NetworkPolicy específica, `kubectl exec` falha com
-# `dial tcp 10.43.0.1:443: connect: connection timed out` e o auto-renew
-# (Decisão #46) degrada para o caminho de bloqueio que exige renew manual.
+# ARMADILHA (causa do bug que ficou em produção): NetworkPolicy filtra o IP de
+# destino *pós-DNAT* — o endpoint REAL do apiserver — e NÃO o ClusterIP do
+# Service `kubernetes` (10.43.0.1). O kube-proxy faz DNAT do ClusterIP para o
+# endpoint real ANTES de a policy ser avaliada. Logo, liberar o Service CIDR
+# (10.43.0.0/16) nunca casa com o pacote: o `kubectl exec` morre em
+# `dial tcp 10.43.0.1:443: connect: connection refused`.
 #
-# Service CIDR em outros clusters: EKS=172.20.0.0/16, GKE/AKS varia. Ajustar
-# o `cidr` abaixo conforme o cluster alvo (k3s/Rancher Desktop usa 10.43/16).
+# O endpoint real varia por cluster e está SEMPRE num range RFC1918:
+#   - k3s/Rancher Desktop : node IP, porta 6443  (ex.: 192.168.64.2:6443)
+#   - EKS/GKE/AKS         : IP do control-plane, porta 443
+# Este bloco é o FALLBACK PORTÁVEL aplicado pelo arquivo cru (`kubectl apply -f`):
+# libera os três ranges privados nas duas portas (443 + 6443), cobrindo qualquer
+# cluster. O `deploy.py` (`_apply_apiserver_egress_netpol`) ESTREITA isto, logo
+# após aplicar este arquivo, para o(s) IP(s) /32 reais + porta real descobertos
+# via `endpoints/kubernetes` — sobrescrevendo esta policy pelo nome.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -331,10 +337,12 @@ spec:
   policyTypes: ["Egress"]
   egress:
     - to:
-        - ipBlock:
-            cidr: 10.43.0.0/16
+        - ipBlock: { cidr: 10.0.0.0/8 }
+        - ipBlock: { cidr: 172.16.0.0/12 }
+        - ipBlock: { cidr: 192.168.0.0/16 }
       ports:
         - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 6443 }
 ---
 # ---- deile-monitor ingress: from deilebot only (command proxying) ----------------
 # The bot proxies ad-hoc questions and steer commands to the monitor. No other

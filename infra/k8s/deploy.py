@@ -207,6 +207,72 @@ def _capture(cmd: List[str], timeout: float = 30.0) -> Optional[str]:
     return proc.stdout if proc.returncode == 0 else None
 
 
+def _apply_apiserver_egress_netpol(kubectl: str, ns: str) -> None:
+    """Estreita a NetworkPolicy de egress ao kube-apiserver para o endpoint real.
+
+    NetworkPolicy filtra o IP de destino *pós-DNAT* — o endpoint real do
+    apiserver — e não o ClusterIP do Service ``kubernetes`` (10.43.0.1 em k3s).
+    Por isso liberar só o Service CIDR (10.43.0.0/16) nunca casa com o pacote;
+    o ``kubectl exec`` do auto-renew morre em ``connection refused``. O endpoint
+    real varia por cluster (k3s: ``node:6443``; EKS/GKE: ``master:443``), então
+    descobrimos em runtime via ``endpoints/kubernetes`` e estreitamos o egress
+    para o(s) IP(s) ``/32`` + a(s) porta(s) real(is).
+
+    Best-effort: se a descoberta falhar, o manifest 40 já carrega um fallback
+    RFC1918 (443 + 6443) que cobre qualquer cluster — apenas mais amplo.
+    """
+    raw = _capture([kubectl, "get", "endpoints", "kubernetes",
+                    "-n", "default", "-o", "json"])
+    ips: List[str] = []
+    ports: List[int] = []
+    if raw:
+        try:
+            data = json.loads(raw)
+            for subset in data.get("subsets", []) or []:
+                ips.extend(a["ip"] for a in subset.get("addresses", []) or [] if a.get("ip"))
+                ports.extend(p["port"] for p in subset.get("ports", []) or [] if p.get("port"))
+        except (ValueError, KeyError, TypeError):
+            ips, ports = [], []
+    ips = sorted(set(ips))
+    ports = sorted(set(ports))
+    if not ips or not ports:
+        ui.warn("endpoints/kubernetes vazio — mantendo fallback RFC1918 do manifest 40")
+        return
+
+    to_block = "\n".join(f"        - ipBlock: {{ cidr: {ip}/32 }}" for ip in ips)
+    ports_block = "\n".join(f"        - {{ protocol: TCP, port: {p} }}" for p in ports)
+    manifest = (
+        "apiVersion: networking.k8s.io/v1\n"
+        "kind: NetworkPolicy\n"
+        "metadata:\n"
+        "  name: creds-renewer-egress-to-kube-api\n"
+        f"  namespace: {ns}\n"
+        "spec:\n"
+        "  podSelector:\n"
+        "    matchExpressions:\n"
+        "      - { key: app, operator: In, values: [deile-pipeline, claude-creds-renewer, deile-monitor] }\n"
+        "  policyTypes: [\"Egress\"]\n"
+        "  egress:\n"
+        "    - to:\n"
+        f"{to_block}\n"
+        "      ports:\n"
+        f"{ports_block}\n"
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "apply", "-n", ns, "-f", "-"],
+            input=manifest, text=True, capture_output=True, cwd=str(ROOT),
+        )
+    except OSError as exc:
+        ui.warn(f"netpol apiserver-egress não aplicada: {exc}")
+        return
+    if proc.returncode == 0:
+        ui.info("netpol apiserver-egress estreitada para "
+                f"{', '.join(ips)} :{','.join(map(str, ports))}")
+    else:
+        ui.warn(f"netpol apiserver-egress não aplicada: {(proc.stderr or '').strip()}")
+
+
 def read_env() -> Dict[str, str]:
     """Lê o `.env` da raiz como um dicionário simples."""
     data: Dict[str, str] = {}
@@ -597,6 +663,7 @@ def k8s_up(args: dict) -> int:
 
     ui.info("aplicando network policies")
     _run([kubectl, "apply", "-n", ns, "-f", str(MANIFESTS / "40-network-policy.yaml")])
+    _apply_apiserver_egress_netpol(kubectl, ns)
 
     ui.info("criando os Secrets (nada é impresso)")
     deile_secret: Dict[str, str] = {"DEILE_BOT_AUTH_TOKEN": bearer, **llm}
@@ -1806,6 +1873,7 @@ def do_create_namespace(cfg: CreateNamespaceConfig) -> int:
     ui.info("aplicando NetworkPolicies")
     _run([kubectl, "apply", "-n", ns, "-f",
           str(MANIFESTS / "40-network-policy.yaml")])
+    _apply_apiserver_egress_netpol(kubectl, ns)
 
     # ---- 3. Secrets ---------------------------------------------------------
     ui.info("criando Secrets (nada é impresso)")
