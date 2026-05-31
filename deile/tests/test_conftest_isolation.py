@@ -12,6 +12,11 @@ import logging
 import os
 import sys
 
+# Enable the pytester plugin (not loaded by default) so test_stdio_swap_fails_test
+# can spin up an isolated in-process pytest run to verify _guard_sys_stdio's
+# failing-restore assertion.
+pytest_plugins = ["pytester"]
+
 
 class TestEnvRestore:
     """_snapshot_os_environ must clean up direct os.environ mutations between tests.
