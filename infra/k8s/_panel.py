@@ -63,6 +63,7 @@ from _panel_data import _fmt_cpu_display, _fmt_mem_display, _pct  # noqa: F401
 from _panel_data import EndpointInfo  # noqa: F401
 from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
+from _panel_data import _SOURCE_COLOR_MAP as _ACTIVITY_COLOR_MAP  # noqa: F401
 from _panel_data import \
     _audit_dispatch_mode_change as pd_audit_dispatch_mode_change
 from _panel_data import \
@@ -426,15 +427,19 @@ class ActivityRow:
 def _activity_from_data(data: Optional[PanelData], limit: int = 8) -> List[ActivityRow]:
     if data is None:
         return [ActivityRow(*row) for row in demo.ACTIVITY[:limit]]
-    # Combina eventos k8s + locais ordenando por timestamp desc — assim a
-    # UI mostra atividade real seja qual for a fonte. Locais ganham
-    # actor='local' (setado em LocalLogsState para diferenciar de pipeline).
-    pool = list(data.pipeline.get().events)
-    if data.local_logs is not None:
-        pool.extend(data.local_logs.get().events)
-    pool.sort(key=lambda ev: ev.ts, reverse=True)
+    # Multi-source feed (issue #436): use MultiSourceActivityProvider when
+    # k8s is available; it merges all 5 sources with a 200-event buffer.
+    if getattr(data, "activity", None) is not None:
+        events = data.activity.get().top(limit)
+    else:
+        # Fallback: single-source (pipeline + local) for local-only mode.
+        pool = list(data.pipeline.get().events)
+        if data.local_logs is not None:
+            pool.extend(data.local_logs.get().events)
+        pool.sort(key=lambda ev: ev.ts, reverse=True)
+        events = pool[:limit]
     rows: List[ActivityRow] = []
-    for ev in pool[:limit]:
+    for ev in events:
         rows.append(ActivityRow(
             hhmmss=ev.hhmmss,
             actor=ev.actor,
@@ -448,14 +453,17 @@ def _activity_from_data(data: Optional[PanelData], limit: int = 8) -> List[Activ
 def _last_activity_caption(data: Optional[PanelData]) -> Optional[str]:
     """Retorna string legível do evento mais recente, ex: '23s ago — #360 → em_pr'.
 
-    Combina eventos do pipeline e locais (mesma fonte de `_activity_from_data`).
+    Usa o multi-source buffer quando disponível; fallback pipeline+local.
     Retorna None quando não há eventos para não poluir o rodapé.
     """
     if data is None:
         return None
-    pool: List[Any] = list(data.pipeline.get().events)
-    if data.local_logs is not None:
-        pool.extend(data.local_logs.get().events)
+    if getattr(data, "activity", None) is not None:
+        pool: List[Any] = list(data.activity.get().events)
+    else:
+        pool = list(data.pipeline.get().events)
+        if data.local_logs is not None:
+            pool.extend(data.local_logs.get().events)
     if not pool:
         return None
     ev = max(pool, key=lambda e: e.ts)
@@ -866,14 +874,22 @@ class DashboardView(View):
         else:
             tbl = Table(box=box.SIMPLE, expand=True, show_header=False,
                         pad_edge=False)
-            tbl.add_column(width=8, style="dim")
-            tbl.add_column(width=10, style="bold cyan")
-            tbl.add_column(width=12)
-            tbl.add_column(width=8, style="yellow")
-            tbl.add_column()
+            # Adaptive widths per principle 15 — no literal width=<int>.
+            tbl.add_column(max_width=9, style="dim")        # timestamp
+            tbl.add_column(max_width=14, min_width=6)       # actor/role
+            tbl.add_column(max_width=20, min_width=8)       # action
+            tbl.add_column(max_width=10, style="yellow")    # target
+            tbl.add_column()                                 # detail
             for r in rows:
-                tbl.add_row(r.hhmmss, r.actor, r.action, r.target,
-                            Text(r.detail, style="dim"))
+                # Color by role: look up deploy→color, fall back to dim italic.
+                actor_color = _ACTIVITY_COLOR_MAP.get(r.actor, "dim italic")
+                tbl.add_row(
+                    r.hhmmss,
+                    Text(r.actor, style=f"bold {actor_color}"),
+                    r.action,
+                    r.target,
+                    Text(r.detail, style="dim"),
+                )
             body = tbl
         return Panel(body, title="[bold]ACTIVITY[/bold] (últimos 10)",
                      title_align="left", border_style="green")

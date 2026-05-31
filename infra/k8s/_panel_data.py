@@ -1364,6 +1364,197 @@ class WorkerProvider(_KubectlProviderMixin):
         return state
 
 
+# ===== MultiSourceActivityProvider (issue #436) =============================
+#
+# Tail em paralelo de 5 deployments fixos. Eventos mergeados num buffer
+# rolling-window (cap 200), top-10 renderizados em ordem cronológica
+# decrescente com cores por role.
+#
+# Parser dual-mode: tenta parser canônico primeiro (vocabulário das issues
+# pré-req #435/#437/#438/#439); se não casa, cai no legacy
+# _classify_pipeline_line (degradação suave). Source sem nenhum parser que
+# case → silêncio (não erro).
+
+# (deploy, role_label, rich_color)
+_MULTI_SOURCE_DEFS: Tuple[Tuple[str, str, str], ...] = (
+    ("deile-pipeline", "pipeline",     "bright_black"),
+    ("deile-worker",   "deile-worker", "cyan"),
+    ("claude-worker",  "claude-worker","orange1"),
+    ("deilebot",       "bot",          "magenta"),
+    ("deile-monitor",  "monitor",      "blue"),
+)
+
+_SOURCE_ROLE_MAP: Dict[str, str] = {d: r for d, r, _ in _MULTI_SOURCE_DEFS}
+_SOURCE_COLOR_MAP: Dict[str, str] = {d: c for d, _, c in _MULTI_SOURCE_DEFS}
+
+_MULTI_BUFFER_CAP = 200
+_MULTI_TAIL_LINES = 80
+_MULTI_SINCE = "10s"
+
+# Canonical structured-log prefix emitted by issues #435/#437/#438/#439.
+# Format: ``verb.sub [key=val ...]`` at start of log body.
+# Example: ``dispatch.started task=abc123 channel=pipeline-issue-360 stage=implement``
+_CANONICAL_VERB_RE = re.compile(
+    r"^(dispatch|git|forge|inbound|agent|cron"
+    r"|refinement|routing|auth|monitor)\.(\S+)\s*(.*?)$",
+    re.IGNORECASE,
+)
+_KV_PAIR_RE = re.compile(r"(\w+)=(\S+)")
+
+
+def _classify_canonical(ll: LogLine, role: str) -> Optional[ActivityEvent]:
+    """Parser canônico para vocabulário emitido pelas issues #435-#439.
+
+    Retorna None se o padrão não casa — o caller cai no parser legacy.
+    """
+    m = _CANONICAL_VERB_RE.match(ll.body)
+    if not m:
+        return None
+    verb = m.group(1).lower()
+    subaction = m.group(2).lower()
+    rest = m.group(3)
+    kv = dict(_KV_PAIR_RE.findall(rest))
+    action = f"{verb}.{subaction}"
+    target = ""
+    detail = action
+
+    if verb == "dispatch":
+        channel = kv.get("channel", "")
+        m2 = _PIPELINE_CHANNEL_RE.match(channel)
+        if m2:
+            kind_hint = m2.group(1)
+            num = m2.group(2)
+            target = ("PR#" if kind_hint.endswith("pr") else "#") + num
+        outcome = kv.get("outcome", kv.get("status", ""))
+        detail = f"{action} → {outcome}" if outcome else action
+    elif verb == "inbound" and subaction == "mention":
+        raw_t = kv.get("target", kv.get("issue", ""))
+        m3 = re.match(r"(issue|pr):(\d+)", raw_t)
+        if m3:
+            target = ("PR#" if m3.group(1) == "pr" else "#") + m3.group(2)
+    elif verb == "monitor":
+        queue = kv.get("queue", "")
+        detail = (f"monitor.{subaction} queue={queue}"
+                  if queue else f"monitor.{subaction}")
+    elif verb == "git":
+        ref = kv.get("branch", kv.get("ref", kv.get("sha", "")))
+        if ref:
+            target = ref[:20]
+        detail = f"git.{subaction}"
+    elif verb in ("forge", "auth"):
+        detail = f"{verb}.{subaction}"
+    elif verb in ("refinement", "routing"):
+        issue_ref = kv.get("issue", kv.get("number", ""))
+        if issue_ref:
+            target = f"#{issue_ref}"
+        detail = f"{verb}.{subaction}"
+    elif verb == "agent":
+        task = kv.get("task", kv.get("id", ""))
+        detail = f"agent.{subaction}" + (f" task={task}" if task else "")
+    elif verb == "cron":
+        job = kv.get("job", kv.get("name", ""))
+        detail = f"cron.{subaction}" + (f" {job}" if job else "")
+
+    return ActivityEvent(ts=ll.ts, actor=role, action=action,
+                         target=target, detail=detail)
+
+
+def _classify_source_line(ll: LogLine, role: str) -> Optional[ActivityEvent]:
+    """Dual-mode classifier: canônico primeiro, legacy como fallback.
+
+    Legacy sempre sobrescreve ``actor`` com ``role`` para que o widget
+    mostre a origem correta mesmo para fontes ainda sem vocabulário canônico.
+    """
+    ev = _classify_canonical(ll, role)
+    if ev is not None:
+        return ev
+    ev_legacy = _classify_pipeline_line(ll)
+    if ev_legacy is None:
+        return None
+    return ActivityEvent(
+        ts=ev_legacy.ts,
+        actor=role,
+        action=ev_legacy.action,
+        target=ev_legacy.target,
+        detail=ev_legacy.detail,
+    )
+
+
+@dataclass
+class MultiSourceActivityState:
+    """Buffer rolling-window com eventos de todas as fontes."""
+    events: List[ActivityEvent] = field(default_factory=list)
+
+    def top(self, n: int = 10) -> List[ActivityEvent]:
+        return sorted(self.events, key=lambda e: e.ts, reverse=True)[:n]
+
+
+class MultiSourceActivityProvider(_KubectlProviderMixin):
+    """Tail em paralelo de 5 deployments → buffer rolling-window de eventos.
+
+    Usa ``--since=10s --tail=80 --timestamps`` por source. Cada refresh
+    mescla todas as linhas num buffer capped em 200, ordenado por timestamp.
+    Fontes indisponíveis são silenciosamente ignoradas (provider permanece
+    funcional com eventos das demais fontes).
+    """
+
+    def __init__(self, ttl_s: float = 3.0, namespace: str = NS,
+                 enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
+        self._cache: Cache[MultiSourceActivityState] = Cache(
+            ttl_s, self._fetch, fallback=MultiSourceActivityState(),
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> MultiSourceActivityState:
+        return self._cache.get(force)
+
+    def _fetch_source(self, deploy: str, role: str) -> List[ActivityEvent]:
+        """Fetch + parse de um único deployment. Retorna [] em caso de erro."""
+        if self._kubectl is None:
+            return []
+        text = _capture_text(
+            [self._kubectl, "-n", self._namespace, "logs",
+             f"deploy/{deploy}",
+             f"--tail={_MULTI_TAIL_LINES}",
+             f"--since={_MULTI_SINCE}",
+             "--timestamps"],
+            timeout=5.0,
+        )
+        if not text:
+            return []
+        if len(text) > MAX_LOG_BYTES:
+            text = text[-MAX_LOG_BYTES:]
+        events: List[ActivityEvent] = []
+        for raw in text.splitlines():
+            ll = _parse_log_line(raw)
+            if ll is None:
+                continue
+            ev = _classify_source_line(ll, role)
+            if ev is not None:
+                events.append(ev)
+        return events
+
+    def _fetch(self) -> MultiSourceActivityState:
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        pool: List[ActivityEvent] = []
+        for deploy, role, _ in _MULTI_SOURCE_DEFS:
+            pool.extend(self._fetch_source(deploy, role))
+        # Rolling window: keep newest _MULTI_BUFFER_CAP events.
+        pool.sort(key=lambda e: e.ts)
+        state = MultiSourceActivityState()
+        state.events = pool[-_MULTI_BUFFER_CAP:]
+        return state
+
+
 # ===== GitHub provider ======================================================
 
 @dataclass
@@ -5179,6 +5370,10 @@ class PanelData:
     # Pod-status provider for claude-worker (issue #395). Instanciado
     # apenas quando k8s está disponível — accessa /v1/pod-status via HTTP.
     claude_worker_info: Optional["ClaudeWorkerInfoProvider"] = None
+    # Multi-source activity feed (issue #436). Tail paralelo dos 5 deploys
+    # fixos V1; buffer rolling-window 200 eventos; parser dual-mode.
+    # ``None`` quando k8s não está disponível (modo local-only ou demo).
+    activity: Optional[MultiSourceActivityProvider] = None
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "PanelData":
@@ -5276,6 +5471,12 @@ class PanelData:
             claude_worker_info=(
                 ClaudeWorkerInfoProvider(enabled=True) if k8s_on else None
             ),
+            # MultiSourceActivityProvider (issue #436): only when k8s is on.
+            activity=(
+                MultiSourceActivityProvider(namespace=context.namespace,
+                                            enabled=k8s_on)
+                if k8s_on else None
+            ),
         )
 
     @classmethod
@@ -5292,7 +5493,7 @@ class PanelData:
         optionals = tuple(p for p in (self.local_processes, self.local_logs,
                                       self.local_audit, self.local_instances,
                                       self.local_registry, self.claude_workers,
-                                      self.claude_worker_info)
+                                      self.claude_worker_info, self.activity)
                           if p is not None)
         return base + optionals
 
@@ -5329,6 +5530,8 @@ class PanelData:
             names.append("local_registry")
         if self.claude_worker_info is not None:
             names.append("claude_worker_info")
+        if self.activity is not None:
+            names.append("activity")
         out: List[tuple] = []
         for name, p in zip(names, self._all_providers()):
             err = p.last_error
