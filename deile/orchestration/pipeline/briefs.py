@@ -579,9 +579,9 @@ Você é o GATE DE CRÍTICA DE ESCOPO da issue #{number} (tipo: {type}) do repos
 2. JULGAMENTO CÉTICO — só vote CLARO se TODOS os abaixo se sustentam (qualquer falha → VAGO):
    a) Segue o template do tipo, com cada seção preenchida com substância real (não placeholder).
    b) Critérios de aceite DUROS e MENSURÁVEIS (frases como "deve funcionar bem", "ser robusto", "ser performático" SEM número/condição = vago).
-   c) Sem PROMESSAS VAZIAS — frases como "depois isso é estendido", "alguém edita o Markdown", "trivial adicionar X", "hot-reload já existe" SEM mecanismo concreto (teste, lint, schema, sub-issue rastreável) que GARANTA o cumprimento = vago.
+   c) Sem PROMESSAS VAZIAS — frases como "depois isso é estendido", "alguém edita o Markdown", "trivial adicionar X", "hot-reload já existe" SEM mecanismo concreto (teste, lint, schema, item no checklist de UMA sub-issue agregada de follow-ups) que GARANTA o cumprimento = vago.
    d) Sem LACUNAS ARQUITETURAIS óbvias para a disciplina envolvida — idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model (se toca segurança/secrets/rede), schema migration (se altera persistência), false-positive/SLO (se é detector/classificador), **dependências externas** (componentes/serviços que precisam existir antes — sem garantia de ordem ou degrade gracefully = vago). Ausência sem justificativa explícita = vago.
-   e) Escopo V1 vs futuro EXPLÍCITO — o que entra agora vs o que vira sub-issue rastreável vs o que fica fora.
+   e) Escopo V1 vs futuro EXPLÍCITO — o que entra agora vs o que vira item no checklist de UMA sub-issue agregada de follow-ups (regra anti-flood: nunca N sub-issues por gap) vs o que fica fora.
 3. Se VAGO, LISTE 3-5 defeitos concretos ordenados por impacto (não pare no primeiro — issues complexas têm múltiplas lacunas, e refinar uma de cada vez gera N voltas extras desnecessárias). Em dúvida entre CLARO e VAGO, **vote VAGO** — vale mais uma volta extra do que uma issue mal-escopada chegando ao código.
 
 VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
@@ -601,21 +601,22 @@ REFINE a issue #{number} (tipo: {type}) do {repo} ao PADRÃO DE MAESTRIA — tí
    (feature/refactor: docs/system_design/ + código real, `{clone_cmd}` se preciso. bug: localize origem `arquivo:linha`.)
 
 2. ALGORITMO (ordem: 2a→2b→2c→2d→2e→2f — diagnostique TUDO primeiro, depois escreva. Pular ordem leva a body inflado e inconsistente):
-   a) **Promessas vazias** — "depois estende"/"trivial X"/"alguém edita"/"já existe" sem mecanismo concreto. Para CADA: substitua por mecanismo (AC, teste, lint, schema, sub-issue, fixture) OU mova para sub-issue vinculada (com motivo da priorização: "fora do V1 porque <razão concreta>") OU declare fora-de-escopo com motivo. Nunca silêncio.
-   b) **Lacunas arquiteturais** — confronte com práticas da disciplina (idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model, SLO, schema migration, dependências externas — sua persona lista). Para CADA item da checklist pertinente ao escopo: marque resolvido (com decisão concreta no body), N/A (com motivo explícito — "não toca persistência, schema migration N/A"), ou movido para sub-issue (com link). Item pertinente sem marcação = vago.
-   c) **V1 vs roadmap** — o que sai de V1 está em (i) skeleton/DISABLED no artefato OU (ii) sub-issue vinculada com motivo de priorização. Sem futuro sem âncora.
-   d) **Spin off lateral** — trabalho de outra issue vira sub-issue vinculada com motivo da separação ("trabalho lateral porque <razão>"), não infla este escopo.
+   a) **Promessas vazias** — "depois estende"/"trivial X"/"alguém edita"/"já existe" sem mecanismo concreto. Para CADA: substitua por mecanismo (AC, teste, lint, schema, item no checklist da sub-issue agregada de follow-ups, fixture) OU declare fora-de-escopo com motivo. Nunca silêncio.
+   b) **Lacunas arquiteturais** — confronte com práticas da disciplina (idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model, SLO, schema migration, dependências externas — sua persona lista). Para CADA item da checklist pertinente ao escopo: marque resolvido (com decisão concreta no body), N/A (com motivo explícito — "não toca persistência, schema migration N/A"), ou movido para a sub-issue agregada de follow-ups (regra anti-flood — ver passo 3). Item pertinente sem marcação = vago.
+   c) **V1 vs roadmap** — o que sai de V1 está em (i) skeleton/DISABLED no artefato OU (ii) **UMA sub-issue agregada de follow-ups desta issue-mãe**, com checklist markdown (`- [ ]` por item) cobrindo TODOS os adiamentos identificados. NÃO abra N sub-issues por gap — abra UMA e agregue. Sem futuro sem âncora.
+   d) **Spin off lateral** — trabalho de outra issue identificado durante o refino entra na MESMA sub-issue agregada de follow-ups do passo 2c (mais um item do checklist), não infla este escopo nem vira sub-issue separada.
    e) **AC DUROS** — proibido "funcionar bem"/"robusto" sem número/condição. Cada AC: número, percentual, condição testável, ou referência a teste. Mínimo: cobrir comportamento desejado + cada modo de falha identificado em 2b + cada decisão de 2c.
    f) **Testes** — paths concretos + o que cada um prova (feliz, borda, regressão da promessa morta em 2a, cada lacuna arquitetural que entrou em V1).
 
-3. APLIQUE:
+3. APLIQUE — REGRA ANTI-FLOOD (V1 inegociável): cada issue-mãe pode gerar no MÁXIMO UMA sub-issue agregada de follow-ups, com checklist markdown (`- [ ]` por gap). Split em N sub-issues SÓ é permitido se você JUSTIFICAR explicitamente no comment de auditoria que cada gap tem escopo de PR independente (tocam módulos disjuntos, testes diferentes, ordem de merge não-importa). Default: agregar. Em dúvida: agregar. Cada sub-issue extra passa por refine+critique+implement+review e custa um ciclo inteiro do pipeline.
    - Título com prefixo `{title_prefix}`: {edit_issue_title_cmd}
    - Corpo reescrito conforme template, codificando TODAS as decisões do passo 2: {edit_issue_body_cmd}
-   - Sub-issues (2d) abertas e linkadas. AUDITORIA em {comment_issue_cmd}: resumo do reescrito, gaps e como resolveu cada, sub-issues abertas, ACs duros, linha final "Pronto para implementação" OU "Bloqueado por: <X>".
+   - No MÁXIMO UMA sub-issue agregada de follow-ups (com checklist agregando todos os items dos passos 2a/2b/2c/2d que foram adiados), criada via {create_issue_cmd} com `Originada de #{number}` no body. Se split em múltiplas for genuinamente necessário, justifique célula por célula no comment de auditoria.
+   - AUDITORIA em {comment_issue_cmd}: resumo do reescrito, gaps e como resolveu cada, sub-issue agregada de follow-ups aberta (link), ACs duros, JUSTIFICATIVA do split se houver mais de uma, linha final "Pronto para implementação" OU "Bloqueado por: <X>".
 
 4. AGUARDA_STAKEHOLDER — só para decisão de PRODUTO de alto impacto. Lacuna arquitetural decidível por melhores práticas você RESOLVE. Se aguardar: 2-3 sugestões + autor (`{view_pr_author_cmd_for_issue}` + {assign_user_cmd}) + AGUARDA_STAKEHOLDER.
 
-5. HONESTIDADE — suposições marcadas; arquivo:linha do lido; só sub-issues REALMENTE abertas; em dúvida, **sempre exaustivo**.
+5. HONESTIDADE — suposições marcadas; arquivo:linha do lido; só sub-issue agregada REALMENTE aberta (e split justificado se houver); em dúvida, **sempre exaustivo** (mas anti-flood permanece — exaustividade NÃO autoriza multiplicar issues).
 
 VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
   REFINO: OK
@@ -626,24 +627,41 @@ VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois 
 """
 
 _WORKER_DECOMPOSE_BRIEF = """\
-Você é o ARQUITETO. A intent #{number} do repositório {repo} está CLARA e aprovada. DECOMPONHA-A em uma ou mais issues derivadas INDEPENDENTES (feature/bug/refactor) que possam ser implementadas em branches PARALELOS, JÁ no padrão de maestria (sem voltas extras de refino depois).
+Você é o ARQUITETO. A intent #{number} do repositório {repo} está CLARA e aprovada. DECOMPONHA-A em UMA ou — se rigorosamente justificável — poucas issues derivadas INDEPENDENTES (feature/bug/refactor) que possam ser implementadas em branches PARALELOS, JÁ no padrão de maestria (sem voltas extras de refino depois).
+
+## REGRA ANTI-FLOOD (V1 inegociável — leia ANTES de criar qualquer derivada)
+
+Cada issue derivada que você abrir passa por refine + critique + implement + review no pipeline (3-7min de claude-worker × tokens xhigh/ultracode cada estágio). Decompor uma intent em 4 sub-issues quando elas cabem em UMA com checklist agregada **quadruplica o custo** sem ganho proporcional.
+
+> **Default agressivo: AGREGAR em UMA derivada com checklist markdown** (`- [ ]` por item de escopo). Split em N derivadas SÓ é permitido se você JUSTIFICAR explicitamente que cada derivada tem **escopo de PR independente** — tocam módulos disjuntos, testes diferentes, ordem de merge não-importa. Em dúvida: AGREGAR. Quando achar que precisa de 3-4 derivadas, pergunte-se: "esses gaps cabem no mesmo PR?". Se "sim" ou "talvez": agregue. Se "não, claramente módulos disjuntos": split.
+
+Exemplos:
+
+```
+RUIM (proibido):    "A intent tem 4 frentes: A, B, C, D — vou abrir #X, #Y, #Z, #W."
+BOM (default):      "A intent tem 4 frentes: A, B, C, D. Abro #X com checklist agregando A/B/C/D — todas tocam módulo M e cabem num PR."
+SPLIT JUSTIFICADO:  "A intent tem 4 frentes. A/B tocam módulo M; C/D tocam módulo N — não relacionados. Abro #X (A+B em M) e #Y (C+D em N) — dois PRs paralelos."
+```
+
+## Algoritmo de decomposição
 
 1. ANCORAGEM — consulte a arquitetura real ANTES de decidir: docs/system_design/ (clone com `{clone_cmd}` se preciso) e o código relevante. Sem palpite no abstrato.
 
-2. INDEPENDÊNCIA — identifique as frentes GENUINAMENTE INDEPENDENTES (sem dependência sequencial). Intenção coesa e indivisível = UMA derivada; multi-frente real = várias. NÃO force a divisão — partes acopladas ficam na MESMA issue (fatiar trabalho dependente gera conflito, não paralelismo). Se houver ordem obrigatória entre frentes, declare-a no comment final (e considere abrir só a primeira agora, com follow-ups citados).
+2. AGREGAÇÃO PRIMEIRO — liste os items de escopo da intent. Por DEFAULT eles vão pra UMA derivada com checklist. Só considere split se identificar **independência genuína de PR** (módulos disjuntos sem sobreposição de arquivos, testes diferentes, sem dependência sequencial nem mesma migração de schema/lib utility). Partes acopladas ficam JUNTAS na MESMA derivada — fatiar trabalho dependente gera conflito, não paralelismo. Se houver ordem obrigatória entre items, declare no comment final (e considere começar só pela primeira frente agora, com follow-ups no checklist da MESMA derivada).
 
 3. CADA derivada nasce com ESCOPO JÁ CLARO no padrão de excelência — não delegue refino para depois:
    - título com prefixo correto do tipo; corpo seguindo o template (.github/ISSUE_TEMPLATE/feature_request.md | bug_report.md | refactor_proposal.md OU .gitlab/issue_templates/<f>.md em projetos GitLab).
    - alvo técnico (módulos/arquivos prováveis), contrato (interfaces/IO), critérios de aceite MENSURÁVEIS, plano de teste com paths concretos sugeridos.
-   - sem promessas vazias ("alguém adiciona X depois", "trivial estender") — cada ponto futuro vira sub-issue rastreável ou skeleton DISABLED no próprio artefato.
+   - **checklist markdown** agregando TODOS os items de escopo coesos daquela derivada (`- [ ]` por item).
+   - sem promessas vazias ("alguém adiciona X depois", "trivial estender") — cada ponto futuro vira item no checklist de UMA sub-issue de follow-ups (NÃO N sub-issues) ou skeleton DISABLED no próprio artefato.
    - lacunas arquiteturais pertinentes endereçadas: idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model (se toca segurança/secrets/rede), schema migration (se toca persistência), SLO/false-positive (se é detector).
-   - V1 vs roadmap explícito; spinoffs já abertos como sub-issues vinculadas se forem trabalho lateral.
+   - V1 vs roadmap explícito; spinoffs laterais agregados em UMA sub-issue de follow-ups (regra anti-flood) ou inline no checklist se cabem no mesmo PR.
    - inclua a linha: `Originada de #{number}`.
    - crie com: {create_issue_cmd}
 
-4. AUDIT — comente na intent #{number} ({comment_issue_cmd}) listando: as derivadas criadas (com links), ordem de dependência se houver, gaps arquiteturais identificados e onde cada um foi endereçado. A intent permanece ABERTA como épico.
+4. AUDIT — comente na intent #{number} ({comment_issue_cmd}) listando: as derivadas criadas (com links), ordem de dependência se houver, gaps arquiteturais identificados e onde cada um foi endereçado, **JUSTIFICATIVA do split se você abriu mais de UMA derivada** (cite módulos disjuntos / testes diferentes / por que não cabem num PR). A intent permanece ABERTA como épico.
 
-5. HONESTIDADE — só liste issues que REALMENTE criou (confirme com `{view_issue_cmd}`); cite arquivo:linha do que leu para fundamentar a divisão.
+5. HONESTIDADE — só liste issues que REALMENTE criou (confirme com `{view_issue_cmd}`); cite arquivo:linha do que leu para fundamentar a divisão; se split, prove a independência de PR.
 
 VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE (com os números reais das issues criadas):
   DECOMPOSTO: #<n1> #<n2> ...
@@ -723,6 +741,7 @@ def _render_worker_refine_brief(
         edit_issue_title_cmd=cmds["edit_issue_title_cmd"],
         edit_issue_body_cmd=cmds["edit_issue_body_cmd"],
         comment_issue_cmd=cmds["comment_issue_cmd"],
+        create_issue_cmd=cmds["create_issue_cmd"],
         view_pr_author_cmd_for_issue=view_author_cmd_for_issue,
         assign_user_cmd=cmds["assign_user_cmd"],
     )
