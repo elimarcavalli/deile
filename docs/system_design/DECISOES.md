@@ -571,6 +571,23 @@
 
 ---
 
+## Decisão #47 — Adapter OTLP-traces para eventos dispatch.*/git.*/forge.*
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 11-Observabilidade, 02-Arquitetura, 08-Segurança |
+| Decisão | Novo subpacote `deile/observability/` ganha dois módulos dedicados ao sinal de traces do dispatch autônomo: `dispatch_schema.py` (dataclasses `frozen=True` com atributos canônicos por família de evento, `SCHEMA_VERSION=1.0.0`, e `get_pod_metadata()` lendo `DEILE_ROLE`/`HOSTNAME`) e `dispatch_export.py` (10 funções `emit_*` thread-safe que integram com a infraestrutura OTel da Decisão #39). Mapeamento evento → forma OTLP: `dispatch.received` abre root span `deile.dispatch` + span event; eventos intermediários (`dispatch.model_resolved`, `dispatch.progress`, `dispatch.tool_burst`) são span events no root span; `dispatch.completed` encerra o root com `set_status(OK)` + `end()`; `dispatch.failed` encerra com `set_status(ERROR)` + `end()`; `git.commit`, `git.push`, `forge.pr_open`, `forge.pr_review` são child spans curtos com `parent_span_id == root.span_id`. Redact de tokens (`ghp_`/`Bearer`/`sk-`/`glpat-`/`gldt-`/`glsoat-`/`AKIA`/base64 longo) aplicado em todos os atributos antes de qualquer `set_attribute`. Drop counter thread-safe incrementa quando o exporter lança, com log `dispatch.otlp_drop` throttled ≤1×/60s via relógio mockável `_time_fn`. Configuração via `get_observability_config()` — zero leitura direta de `os.environ` neste módulo. Falha silenciosa: todo `emit_*` tem `try/except Exception: pass` (noqa BLE001) — observabilidade nunca quebra o dispatch. `deile/observability/__init__.py` exporta todos os novos símbolos em `__all__`. `deile/tests/observability/conftest.py` ganha fixture autouse `reset_dispatch_export` que fecha spans abertos e reseta contadores entre testes. A integração com `infra/k8s/dispatch_logger.py` (#435) — que chamará os `emit_*` como hook único — ocorre quando aquela PR mergear. |
+| Evidência | `deile/observability/dispatch_schema.py` (dataclasses `DispatchReceivedAttrs`, `DispatchModelResolvedAttrs`, `DispatchProgressAttrs`, `DispatchToolBurstAttrs`, `DispatchCompletedAttrs`, `DispatchFailedAttrs`, `GitCommitAttrs`, `GitPushAttrs`, `ForgePrOpenAttrs`, `ForgePrReviewAttrs`; constantes `SCHEMA_VERSION="1.0.0"`, `ATTR_SCHEMA_VERSION`, `ATTR_ROLE`, `ATTR_POD`; helper `get_pod_metadata()`); `deile/observability/dispatch_export.py` (10 funções `emit_*`; `_spans_lock`, `_drop_lock`, `_sdk_warned_lock`; `_redact_value`, `_ensure_provider`, `reset_dispatch_export`); `deile/observability/__init__.py` (novos símbolos em `__all__`); `deile/tests/observability/conftest.py` (fixture `reset_dispatch_export` adicionada ao autouse); `deile/tests/observability/test_dispatch_export*.py` + `test_dispatch_schema_drift.py` (40 casos de teste cobrindo lifecycle, child spans, redact, drop counter, concorrência, schema drift). Issue #443. |
+| Motivação | (1) A Decisão #39 instrumentou os spans `deile.turn`/`deile.tool`/`deile.llm.call` do agente interativo, mas o ciclo autônomo do `dispatch_logger` (pipeline → worker) ficou sem sinal OTLP — operadores só tinham stdout para correlacionar dispatches em produção fleet. (2) `git.*`/`forge.*` são eventos high-value para SRE: latência de `git.push`, taxa de falha de `forge.pr_open`, e `forge.pr_review` são as métricas mais relevantes do ciclo de vida de um PR autônomo — e cada uma é uma operação que pode ser lenta ou falhar silenciosamente. (3) Schema versionado (`SCHEMA_VERSION`) + suíte de drift (`test_dispatch_schema_drift.py`) garante que atualizar o schema não quebre silenciosamente os dashboards — o teste falha na CI antes de chegar em produção. (4) Design fail-open (try/except) e zero leitura de env são invariantes compartilhados com a Decisão #39 — código de observabilidade nunca quebra o turn/dispatch. |
+| Fora do escopo | Logs estruturados (Loki) para o dispatch_logger → issue #454; métricas de dispatch (contadores/histogramas por stage/model) → issue #455; semconv OTel formal (DBSYSTEM, RPC, HTTP) → issue #456; trace propagation W3C traceparent cross-pod (pipeline → worker → claude) → issue #457; integração com `dispatch_logger.py` em si → issue #435 (os `emit_*` estão prontos, a chamada é feita quando #435 mergear); redact key-name-based (reutilizando `dispatch_logger._redact_value` do #435) → consolidar quando #435 estiver em main (V1 usa token-format-based por independência). |
+
+### Histórico
+
+- **2026-05-31** — Decisão criada. Extensão da Decisão #39 (OTLP enterprise) para o ciclo autônomo do dispatch. PR #463.
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |

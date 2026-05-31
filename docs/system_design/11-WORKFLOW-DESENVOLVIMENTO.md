@@ -117,6 +117,86 @@
 - [ ] Verificar que hot-reload continua funcionando.
 - [ ] Confirmar que audit logging captura as novas operações.
 
+## Export OTLP-traces dos eventos dispatch.*/git.*/forge.* (extensão da Decisão #39)
+
+> Implementado em `deile/observability/dispatch_schema.py` + `deile/observability/dispatch_export.py` — Decisão #47. Ver também [`DECISOES.md #47`](DECISOES.md).
+
+### Topologia de spans
+
+```
+root span: deile.dispatch  (task_id, session_id, model, schema_version, role, pod)
+│
+├── span event: dispatch.received       (quando o dispatch_logger abre o ciclo)
+├── span event: dispatch.model_resolved (model selecionado)
+├── span event: dispatch.progress       (mensagem de progresso, turn_index)
+├── span event: dispatch.tool_burst     (tool_name, count)
+├── span event: dispatch.completed      → set_status(OK) + end()
+│   └── ou: dispatch.failed             → set_status(ERROR) + end()
+│
+├── child span: git.commit   (commit_sha, branch, files_changed)
+├── child span: git.push     (branch, remote)
+├── child span: forge.pr_open   (pr_number, title, base_branch)
+└── child span: forge.pr_review (pr_number, event, review_sha)
+```
+
+### Ponto de integração
+
+Os `emit_*` em `dispatch_export.py` são o **hook único** — o `dispatch_logger` chamará cada função no evento correspondente. Antes de #435 mergear, os `emit_*` ficam prontos mas sem chamador em produção.
+
+```python
+from deile.observability import (
+    emit_dispatch_received,
+    emit_dispatch_completed,
+    emit_git_commit,
+    emit_forge_pr_review,
+)
+
+# No dispatch_logger (quando #435 mergear):
+emit_dispatch_received(task_id=tid, session_id=sid, model=m)
+# ... ciclo ...
+emit_forge_pr_review(task_id=tid, pr_number=n, event="APPROVE", review_sha=sha)
+emit_dispatch_completed(task_id=tid, turns=t, tokens_in=i, tokens_out=o)
+```
+
+### Query Grafana Tempo (exemplo)
+
+```logql
+{span_name="deile.dispatch"} | json | task_id=`<tid>`
+```
+
+Para ver toda a árvore (root + child spans) de um dispatch:
+
+```
+TraceQL: { span.task_id = "<task_id>" }
+```
+
+### Redact automático
+
+`_redact_value(v)` mascara qualquer atributo cujo valor contenha padrões sensíveis:
+
+| Padrão | Substituído por |
+|---|---|
+| `ghp_...` | `ghp_***` |
+| `glpat-...` | `glpat-***` |
+| `gldt-...` | `gldt-***` |
+| `glsoat-...` | `glsoat-***` |
+| `Bearer <token>` | `Bearer ***` |
+| `sk-...` | `sk-***` |
+| `AKIA...` | `AKIA***` |
+| base64 > 40 chars | `<redacted-base64>` |
+
+### Config e fallback no-op
+
+Segue exatamente o mesmo contrato da Decisão #39:
+
+| Condição | Comportamento |
+|---|---|
+| `DEILE_OTLP_ENDPOINT` vazio | 0 spans emitidos (SDK init pulado) |
+| SDK `opentelemetry-sdk` não instalado | 0 spans (fallback no-op silencioso) |
+| Exporter raise | drop counter incrementa; log `dispatch.otlp_drop` ≤1×/60s |
+
+---
+
 ## Exemptions (sem fases obrigatórias)
 
 | Caso | Exemption |
