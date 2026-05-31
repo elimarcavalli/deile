@@ -211,6 +211,35 @@ class TestDispatchFailed:
 
 
 # ---------------------------------------------------------------------------
+# Phase-2 dispatch emitters — smoke tests (defined, tested; not yet wired)
+# ---------------------------------------------------------------------------
+
+class TestDispatchProgressEmitters:
+    def test_dispatch_model_resolved(self):
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_model_resolved(task="t1", model="anthropic:claude-opus-4-8", source="settings")
+        assert records[0].getMessage().startswith("dispatch.model_resolved ")
+        assert "model=anthropic:claude-opus-4-8" in records[0].getMessage()
+
+    def test_dispatch_progress(self):
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_progress(task="t1", elapsed_s=60.0, turn=3, tool_last="Bash")
+        msg = records[0].getMessage()
+        assert msg.startswith("dispatch.progress ")
+        assert "task=t1" in msg
+        assert "elapsed_s=60.0" in msg
+        assert "turn=3" in msg
+        assert "tool_last=Bash" in msg
+
+    def test_dispatch_tool_burst(self):
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_tool_burst(task="t1", window_s=10.0, tools="Edit:5,Bash:3")
+        msg = records[0].getMessage()
+        assert msg.startswith("dispatch.tool_burst ")
+        assert "tools=Edit:5,Bash:3" in msg
+
+
+# ---------------------------------------------------------------------------
 # git / forge emitters — smoke tests
 # ---------------------------------------------------------------------------
 
