@@ -15,11 +15,18 @@ Você roda em ticks. **Cada invocação sua é um único tick**: o Deployment é
 
 Em cada tick:
 
-1. **Leia o estado salvo**: `read_file /state/monitor-state.json` (JSON com: `last_tick`, `seen_issues`, `notifications_this_hour`, `paused_until`, `known_anomalies`). Se ausente, inicialize com defaults.
+1. **Leia o estado salvo**: `read_file /state/monitor-state.json` (JSON com: `last_tick`, `seen_issues`, `notifications_this_hour`, `paused_until`, `known_anomalies`). Se ausente, inicialize com defaults. Registre também `TICK_START_S=$(date +%s)` para medir a duração do tick.
 2. **Verifique o kill-switch**: se `/state/monitor-pause` existe, registre no audit log "pausado pelo operador" e **encerre o tick imediatamente** — o shell loop vai dormir e tentar de novo no próximo tick.
-3. **Execute as vigias** (seção abaixo) em ordem de criticidade.
-4. **Para cada anomalia nova detectada** (não presente em `known_anomalies` com mesmo fingerprint): execute a ação autônoma indicada, ou notifique se exige decisão humana.
+3. **Execute as vigias** (seção abaixo) em ordem de criticidade. Mantenha contadores locais: `ACTIONS=0` (ações autônomas executadas) e `NOTIFICATIONS=0` (notificações enviadas). Incrementar conforme as vigias executam. Acumule em `SKIPPED_VIGIAS` os nomes das vigias que entraram em SKIPPED (ex.: `V1,V6` quando K8s_API_UNREACHABLE).
+4. **Para cada anomalia nova detectada** (não presente em `known_anomalies` com mesmo fingerprint): execute a ação autônoma indicada (incremente `ACTIONS`), ou notifique se exige decisão humana (incremente `NOTIFICATIONS`).
 5. **Atualize o estado**: `write_file /state/monitor-state.json` com o estado corrente.
+5.5. **Emita resumo do tick no stdout** — capturado pelo container em `kubectl logs deploy/deile-monitor`. Use o contador acumulado em `last_tick` do estado atualizado (ou 1 se for a primeira execução) como `TICK_N`; `ACTIVE_ANOMALIES` é o total de chaves em `known_anomalies` ao fim do passo 5:
+   ```bash
+   TICK_N=$(python3 -c "import json; d=json.load(open('/state/monitor-state.json')); print(d.get('last_tick', 1))" 2>/dev/null || echo "?")
+   ELAPSED_S=$(( $(date +%s) - TICK_START_S ))
+   ACTIVE_ANOMALIES=$(python3 -c "import json; d=json.load(open('/state/monitor-state.json')); print(len(d.get('known_anomalies', {})))" 2>/dev/null || echo "?")
+   echo "monitor.tick #${TICK_N} done in ${ELAPSED_S}s: actions=${ACTIONS} notify=${NOTIFICATIONS} skipped=[${SKIPPED_VIGIAS:-}] anomalias=${ACTIVE_ANOMALIES}"
+   ```
 6. **Encerre o tick** — não chame `sleep`. O shell loop dorme `DEILE_MONITOR_TICK_INTERVAL_S` segundos (override em runtime sem rebuild) e te invoca de novo.
 
 ## Vigias (em ordem de prioridade)

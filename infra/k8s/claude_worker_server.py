@@ -3143,16 +3143,29 @@ def main(passthrough: Optional[List[str]] = None) -> int:
         return _run_cleanup_main()
 
     # Logging via deile.log_mgmt com dual-write (arquivo + stdout).
+    # O bloco captura qualquer Exception (não apenas ImportError) para garantir
+    # que falhas no setup do FileHandler (ex.: diretório de logs inacessível em
+    # containers com filesystem restrito) não silencie os logs de dispatch —
+    # o fallback basicConfig + StreamHandler(stdout) é suficiente para
+    # `kubectl logs` capturar as linhas de dispatch_started/dispatch_completed.
     _log_level = os.environ.get("DEILE_CLAUDE_WORKER_LOG_LEVEL", "INFO")
     os.environ.setdefault("DEILE_LOG_LEVEL", _log_level)
     try:
         from deile.log_mgmt import init_logging
         init_logging(pod_name="claude-worker")
-    except ImportError:
-        logging.basicConfig(
-            level=_log_level,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
+    except Exception:  # noqa: BLE001 — fallback intencional
+        _handler = logging.StreamHandler(sys.stdout)
+        _handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        ))
+        root_logger = logging.getLogger()
+        root_logger.setLevel(_log_level)
+        if not root_logger.handlers:
+            root_logger.addHandler(_handler)
+    # Garante que loggers deile.* propagam em nível INFO mesmo quando o
+    # root já tinha handlers configurados antes deste bloco (ex.: aiohttp
+    # internamente chama basicConfig antes do nosso main).
+    logging.getLogger("deile").setLevel(_log_level)
     host = os.environ.get("DEILE_CLAUDE_WORKER_HOST", "0.0.0.0")
     port = int(os.environ.get("DEILE_CLAUDE_WORKER_PORT", "8767"))
     root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))

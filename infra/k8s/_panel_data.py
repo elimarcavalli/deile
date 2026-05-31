@@ -534,18 +534,55 @@ def _parse_k8s_ts(s: Optional[str]) -> Optional[datetime]:
         return None
 
 
+# Linhas de ruído que nunca devem aparecer no widget ACTIVITY nem nas métricas
+# de atividade substantiva. Filtro aplicado ANTES do parsing de log — qualquer
+# fonte que tail`a `kubectl logs` puxa essas linhas a cada 10s (kube-probe) ou
+# no bootstrap do wrapper.py; descartá-las cedo evita regressões quando novos
+# pods forem adicionados como fonte do painel.
+_HEALTH_LINE_RE = re.compile(
+    r"(GET\s+/v1/health"
+    r"|kube-probe"
+    r"|aiohttp\.access.*HTTP/\d\.\d\"\s+200\s+\d+\s+\"-\"\s+\"kube-probe)",
+    re.IGNORECASE,
+)
+
+
+def _is_noise_line(body: str) -> bool:
+    """Retorna True para linhas que devem ser descartadas pelo painel.
+
+    Categorias de ruído:
+    - Health checks do K8s (``GET /v1/health``, ``kube-probe``).
+    - Linhas vazias (corpo vazio após strip).
+    - Prefixo ``wrapper(`` — bootstrap do wrapper.py, sem valor operacional.
+    """
+    stripped = body.strip()
+    if not stripped:
+        return True
+    if stripped.startswith("wrapper("):
+        return True
+    return bool(_HEALTH_LINE_RE.search(stripped))
+
+
 _LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+\-Z][\d:]*)\s+(.*)$")
 
 
 def _parse_log_line(line: str) -> Optional["LogLine"]:
-    """Extrai timestamp + corpo de uma linha de `kubectl logs --timestamps`."""
+    """Extrai timestamp + corpo de uma linha de `kubectl logs --timestamps`.
+
+    Retorna ``None`` para linhas de ruído (health checks, bootstrap do wrapper,
+    linhas vazias) — essas linhas nunca devem chegar ao classificador nem ao
+    widget ACTIVITY.
+    """
     m = _LOG_TS_RE.match(line)
     if not m:
         return None
     ts = _parse_k8s_ts(m.group(1))
     if ts is None:
         return None
-    return LogLine(ts=ts, body=m.group(2))
+    body = m.group(2)
+    if _is_noise_line(body):
+        return None
+    return LogLine(ts=ts, body=body)
 
 
 class _KubectlProviderMixin:
@@ -1222,11 +1259,17 @@ class WorkerProvider(_KubectlProviderMixin):
         # também ficariam congelados num dispatch antigo).
         live_tasks: Dict[str, CurrentTask] = {}
         for raw in text.splitlines():
+            # Extrai timestamp ANTES do filtro de ruído para que health checks
+            # ainda atualizem last_health_ts (indicador "pod vivo mas ocioso")
+            # sem poluir os eventos de ACTIVITY.
+            _ts_m = _LOG_TS_RE.match(raw)
+            if _ts_m and _WORKER_HEALTH_RE.search(_ts_m.group(2)):
+                _health_ts = _parse_k8s_ts(_ts_m.group(1))
+                if _health_ts is not None:
+                    state.last_health_ts = _health_ts
+                continue
             ll = _parse_log_line(raw)
             if ll is None:
-                continue
-            if _WORKER_HEALTH_RE.search(ll.body):
-                state.last_health_ts = ll.ts
                 continue
             # Pareamento started/completed — feito ANTES do dispatch-RE
             # genérico porque ambos casam com "dispatch" no body.
@@ -4145,7 +4188,11 @@ _DEILE_LOG_TS_RE = re.compile(
 
 
 def _parse_local_log_line(line: str) -> Optional[LogLine]:
-    """Decoder leniente para `~/.deile/logs/deile.log` (Python logging)."""
+    """Decoder leniente para `~/.deile/logs/deile.log` (Python logging).
+
+    Aplica o mesmo filtro de ruído de ``_parse_log_line`` — descarta health
+    checks, linhas vazias e prefixo ``wrapper(``.
+    """
     m = _DEILE_LOG_TS_RE.match(line)
     if not m:
         return None
@@ -4158,7 +4205,10 @@ def _parse_local_log_line(line: str) -> Optional[LogLine]:
         # `deile.log` usa hora local — assume timezone do sistema.
         local_tz = datetime.now().astimezone().tzinfo
         ts = ts.replace(tzinfo=local_tz)
-    return LogLine(ts=ts, body=m.group(2))
+    body = m.group(2)
+    if _is_noise_line(body):
+        return None
+    return LogLine(ts=ts, body=body)
 
 
 @dataclass

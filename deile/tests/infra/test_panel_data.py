@@ -2301,3 +2301,137 @@ class TestClaudeWorkerInfoProvider:
         assert result.claude_processes == 0
         assert provider.last_error is not None
         assert "RuntimeError" in provider.last_error
+
+
+# ===== Filtro de linhas de ruído (_is_noise_line / _HEALTH_LINE_RE) ==========
+
+class TestNoiseFilter:
+    """Verifica que linhas de health check e bootstrap nunca chegam ao ACTIVITY."""
+
+    # --- _is_noise_line direto ---
+
+    def test_health_check_get_v1_health_is_noise(self):
+        assert pd._is_noise_line("GET /v1/health HTTP/1.1") is True
+
+    def test_kube_probe_user_agent_is_noise(self):
+        assert pd._is_noise_line(
+            'aiohttp.access "GET /v1/health HTTP/1.1" 200 237 "-" "kube-probe/1.29"'
+        ) is True
+
+    def test_aiohttp_access_kube_probe_pattern_is_noise(self):
+        # Padrão completo do kube-probe na access log do aiohttp
+        assert pd._is_noise_line(
+            'aiohttp.access "GET /v1/health HTTP/1.1" 200 15 "-" "kube-probe"'
+        ) is True
+
+    def test_wrapper_prefix_is_noise(self):
+        assert pd._is_noise_line("wrapper(claude-worker): bearer not mounted") is True
+
+    def test_empty_body_is_noise(self):
+        assert pd._is_noise_line("") is True
+        assert pd._is_noise_line("   ") is True
+
+    def test_dispatch_started_is_not_noise(self):
+        assert pd._is_noise_line(
+            "dispatch_started task=abc123 stage=implement"
+        ) is False
+
+    def test_dispatch_completed_is_not_noise(self):
+        assert pd._is_noise_line(
+            "dispatch_completed task=abc123 ok=True"
+        ) is False
+
+    def test_post_dispatch_is_not_noise(self):
+        # POST /v1/dispatch não é health check
+        assert pd._is_noise_line('POST /v1/dispatch HTTP/1.1 200') is False
+
+    def test_get_v1_progress_is_not_noise(self):
+        assert pd._is_noise_line('GET /v1/progress/abc123 HTTP/1.1 200') is False
+
+    # --- _parse_log_line integrado ---
+
+    def _make_line(self, body: str) -> str:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000000+00:00")
+        return f"{ts} {body}"
+
+    def test_parse_log_line_returns_none_for_health_check(self):
+        line = self._make_line("GET /v1/health HTTP/1.1")
+        assert pd._parse_log_line(line) is None
+
+    def test_parse_log_line_returns_none_for_kube_probe(self):
+        line = self._make_line(
+            'aiohttp.access "GET /v1/health HTTP/1.1" 200 237 "-" "kube-probe/1.29"'
+        )
+        assert pd._parse_log_line(line) is None
+
+    def test_parse_log_line_returns_none_for_wrapper_prefix(self):
+        line = self._make_line("wrapper(worker): starting up")
+        assert pd._parse_log_line(line) is None
+
+    def test_parse_log_line_returns_logline_for_dispatch(self):
+        line = self._make_line("dispatch_started task=abc123 stage=implement")
+        result = pd._parse_log_line(line)
+        assert result is not None
+        assert "dispatch_started" in result.body
+
+    # --- ACTIVITY widget: health checks não aparecem ---
+
+    def _recent_log(self, *bodies: str) -> str:
+        now = datetime.now(timezone.utc)
+        out = []
+        for i, body in enumerate(bodies):
+            ts = now - timedelta(seconds=i * 2)
+            out.append(ts.strftime("%Y-%m-%dT%H:%M:%S.000000000+00:00") + f" {body}")
+        return "\n".join(out)
+
+    def test_activity_widget_filters_health_checks(self):
+        """Health checks no log do pipeline NÃO devem aparecer em ACTIVITY."""
+        prov = pd.PipelineProvider(ttl_s=0.0, enabled=True)
+        prov._kubectl = "kubectl"
+
+        log_text = self._recent_log(
+            "GET /v1/health HTTP/1.1",
+            "GET /v1/health HTTP/1.1",
+            'aiohttp.access "GET /v1/health HTTP/1.1" 200 15 "-" "kube-probe"',
+        )
+
+        replicas_text = "1"
+
+        def fake_capture(cmd, timeout):
+            if "jsonpath" in " ".join(cmd):
+                return replicas_text
+            return log_text
+
+        with patch.object(pd, "_capture_text", side_effect=fake_capture):
+            state = prov.get(force=True)
+
+        # Nenhum evento de health check deve chegar ao ACTIVITY
+        assert state.events == [], (
+            f"Esperava lista vazia; got {state.events}"
+        )
+
+    def test_worker_health_updates_last_health_ts_but_not_activity(self):
+        """Health checks atualizam last_health_ts mas NÃO criam ActivityEvent."""
+        prov_w = pd.WorkerProvider(ttl_s=0.0)
+        prov_w._kubectl = "kubectl"
+
+        log_text = self._recent_log(
+            'aiohttp.access "GET /v1/health HTTP/1.1" 200 237',
+            'aiohttp.access "GET /v1/health HTTP/1.1" 200 237',
+        )
+        names_text = "worker-health-test"
+
+        def fake_capture(cmd, timeout):
+            if "jsonpath" in cmd[-1]:
+                return names_text
+            return log_text
+
+        with patch.object(pd, "_capture_text", side_effect=fake_capture):
+            states = prov_w.get(force=True)
+
+        st = states["worker-health-test"]
+        # last_health_ts deve ter sido atualizado (pod vivo)
+        assert st.last_health_ts is not None, "last_health_ts deve ser populado por health checks"
+        # Nenhuma atividade substantiva deve ter sido registrada
+        assert st.last_substantive_ts is None, "health checks não devem virar atividade substantiva"
+        assert st.current_task is None
