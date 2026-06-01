@@ -778,16 +778,27 @@ class StreamState:
     def non_json_tail(self) -> str:
         return "".join(self._non_json_lines)
 
-    def to_final_dict(self) -> dict:
+    def to_final_dict(self, duration_seconds: float = 0.0) -> dict:
         """Fields equivalent to ``_parse_claude_json_output`` output."""
         return {
             "is_error": self.is_error,
             "result": self.result,
             "session_id": self.session_id,
             "total_cost_usd": self.total_cost_usd,
-            "duration_ms": 0,
+            "duration_ms": int(duration_seconds * 1000),
             "num_turns": self.num_turns,
         }
+
+
+#: Active StreamState objects keyed by task_id. Populated while
+#: run_subprocess_with_progress is running; removed on completion.
+#: Allows /v1/progress and dispatch_logger to read mid-flight data.
+_active_stream_states: dict = {}
+
+
+def get_stream_state(task_id: str) -> "Optional[StreamState]":
+    """Return the active StreamState for task_id, or None if not running."""
+    return _active_stream_states.get(task_id)
 
 
 #: Preambles por stage. Cada um descreve identidade + contrato de output, com
@@ -2580,10 +2591,23 @@ async def progress_handler(request: web.Request) -> web.Response:
         logger.warning("failed to read %s: %s", stderr_path, exc)
         stderr = ""
 
+    ss = get_stream_state(task_id)
+    stream_snapshot = (
+        {
+            "turn": ss.turn,
+            "tool_last": ss.tool_last,
+            "tokens_in": ss.tokens_in,
+            "tokens_out": ss.tokens_out,
+        }
+        if ss is not None
+        else None
+    )
+
     return web.json_response({
         "task_id": task_id,
         "stdout": stdout[-50_000:],
         "stderr": stderr[-10_000:],
+        "stream_state": stream_snapshot,
     })
 
 
