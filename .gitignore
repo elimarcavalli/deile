@@ -58,6 +58,7 @@ config/search.yaml
 /deilebot/
 /deilebot.egg-info/
 .worktrees/
+.claude-worktrees/
 
 # DEILE runtime under .deile/ (project scope) — not versioned
 .deile/cache/
