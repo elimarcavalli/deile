@@ -214,6 +214,19 @@ spec:
             # réplicas, deile-worker 2 réplicas → ~5 dispatches reais
             # concorrentes antes da fila.
             - { name: DEILE_PIPELINE_MAX_PARALLEL,         value: "5" }
+            # Redireciona kubectl para o apiserver na porta nativa do k3s
+            # (6443) em vez do ClusterIP kube-proxy (10.43.0.1:443).
+            # Em Rancher Desktop / Lima, o kube-proxy iptables DNAT não
+            # funciona de dentro de pods — o ClusterIP retorna "connection
+            # refused". Usar o node IP direto na porta 6443 contorna isso.
+            # enableServiceLinks: false (acima) bloquearia a injeção automática
+            # de KUBERNETES_SERVICE_HOST/PORT; aqui re-injetamos via Downward
+            # API com o node IP real e a porta correta.
+            - name: KUBERNETES_SERVICE_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - { name: KUBERNETES_SERVICE_PORT, value: "6443" }
           ports:
             - { name: status-api, containerPort: 8768, protocol: TCP }
           readinessProbe:
