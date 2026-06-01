@@ -3137,31 +3137,63 @@ def _harvest_and_prune_orphan_jsonl(
     if dry_run or not orphans:
         return result
 
+    # Fail-safe cardinal: NUNCA podar dados de custo não colhidos. Sem o
+    # agregador (ex.: jsonl_cost ausente da imagem) não há como preservar o
+    # custo antes de deletar — então aborta a poda e preserva tudo.
+    if _aggregate_jsonl is None:
+        result["errors"].append(
+            "aggregate_jsonl indisponível — poda abortada (fail-safe)")
+        logger.error(
+            "cost-ledger harvest ABORTADO: jsonl_cost.aggregate_jsonl "
+            "indisponível; %d dirs órfãos preservados (sem poda) para não "
+            "perder custo", len(orphans),
+        )
+        return result
+
     harvested = _harvested_session_ids(ledger_path)
     for pdir in orphans:
         task_id = pdir.name.split(_PROJECT_MARKER)[-1]
-        if _aggregate_jsonl is not None:
+        # Só podamos um dir DEPOIS que todo o seu conteúdo foi contabilizado
+        # (colhido para o ledger, já presente nele, ou genuinamente sem
+        # tokens). Qualquer falha de agregação/escrita preserva o dir inteiro.
+        dir_fully_accounted = True
+        try:
+            jsonls = sorted(pdir.glob("*.jsonl"))
+        except OSError as exc:
+            result["errors"].append(f"glob {pdir}: {exc}")
+            continue
+        for jsonl in jsonls:
             try:
-                for jsonl in sorted(pdir.glob("*.jsonl")):
-                    data = _aggregate_jsonl(str(jsonl))
-                    sid = data.get("session_id") or jsonl.stem
-                    if sid in harvested or not data.get("models"):
-                        continue
-                    written = _append_ledger(ledger_path, {
-                        "v": 1,
-                        "session_id": sid,
-                        "task_id": task_id,
-                        "models": data["models"],
-                        "first_ts": data.get("first_ts"),
-                        "last_ts": data.get("last_ts"),
-                        "assistant_rounds": data.get("assistant_rounds", 0),
-                        "harvested_at": now,
-                    })
-                    result["ledger_bytes_written"] += written
-                    result["sessions_harvested"] += 1
-                    harvested.add(sid)
+                data = _aggregate_jsonl(str(jsonl))
+            except Exception as exc:  # noqa: BLE001 — agregação falhou: preserva
+                result["errors"].append(f"aggregate {jsonl}: {exc}")
+                dir_fully_accounted = False
+                continue
+            sid = data.get("session_id") or jsonl.stem
+            if sid in harvested:
+                continue  # já no ledger
+            if not data.get("models"):
+                continue  # zero tokens — nada a colher, nada a perder
+            try:
+                written = _append_ledger(ledger_path, {
+                    "v": 1,
+                    "session_id": sid,
+                    "task_id": task_id,
+                    "models": data["models"],
+                    "first_ts": data.get("first_ts"),
+                    "last_ts": data.get("last_ts"),
+                    "assistant_rounds": data.get("assistant_rounds", 0),
+                    "harvested_at": now,
+                })
             except OSError as exc:
-                result["errors"].append(f"harvest {pdir}: {exc}")
+                result["errors"].append(f"ledger write {jsonl}: {exc}")
+                dir_fully_accounted = False
+                continue
+            result["ledger_bytes_written"] += written
+            result["sessions_harvested"] += 1
+            harvested.add(sid)
+        if not dir_fully_accounted:
+            continue  # preserva o dir: havia custo não contabilizado
         size = _dir_size(pdir)
         try:
             shutil.rmtree(pdir, ignore_errors=True)

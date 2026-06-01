@@ -166,3 +166,41 @@ def test_cleanup_scan_includes_orphan_jsonl(cws, env, monkeypatch):
     assert str(env["projects"] / f"-home-claude-work-{TASK_A}") in \
         scan["orphan_jsonl_dirs"]
     assert scan["total_candidate_bytes"] > 0
+
+
+# --------------------------------------------------------------------------- #
+# Fail-safe (incidente 01/jun): NUNCA podar dados de custo não colhidos.
+# Regressão para o bug em que `aggregate_jsonl` ausente da imagem (import
+# falho → None) fazia o harvester colher 0 e podar mesmo assim (337 sessões
+# deletadas sem ledger).
+# --------------------------------------------------------------------------- #
+def test_no_prune_when_aggregator_unavailable(cws, env, monkeypatch):
+    """Sem o agregador (jsonl_cost ausente da imagem), poda é ABORTADA."""
+    pdir = _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=7200)
+    monkeypatch.setattr(cws, "_aggregate_jsonl", None)
+    result = cws._harvest_and_prune_orphan_jsonl(
+        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
+        grace_s=3600, now=time.time(),
+    )
+    assert result["jsonl_dirs_removed"] == 0
+    assert result["sessions_harvested"] == 0
+    assert pdir.exists()                      # dir órfão PRESERVADO
+    assert not env["ledger"].exists()
+    assert any("fail-safe" in e for e in result["errors"])
+
+
+def test_no_prune_when_aggregation_raises(cws, env, monkeypatch):
+    """Se a agregação de um JSONL falha, o dir inteiro é preservado."""
+    pdir = _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=7200)
+
+    def _boom(_path):
+        raise ValueError("parse explodiu")
+
+    monkeypatch.setattr(cws, "_aggregate_jsonl", _boom)
+    result = cws._harvest_and_prune_orphan_jsonl(
+        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
+        grace_s=3600, now=time.time(),
+    )
+    assert result["jsonl_dirs_removed"] == 0
+    assert pdir.exists()                      # preservado: havia custo não colhido
+    assert any("aggregate" in e for e in result["errors"])
