@@ -650,6 +650,28 @@ async def _dispatch_mention_group(
     # a mim sem resposta) e monta a work-list a partir DAÍ. O trigger só
     # informou QUAL PR olhar; o que fazer é deduzido do estado.
     if kind == "pr":
+        # Dedup cross-path: a stage ``pr_review`` roda ANTES de
+        # ``process_mentions`` no mesmo tick e já transiciona a PR para
+        # ``~review:em_andamento`` + claim ``~batch:``. Como a Service
+        # ``claude-worker`` faz load-balance, o guard "claude já vivo" é por-pod
+        # e NÃO enxerga um claude rodando num pod irmão — sem este skip a mesma
+        # PR seria revisada por DOIS workers ao mesmo tempo (budget jogado fora,
+        # observado em #463). Se a PR já está em revisão/locked, o ``pr_review``
+        # é o dono: o brief unificado dele já lê comments/threads dirigidos a
+        # mim, então pular aqui é correto — um handler por PR ("a PR é o quadro").
+        try:
+            pr_now = await monitor.forge.get_pr(number)
+        except Exception:  # noqa: BLE001 — best-effort; segue pro dispatch
+            pr_now = None
+        if pr_now is not None:
+            pr_labels = set(pr_now.labels)
+            if REVIEW_IN_PROGRESS in pr_labels or any(is_batch_label(lb) for lb in pr_labels):
+                logger.info(
+                    "mention %s ignorada p/ roteamento: PR já em revisão pelo "
+                    "pr_review (em_andamento/batch) — evita dispatch duplo",
+                    dedup_key,
+                )
+                return
         mode = "pr_unified"
     else:
         mode = "comment"  # comment mention on an issue
