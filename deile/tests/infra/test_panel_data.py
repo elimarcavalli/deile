@@ -905,6 +905,9 @@ class TestPodRowsAdapter:
 
     def test_with_data_passes_through(self):
         d = MagicMock()
+        # Sem providers de verdade → célula usa o caminho legado (WorkerState).
+        d.claude_truth = None
+        d.deile_worker_truth = None
         pod = MagicMock()
         pod.name, pod.role, pod.status, pod.ready, pod.restarts = (
             "p1", "worker", "Running", True, 0,

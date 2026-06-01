@@ -154,6 +154,63 @@ _TASK_ID_LEN: int = 12
 _TASK_ID_RE = re.compile(rf"^[a-f0-9]{{{_TASK_ID_LEN}}}$")
 
 
+# Marcador de "dispatch em voo" publicado no PVC para o painel TUI ler a
+# VERDADE do que este worker está fazendo agora (proposta de UI [1]Pods —
+# doing-now sem inferência de log). Um arquivo por task em ``WORK_ROOT/.current``;
+# escrito no início, atualizado a cada mudança de fase, removido no fim.
+# Espelha a ``.lease.json`` do claude-worker. O painel lê via ``kubectl exec``
+# e cruza o ``pid`` com ``/proc`` para atribuir o marcador ao pod certo
+# (PVC pode ser compartilhado entre réplicas).
+_CURRENT_DIR = WORK_ROOT / ".current"
+
+
+def _write_current_marker(task_id: str, channel_id: str,
+                          persona: Optional[str], model: Optional[str],
+                          phase: str) -> None:
+    """Publica/atualiza o marcador de dispatch atual. Best-effort."""
+    try:
+        _CURRENT_DIR.mkdir(parents=True, exist_ok=True)
+        path = _CURRENT_DIR / f"{task_id}.json"
+        started = time.time()
+        if path.is_file():
+            try:
+                started = json.loads(
+                    path.read_text(encoding="utf-8")).get("started_at", started)
+            except (OSError, ValueError):
+                pass
+        path.write_text(json.dumps({
+            "task_id": task_id,
+            "channel_id": channel_id,
+            "persona": persona or "",
+            "model": model or "",
+            "phase": phase,
+            "pid": os.getpid(),
+            "started_at": started,
+            "updated_at": time.time(),
+        }, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        logger.debug("write current marker failed for %s", task_id, exc_info=True)
+
+
+def _clear_current_marker(task_id: str) -> None:
+    """Remove o marcador ao fim do dispatch + prune de marcadores órfãos.
+
+    Marcadores de dispatches que morreram sem passar pelo fim (processo
+    morto, timeout externo) ficam para trás — prune oportunista por mtime.
+    """
+    try:
+        (_CURRENT_DIR / f"{task_id}.json").unlink(missing_ok=True)
+        cutoff = time.time() - 3600
+        for p in _CURRENT_DIR.glob("*.json"):
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except OSError:
+        logger.debug("clear current marker failed for %s", task_id, exc_info=True)
+
+
 def _evict_old_tasks_if_needed() -> None:
     """Quando ``_TASKS`` excede ``_TASKS_MAX``, descarta as entradas terminais
     mais antigas (preserva execuções em andamento). Best-effort; chamado em
@@ -593,10 +650,15 @@ async def _run_task(
     _tstate["progress_lines"] = []
     progress_lines = _tstate["progress_lines"]
     last_edit_t = 0.0
+    # Verdade do doing-now para o painel: publica o marcador de dispatch.
+    _write_current_marker(task_id, channel_id, persona, preferred_model,
+                          "inicializando")
 
     async def maybe_edit(force: bool = False, phase: str = "▶️  trabalhando..."):
         nonlocal last_edit_t
         _tstate["phase"] = phase
+        _write_current_marker(task_id, channel_id, persona, preferred_model,
+                              phase)
         now = time.monotonic()
         if not status_msg_id:
             return
@@ -832,6 +894,9 @@ async def _run_task(
         _prune_results_dir(results_dir)
     except OSError:
         logger.exception("could not persist result for task %s", task_id)
+
+    # Dispatch terminou: remove o marcador de doing-now (painel volta a idle).
+    _clear_current_marker(task_id)
     return result
 
 

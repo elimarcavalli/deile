@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import _panel_demo as demo  # noqa: E402
 # Imports `_panel_data` e `_panel_demo` são unqualified — dependem do
@@ -522,6 +522,62 @@ class PodRow:
     last_activity: str
     doing_now: str
     busy: bool = False
+    # Idade do heartbeat quando há um (claude-worker). Quando > 15s a UI marca
+    # ``⚠ stale`` em amarelo no lugar de mostrar a ação como se fosse atual.
+    stale_s: Optional[float] = None
+
+
+# Limiar (s) acima do qual o heartbeat é considerado stale na coluna doing-now.
+_HEARTBEAT_STALE_S = 15.0
+
+
+def _pods_summary_caption(data: Optional[PanelData], replicas: int) -> str:
+    """Rodapé do painel PODS: ``⚡ X/N dispatches ativos · hoje (BRT) $Y``.
+
+    Tudo cheap/non-blocking: ``active_dispatch_count`` lê cache (TTL 2s) e o
+    custo é ``peek()`` (cacheado pelo BackgroundRefresher; nunca dispara o
+    parse de 30s no render). Custo só aparece quando já calculado.
+    """
+    if data is None or data.claude_truth is None or not replicas:
+        return ""
+    active = data.claude_truth.active_dispatch_count()
+    parts = [f"⚡ {active}/{replicas} dispatches ativos"]
+    cost = (data.claude_cost_today.peek()
+            if data.claude_cost_today is not None else None)
+    if cost is not None:
+        parts.append(f"hoje (BRT) ${cost:.2f}")
+    return "  ·  ".join(parts)
+
+
+def _restart_text(restarts: str) -> Text:
+    """Colore RESTARTS: 0 verde · 1-3 amarelo · >3 vermelho.
+
+    Sinaliza o restart cíclico (ex.: ~70min do pipeline) sem ler log.
+    """
+    try:
+        n = int(restarts)
+    except (TypeError, ValueError):
+        return Text(str(restarts), style="dim")
+    if n == 0:
+        style = "green"
+    elif n <= 3:
+        style = "yellow"
+    else:
+        style = "bold red"
+    return Text(str(n), style=style)
+
+
+def _doing_now_render(row: PodRow) -> Tuple[Text, str]:
+    """Texto + estilo da célula doing-now aplicando staleness.
+
+    - heartbeat > 15s → ``⚠ stale (Ns)`` amarelo (não mostra ação velha).
+    - busy → amarelo; idle/idle-explícito → cinza.
+    Truncamento (``…``) é deixado para o overflow da coluna (pilar #15).
+    """
+    if row.stale_s is not None and row.stale_s > _HEARTBEAT_STALE_S:
+        return Text(f"⚠ stale ({_fmt_age(row.stale_s)})", style="yellow"), "yellow"
+    style = "bold yellow" if row.busy else "dim"
+    return Text(row.doing_now, style=style), style
 
 
 def _local_process_rows(data: Optional[PanelData]) -> List[PodRow]:
@@ -583,6 +639,90 @@ def _local_process_rows(data: Optional[PanelData]) -> List[PodRow]:
     return rows
 
 
+def _claude_worker_cell(
+    data: PanelData, pod_name: str,
+) -> Tuple[Optional[float], str, str, bool, str, Optional[float]]:
+    """Doing-now de um pod claude-worker pela VERDADE (probe), não por log.
+
+    Retorna ``(age_s, last_activity, doing_now, busy, icon, stale_s)``.
+
+    Precedência (requisito #1 da proposta):
+    1. ``claude_truth`` (exec/proc) — ``claude -p`` vivo NESTE pod = busy.
+    2. probe falhou → ``— (pod down)`` (degradação graciosa).
+    3. idle explícito; ``last_activity`` = última task concluída (+custo) do
+       log do worker, quando disponível — histórico, não estado-atual.
+    """
+    truth = (data.claude_truth.get().get(pod_name)
+             if data.claude_truth is not None else None)
+    if truth is None or not truth.probe_ok:
+        return None, "—", "— (pod down)", False, "●", None
+    if truth.claude_running:
+        d = truth.dispatches[0]
+        bits = [d.summary]
+        if d.branch:
+            bits.append(d.branch)
+        doing = " · ".join(bits)
+        suffix = " ".join(x for x in (d.model, d.effort) if x)
+        if suffix:
+            doing += f" ({suffix})"
+        extra = len(truth.dispatches) - 1
+        if extra > 0:
+            doing += f"  +{extra}"
+        return truth.heartbeat_age_s, "agora", doing, True, "⚡", truth.heartbeat_age_s
+    # idle: busca a última task concluída no log do worker (histórico).
+    last = "—"
+    cws = (data.claude_workers.get() if data.claude_workers is not None else {})
+    ws = cws.get(pod_name)
+    if ws is not None and ws.last_completed is not None:
+        lc = ws.last_completed
+        age = (datetime.now(timezone.utc) - lc.finished_ts).total_seconds()
+        cost = f" ${lc.cost_usd:.2f}" if lc.cost_usd is not None else ""
+        last = f"{_fmt_age(age)} ago · {lc.outcome}{cost}"
+    return None, last, "idle", False, "●", None
+
+
+def _deile_worker_cell(
+    data: PanelData, pod_name: str, ws,
+) -> Tuple[Optional[float], str, str, bool, str, Optional[float]]:
+    """Doing-now de um pod deile-worker pela VERDADE (marcador de dispatch).
+
+    Retorna ``(age_s, last_activity, doing_now, busy, icon, stale_s)``.
+
+    Precedência: marcador ``.current`` (verdade) > legado (log) durante o
+    rollout da imagem que ainda não escreve marcador (``has_marker_dir`` False)
+    ou quando o probe falha. ``stale_s`` é sempre ``None`` aqui — o marcador
+    não é um heartbeat periódico, então a regra ⚠ (claude-worker) não se aplica.
+    """
+    def _legacy() -> Tuple[Optional[float], str, str, bool, str, Optional[float]]:
+        age_s = ws.last_activity_s if ws else None
+        last = _fmt_age(age_s) + " ago" if ws else "—"
+        doing = (ws.last_substantive_body[:48] if ws and ws.last_substantive_body
+                 else ("ocupado" if ws and ws.busy else "idle"))
+        busy = bool(ws and ws.busy)
+        return age_s, last, doing, busy, ("⚡" if busy else "●"), None
+
+    truth = (data.deile_worker_truth.get().get(pod_name)
+             if data.deile_worker_truth is not None else None)
+    if truth is None or not truth.probe_ok or not truth.has_marker_dir:
+        return _legacy()  # imagem sem marcador ou pod inacessível
+    if truth.busy:
+        bits = [truth.phase or "trabalhando"]
+        if truth.target:
+            bits.insert(0, truth.target)
+        doing = " · ".join(bits)
+        if truth.model:
+            doing += f" ({truth.model})"
+        return truth.age_s, "agora", doing, True, "⚡", None
+    # idle pela verdade (dir existe, nenhum marcador vivo) → idle explícito.
+    last = "—"
+    if ws is not None and ws.last_completed is not None:
+        lc = ws.last_completed
+        age = (datetime.now(timezone.utc) - lc.finished_ts).total_seconds()
+        cost = f" ${lc.cost_usd:.2f}" if lc.cost_usd is not None else ""
+        last = f"{_fmt_age(age)} ago · {lc.outcome}{cost}"
+    return None, last, "idle", False, "●", None
+
+
 def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodRow]:
     """Converte o estado dos providers em linhas da tabela de pods."""
     if data is None:
@@ -598,19 +738,16 @@ def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodR
     for p in data.pods.get():
         # Last-activity humano por role.
         if p.role == "worker":
-            ws = workers.get(p.name)
-            age_s: Optional[float] = ws.last_activity_s if ws else None
-            last = _fmt_age(age_s) + " ago" if ws else "—"
-            doing = ws.last_substantive_body[:32] if ws and ws.last_substantive_body \
-                else ("ocupado" if ws and ws.busy else "idle")
-            busy = bool(ws and ws.busy)
-            icon = "⚡" if busy else "●"
+            age_s, last, doing, busy, icon, _ws_stale = _deile_worker_cell(
+                data, p.name, workers.get(p.name))
         elif p.role == "pipeline":
             age_s = ps.last_action_age_s
             last = (_fmt_age(age_s) + " ago" if age_s is not None else "—")
             doing = ps.last_action_summary[:48] or "idle"
             busy = (age_s is not None and age_s < 60)
             icon = "⚡" if busy else "●"
+        elif p.role == "claude-worker":
+            age_s, last, doing, busy, icon, stale_s = _claude_worker_cell(data, p.name)
         else:
             age_s = None
             last = "—"
@@ -627,6 +764,7 @@ def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodR
             status=ready_label, age=_fmt_age(p.age_s),
             restarts=str(p.restarts), last_activity=last,
             doing_now=doing, busy=busy,
+            stale_s=stale_s if p.role == "claude-worker" else None,
         )
         pairs.append((age_s, row))
 
@@ -794,28 +932,61 @@ class DashboardView(View):
     def _pods_panel(self) -> Panel:
         rows = _pod_rows(self.data, sort_mode=self.sort_mode)
         tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
-        tbl.add_column(" ", width=2, no_wrap=True)
-        tbl.add_column("pod", style="bold")
-        tbl.add_column("status", width=8)
-        tbl.add_column("age", width=5)
-        tbl.add_column("r", width=2, justify="right")
-        tbl.add_column("last-activity", width=12)
-        tbl.add_column("doing now", no_wrap=False)
-        for p in rows:
+        # Larguras adaptativas (pilar #15): sem ``width=<int>`` literal —
+        # ``no_wrap`` + ``overflow="ellipsis"`` deixam o Rich calcular cada
+        # coluna a partir de ``console.width`` e truncar com ``…`` sem
+        # quebrar a borda. ``ratio`` divide o espaço de texto livre.
+        tbl.add_column(" ", no_wrap=True)
+        tbl.add_column("pod", style="bold", no_wrap=True, overflow="ellipsis",
+                       ratio=3)
+        tbl.add_column("status", no_wrap=True, overflow="ellipsis")
+        tbl.add_column("age", no_wrap=True, justify="right")
+        tbl.add_column("r", no_wrap=True, justify="right")
+        tbl.add_column("last-activity", no_wrap=True, overflow="ellipsis",
+                       ratio=3)
+        tbl.add_column("doing now", no_wrap=True, overflow="ellipsis", ratio=5)
+
+        # Pods não-claude-worker em ordem; réplicas claude-worker agrupadas
+        # sob um cabeçalho (requisito #3 da proposta).
+        cw_rows = [p for p in rows if p.role == "claude-worker"]
+        other_rows = [p for p in rows if p.role != "claude-worker"]
+
+        def _emit(p: PodRow, *, indent: bool = False) -> None:
             icon_style = "bold yellow" if p.busy else "green"
-            doing_style = "bold yellow" if p.busy else "dim"
             status_style = "green" if p.status == "Running" else "red"
+            doing_text, _ = _doing_now_render(p)
+            name = (f"  └ {p.name.split('-')[-1]}" if indent else p.name)
             tbl.add_row(
                 Text(p.icon, style=icon_style),
-                p.name,
+                name,
                 Text(p.status, style=status_style),
                 p.age,
-                p.restarts,
+                _restart_text(p.restarts),
                 Text(p.last_activity, style="dim"),
-                Text(p.doing_now, style=doing_style),
+                doing_text,
             )
+
+        for p in other_rows:
+            _emit(p)
+        if cw_rows:
+            running = sum(1 for p in cw_rows if p.busy)
+            tbl.add_row(
+                Text("●", style="cyan"),
+                Text(f"claude-worker ({len(cw_rows)} réplicas · {running} ativa(s))",
+                     style="bold cyan"),
+                "", "", "", "", "",
+            )
+            for p in cw_rows:
+                _emit(p, indent=True)
+
         return Panel(tbl, title="[bold]PODS[/bold]",
-                     title_align="left", border_style="cyan")
+                     title_align="left", border_style="cyan",
+                     subtitle=self._pods_subtitle(rows),
+                     subtitle_align="right")
+
+    def _pods_subtitle(self, rows: List[PodRow]) -> str:
+        replicas = sum(1 for p in rows if p.role == "claude-worker")
+        return _pods_summary_caption(self.data, replicas)
 
     def _local_processes_panel(self, rows: List[PodRow]) -> Panel:
         """Painel paralelo ao PODS para processos DEILE no host."""
@@ -1266,8 +1437,16 @@ class PodPickerView(View):
         self.last_ok: Optional[bool] = None
 
     def _rows(self) -> List[PodRow]:
-        """Lista pods do cluster + processos locais (na ordem natural)."""
-        return _pod_rows(self.data) + _local_process_rows(self.data)
+        """Lista pods do cluster + processos locais (na ordem natural).
+
+        Réplicas ``claude-worker`` são reagrupadas contíguas (antes dos
+        processos locais) para o render desenhar um cabeçalho de grupo sem
+        desalinhar o cursor — ``handle_key`` indexa esta MESMA lista.
+        """
+        pods = _pod_rows(self.data)
+        cw = [p for p in pods if p.role == "claude-worker"]
+        other = [p for p in pods if p.role != "claude-worker"]
+        return other + cw + _local_process_rows(self.data)
 
     @staticmethod
     def _deployment_for_role(role: str) -> Optional[str]:
@@ -1303,44 +1482,72 @@ class PodPickerView(View):
         rows = self._rows()
         if rows:
             self.cursor = max(0, min(self.cursor, len(rows) - 1))
+        # Larguras adaptativas (pilar #15): sem ``width=<int>`` literal —
+        # ``no_wrap``+``overflow="ellipsis"``+``ratio`` deixam o Rich calcular
+        # cada coluna a partir de ``console.width`` e truncar com ``…``.
         tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
-        tbl.add_column(" ", width=2)
-        tbl.add_column(" ", width=2)
-        tbl.add_column("pod", style="bold")
-        tbl.add_column("role", width=10)
-        tbl.add_column("status", width=10)
-        tbl.add_column("age", width=6)
-        tbl.add_column("doing now")
+        tbl.add_column(" ", no_wrap=True)
+        tbl.add_column(" ", no_wrap=True)
+        tbl.add_column("pod", style="bold", no_wrap=True, overflow="ellipsis",
+                       ratio=3)
+        tbl.add_column("role", no_wrap=True, overflow="ellipsis")
+        tbl.add_column("status", no_wrap=True, overflow="ellipsis")
+        tbl.add_column("age", no_wrap=True, justify="right")
+        tbl.add_column("r", no_wrap=True, justify="right")
+        tbl.add_column("last-activity", no_wrap=True, overflow="ellipsis",
+                       ratio=3)
+        tbl.add_column("doing now", no_wrap=True, overflow="ellipsis", ratio=5)
+
+        cw_total = sum(1 for p in rows if p.role == "claude-worker")
+        cw_running = sum(1 for p in rows if p.role == "claude-worker" and p.busy)
+        cw_header_done = False
         for i, p in enumerate(rows):
+            # Cabeçalho do grupo claude-worker (linha visual, fora do cursor).
+            if p.role == "claude-worker" and not cw_header_done:
+                tbl.add_row(
+                    "", Text("●", style="cyan"),
+                    Text(f"claude-worker ({cw_total} réplicas · "
+                         f"{cw_running} ativa(s))", style="bold cyan"),
+                    "", "", "", "", "", "",
+                )
+                cw_header_done = True
+            indent = p.role == "claude-worker"
+            name = f"  └ {p.name.split('-')[-1]}" if indent else p.name
             marker = "▶" if i == self.cursor else " "
             row_style = "bold cyan on grey15" if i == self.cursor else ""
+            status_style = "green" if p.status == "Running" else "red"
+            doing_text, _ = _doing_now_render(p)
             tbl.add_row(
                 Text(marker, style="bold cyan"),
                 Text(p.icon, style="bold yellow" if p.busy else "green"),
-                Text(p.name, style=row_style),
+                Text(name, style=row_style),
                 p.role,
-                p.status,
+                Text(p.status, style=status_style),
                 p.age,
-                Text(p.doing_now, style="dim"),
+                _restart_text(p.restarts),
+                Text(p.last_activity, style="dim"),
+                doing_text,
             )
 
         # Painel de confirmação OU feedback da última ação. Mutuamente
         # exclusivos — a confirmação aparece enquanto está pendente, e
         # depois o feedback fica visível até a próxima ação (ou refresh).
         confirm_panel = self._confirm_panel(rows)
+        subtitle = _pods_summary_caption(self.data, cw_total)
+
+        def _list_panel() -> Panel:
+            return Panel(tbl, title="[bold]escolha um pod para assistir[/bold]",
+                         title_align="left", border_style="cyan",
+                         subtitle=subtitle, subtitle_align="right")
 
         body = Layout(name="body")
         if confirm_panel is not None:
             body.split_column(
-                Layout(Panel(tbl, title="[bold]escolha um pod para assistir[/bold]",
-                             title_align="left", border_style="cyan"),
-                       name="list"),
+                Layout(_list_panel(), name="list"),
                 Layout(confirm_panel, name="confirm", size=7),
             )
         else:
-            body.update(Panel(tbl,
-                              title="[bold]escolha um pod para assistir[/bold]",
-                              title_align="left", border_style="cyan"))
+            body.update(_list_panel())
 
         layout = Layout()
         layout.split_column(
