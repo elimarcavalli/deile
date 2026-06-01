@@ -35,7 +35,7 @@ class RoutingPolicy:
 
         policies:
           task_optimized:
-            tier_1: [anthropic:claude-opus-4-7, openai:gpt-4o, ...]
+            tier_1: [anthropic:claude-opus-4-8, openai:gpt-4o, ...]
           cost_optimized:
             tier_1: [deepseek:deepseek-chat, openai:gpt-4o-mini, ...]
     """

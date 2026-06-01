@@ -831,7 +831,11 @@ def _print_oneshot_content(content) -> None:
         console.print(item)
 
 
-async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
+async def _run_oneshot(
+    message: str,
+    forced_model: Optional[str] = None,
+    reasoning: Optional[str] = None,
+) -> int:
     """Single-turn non-interactive. stdout = response.content."""
     from deile.config.manager import ConfigManager
     from deile.config.settings import get_settings
@@ -857,6 +861,10 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
         preferred = settings.preferred_model
         if preferred:
             session.context_data["preferred_model"] = preferred
+    # Reasoning effort: o flag --reasoning vence; sem ele o agente resolve via
+    # settings.reasoning_effort (resolve_session_reasoning). Normalizado p/ baixo.
+    if reasoning:
+        session.context_data["reasoning_effort"] = str(reasoning).strip().lower()
 
     try:
         response = await agent.process_input(
@@ -1061,6 +1069,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Force a specific model (e.g. deepseek:deepseek-v4-pro).",
     )
     parser.add_argument(
+        "--reasoning", "--effort",
+        dest="reasoning",
+        metavar="LEVEL",
+        help=(
+            "Reasoning effort for this run "
+            "(low|medium|high|xhigh|max|ultracode|auto p/ anthropic; "
+            "provider-specific p/ openai/gemini/deepseek)."
+        ),
+    )
+    parser.add_argument(
         "--ui",
         dest="ui",
         choices=("legacy", "textual"),
@@ -1165,14 +1183,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             _silence_logging()
             return _run_textual_ui()
         # --debug or --model without a message → fall through to interactive mode.
-        if getattr(args, "debug", False) or args.model:
+        if getattr(args, "debug", False) or args.model or getattr(args, "reasoning", None):
             _silence_logging()
             asyncio.run(_DeileCLI().run_interactive())
             return 0
         parser.error("no message provided (pass as positional arg, via stdin, or use a --flag)")
 
     _silence_logging()
-    return asyncio.run(_run_oneshot(msg, forced_model=args.model))
+    return asyncio.run(_run_oneshot(
+        msg, forced_model=args.model, reasoning=getattr(args, "reasoning", None),
+    ))
 
 
 if __name__ == "__main__":

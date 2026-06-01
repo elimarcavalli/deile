@@ -30,7 +30,7 @@ class TestTierRouterExactCascadeMatch:
         catalog = MagicMock()
         router = TierRouter(catalog, policy, cb)
 
-        opus = _make_provider("anthropic", "claude-opus-4-7")
+        opus = _make_provider("anthropic", "claude-opus-4-8")
         haiku = _make_provider("anthropic", "claude-haiku-4-5")
         router.register_provider(opus)
         router.register_provider(haiku)
@@ -42,19 +42,19 @@ class TestTierRouterExactCascadeMatch:
     def test_tier1_picks_opus_when_both_registered(self):
         """Symmetric: the opus instance must be picked for tier_1 cascade."""
         policy = RoutingPolicy("test", {
-            ModelTier.TIER_1: ["anthropic:claude-opus-4-7"],
+            ModelTier.TIER_1: ["anthropic:claude-opus-4-8"],
         })
         cb = CircuitBreaker()
         router = TierRouter(MagicMock(), policy, cb)
 
-        opus = _make_provider("anthropic", "claude-opus-4-7")
+        opus = _make_provider("anthropic", "claude-opus-4-8")
         haiku = _make_provider("anthropic", "claude-haiku-4-5")
         router.register_provider(opus)
         router.register_provider(haiku)
 
         selected = router.select(ModelTier.TIER_1)
         assert selected is opus
-        assert selected.model_name == "claude-opus-4-7"
+        assert selected.model_name == "claude-opus-4-8"
 
     def test_falls_back_to_provider_id_when_model_not_registered(self):
         """If cascade asks for `anthropic:nonexistent` but provider has another model,
@@ -92,7 +92,7 @@ class TestTierRouterExactCascadeMatch:
     def test_unregister_drops_all_anthropic_instances(self):
         policy = RoutingPolicy("test", {ModelTier.TIER_3: ["anthropic:claude-haiku-4-5"]})
         router = TierRouter(MagicMock(), policy, CircuitBreaker())
-        router.register_provider(_make_provider("anthropic", "claude-opus-4-7"))
+        router.register_provider(_make_provider("anthropic", "claude-opus-4-8"))
         router.register_provider(_make_provider("anthropic", "claude-haiku-4-5"))
         router.unregister_provider("anthropic")
         with pytest.raises(NoProviderAvailable):
@@ -100,9 +100,9 @@ class TestTierRouterExactCascadeMatch:
 
     def test_registered_providers_includes_full_keys(self):
         router = TierRouter(MagicMock(), RoutingPolicy("test", {}), CircuitBreaker())
-        router.register_provider(_make_provider("anthropic", "claude-opus-4-7"))
+        router.register_provider(_make_provider("anthropic", "claude-opus-4-8"))
         router.register_provider(_make_provider("anthropic", "claude-haiku-4-5"))
         registered = router.registered_providers()
         # Should expose both full keys for debugging / introspection
-        assert "anthropic:claude-opus-4-7" in registered
+        assert "anthropic:claude-opus-4-8" in registered
         assert "anthropic:claude-haiku-4-5" in registered

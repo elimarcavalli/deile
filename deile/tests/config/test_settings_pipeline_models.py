@@ -31,8 +31,8 @@ class TestModelSlugValidator:
     def test_valid_slugs_pass_through(self):
         assert _to_optional_model_slug("deepseek:deepseek-v4-pro") == \
             "deepseek:deepseek-v4-pro"
-        assert _to_optional_model_slug("anthropic:claude-opus-4-7") == \
-            "anthropic:claude-opus-4-7"
+        assert _to_optional_model_slug("anthropic:claude-opus-4-8") == \
+            "anthropic:claude-opus-4-8"
         # Dots, underscores and dashes in the model portion are allowed.
         assert _to_optional_model_slug("openai:gpt-4o-mini-2024_07_18") == \
             "openai:gpt-4o-mini-2024_07_18"
@@ -83,13 +83,13 @@ class TestApplyOverrides:
                 "models": {
                     "classify": "deepseek:deepseek-v3-small",
                     "implement": "anthropic:claude-sonnet-4-6",
-                    "pr_review": "anthropic:claude-opus-4-7",
+                    "pr_review": "anthropic:claude-opus-4-8",
                 }
             }
         })
         assert s.pipeline_model_classify == "deepseek:deepseek-v3-small"
         assert s.pipeline_model_implement == "anthropic:claude-sonnet-4-6"
-        assert s.pipeline_model_pr_review == "anthropic:claude-opus-4-7"
+        assert s.pipeline_model_pr_review == "anthropic:claude-opus-4-8"
         # Unset stages remain None (no implicit fallback at this layer).
         assert s.pipeline_model_refine is None
         assert s.pipeline_model_follow_ups is None
@@ -135,10 +135,10 @@ class TestEnvOverrides:
 
     def test_env_vars_apply(self, monkeypatch):
         s = Settings()
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT", "anthropic:claude-opus-4-7")
+        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT", "anthropic:claude-opus-4-8")
         monkeypatch.setenv("DEILE_PIPELINE_MODEL_PR_REVIEW", "deepseek:deepseek-v4-pro")
         _apply_env_overrides(s)
-        assert s.pipeline_model_implement == "anthropic:claude-opus-4-7"
+        assert s.pipeline_model_implement == "anthropic:claude-opus-4-8"
         assert s.pipeline_model_pr_review == "deepseek:deepseek-v4-pro"
 
     def test_env_var_with_malformed_slug_is_dropped(self, monkeypatch):

@@ -49,6 +49,8 @@ from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  template_for_type)
 from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.model_resolver import resolve_stage_model
+from deile.orchestration.pipeline.reasoning_resolver import \
+    resolve_stage_reasoning
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
@@ -834,6 +836,9 @@ class WorkerImplementer(PipelineImplementer):
         # then falls back to its own ``DEILE_PREFERRED_MODEL``), or a
         # ``provider:model`` slug to pin THIS turn only.
         preferred_model = resolve_stage_model(stage) if stage else None
+        # Per-stage reasoning effort (espelha o per-stage model). ``None`` quando
+        # nem a etapa nem o global têm override — o worker/provider usa o default.
+        preferred_reasoning = resolve_stage_reasoning(stage) if stage else None
         # Per-stage endpoint routing (issue #309 fase 2). ``stage`` opcional
         # mantém compat com callers (testes) que ainda não declaram stage.
         url = self._resolve_endpoint(stage or "implement")
@@ -881,6 +886,7 @@ class WorkerImplementer(PipelineImplementer):
         payload_kwargs: Dict[str, Any] = dict(
             brief=brief, channel_id=channel_id, persona=persona, wait=not nowait,
             preferred_model=preferred_model, stage=stage, branch=branch,
+            preferred_reasoning=preferred_reasoning,
             timeout_s=resolve_stage_timeout_s(stage) if stage else None,
             max_retries=resolve_stage_max_retries(stage) if stage else None,
         )

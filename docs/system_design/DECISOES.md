@@ -571,7 +571,24 @@
 
 ---
 
-## Decisão #47 — Adapter OTLP-traces para eventos dispatch.*/git.*/forge.*
+## Decisão #47 — Reasoning effort configurável por worker × stage (espelha os per-stage models)
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 07-Integrações LLM, 04-Componentes, 09-Configuração, 14-Containerização |
+| Decisão | O esforço de raciocínio ("reasoning effort") é configurável por etapa do pipeline (`classify`/`refine`/`implement`/`pr_review`/`follow_ups`), para **ambos** os workers (claude-worker e deile-worker), e globalmente no DEILE CLI — espelhando a infra dos per-stage models (Decisão #41). Vocabulário canônico **claude-worker E deile-worker+anthropic**: `low\|medium\|high\|xhigh\|max\|ultracode\|auto` (os mesmos efforts do `claude --effort`). Para os demais providers do deile-worker, níveis levantados nas docs oficiais: **openai** `none\|minimal\|low\|medium\|high\|xhigh\|auto` (`reasoning_effort`); **gemini** `off\|minimal\|low\|medium\|high\|auto` (`thinking_config` — `thinking_level` em 3.x, `thinking_budget` em 2.5); **deepseek** `off\|high\|max\|auto` (`reasoning_effort` + `thinking.type`). Fonte única do vocabulário + mapeamento → parâmetro nativo em `deile/core/models/reasoning.py`; resolver por etapa em `deile/orchestration/pipeline/reasoning_resolver.py` (dobra o global, como `resolve_stage_timeout_s`). O valor resolvido viaja em `DispatchPayload.preferred_reasoning`: o deile-worker injeta em `session.context_data["reasoning_effort"]` (cada provider traduz com **fail-open** — nível não suportado → omite, nunca quebra o turno; injeção via `extra_body` para anthropic/openai/deepseek, `ThinkingConfig` para gemini) e o claude-worker valida contra o conjunto Claude Code e passa a `claude --effort`. Persistência tripla (paridade com #41): cluster (`DEILE_PIPELINE_REASONING_<STAGE>` + `DEILE_REASONING_EFFORT` no Deployment `deile-pipeline`, escritos pelo painel via `kubectl set env`), CLI local (`pipeline.reasoning.<stage>` + `model.reasoning_effort` em `~/.deile/settings.json`), e flag one-shot `--reasoning LEVEL`. UI: nova coluna **Reasoning** (col 5) na `DispatchMatrixView` (`[d]`), com picker contextual por (worker, provider) + linha Global default editável; comando `/reasoning <nível>` (alias `/effort`) no REPL. |
+| Evidência | `deile/core/models/reasoning.py` (vocabulário + `valid_efforts_for` + `request_overrides`/`gemini_thinking_kwargs` + `resolve_session_reasoning`); `deile/orchestration/pipeline/reasoning_resolver.py`; `deile/config/settings.py` (`_to_optional_reasoning_effort`, 6 atributos, `_OVERRIDE_HANDLERS` + `_ENV_OVERRIDES`); `deile/infrastructure/deile_worker_client.py` (`DispatchPayload.preferred_reasoning` + validator + builder); `deile/orchestration/pipeline/implementer.py` (resolve + thread no payload); `infra/k8s/worker_server.py` (parse + injeção em context_data); `infra/k8s/claude_worker_server.py` (parse + valida + `--effort`); `deile/core/models/base.py` (`_pop_reasoning_extra_body`/`_apply_reasoning_extra_body`) + `anthropic_provider.py`/`openai_provider.py`/`gemini_provider.py`; `deile/core/tool_loop_executor.py` + `agent_streaming.py` + `agent.py` (threading do effort); `deile/commands/builtin/reasoning_command.py`; `deile/cli.py` (`--reasoning`); `infra/k8s/_panel.py` + `_panel_data.py` (coluna + pickers + set/clear); `infra/k8s/manifests/46-deile-pipeline-deployment.yaml`; testes em `deile/tests/`. |
+| Motivação | A Decisão #41 deu controle de **modelo** por etapa, mas não de **profundidade de raciocínio** — eixo independente e de alto impacto em custo/qualidade. Um classify barato não precisa de reasoning pesado; um implement/pr_review se beneficia de `high`/`max`. O Humano pediu paridade de vocabulário Claude Code para anthropic/claude e níveis oficiais por provider para o resto, com configuração também no DEILE CLI, reusando ao máximo a infra existente (sem duplicar código). |
+| Fora do escopo | Auto-seleção de effort por heurística de complexidade (futuro); budget de thinking_tokens numérico exposto no painel (gemini 2.5 usa budget internamente, mas a UI é discreta); reasoning para a linha "monitor" do painel (só Model é editável ali). |
+
+### Histórico
+
+- **2026-05-30** — Decisão criada. Pesquisa de níveis por provider conduzida por sub-agents Sonnet contra as docs oficiais (anthropic `output_config.effort`, openai `reasoning_effort`, gemini `thinking_config`, deepseek `reasoning_effort`+`thinking`).
+
+---
+
+## Decisão #48 — Adapter OTLP-traces para eventos dispatch.*/git.*/forge.*
 
 | Campo | Valor |
 |---|---|
@@ -584,7 +601,7 @@
 
 ### Histórico
 
-- **2026-05-31** — Decisão criada. Extensão da Decisão #39 (OTLP enterprise) para o ciclo autônomo do dispatch. PR #463.
+- **2026-05-31** — Decisão criada. Extensão da Decisão #39 (OTLP enterprise) para o ciclo autônomo do dispatch. PR #463. Renumerada de #47 para #48 ao mergear com main (conflito de numeração com Decisão #47 reasoning effort, PR #481).
 
 ---
 

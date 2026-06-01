@@ -63,6 +63,8 @@ from _panel_data import _fmt_cpu_display, _fmt_mem_display, _pct  # noqa: F401
 from _panel_data import EndpointInfo  # noqa: F401
 from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
+from _panel_data import _ROLE_COLOR_MAP as _ACTIVITY_COLOR_MAP  # noqa: F401
+from _panel_data import _ERROR_DETAIL_RE as _ACTIVITY_ERROR_RE  # noqa: F401
 from _panel_data import \
     _audit_dispatch_mode_change as pd_audit_dispatch_mode_change
 from _panel_data import \
@@ -70,6 +72,10 @@ from _panel_data import \
 from _panel_data import \
     clear_pipeline_dispatch_mode as pd_clear_pipeline_dispatch_mode
 from _panel_data import clear_stage_model as pd_clear_stage_model
+from _panel_data import set_stage_reasoning as pd_set_stage_reasoning
+from _panel_data import clear_stage_reasoning as pd_clear_stage_reasoning
+from _panel_data import set_global_reasoning as pd_set_global_reasoning
+from _panel_data import clear_global_reasoning as pd_clear_global_reasoning
 from _panel_data import \
     set_pipeline_dispatch_mode as pd_set_pipeline_dispatch_mode
 from _panel_data import \
@@ -144,6 +150,12 @@ if os.name == "nt":  # pragma: no cover - Windows fallback
             return self
 
         def __exit__(self, *exc):
+            pass
+
+        def pause_cbreak(self) -> None:  # no-op no Windows (sem cbreak)
+            pass
+
+        def resume_cbreak(self) -> None:
             pass
 
         def read(self, timeout: float = 0.0) -> Optional[str]:
@@ -232,6 +244,24 @@ else:
                     pass
             self._prev_handlers.clear()
 
+        def pause_cbreak(self) -> None:
+            """Volta o terminal ao modo cozido (canônico) sem desfazer o
+            context-manager — para rodar um subprocess interativo que precisa
+            de input por linha. Pareie sempre com :meth:`resume_cbreak`."""
+            if self._fd is not None and self._old is not None:
+                try:
+                    termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+                except (OSError, termios.error):
+                    pass
+
+        def resume_cbreak(self) -> None:
+            """Reentra no cbreak após :meth:`pause_cbreak`."""
+            if self._fd is not None and not self._restored:
+                try:
+                    tty.setcbreak(self._fd)
+                except (OSError, termios.error):
+                    pass
+
         def _signal_handler(self, signum, frame):
             # Restaura o terminal e re-dispara o sinal com o handler default
             # — o processo sai com o status canônico do sinal.
@@ -288,6 +318,7 @@ class Action(Enum):
     QUIT = "quit"
     NAV = "nav"
     REFRESH = "refresh"
+    SUSPEND = "suspend"  # suspende o Live + cbreak e roda um subprocess interativo
 
 
 @dataclass
@@ -311,6 +342,11 @@ class ActionResult:
     @classmethod
     def refresh(cls) -> "ActionResult":
         return cls(kind=Action.REFRESH)
+
+    @classmethod
+    def suspend(cls, command: List[str]) -> "ActionResult":
+        """Suspende o painel e roda ``command`` como subprocess interativo."""
+        return cls(kind=Action.SUSPEND, payload={"command": command})
 
 
 class View(ABC):
@@ -426,15 +462,19 @@ class ActivityRow:
 def _activity_from_data(data: Optional[PanelData], limit: int = 8) -> List[ActivityRow]:
     if data is None:
         return [ActivityRow(*row) for row in demo.ACTIVITY[:limit]]
-    # Combina eventos k8s + locais ordenando por timestamp desc — assim a
-    # UI mostra atividade real seja qual for a fonte. Locais ganham
-    # actor='local' (setado em LocalLogsState para diferenciar de pipeline).
-    pool = list(data.pipeline.get().events)
-    if data.local_logs is not None:
-        pool.extend(data.local_logs.get().events)
-    pool.sort(key=lambda ev: ev.ts, reverse=True)
+    # Multi-source feed (issue #436): use MultiSourceActivityProvider when
+    # k8s is available; it merges all 5 sources with a 200-event buffer.
+    if getattr(data, "activity", None) is not None:
+        events = data.activity.get().top(limit)
+    else:
+        # Fallback: single-source (pipeline + local) for local-only mode.
+        pool = list(data.pipeline.get().events)
+        if data.local_logs is not None:
+            pool.extend(data.local_logs.get().events)
+        pool.sort(key=lambda ev: ev.ts, reverse=True)
+        events = pool[:limit]
     rows: List[ActivityRow] = []
-    for ev in pool[:limit]:
+    for ev in events:
         rows.append(ActivityRow(
             hhmmss=ev.hhmmss,
             actor=ev.actor,
@@ -448,14 +488,17 @@ def _activity_from_data(data: Optional[PanelData], limit: int = 8) -> List[Activ
 def _last_activity_caption(data: Optional[PanelData]) -> Optional[str]:
     """Retorna string legível do evento mais recente, ex: '23s ago — #360 → em_pr'.
 
-    Combina eventos do pipeline e locais (mesma fonte de `_activity_from_data`).
+    Usa o multi-source buffer quando disponível; fallback pipeline+local.
     Retorna None quando não há eventos para não poluir o rodapé.
     """
     if data is None:
         return None
-    pool: List[Any] = list(data.pipeline.get().events)
-    if data.local_logs is not None:
-        pool.extend(data.local_logs.get().events)
+    if getattr(data, "activity", None) is not None:
+        pool: List[Any] = list(data.activity.get().events)
+    else:
+        pool = list(data.pipeline.get().events)
+        if data.local_logs is not None:
+            pool.extend(data.local_logs.get().events)
     if not pool:
         return None
     ev = max(pool, key=lambda e: e.ts)
@@ -692,7 +735,7 @@ class DashboardView(View):
     def HOTKEYS(self) -> str:
         return (
             "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
-            "[5]Tokens  [M]onitor  [n]otifier  [a]ctions  [m]odel/runtime  "
+            "[t]okens  [M]onitor  [n]otifier  [a]ctions  [m]odel/runtime  "
             f"[d]ispatch  [s]ort:{self.sort_mode}  [?]help  [q]uit"
         )
 
@@ -866,14 +909,27 @@ class DashboardView(View):
         else:
             tbl = Table(box=box.SIMPLE, expand=True, show_header=False,
                         pad_edge=False)
-            tbl.add_column(width=8, style="dim")
-            tbl.add_column(width=10, style="bold cyan")
-            tbl.add_column(width=12)
-            tbl.add_column(width=8, style="yellow")
-            tbl.add_column()
+            # Adaptive widths per principle 15 — no literal width=<int>.
+            tbl.add_column(max_width=9, style="dim")        # timestamp
+            tbl.add_column(max_width=14, min_width=6)       # actor/role
+            tbl.add_column(max_width=20, min_width=8)       # action
+            tbl.add_column(max_width=10, style="yellow")    # target
+            tbl.add_column()                                 # detail
             for r in rows:
-                tbl.add_row(r.hhmmss, r.actor, r.action, r.target,
-                            Text(r.detail, style="dim"))
+                # Color by role: look up deploy→color, fall back to dim italic.
+                actor_color = _ACTIVITY_COLOR_MAP.get(r.actor, "dim italic")
+                # AC7: highlight error details in bold red.
+                detail_style = (
+                    "bold red" if _ACTIVITY_ERROR_RE.search(r.detail)
+                    else "dim"
+                )
+                tbl.add_row(
+                    r.hhmmss,
+                    Text(r.actor, style=f"bold {actor_color}"),
+                    r.action,
+                    r.target,
+                    Text(r.detail, style=detail_style),
+                )
             body = tbl
         return Panel(body, title="[bold]ACTIVITY[/bold] (últimos 10)",
                      title_align="left", border_style="green")
@@ -953,7 +1009,7 @@ class DashboardView(View):
 
     def _health_pulse_panel(self) -> Panel:
         """Widget compacto de saúde do cluster — substitui TOKENS & CUSTOS
-        no dashboard (Tarefa 3). TOKENS mantém view dedicada em [5].
+        no dashboard (Tarefa 3). TOKENS abre o relatório completo via [t].
 
         Exibe:
         - Status do deile-monitor (se instalado): próximo tick + anomalias
@@ -1029,7 +1085,7 @@ class DashboardView(View):
         else:
             lines.append(Text("Forge: github.com · elimarcavalli/deile", style="dim"))
 
-        # ---- Tokens resumido (ponteiro para [5]) ----
+        # ---- Tokens resumido (ponteiro para [t]) ----
         if self.data is not None:
             c = self.data.costs.get()
             total_str = f"${c.total_24h:.2f}"
@@ -1038,10 +1094,10 @@ class DashboardView(View):
                 ("Tokens 24h: ", "dim"),
                 (total_str, "bold green"),
                 (f"  ·  1h: {hour_str}", "dim"),
-                ("  [5] detalhes", "dim"),
+                ("  [t] detalhes", "dim"),
             ))
         else:
-            lines.append(Text("Tokens 24h: $11.40  ·  1h: $1.32  [5] detalhes",
+            lines.append(Text("Tokens 24h: $11.40  ·  1h: $1.32  [t] detalhes",
                                style="dim"))
 
         body = Group(*lines) if lines else Text("· sem dados", style="dim")
@@ -1056,7 +1112,6 @@ class DashboardView(View):
             "2": "pipeline-timeline",
             "3": "issues-prs",
             "4": "logs-split",
-            "5": "tokens",
             "n": "notifier-echo",
             "a": "actions",
             "m": "model-switcher",
@@ -1077,6 +1132,16 @@ class DashboardView(View):
         }
         if key in nav:
             return ActionResult.nav(nav[key])
+        if key == "t":
+            # [t]okens — suspende o painel e roda o relatório completo de uso
+            # de Claude Code nos PVCs (session_tokens_audit.py). Substitui a
+            # antiga view [5] Tokens (UsageRepository local).
+            ns = _NS_DEFAULT
+            if self.data is not None and self.data.context is not None:
+                ns = getattr(self.data.context, "namespace", None) or _NS_DEFAULT
+            script = Path(__file__).resolve().parent / "session_tokens_audit.py"
+            return ActionResult.suspend(
+                [sys.executable, str(script), "-n", ns])
         if key == "s":
             idx = _SORT_MODES.index(self.sort_mode)
             self.sort_mode = _SORT_MODES[(idx + 1) % len(_SORT_MODES)]
@@ -4212,13 +4277,13 @@ class DispatchMatrixView(View):
     refresh_s = 1.0
 
     HOTKEYS = (
-        "[↑/↓] linha   [←/→] coluna (Worker/Model/Timeout/Retries)   "
+        "[↑/↓] linha   [←/→] coluna (Worker/Model/Timeout/Retries/Cost/Reasoning)   "
         "[enter] editar   [r] reset   "
         "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
         "[s]caling row: enter digita réplicas (0-10)   "
         "[c] cleanup on-demand (preview + confirm)   "
         "[p] editar max_parallel (parallelism do pipeline)   "
-        "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run)   "
+        "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run) 5=Reasoning   "
         "retries=0 EXIGE confirmação: digite '0!' (fail-fast, sem retry)   "
         "linha monitor: Worker=in-pod (não editável)  Model=DEILE_PREFERRED_MODEL do deile-monitor"
     )
@@ -4242,7 +4307,7 @@ class DispatchMatrixView(View):
     # mas garante que o picker sempre tenha opções para o operador
     # escolher (ex.: em CI sem yaml acessível ou em demo sem cluster).
     _MODELS_FALLBACK_STATIC = (
-        "anthropic:claude-opus-4-7",
+        "anthropic:claude-opus-4-8",
         "anthropic:claude-sonnet-4-6",
         "anthropic:claude-haiku-4-5",
         "openai:gpt-4",
@@ -4261,7 +4326,8 @@ class DispatchMatrixView(View):
         # cursor_row ∈ [0, N] — N inclusive corresponde à linha "Global
         # default" no fim da matriz.
         self.cursor_row: int = 0
-        # cursor_col ∈ {0, 1, 2, 3, 4} — 0=Worker, 1=Model, 2=Timeout(s), 3=Retries, 4=Cost cap (USD/run).
+        # cursor_col ∈ {0,1,2,3,4,5} — 0=Worker, 1=Model, 2=Timeout(s),
+        # 3=Retries, 4=Cost cap (USD/run), 5=Reasoning.
         # As colunas Stage e Source não são editáveis.
         self.cursor_col: int = 0
         # --- Picker modal state (Task 19). ``None`` = browsing.
@@ -4457,12 +4523,16 @@ class DispatchMatrixView(View):
         # (UI resize-adaptativa, issue #307). Rich auto-calcula a largura
         # ótima por coluna em cada render usando ``console.width`` corrente.
         tbl = Table(show_header=True, box=box.SIMPLE_HEAVY, expand=True)
-        tbl.add_column("Stage", style="bold cyan")
+        # min_width=14 (piso, princípio 15 permite): garante que rótulos como
+        # "Worker Scaling"/"Global default" não quebrem em 2 linhas quando a 8ª
+        # coluna (Reasoning) aperta a largura. Rich ainda encolhe as demais.
+        tbl.add_column("Stage", style="bold cyan", min_width=14)
         tbl.add_column("Worker")
         tbl.add_column("Model")
         tbl.add_column("Timeout (s)")
         tbl.add_column("Max retries")
         tbl.add_column("Cost cap (USD/run)")
+        tbl.add_column("Reasoning")
         tbl.add_column("Source", style="dim")
 
         for i, entry in enumerate(entries):
@@ -4471,6 +4541,7 @@ class DispatchMatrixView(View):
             highlight_t = (i == self.cursor_row and self.cursor_col == 2)
             highlight_r = (i == self.cursor_row and self.cursor_col == 3)
             highlight_c = (i == self.cursor_row and self.cursor_col == 4)
+            highlight_z = (i == self.cursor_row and self.cursor_col == 5)
 
             worker_cell = (f"[reverse]{entry.worker}[/reverse]"
                            if highlight_w else entry.worker)
@@ -4487,12 +4558,16 @@ class DispatchMatrixView(View):
             cap_txt = (f"${cap_raw}" if cap_raw else "(no cap)")
             cost_cap_cell = (f"[reverse]{cap_txt}[/reverse]"
                              if highlight_c else cap_txt)
+            reasoning_txt = getattr(entry, "reasoning", None) or "(default)"
+            reasoning_cell = (f"[reverse]{reasoning_txt}[/reverse]"
+                              if highlight_z else reasoning_txt)
             tbl.add_row(entry.stage, worker_cell, model_cell,
-                        timeout_cell, retries_cell, cost_cap_cell, entry.source)
+                        timeout_cell, retries_cell, cost_cap_cell,
+                        reasoning_cell, entry.source)
 
         # Separador visual entre stages e a linha "Global default".
-        tbl.add_row("─" * 12, "─" * 14, "─" * 28, "─" * 10, "─" * 11, "─" * 12, "─" * 8,
-                    style="dim")
+        tbl.add_row("─" * 10, "─" * 12, "─" * 22, "─" * 8, "─" * 8, "─" * 10,
+                    "─" * 9, "─" * 6, style="dim")
 
         # Linha "Global default" — ``cursor_row == len(entries)`` aponta
         # aqui (mas só dentro dos limites de ``handle_key``).
@@ -4505,10 +4580,13 @@ class DispatchMatrixView(View):
                         and self.cursor_col == 2)
         highlight_gr = (self.cursor_row == global_idx
                         and self.cursor_col == 3)
+        highlight_gz = (self.cursor_row == global_idx
+                        and self.cursor_col == 5)
         global_w_txt = "(DEILE_PIPELINE_DISPATCH_MODE)"
         global_m_txt = "(DEILE_PIPELINE_MODEL)"
         global_t_txt = "(DEILE_PIPELINE_DEILE/CLAUDE_TIMEOUT)"
         global_r_txt = "(DEILE_PIPELINE_DEFAULT_MAX_RETRIES)"
+        global_z_txt = "(DEILE_REASONING_EFFORT)"
         if highlight_gw:
             global_w_txt = f"[reverse]{global_w_txt}[/reverse]"
         if highlight_gm:
@@ -4517,8 +4595,10 @@ class DispatchMatrixView(View):
             global_t_txt = f"[reverse]{global_t_txt}[/reverse]"
         if highlight_gr:
             global_r_txt = f"[reverse]{global_r_txt}[/reverse]"
+        if highlight_gz:
+            global_z_txt = f"[reverse]{global_z_txt}[/reverse]"
         tbl.add_row("Global default", global_w_txt, global_m_txt,
-                    global_t_txt, global_r_txt, "—", "env")
+                    global_t_txt, global_r_txt, "—", global_z_txt, "env")
 
         # Linha "Worker Scaling" — edita réplicas de deile-worker / claude-worker
         # via prompt numérico [enter] (issue #309 fase 3 Task 4).
@@ -4533,7 +4613,7 @@ class DispatchMatrixView(View):
         if highlight_sm:
             scale_m_txt = f"[reverse]{scale_m_txt}[/reverse]"
         tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt,
-                    "", "", "—", "kubectl")
+                    "", "", "—", "—", "kubectl")
 
         # Linha "Max Parallel" — edita DEILE_PIPELINE_MAX_PARALLEL no
         # Deployment deile-pipeline (issue #408). [p] ou [enter] nesta row
@@ -4547,11 +4627,11 @@ class DispatchMatrixView(View):
         mp_desc = "auto = réplicas claude-worker" if mp_current == "auto" else "DEILE_PIPELINE_MAX_PARALLEL"
         if highlight_mp:
             mp_txt = f"[reverse]{mp_txt}[/reverse]"
-        tbl.add_row("Max Parallel", mp_txt, mp_desc, "", "", "—", "env")
+        tbl.add_row("Max Parallel", mp_txt, mp_desc, "", "", "—", "—", "env")
 
         # Separador visual antes da linha do monitor.
-        tbl.add_row("─" * 12, "─" * 14, "─" * 28, "─" * 10, "─" * 11, "─" * 12, "─" * 8,
-                    style="dim")
+        tbl.add_row("─" * 10, "─" * 12, "─" * 22, "─" * 8, "─" * 8, "─" * 10,
+                    "─" * 9, "─" * 6, style="dim")
 
         # Linha "monitor" — modelo aplicado ao Deployment deile-monitor.
         # ``cursor_row == len(entries) + 3`` aponta aqui.
@@ -4575,7 +4655,7 @@ class DispatchMatrixView(View):
             Text("monitor", style="bold magenta"),
             mon_worker_txt,
             mon_model_txt,
-            "—", "—", "(no cap)",
+            "—", "—", "(no cap)", "—",
             mon_source,
         )
 
@@ -4681,6 +4761,10 @@ class DispatchMatrixView(View):
             title = f"MAX RETRIES PARA STAGE '{stage}' (enter vazio = clear)"
         elif kind == "cost_cap_usd":
             title = f"COST CAP (USD/RUN) PARA STAGE '{stage}'"
+        elif kind == "reasoning":
+            title = f"REASONING EFFORT PARA STAGE '{stage}'"
+        elif kind == "global_reasoning":
+            title = "ESCOLHA REASONING GLOBAL (DEILE_REASONING_EFFORT)"
         elif kind == "global_worker":
             title = "ESCOLHA DISPATCH MODE GLOBAL (DEILE_PIPELINE_DISPATCH_MODE)"
         elif kind == "global_model":
@@ -4849,8 +4933,9 @@ class DispatchMatrixView(View):
             self.cursor_col = max(0, self.cursor_col - 1)
             return ActionResult.refresh()
         if key in ("RIGHT", "l"):
-            # 5 editable columns: 0=Worker, 1=Model, 2=Timeout, 3=Retries, 4=Cost cap (issues #391/#392)
-            self.cursor_col = min(4, self.cursor_col + 1)
+            # 6 editable columns: 0=Worker, 1=Model, 2=Timeout, 3=Retries,
+            # 4=Cost cap (issues #391/#392), 5=Reasoning.
+            self.cursor_col = min(5, self.cursor_col + 1)
             return ActionResult.refresh()
 
         # --- [enter]: abre picker contextual ------------------------------
@@ -4887,12 +4972,14 @@ class DispatchMatrixView(View):
                     self.last_ok = None
                     return ActionResult.refresh()
                 return self._open_scaling_prompt()
-            # Row na linha "Global default" → picker global (só worker/model).
+            # Row na linha "Global default" → picker global (worker/model/reasoning).
             if self.cursor_row == global_idx:
                 if self.cursor_col == 0:
                     return self._open_global_worker_picker()
                 if self.cursor_col == 1:
                     return self._open_global_model_picker()
+                if self.cursor_col == 5:
+                    return self._open_global_reasoning_picker()
                 # cols 2/3 (Timeout/Retries) no Global row são read-only hint
                 self.last_msg = (
                     "Timeout/Retries globais: editar via settings.json ou "
@@ -4910,9 +4997,11 @@ class DispatchMatrixView(View):
                 return self._open_timeout_prompt(entry)
             elif self.cursor_col == 3:
                 return self._open_retries_prompt(entry)
-            else:
-                # col 4 = Cost cap (issue #392)
+            elif self.cursor_col == 4:
                 return self._open_cost_cap_picker(entry)
+            else:
+                # col 5 = Reasoning effort
+                return self._open_reasoning_picker(entry)
 
         # --- [r] reset da célula corrente -------------------------------
         if key == "r":
@@ -5077,6 +5166,66 @@ class DispatchMatrixView(View):
         self.picker_cursor = 0
         return ActionResult.refresh()
 
+    # Conjuntos de níveis de reasoning por contexto — espelham
+    # ``deile/core/models/reasoning.py`` (mantidos locais porque o painel roda
+    # de ``infra/k8s/`` sem o pacote ``deile`` no path; mesma disciplina de
+    # ``_MODELS_FALLBACK_STATIC`` / ``_STAGES_FALLBACK``). MANTER EM SINCRONIA.
+    _REASONING_CLAUDE = ("low", "medium", "high", "xhigh", "max", "ultracode", "auto")
+    _REASONING_OPENAI = ("none", "minimal", "low", "medium", "high", "xhigh", "auto")
+    _REASONING_GEMINI = ("off", "minimal", "low", "medium", "high", "auto")
+    _REASONING_DEEPSEEK = ("off", "high", "max", "auto")
+    _CLEAR_SENTINEL_REASONING = "(default — clear override)"
+
+    def _reasoning_picker_options(self, *, worker: str, model: Optional[str]) -> List[str]:
+        """Opções do picker de reasoning, contextualizadas por (worker, model).
+
+        claude-worker OU modelos anthropic → vocabulário Claude Code (7 níveis).
+        Demais providers do deile-worker → conjunto específico do provider,
+        derivado do prefixo do slug ``provider:model``.
+        """
+        if worker == "claude-worker":
+            levels = self._REASONING_CLAUDE
+        else:
+            provider = (model or "").split(":", 1)[0].strip().lower()
+            levels = {
+                "anthropic": self._REASONING_CLAUDE,
+                "openai": self._REASONING_OPENAI,
+                "gemini": self._REASONING_GEMINI,
+                "google": self._REASONING_GEMINI,
+                "deepseek": self._REASONING_DEEPSEEK,
+            }.get(provider, self._REASONING_CLAUDE)
+        return [self._CLEAR_SENTINEL_REASONING, *levels]
+
+    def _open_reasoning_picker(self, entry) -> ActionResult:
+        """Abre picker per-stage de reasoning (col 5 numa stage row).
+
+        Contextualizado pelo worker E pelo model da MESMA linha — anthropic
+        e claude-worker oferecem o vocabulário Claude Code; demais providers
+        oferecem seus níveis nativos.
+        """
+        opts = self._reasoning_picker_options(
+            worker=entry.worker, model=entry.model,
+        )
+        self.mode = ("reasoning", entry.stage, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    def _open_global_reasoning_picker(self) -> ActionResult:
+        """Picker global de reasoning (DEILE_REASONING_EFFORT em deile-pipeline).
+
+        Oferece a UNIÃO de níveis (o global aplica a qualquer worker/provider).
+        """
+        # dict.fromkeys preserva ordem e deduplica numa passada.
+        union = list(dict.fromkeys(
+            lvl
+            for grp in (self._REASONING_CLAUDE, self._REASONING_OPENAI,
+                        self._REASONING_GEMINI, self._REASONING_DEEPSEEK)
+            for lvl in grp
+        ))
+        self.mode = ("global_reasoning", None, ["(clear override)", *union])
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
     # --- [r] reset cell --------------------------------------------------
 
     def _reset_current_cell(self) -> ActionResult:
@@ -5115,9 +5264,12 @@ class DispatchMatrixView(View):
                 ok, msg = pd_set_stage_timeout(stage, None, namespace=ns)
             elif self.cursor_col == 3:
                 ok, msg = pd_set_stage_retries(stage, None, namespace=ns)
-            else:
+            elif self.cursor_col == 4:
                 # col 4 = Cost cap reset (issue #392)
                 ok, msg = pd_reset_stage_cost_cap_usd(stage, namespace=ns)
+            else:
+                # col 5 = Reasoning reset
+                ok, msg = pd_clear_stage_reasoning(stage, namespace=ns)
         elif self.cursor_row == n_stages + 3:  # Monitor row — só model é resetável
             if self.cursor_col == 0:
                 ok, msg = (None, "Worker do monitor não é editável (in-pod)")
@@ -5132,6 +5284,8 @@ class DispatchMatrixView(View):
         else:  # Global default row (n_stages)
             if self.cursor_col == 0:
                 ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
+            elif self.cursor_col == 5:
+                ok, msg = pd_clear_global_reasoning(namespace=ns)
             else:
                 ok, msg = (None, "clear de override global ainda não suportado via painel")
 
@@ -5922,6 +6076,26 @@ class DispatchMatrixView(View):
             self.last_msg = msg
             return
 
+        # --- per-stage reasoning effort ---------------------------------
+        if kind == "reasoning":
+            if selected == self._CLEAR_SENTINEL_REASONING:
+                ok, msg = pd_clear_stage_reasoning(stage, namespace=ns)
+            else:
+                ok, msg = pd_set_stage_reasoning(stage, selected, namespace=ns)
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+        # --- global reasoning (DEILE_REASONING_EFFORT em deile-pipeline) ---
+        if kind == "global_reasoning":
+            if selected == "(clear override)":
+                ok, msg = pd_clear_global_reasoning(namespace=ns)
+            else:
+                ok, msg = pd_set_global_reasoning(selected, namespace=ns)
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
         # --- global model (DEILE_PREFERRED_MODEL em deile-worker) -------
         if kind == "global_model":
             if selected == "(clear override)":
@@ -6381,6 +6555,9 @@ class PanelApp:
         self.data = data
         self.last_payload: Dict[str, Any] = {}
         self._last_render = 0.0
+        # Comando externo pendente (Action.SUSPEND) — executado no _run_loop
+        # após suspender Live + cbreak. None = nada pendente.
+        self._pending_suspend: Optional[List[str]] = None
         # `--memdebug`: liga tracemalloc + amostragem periódica do top N.
         # Default OFF (não há overhead em uso normal). Quando ligado,
         # `_memdebug_line()` devolve a string que vai pro head do painel.
@@ -6644,6 +6821,11 @@ class PanelApp:
                         # NOOP = tecla ignorada pela view; não força render.
                         if result.kind != Action.NOOP:
                             consumed = True
+                if self._pending_suspend is not None:
+                    cmd = self._pending_suspend
+                    self._pending_suspend = None
+                    self._run_external(cmd, live, keys)
+                    consumed = True
                 if not self.running:
                     break
                 # Render imediato quando: (a) tecla mudou o estado,
@@ -6667,6 +6849,40 @@ class PanelApp:
         elif result.kind == Action.NAV and result.target:
             self.push(result.target, **result.payload)
         elif result.kind == Action.REFRESH:
+            self._last_render = 0.0
+        elif result.kind == Action.SUSPEND:
+            # Não roda aqui (sem acesso a Live/KeyReader). Marca pendente;
+            # o _run_loop suspende o painel e executa.
+            self._pending_suspend = result.payload.get("command")
+
+    def _run_external(self, command: List[str], live: "Live",
+                      keys: "KeyReader") -> None:
+        """Suspende Live + cbreak, roda ``command`` herdando o terminal, retoma.
+
+        Usado pela ``Action.SUSPEND`` (ex.: ``[t]okens`` → session_tokens_audit).
+        Best-effort em toda etapa: nenhuma falha do subprocess derruba o painel.
+        """
+        try:
+            live.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        keys.pause_cbreak()
+        try:
+            subprocess.run(command)
+        except KeyboardInterrupt:
+            pass
+        except Exception as exc:  # noqa: BLE001 — nunca derruba o painel
+            self.console.print(f"[red]falha ao rodar comando externo: {exc}[/red]")
+            try:
+                input("Enter para voltar ao painel...")
+            except (EOFError, KeyboardInterrupt):
+                pass
+        finally:
+            keys.resume_cbreak()
+            try:
+                live.start(refresh=True)
+            except Exception:  # noqa: BLE001
+                pass
             self._last_render = 0.0
 
 
@@ -6723,51 +6939,13 @@ def run_panel(context: "Optional[Any]" = None,
     """
     # Import local para evitar import circular no topo.
     from _panel_data import RuntimeContext  # noqa: PLC0415
-    from _panel_data import discover_deile_namespaces  # noqa: PLC0415
 
     if force_demo:
         data: Optional[PanelData] = None
     else:
-        # Quando o operador não especificou --namespace explicitamente E há
-        # múltiplos namespaces DEILE no cluster, apresenta um menu de seleção
-        # antes de abrir o painel.
-        if context is None or (
-            getattr(context, "namespace", _NS_DEFAULT) == _NS_DEFAULT
-            and not getattr(context, "k8s_force", False)
-            and not getattr(context, "local_force", False)
-        ):
-            available_ns = discover_deile_namespaces()
-            if len(available_ns) > 1:
-                # Prompt simples sem Rich (terminal pode não suportar fancy UI
-                # antes do Live iniciar) — mostra a lista e pede número.
-                print("\nVários namespaces DEILE detectados no cluster:")
-                for idx, ns in enumerate(available_ns, 1):
-                    print(f"  [{idx}] {ns}")
-                selected_ns: Optional[str] = None
-                while selected_ns is None:
-                    try:
-                        raw = input(
-                            f"Escolha o namespace [1-{len(available_ns)}] "
-                            f"(Enter = {available_ns[0]}): "
-                        ).strip()
-                        if raw == "":
-                            selected_ns = available_ns[0]
-                        elif raw.isdigit() and 1 <= int(raw) <= len(available_ns):
-                            selected_ns = available_ns[int(raw) - 1]
-                        else:
-                            print("  Número inválido — tente novamente.")
-                    except (EOFError, KeyboardInterrupt):
-                        # Não-interativo ou Ctrl-C: usa o primeiro NS.
-                        selected_ns = available_ns[0]
-                        print(f"\nUsando namespace: {selected_ns}")
-                if context is None:
-                    context = RuntimeContext.detect(namespace=selected_ns)
-                elif hasattr(context, "__class__"):
-                    # RuntimeContext é frozen; cria novo com namespace correto.
-                    from dataclasses import \
-                        replace as _dc_replace  # noqa: PLC0415
-                    context = _dc_replace(context, namespace=selected_ns)
-
+        # O namespace já vem resolvido pelo chamador (deploy.py cmd_panel faz
+        # a seleção multi-NS com UI rica, incluindo contagem de pods). run_panel
+        # apenas confia no context — sem segundo prompt redundante.
         ctx = context if context is not None else RuntimeContext.detect()
         try:
             data = PanelData.from_context(ctx)

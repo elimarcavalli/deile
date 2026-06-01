@@ -171,7 +171,7 @@ class DispatchPayload:
 async def dispatch_handler(request):
     payload = await request.json()
     # 1. Validate model is anthropic:*
-    # 2. Translate slug (anthropic:claude-opus-4-7 → claude-opus-4-7)
+    # 2. Translate slug (anthropic:claude-opus-4-8 → claude-opus-4-8)
     # 3. Prepare worktree (clone + checkout branch)
     # 4. Build full prompt: preamble[stage] + "---" + brief
     # 5. exec `claude -p --permission-mode bypassPermissions [--model X] <prompt>`
@@ -245,7 +245,7 @@ WorkerImplementer.implement(monitor, issue)
     │            = "claude-worker"  (env var DEILE_PIPELINE_DISPATCH_IMPLEMENT)
     │
     │ model = resolve_stage_model("implement")
-    │       = "anthropic:claude-opus-4-7"  (env var DEILE_PIPELINE_MODEL_IMPLEMENT)
+    │       = "anthropic:claude-opus-4-8"  (env var DEILE_PIPELINE_MODEL_IMPLEMENT)
     │
     │ endpoint = get_endpoint_for("claude-worker")
     │          = "http://claude-worker:8767"
@@ -256,7 +256,7 @@ WorkerImplementer.implement(monitor, issue)
        {
          brief: "<long brief from briefs.py>",
          channel_id: "auto/issue-N",
-         preferred_model: "anthropic:claude-opus-4-7",
+         preferred_model: "anthropic:claude-opus-4-8",
          stage: "implement",
          action_kind: "implement",
          issue_number: N,
@@ -266,11 +266,11 @@ WorkerImplementer.implement(monitor, issue)
 claude-worker dispatch_handler:
     │
     │ 1. validate model is anthropic:*  ✓
-    │ 2. claude_model = "claude-opus-4-7"
+    │ 2. claude_model = "claude-opus-4-8"
     │ 3. workspace = /home/claude/work/<task_id> (git checkout branch)
     │ 4. preamble = render_claude_preamble("implement", branch, task_id)
     │ 5. full_prompt = preamble + "\n---\n" + brief
-    │ 6. cmd = ["claude", "-p", "--model", "claude-opus-4-7",
+    │ 6. cmd = ["claude", "-p", "--model", "claude-opus-4-8",
     │           "--permission-mode", "bypassPermissions", full_prompt]
     │ 7. subprocess in cwd=workspace
     │

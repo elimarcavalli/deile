@@ -453,6 +453,12 @@ def _kubectl_apply_manifests(*, namespace: str) -> bool:
             logger.error("kubectl apply %s failed: %s", f.name, result.stderr)
             return False
         logger.info("applied %s", f.name)
+    # 40-network-policy.yaml acima reaplica o FALLBACK amplo da egress policy do
+    # apiserver, revertendo qualquer /32 que um `k8s up` anterior tenha
+    # estreitado. Re-estreita aqui para a postura /32 não se perder no fluxo
+    # claude-login (best-effort; mantém o fallback se a descoberta falhar).
+    from _netpol import apply_apiserver_egress_netpol  # noqa: PLC0415
+    apply_apiserver_egress_netpol("kubectl", namespace, info=logger.info, warn=logger.warning)
     return True
 
 

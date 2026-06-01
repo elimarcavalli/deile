@@ -41,6 +41,12 @@ from deile.observability.dispatch_export import (
     emit_git_push,
     reset_dispatch_export,
 )
+from deile.observability.dispatch_log_export import (
+    emit_log_record,
+    get_dispatch_log_export,
+    get_log_provider,
+    reset_dispatch_log_export,
+)
 from deile.observability.dispatch_schema import (SCHEMA_VERSION,
                                                  get_pod_metadata)
 from deile.observability.metrics import (DeileMetrics, NoOpMetrics,
@@ -81,6 +87,11 @@ __all__ = [
     "emit_forge_pr_open",
     "emit_forge_pr_review",
     "reset_dispatch_export",
+    "reset_dispatch_log_export",
     "SCHEMA_VERSION",
     "get_pod_metadata",
+    # log records pipeline (issue #454)
+    "get_log_provider",
+    "get_dispatch_log_export",
+    "emit_log_record",
 ]

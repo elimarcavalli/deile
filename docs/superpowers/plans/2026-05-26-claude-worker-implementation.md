@@ -385,7 +385,7 @@ def test_full_payload_with_new_fields():
     p = DispatchPayload(
         brief="implement #309",
         channel_id="auto/issue-309",
-        preferred_model="anthropic:claude-opus-4-7",
+        preferred_model="anthropic:claude-opus-4-8",
         stage="implement",
         action_kind="implement",
         issue_number=309,
@@ -1763,8 +1763,8 @@ async def test_dispatch_rejects_non_anthropic_model(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_dispatch_translates_model_slug(monkeypatch, tmp_path):
-    """Mocks subprocess; verifica que slug 'anthropic:claude-opus-4-7' vira
-    arg '--model claude-opus-4-7' na call do claude CLI."""
+    """Mocks subprocess; verifica que slug 'anthropic:claude-opus-4-8' vira
+    arg '--model claude-opus-4-8' na call do claude CLI."""
     from infra.k8s import claude_worker_server as cws
     
     captured_args = {}
@@ -1785,7 +1785,7 @@ async def test_dispatch_translates_model_slug(monkeypatch, tmp_path):
         resp = await client.post("/v1/dispatch", json={
             "brief": "implement #1",
             "channel_id": "auto/issue-1",
-            "preferred_model": "anthropic:claude-opus-4-7",
+            "preferred_model": "anthropic:claude-opus-4-8",
             "stage": "implement",
             "issue_number": 1,
             "branch": "auto/issue-1",
@@ -1796,9 +1796,9 @@ async def test_dispatch_translates_model_slug(monkeypatch, tmp_path):
     assert "claude" in args[0]
     assert "-p" in args
     assert "--model" in args
-    # Slug deve ter sido traduzido: anthropic:claude-opus-4-7 → claude-opus-4-7
+    # Slug deve ter sido traduzido: anthropic:claude-opus-4-8 → claude-opus-4-8
     model_idx = args.index("--model")
-    assert args[model_idx + 1] == "claude-opus-4-7"
+    assert args[model_idx + 1] == "claude-opus-4-8"
 
 
 @pytest.mark.asyncio
@@ -2048,7 +2048,7 @@ git add infra/k8s/claude_worker_server.py \
 git commit -m "feat(claude-worker): /v1/dispatch implementa exec claude -p
 
 - Valida preferred_model é anthropic:*; 400 em violação
-- Traduz slug (anthropic:claude-opus-4-7 → claude-opus-4-7) para --model
+- Traduz slug (anthropic:claude-opus-4-8 → claude-opus-4-8) para --model
 - Cria worktree fresco em DEILE_CLAUDE_WORKER_ROOT/<task_id>
 - Renderiza preamble por stage + brief do pipeline
 - Exec claude -p --permission-mode bypassPermissions [--model X] <prompt>
@@ -2602,7 +2602,7 @@ def test_stage_dispatch_provider_reads_env_vars(monkeypatch):
             "env": [
                 {"name": "DEILE_PIPELINE_DISPATCH_IMPLEMENT", "value": "claude-worker"},
                 {"name": "DEILE_PIPELINE_DISPATCH_MODE", "value": "deile-worker"},
-                {"name": "DEILE_PIPELINE_MODEL_IMPLEMENT", "value": "anthropic:claude-opus-4-7"},
+                {"name": "DEILE_PIPELINE_MODEL_IMPLEMENT", "value": "anthropic:claude-opus-4-8"},
             ]
         }]}}}
     }
@@ -2616,7 +2616,7 @@ def test_stage_dispatch_provider_reads_env_vars(monkeypatch):
     
     assert by_stage["implement"].worker == "claude-worker"
     assert by_stage["implement"].source == "env"
-    assert by_stage["implement"].model == "anthropic:claude-opus-4-7"
+    assert by_stage["implement"].model == "anthropic:claude-opus-4-8"
     assert by_stage["classify"].worker == "deile-worker"  # global fallback
     assert by_stage["classify"].source == "global"
 
@@ -3044,7 +3044,7 @@ def _load_all_models(self) -> list[str]:
         return self.data.stage_dispatch.list_models()
     # Fallback: hardcoded set conhecido para CI/tests
     return [
-        "anthropic:claude-opus-4-7", "anthropic:claude-sonnet-4-6", "anthropic:claude-haiku-4-5",
+        "anthropic:claude-opus-4-8", "anthropic:claude-sonnet-4-6", "anthropic:claude-haiku-4-5",
         "openai:gpt-4", "openai:gpt-4-turbo",
         "deepseek:deepseek-chat",
         "google:gemini-2.5-pro",

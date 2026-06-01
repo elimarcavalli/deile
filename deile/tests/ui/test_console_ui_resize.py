@@ -165,7 +165,7 @@ def test_show_welcome_box_is_not_full_terminal_width_when_room_for_compact() -> 
     short.show_welcome()
     long_ = _make_ui(
         width=200,
-        default_model="anthropic:claude-opus-4-7-with-a-deliberately-very-long-suffix",
+        default_model="anthropic:claude-opus-4-8-with-a-deliberately-very-long-suffix",
     )
     long_.show_welcome()
 
@@ -201,11 +201,11 @@ def test_show_welcome_does_not_set_console_explicit_width() -> None:
 @pytest.mark.unit
 def test_show_welcome_panel_contains_provider_and_model() -> None:
     """Conteúdo semântico continua presente após o refactor."""
-    ui = _make_ui(width=80, default_model="anthropic:claude-opus-4-7")
+    ui = _make_ui(width=80, default_model="anthropic:claude-opus-4-8")
     ui.show_welcome()
     output = ui.console.file.getvalue()
     assert "Provider" in output
     assert "Anthropic" in output
     assert "Model" in output
-    assert "claude-opus-4-7" in output
+    assert "claude-opus-4-8" in output
     assert "DEILE" in output

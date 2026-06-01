@@ -47,6 +47,8 @@ from typing import List, Optional
 
 from aiohttp import web
 
+import dispatch_logger as dlog
+
 logger = logging.getLogger("deile.claude_worker_server")
 
 #: ``secrets.token_hex(8)`` gera exatamente 16 chars hex; qualquer outra
@@ -325,6 +327,38 @@ async def _acquire_lease(workspace: Path) -> Optional[dict]:
             return None
 
     return await asyncio.to_thread(_write_and_confirm)
+
+
+async def _update_lease_claude_pid(lease_path: Path, claude_pid: Optional[int]) -> None:
+    """Set/clear ``claude_pid`` on the lease — the PID of the spawned ``claude -p``
+    subprocess (NOT the wrapper server process, which lives in ``pid``).
+
+    Without this field, ``mtime`` of ``.lease.json`` is whatever the heartbeat
+    task last wrote (always recent while the server is up) and the ``pid`` is
+    just the wrapper — an observer cannot tell whether a real ``claude``
+    workload is still running. With it, ``claude_pid is not None and pid_alive
+    (claude_pid)`` is the ground truth for "claude is actively working on this
+    workdir". Best-effort: a missing/unwritable lease is logged and ignored —
+    the dispatch is the source of truth, the lease is just an observability
+    aid.
+    """
+    def _update() -> None:
+        try:
+            content = json.loads(lease_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if claude_pid is None:
+            content.pop("claude_pid", None)
+        else:
+            content["claude_pid"] = int(claude_pid)
+        try:
+            tmp = lease_path.with_suffix(".json.pid_tmp")
+            tmp.write_text(json.dumps(content), encoding="utf-8")
+            tmp.rename(lease_path)
+        except OSError as exc:
+            logger.warning("lease claude_pid update failed for %s: %s", lease_path, exc)
+
+    await asyncio.to_thread(_update)
 
 
 async def _release_lease(lease_path: Path) -> None:
@@ -747,6 +781,7 @@ async def run_subprocess_with_progress(
     cwd: Path,
     task_id: str,
     timeout: int,
+    lease_path: Optional[Path] = None,
 ) -> SubprocessResult:
     """Spawn de ``claude -p`` com persistência de stdout/stderr para o PVC.
 
@@ -755,6 +790,13 @@ async def run_subprocess_with_progress(
     ``/v1/progress/{task_id}`` (Task 14) para snapshot mid-flight no painel
     TUI. Em timeout, devolvemos ``returncode=124`` (convenção do ``coreutils
     timeout``) com mensagem em ``stderr``.
+
+    Quando ``lease_path`` é informado, gravamos ``claude_pid`` no lease assim
+    que o subprocess é spawnado e limpamos ao terminar — isso permite que um
+    observador (painel, ``kubectl exec``) distinga "lease vivo por heartbeat"
+    de "claude rodando agora" sem ter que varrer ``/proc`` (gotcha do
+    Mistério #3 — o lease é mantido vivo pela heartbeat task do servidor
+    mesmo quando o subprocess do claude já terminou).
     """
     start = time.monotonic()
 
@@ -772,6 +814,9 @@ async def run_subprocess_with_progress(
         stderr=asyncio.subprocess.PIPE,
     )
 
+    if lease_path is not None:
+        await _update_lease_claude_pid(lease_path, proc.pid)
+
     try:
         stdout_b, stderr_b = await asyncio.wait_for(
             proc.communicate(), timeout=timeout,
@@ -779,6 +824,8 @@ async def run_subprocess_with_progress(
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
+        if lease_path is not None:
+            await _update_lease_claude_pid(lease_path, None)
         duration = time.monotonic() - start
         return SubprocessResult(
             returncode=124, stdout="",
@@ -790,11 +837,14 @@ async def run_subprocess_with_progress(
     stdout = stdout_b.decode("utf-8", "replace")
     stderr = stderr_b.decode("utf-8", "replace")
 
+    if lease_path is not None:
+        await _update_lease_claude_pid(lease_path, None)
+
     # Persiste para o ``/v1/progress`` (Task 14) — best-effort; falha em
     # escrita NÃO derruba o dispatch (o cliente já recebeu o resultado).
     try:
-        stdout_path.write_text(stdout)
-        stderr_path.write_text(stderr)
+        await asyncio.to_thread(stdout_path.write_text, stdout)
+        await asyncio.to_thread(stderr_path.write_text, stderr)
     except OSError as exc:
         logger.warning(
             "failed to persist progress logs for task_id=%s: %s", task_id, exc,
@@ -811,6 +861,72 @@ async def run_subprocess_with_progress(
 #: Slugs internos do DEILE têm forma ``provider:model``. O ``claude-worker``
 #: só aceita ``anthropic:*`` — outros providers são rejeitados em 400.
 _ANTHROPIC_SLUG_RE = re.compile(r"^anthropic:(.+)$")
+
+#: Níveis que o ``claude`` CLI aceita via ``--effort`` (print mode) — verificado
+#: empiricamente contra o binário: ``low|medium|high|xhigh|max`` (qualquer outro
+#: valor faz o commander sair com erro ANTES de qualquer chamada de API). NÃO
+#: inclui ``ultracode``/``auto``: esses são do vocabulário interativo (slash
+#: ``/effort``) e o flag ``--effort`` os REJEITA. O vocabulário Claude Code
+#: completo (com ultracode/auto) vive em ``CLAUDE_CODE_EFFORTS`` no pacote
+#: ``deile`` — aqui só os aceitos pelo CLI. Tudo ``[a-z]`` puro (sem metacaractere
+#: de shell no argv). :func:`_coerce_claude_effort` traduz ultracode→xhigh e
+#: auto→(omitir) antes de montar o argv.
+_VALID_CLAUDE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+
+def _coerce_claude_effort(raw: Optional[str]) -> Optional[str]:
+    """Traduz um nível de reasoning para um valor aceito por ``claude --effort``.
+
+    - ``None``/vazio/``auto`` → ``None`` (omite o flag; claude usa o default).
+    - ``ultracode`` → ``xhigh``: ultracode = xhigh + palavra "workflow" no prompt
+      (modo interativo); em ``-p`` replicamos só o esforço — ``xhigh`` é o nível
+      correto (``max`` é um tier acima separado).
+    - ``low|medium|high|xhigh|max`` → passa direto.
+    - qualquer outro (ex.: ``off``/``none``/``minimal`` de uma config trocada) →
+      ``None`` com warning (fail-open; nunca passa valor inválido pro argv, o que
+      faria ``claude -p`` sair com erro e a dispatch falhar 100%).
+    """
+    if raw is None:
+        return None
+    v = str(raw).strip().lower()
+    if not v or v == "auto":
+        return None
+    if v == "ultracode":
+        return "xhigh"
+    if v in _VALID_CLAUDE_EFFORTS:
+        return v
+    logger.warning(
+        "claude-worker: effort %r não é aceito por 'claude --effort' "
+        "(esperado %s) — omitido", v, sorted(_VALID_CLAUDE_EFFORTS),
+    )
+    return None
+
+
+def _is_ultracode(raw: Optional[str]) -> bool:
+    """``True`` quando o effort pedido é exatamente ``ultracode``.
+
+    Ultracode no Claude Code = ``xhigh`` + orquestração dynamic-workflow "de
+    pé". O ``--effort`` cobre o ``xhigh`` (via :func:`_coerce_claude_effort`);
+    a segunda metade — opt-in no Workflow tool — não tem flag de CLI: o binário
+    detecta o keyword ``workflow``/``workflows`` no prompt. Esta função sinaliza
+    quando injetar :data:`_ULTRACODE_PREAMBLE` para reproduzir o preset em ``-p``.
+    """
+    return raw is not None and str(raw).strip().lower() == "ultracode"
+
+
+#: Preâmbulo injetado no prompt quando o effort pedido é ``ultracode``. Carrega
+#: o keyword ``workflow`` que o ``claude`` CLI usa para opt-in no Workflow tool
+#: (orquestração multi-agente). Requer Dynamic Workflows habilitado na conta
+#: OAuth do pod — se estiver off, o CLI ignora o keyword (sem quebrar o
+#: dispatch). Para edições triviais o agente segue direto; o fan-out só vale
+#: quando a tarefa se beneficia.
+_ULTRACODE_PREAMBLE = (
+    "ULTRACODE: para tarefas substanciais, orquestre via workflow multi-agente "
+    "(decomponha o problema, paralelize as frentes independentes e verifique "
+    "adversarialmente os achados antes de concluir) em vez de resolver tudo "
+    "numa única linha de raciocínio. Para edições triviais ou mecânicas, siga "
+    "direto sem fan-out.\n\n---\n\n"
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -1248,8 +1364,17 @@ def _parse_claude_json_output(stdout: str) -> dict:
 def _find_active_lease(root: Path) -> Optional[dict]:
     """Return the most recent alive lease found under *root*/<task_id>/.lease.json.
 
-    Security: exposes only task_id, heartbeat_at, pid — never the full
-    lease payload (no pod name, no prompts, nothing injectable).
+    Security: exposes only task_id, heartbeat_at, pid, claude_pid e
+    claude_running — never the full lease payload (no pod name, no prompts,
+    nothing injectable).
+
+    ``claude_pid``/``claude_running`` distinguish "lease alive (heartbeat
+    fresh)" from "claude subprocess actually running":
+    - ``claude_pid`` is the PID of the spawned ``claude -p`` (None when no
+      subprocess is in flight).
+    - ``claude_running`` is True iff that PID is currently alive.
+    Without these the observer cannot tell — the heartbeat task keeps the
+    lease's mtime fresh long after the subprocess exits.
     """
     now = time.time()
     best: Optional[dict] = None
@@ -1271,10 +1396,16 @@ def _find_active_lease(root: Path) -> Optional[dict]:
             hb = float(data.get("heartbeat_at", 0))
             if (now - hb) < _LEASE_TTL_S and hb > best_hb:
                 best_hb = hb
+                claude_pid = data.get("claude_pid")
+                claude_running = bool(
+                    claude_pid and _pid_alive(int(claude_pid))
+                )
                 best = {
                     "task_id": child.name,
                     "heartbeat_at": hb,
                     "pid": data.get("pid"),
+                    "claude_pid": claude_pid,
+                    "claude_running": claude_running,
                 }
         except (OSError, json.JSONDecodeError, ValueError):
             continue
@@ -1633,10 +1764,12 @@ async def health_handler(request: web.Request) -> web.Response:
     """
     claude_bin = shutil.which("claude")
     if claude_bin is None:
+        dlog.log_health_probe(request.path, 500)
         return web.json_response(
             {"status": "error", "error": "claude binary not found in PATH"},
             status=500,
         )
+    dlog.log_health_probe(request.path, 200)
     return web.json_response({"status": "ok", "claude_binary": claude_bin})
 
 
@@ -1725,16 +1858,22 @@ async def pod_status_handler(request: web.Request) -> web.Response:
     """``GET /v1/pod-status`` — introspection of this pod's own runtime state.
 
     Returns a snapshot of:
-    - ``lease``:           active lease (task_id, heartbeat_at, pid) or null when idle.
+    - ``lease``:           active lease (task_id, heartbeat_at, pid,
+                           ``claude_pid``, ``claude_running``) or null when idle.
+                           ``pid`` is the wrapper server (always alive while
+                           the pod is up); ``claude_pid``/``claude_running``
+                           are the ground truth for a live ``claude -p``
+                           subprocess.
     - ``disk``:            PVC usage via shutil.disk_usage (no subprocess).
     - ``claude_processes``: count of running claude processes.
     - ``anthropic_quota``: last captured rate-limit tokens-remaining + timestamp,
                            or null if never observed.
     - ``ts``:              unix timestamp of this response.
 
-    Security: ``lease`` exposes ONLY task_id, heartbeat_at, and pid — no
-    prompt content, no credentials, nothing that could serve as an injection
-    vector.  Bearer auth required (same middleware as all other endpoints).
+    Security: ``lease`` exposes ONLY task_id, heartbeat_at, pid, claude_pid
+    and claude_running — no prompt content, no credentials, nothing that
+    could serve as an injection vector.  Bearer auth required (same
+    middleware as all other endpoints).
     """
     root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
     disk_mount = os.environ.get("DEILE_CLAUDE_HOME", "/home/claude")
@@ -1812,6 +1951,15 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     model_slug = payload.get("preferred_model")
     resume_session_id = payload.get("resume_session_id")
     prev_task_id = payload.get("prev_task_id")
+    # Reasoning effort por etapa → ``claude --effort``. Traduzido para um valor
+    # que o CLI aceita (ultracode→xhigh, auto→omitir); inválido vira None (fail-open).
+    # O painel oferece o vocabulário Claude Code completo; a tradução acontece aqui.
+    _raw_reasoning = payload.get("preferred_reasoning")
+    reasoning_effort = _coerce_claude_effort(_raw_reasoning)
+    # Ultracode = xhigh (já no --effort) + keyword "workflow" no prompt para
+    # opt-in no Workflow tool. Capturado do raw ANTES do coercion (que colapsa
+    # ultracode→xhigh e perderia a distinção).
+    is_ultracode = _is_ultracode(_raw_reasoning)
     # Pipeline-context fields (issue #396) — forwarded by the pipeline so
     # the PodWatchView panel can surface "what is this claude-worker doing"
     # in the WORK/LAST_COMPLETED header. Same wire contract as worker_server.
@@ -2006,21 +2154,24 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         preamble = _render_preamble(stage, branch, task_id)
         full_prompt = preamble + "\n\n---\n\n" + brief
 
+    # Ultracode: prefixa o keyword "workflow" para o CLI opt-in no Workflow tool
+    # (multi-agente). Funciona em fresh e resume; se Dynamic Workflows estiver
+    # off na conta, o CLI ignora o keyword sem quebrar o dispatch.
+    if is_ultracode:
+        full_prompt = _ULTRACODE_PREAMBLE + full_prompt
+
     # Structured dispatch marker consumed by WorkerProvider in the panel
-    # (issue #396). Mirrors worker_server.py format so PodWatchView can
+    # (issue #396, #435). Emitted via dispatch_logger so PodWatchView can
     # show WORK/LAST_COMPLETED for claude-worker pods as well.
-    _dispatch_parts = [f"task={task_id}"]
-    if _channel_id:
-        _dispatch_parts.append(f"channel={_channel_id}")
-    if stage:
-        _dispatch_parts.append(f"stage={stage}")
-    if _issue_number is not None:
-        _dispatch_parts.append(f"issue={_issue_number}")
-    if branch:
-        _dispatch_parts.append(f"branch={branch}")
-    if claude_model:
-        _dispatch_parts.append(f"model={claude_model}")
-    logger.info("dispatch_started %s", " ".join(_dispatch_parts))
+    dlog.dispatch_received(
+        task=task_id,
+        channel=_channel_id or "",
+        stage=stage,
+        issue=_issue_number,
+        branch=branch,
+        model_requested=claude_model,
+        effort=reasoning_effort or None,
+    )
 
     # Mecanismo 2 — Lease: garante que NUNCA dois pods trabalhem no mesmo
     # workspace simultaneamente. Adquirido ANTES do spawn; liberado no finally.
@@ -2030,6 +2181,15 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             "dispatch RECUSADO — lease ativo em %s (outro pod está trabalhando "
             "nesta task). task_id=%s stage=%s",
             workspace, task_id, stage,
+        )
+        # AC #435 §2 — 409 lease conflict é um dos 5 caminhos terminais
+        # do dispatch e precisa emitir ``dispatch.failed`` pra o painel
+        # liberar ``current_task`` (senão fica preso quando duas réplicas
+        # brigam pelo mesmo workspace).
+        dlog.dispatch_failed(
+            task=task_id,
+            reason="lease_conflict",
+            error_code="TASK_ALREADY_RUNNING",
         )
         return web.json_response({
             "ok": False,
@@ -2060,6 +2220,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         "stage": stage,
         "branch": branch,
         "model": claude_model,
+        "reasoning_effort": reasoning_effort,
+        "ultracode": is_ultracode,
         "started_at": int(time.time()),
         "attempt": attempt,
         "prev_task_id": prev_task_id if is_resume else None,
@@ -2070,7 +2232,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         "last_duration_seconds": None,
         "last_total_cost_usd": 0.0,
     }
-    _save_session_meta(task_id, meta_pre)
+    await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
 
     claude_bin = shutil.which("claude") or "claude"
     cmd = [
@@ -2084,6 +2246,17 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         cmd.extend(["--session-id", session_id])
     if claude_model:
         cmd.extend(["--model", claude_model])
+    if reasoning_effort:
+        # Já coagido a um valor aceito pelo CLI ([a-z] puro) por _coerce_claude_effort.
+        cmd.extend(["--effort", reasoning_effort])
+    # Cost cap por dispatch (PR cost-reduction): claude CLI mata o turn quando
+    # o custo previsto da próxima chamada estouraria o cap. Default 8 USD por
+    # dispatch — substitui a sangria histórica de $27/sessão observada em
+    # pr_review (issue: 209 tool calls, 53M cache reads, $27.68 numa única PR).
+    # Configurável via env var; ``0`` ou vazio = sem cap (back-compat).
+    max_budget = os.environ.get("DEILE_CLAUDE_MAX_BUDGET_USD", "8").strip()
+    if max_budget and max_budget != "0":
+        cmd.extend(["--max-budget-usd", max_budget])
     cmd.append(full_prompt)
 
     timeout = dispatch_timeout_s if dispatch_timeout_s is not None else int(
@@ -2094,7 +2267,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     # (issue #347) can show what's being executed even while it's running.
     meta_pre["command"] = list(cmd)
     meta_pre["full_prompt"] = full_prompt
-    _save_session_meta(task_id, meta_pre)
+    await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
 
     async def _cleanup_lease() -> None:
         """Para o heartbeat e libera o lease. Idempotente."""
@@ -2108,6 +2281,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     try:
         result = await run_subprocess_with_progress(
             cmd, cwd=workspace, task_id=task_id, timeout=timeout,
+            lease_path=workspace / ".lease.json",
         )
     except Exception as exc:
         logger.exception("dispatch failed task_id=%s", task_id)
@@ -2115,7 +2289,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         meta_pre["last_result_summary"] = f"{type(exc).__name__}: {exc}"[:300]
         meta_pre["last_returncode"] = -1
         meta_pre["last_completed_at"] = int(time.time())
-        _save_session_meta(task_id, meta_pre)
+        await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
         await _cleanup_lease()
         return web.json_response({
             "ok": False,
@@ -2161,7 +2335,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     meta_pre["last_completed_at"] = int(time.time())
     meta_pre["last_duration_seconds"] = result.duration_seconds
     meta_pre["last_total_cost_usd"] = claude_result["total_cost_usd"]
-    _save_session_meta(task_id, meta_pre)
+    await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
 
     response = {
         "ok": ok,
@@ -2185,8 +2359,24 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         # Falha não-auth reportada pelo claude — propaga o erro pra pipeline.
         response["error"] = claude_result["result"][:500]
 
-    # Terminal marker for the panel — pairs with dispatch_started (issue #396).
-    logger.info("dispatch_completed task=%s ok=%s", task_id, ok)
+    # Terminal marker for the panel — pairs with dispatch.received (#435).
+    if ok:
+        dlog.dispatch_completed(
+            task=task_id,
+            ok=True,
+            turns=claude_result.get("num_turns"),
+            cost_usd=claude_result.get("total_cost_usd"),
+            duration_s=result.duration_seconds,
+        )
+    else:
+        _err_code = error_code or ("AUTH_EXPIRED" if auth_expired else None)
+        dlog.dispatch_failed(
+            task=task_id,
+            reason=claude_result.get("result", "")[:120] or "unknown",
+            turns=claude_result.get("num_turns"),
+            duration_s=result.duration_seconds,
+            error_code=_err_code,
+        )
 
     # Libera heartbeat + lease antes de responder (lease liberado apenas aqui
     # no caminho feliz; o caminho de exceção já liberou no handler acima).

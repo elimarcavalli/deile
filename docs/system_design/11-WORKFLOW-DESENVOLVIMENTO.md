@@ -119,7 +119,7 @@
 
 ## Export OTLP-traces dos eventos dispatch.*/git.*/forge.* (extensão da Decisão #39)
 
-> Implementado em `deile/observability/dispatch_schema.py` + `deile/observability/dispatch_export.py` — Decisão #47. Ver também [`DECISOES.md #47`](DECISOES.md).
+> Implementado em `deile/observability/dispatch_schema.py` + `deile/observability/dispatch_export.py` — Decisão #48. Ver também [`DECISOES.md #48`](DECISOES.md).
 
 ### Topologia de spans
 

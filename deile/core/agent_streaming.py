@@ -25,6 +25,7 @@ from ..tools.base import ToolResult, ToolStatus
 from ..ui.stage_cascade import cascade_until
 from ..ui.stage_messages import get_stage_message
 from .exceptions import ModelError
+from .models.reasoning import resolve_session_reasoning
 
 if TYPE_CHECKING:
     from .agent import AgentSession
@@ -636,6 +637,7 @@ class AgentStreamingMixin:
                 system_instruction=system_instruction,
                 working_directory=str(session.working_directory),
                 session_data=session.context_data,
+                reasoning_effort=resolve_session_reasoning(session),
             ):
                 yield event
         finally:

@@ -155,6 +155,10 @@ class OpenAIProvider(ModelProvider):
         system_instruction = self._compose_system_instruction(system_instruction)
         oai_msgs = self._to_openai_messages(messages, system_instruction)
 
+        # Reasoning effort → reasoning_effort / thinking via extra_body (best-effort).
+        _extra_reasoning = self._pop_reasoning_extra_body(kwargs)
+        if _extra_reasoning:
+            kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), **_extra_reasoning}
         # Issue #303 fase 4 — span deile.llm.call.
         with self._llm_span() as _span:
             try:
@@ -213,6 +217,8 @@ class OpenAIProvider(ModelProvider):
         last_reasoning_content: Optional[str] = None
         guard = make_guard(session_id=str(kwargs.get("session_id", "")) or None)
         loop_aborted = False
+        # Reasoning effort resolvido UMA vez (pop evita repetir no loop). Best-effort.
+        _reasoning_extra = self._pop_reasoning_extra_body(kwargs)
 
         for _ in range(DEFAULT_MAX_TOOL_ITERATIONS):
             create_kwargs: Dict[str, Any] = {
@@ -223,6 +229,7 @@ class OpenAIProvider(ModelProvider):
             if oai_tools:
                 create_kwargs["tools"] = oai_tools
                 create_kwargs["tool_choice"] = "auto"
+            self._apply_reasoning_extra_body(create_kwargs, _reasoning_extra)
 
             # Issue #303 fase 4 — 1 iteração = 1 deile.llm.call span.
             with self._llm_span() as _it_span:
@@ -368,6 +375,10 @@ class OpenAIProvider(ModelProvider):
         if tools:
             create_kwargs["tools"] = [t.to_openai_function() for t in tools]
             create_kwargs["tool_choice"] = "auto"
+        # Reasoning effort → reasoning_effort / thinking via extra_body (best-effort).
+        self._apply_reasoning_extra_body(
+            create_kwargs, self._pop_reasoning_extra_body(kwargs)
+        )
 
         # tool_calls deltas come fragmented; index → accumulator
         pending_tool_calls: Dict[int, Dict[str, Any]] = {}

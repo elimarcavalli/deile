@@ -49,33 +49,33 @@ class TestStageBudgetGuardNoCap:
         """When no cap is configured, check_stage_run returns without raising."""
         guard = _make_guard(Decimal("99.99"))
         # No env var set → no cap → passes
-        guard.check_stage_run("implement", "anthropic:claude-opus-4-7")
+        guard.check_stage_run("implement", "anthropic:claude-opus-4-8")
 
     def test_zero_estimate_passes_even_with_cap(self, monkeypatch):
         """Estimate of 0 (unknown pricing) passes regardless of cap."""
         monkeypatch.setenv("DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT", "1.00")
         guard = _make_guard(Decimal("0"))
         # Pricing unknown → estimate 0 → no enforcement
-        guard.check_stage_run("implement", "anthropic:claude-opus-4-7")
+        guard.check_stage_run("implement", "anthropic:claude-opus-4-8")
 
 
 class TestStageBudgetGuardWithCap:
     def test_below_cap_passes(self, monkeypatch):
         monkeypatch.setenv("DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT", "5.00")
         guard = _make_guard(Decimal("4.99"))
-        guard.check_stage_run("implement", "anthropic:claude-opus-4-7")
+        guard.check_stage_run("implement", "anthropic:claude-opus-4-8")
 
     def test_equal_to_cap_passes(self, monkeypatch):
         monkeypatch.setenv("DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT", "5.00")
         guard = _make_guard(Decimal("5.00"))
-        guard.check_stage_run("implement", "anthropic:claude-opus-4-7")
+        guard.check_stage_run("implement", "anthropic:claude-opus-4-8")
 
     def test_above_cap_raises(self, monkeypatch):
         monkeypatch.setenv("DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT", "5.00")
         guard = _make_guard(Decimal("5.01"))
 
         with pytest.raises(StageCostCapExceeded) as exc_info:
-            guard.check_stage_run("implement", "anthropic:claude-opus-4-7")
+            guard.check_stage_run("implement", "anthropic:claude-opus-4-8")
 
         exc = exc_info.value
         assert exc.stage == "implement"

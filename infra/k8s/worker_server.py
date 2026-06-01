@@ -51,6 +51,7 @@ from typing import Any, Dict, Optional
 # a plain import resolves it. Done as a module so the git/fingerprint/journal
 # logic is unit-testable without aiohttp.
 import _worker_resume as resume
+import dispatch_logger as dlog
 # aiohttp comes from the deilebot extra (already in the image).
 from aiohttp import web
 
@@ -537,6 +538,7 @@ async def _run_task(
     *,
     resume_ctx: Optional[Dict[str, Any]] = None,
     preferred_model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     task_timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Body of a single dispatch — only one runs at a time (lock).
@@ -642,6 +644,22 @@ async def _run_task(
                     logger.warning(
                         "task %s: could not pin preferred_model=%s: %s",
                         task_id, preferred_model, exc,
+                    )
+            # Per-stage reasoning effort (espelha preferred_model). O agente lê
+            # context_data["reasoning_effort"] e cada provider traduz para o
+            # parâmetro nativo (output_config.effort / reasoning_effort /
+            # thinking_config) com fail-open. Per-task: não vaza entre dispatches.
+            if reasoning_effort and session is not None:
+                try:
+                    session.context_data["reasoning_effort"] = reasoning_effort
+                    logger.info(
+                        "task %s: pinning reasoning_effort=%s for this turn",
+                        task_id, reasoning_effort,
+                    )
+                except (AttributeError, TypeError) as exc:
+                    logger.warning(
+                        "task %s: could not pin reasoning_effort=%s: %s",
+                        task_id, reasoning_effort, exc,
                     )
             prompt = _build_prompt(brief, workdir, history or "")
 
@@ -836,6 +854,7 @@ async def _bearer_auth_mw(request: web.Request, handler):
 
 
 async def health_handler(request: web.Request) -> web.Response:
+    dlog.log_health_probe(request.path, 200)
     return web.json_response(
         {"ok": True, "service": "deile-worker", "version": "0.1.0"}
     )
@@ -907,6 +926,11 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     preferred_model = body.get("preferred_model")
     if preferred_model is not None:
         preferred_model = str(preferred_model).strip() or None
+    # Per-turn reasoning effort — present only on pipeline dispatches with a
+    # per-stage/global reasoning configured. Empty collapses to None.
+    reasoning_effort = body.get("preferred_reasoning")
+    if reasoning_effort is not None:
+        reasoning_effort = str(reasoning_effort).strip() or None
     # Resume context — present only on pipeline dispatches (issue #254).
     resume_ctx = _parse_resume_ctx(body)
     # Pipeline-context fields (issue #309 fase 2). Optional and forge-agnostic;
@@ -956,26 +980,20 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     }
     # Structured one-line dispatch log — single source of truth consumed by
     # ``infra.k8s._panel_data.WorkerProvider`` to populate the Pod Watch
-    # "current task" header (issue #309 fase 2 follow-up). NEVER include the
-    # ``brief`` (untrusted Discord content) or any secret — only the
-    # already-validated routing metadata. Format is ``key=value`` pairs with
-    # absent fields omitted; ``channel_id`` is included because it doubles as
-    # a fallback target hint for pipeline channels (``pipeline-issue-<N>`` /
-    # ``pipeline-pr-<N>`` / ``pipeline-mention-{issue|pr}-<N>``) when the
-    # caller didn't pass ``issue_number`` explicitly. Format change here MUST
-    # be mirrored in ``_DISPATCH_STARTED_RE`` on the panel side.
-    parts = [f"task={task_id}", f"channel={channel_id}"]
-    if stage:
-        parts.append(f"stage={stage}")
-    if action_kind:
-        parts.append(f"kind={action_kind}")
-    if issue_number is not None:
-        parts.append(f"issue={issue_number}")
-    if branch:
-        parts.append(f"branch={branch}")
-    if preferred_model:
-        parts.append(f"model={preferred_model}")
-    logger.info("dispatch_started %s", " ".join(parts))
+    # "current task" header (issue #309 fase 2 follow-up, #435). NEVER include
+    # the ``brief`` (untrusted Discord content) or any secret — only the
+    # already-validated routing metadata. Format change here MUST be mirrored
+    # in ``_DISPATCH_STARTED_RE`` on the panel side (see _panel_data.py).
+    dlog.dispatch_received(
+        task=task_id,
+        channel=channel_id,
+        stage=stage,
+        kind=action_kind,
+        issue=issue_number,
+        branch=branch,
+        model_requested=preferred_model,
+        effort=reasoning_effort or None,
+    )
 
     wait_for_result = bool(body.get("wait_for_result", True))
     _outer_timeout = (dispatch_timeout_s + 30) if dispatch_timeout_s is not None else (TASK_TIMEOUT_S + 30)
@@ -985,21 +1003,17 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 _run_task(task_id, brief, channel_id, user_message_id, persona,
                           attachments, history, resume_ctx=resume_ctx,
                           preferred_model=preferred_model,
+                          reasoning_effort=reasoning_effort,
                           task_timeout_s=dispatch_timeout_s),
                 timeout=_outer_timeout,
             )
             _TASKS[task_id] = result
-            # Terminal marker for the panel — pairs with the
-            # ``dispatch_started`` line emitted above. Carries only the
-            # task_id and an ``ok`` flag (no brief/result echo: pilar 08).
-            logger.info(
-                "dispatch_completed task=%s ok=%s",
-                task_id, bool(result.get("ok")),
-            )
+            # Terminal marker for the panel — pairs with dispatch.received (#435).
+            dlog.dispatch_completed(task=task_id, ok=bool(result.get("ok")))
             return web.json_response(result)
         except asyncio.TimeoutError:
             _TASKS[task_id] = {**_TASKS[task_id], "ok": False, "error": "outer timeout"}
-            logger.info("dispatch_completed task=%s ok=False", task_id)
+            dlog.dispatch_failed(task=task_id, reason="outer_timeout", error_code="OUTER_TIMEOUT")
             return web.json_response(_TASKS[task_id], status=504)
     else:
         # Fire-and-forget — caller polls /v1/result/{id}
@@ -1011,10 +1025,10 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 _TASKS[task_id] = await _run_task(task_id, brief, channel_id, user_message_id, persona,
                                                   attachments, history, resume_ctx=resume_ctx,
                                                   preferred_model=preferred_model,
+                                                  reasoning_effort=reasoning_effort,
                                                   task_timeout_s=dispatch_timeout_s)
-                logger.info(
-                    "dispatch_completed task=%s ok=%s",
-                    task_id, bool(_TASKS[task_id].get("ok")),
+                dlog.dispatch_completed(
+                    task=task_id, ok=bool(_TASKS[task_id].get("ok")),
                 )
             except asyncio.CancelledError:
                 _TASKS[task_id] = {
@@ -1022,14 +1036,14 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                     "ok": False,
                     "error": "task cancelled",
                 }
-                logger.info("dispatch_completed task=%s ok=False", task_id)
+                dlog.dispatch_failed(task=task_id, reason="cancelled", error_code="TASK_CANCELLED")
                 raise
             except Exception as exc:
                 _TASKS[task_id] = {
                     "task_id": task_id, "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
-                logger.info("dispatch_completed task=%s ok=False", task_id)
+                dlog.dispatch_failed(task=task_id, reason=type(exc).__name__, error_code="RUNTIME_EXCEPTION")
         # B2 (PR #295 review): guarda strong ref para a task em background.
         # asyncio mantém apenas weak refs internamente; sem o set + callback,
         # o GC pode coletar a task antes de ela completar.

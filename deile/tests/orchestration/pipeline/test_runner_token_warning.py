@@ -6,6 +6,7 @@ GITLAB_TOKEN is present, without interrupting execution.
 from __future__ import annotations
 
 import logging
+import os
 
 import pytest
 
@@ -76,3 +77,22 @@ def test_warning_does_not_raise(monkeypatch):
     for key in ("GITHUB_TOKEN", "GITLAB_TOKEN", "GL_TOKEN"):
         monkeypatch.delenv(key, raising=False)
     _warn_if_no_forge_token()  # must not raise
+
+
+def test_warns_even_after_environ_leak(caplog, monkeypatch):
+    """WARNING fires even when os.environ was mutated via direct assignment.
+
+    Issue #432: a prior test could set GITHUB_TOKEN via direct assignment (not
+    monkeypatch), leaving the key in os.environ for subsequent tests. Without
+    _snapshot_os_environ the next call to _warn_if_no_forge_token would find the
+    token and suppress the warning.  This test simulates that leak inline: it
+    sets the key via direct assignment, then verifies the WARNING still fires
+    once the token is removed through normal monkeypatch cleanup.
+    _snapshot_os_environ will restore the original environ after this test ends.
+    """
+    os.environ["GITHUB_TOKEN"] = "leaked-token-direct-assignment"
+    records = _capture_warnings(caplog, {}, monkeypatch)
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.levelno == logging.WARNING
+    assert "GITHUB_TOKEN" in rec.message

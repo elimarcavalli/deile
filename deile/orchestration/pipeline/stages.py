@@ -2070,6 +2070,33 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     )
     if target is None:
         return
+    # Defensive guard (Mistério #4): if the head branch no longer exists on
+    # the remote (force-deleted, squash-merged with branch removal, etc.),
+    # there is nothing to review/merge — block the PR so it does not churn
+    # the pipeline forever. The human removes ``~workflow:bloqueada`` after
+    # restoring the branch (or closes the PR by hand).
+    if target.head_ref:
+        try:
+            branch_alive = await monitor.forge.branch_exists(target.head_ref)
+        except Exception as exc:  # noqa: BLE001 — fail-open on API hiccup
+            logger.debug(
+                "branch_exists check failed for PR #%d (%s); proceeding",
+                target.number, exc,
+            )
+            branch_alive = True
+        if not branch_alive:
+            logger.warning(
+                "PR #%d has orphan head_ref=%r (branch deleted on remote); "
+                "marking %s",
+                target.number, target.head_ref, WORKFLOW_BLOCKED,
+            )
+            await _block_pr(
+                monitor, target.number, target.title, target.url,
+                f"branch `{target.head_ref}` foi removida do remote — "
+                "restaure a branch ou feche a PR manualmente",
+            )
+            monitor._stats.errors += 1
+            return
     is_resume = REVIEW_IN_PROGRESS in target.labels
     batch = await monitor.forge.claim_with_batch("pr", target.number)
     if batch is None:
