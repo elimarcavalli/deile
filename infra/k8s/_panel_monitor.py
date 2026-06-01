@@ -125,7 +125,8 @@ class MonitorConfig:
 class MonitorStateData:
     """Conteúdo do /state/monitor-state.json lido via kubectl exec."""
     raw: Optional[Dict[str, Any]] = None
-    last_tick: Optional[str] = None
+    last_tick: Optional[int] = None          # CONTADOR de ticks (não é timestamp)
+    last_tick_epoch: Optional[float] = None  # epoch da última execução (p/ tempo)
     known_anomalies: Dict[str, Any] = field(default_factory=dict)
     notifications_this_hour: int = 0
     paused_until: Optional[str] = None
@@ -311,6 +312,7 @@ class MonitorDataProvider(pd_mod._KubectlProviderMixin):
             return st
         st.raw = data
         st.last_tick = data.get("last_tick")
+        st.last_tick_epoch = data.get("last_tick_epoch")
         st.known_anomalies = data.get("known_anomalies") or {}
         st.notifications_this_hour = int(data.get("notifications_this_hour", 0))
         st.paused_until = data.get("paused_until")
@@ -588,11 +590,24 @@ class MonitorView:
                 border_style=border,
             ))
 
-        sections.append(Panel(
+        # Footer PINADO via Layout — não como última seção de um Group, que
+        # o ``Live(screen=True)`` cortaria quando o conteúdo passa da altura
+        # do terminal (era por isso que a barra de atalhos sumia). head fixo
+        # no topo, footer fixo embaixo, body no meio (clipa se transbordar) —
+        # mesmo padrão da DashboardView principal.
+        footer = Panel(
             Text(self.HOTKEYS_BASE, style="dim"),
             border_style="dim", box=box.SIMPLE,
-        ))
-        return Group(*sections)
+        )
+        body: RenderableType = (
+            Group(*sections[1:]) if len(sections) > 1 else Text(""))
+        layout = Layout()
+        layout.split_column(
+            Layout(sections[0], name="head", size=4),
+            Layout(body, name="body", ratio=1),
+            Layout(footer, name="footer", size=3),
+        )
+        return layout
 
     # --- Blocos de render ---
 
@@ -606,16 +621,16 @@ class MonitorView:
         status_style = "bold green" if p.status == "Running" else "bold yellow"
         ready_icon = "✓" if p.ready else "✗"
 
-        # Calcula próximo tick: last_tick + interval_s
+        # Calcula próximo tick: last_tick_epoch + interval_s. O state grava
+        # ``last_tick`` como CONTADOR (int) e ``last_tick_epoch`` como o epoch
+        # da última execução — é este último que serve para o cálculo de tempo.
         next_tick_str = "—"
         try:
             interval_s = int(cfg.tick_interval_s)
-            if st.last_tick:
-                ts = _parse_iso(st.last_tick)
-                if ts:
-                    elapsed = (now - ts).total_seconds()
-                    remaining = max(0, interval_s - elapsed)
-                    next_tick_str = f"{int(remaining)}s"
+            if st.last_tick_epoch:
+                elapsed = now.timestamp() - float(st.last_tick_epoch)
+                remaining = max(0, interval_s - elapsed)
+                next_tick_str = f"{int(remaining)}s"
         except (ValueError, TypeError):
             pass
 
@@ -746,10 +761,13 @@ class MonitorView:
 
     def _render_last_tick(self, snap: MonitorSnapshot) -> RenderableType:
         st = snap.state
-        if st.last_tick:
-            txt = Text.assemble(
-                (st.last_tick[:19] + "Z" if st.last_tick else "—", "bold"),
-            )
+        if st.last_tick_epoch:
+            when = datetime.fromtimestamp(
+                float(st.last_tick_epoch), _UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            label = f"{when}   (tick #{st.last_tick})" if st.last_tick else when
+            txt = Text(label, style="bold")
+        elif st.last_tick is not None:
+            txt = Text(f"tick #{st.last_tick}", style="bold")
         else:
             txt = Text("· sem tick registrado", style="dim")
         return Panel(txt, title="[bold]ÚLTIMO TICK[/bold]",
@@ -1267,14 +1285,3 @@ def _fmt_age_s(seconds: float) -> str:
         m = (s % 3600) // 60
         return f"{h}h{m:02d}m" if m else f"{h}h"
     return f"{s // 86400}d"
-
-
-def _parse_iso(s: str) -> Optional[datetime]:
-    """Parse leniente de timestamp ISO-8601 → datetime UTC."""
-    if not s:
-        return None
-    s = s.replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(s)
-    except ValueError:
-        return None
