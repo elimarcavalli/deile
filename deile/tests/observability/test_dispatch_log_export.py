@@ -333,6 +333,7 @@ class TestResourceAttributes:
     def test_resource_attrs_match_schema(self, monkeypatch):
         """Resource attrs do LoggerProvider incluem service.name, deile.role, deile.pod,
         deile.dispatch.schema_version idênticos ao TracerProvider (D1)."""
+        pytest.importorskip("opentelemetry.sdk._logs.export")
         monkeypatch.setenv("DEILE_ROLE", "worker")
         monkeypatch.setenv("HOSTNAME", "pod-abc123")
         monkeypatch.setenv("DEILE_OTLP_SERVICE_NAME", "deile-test")
