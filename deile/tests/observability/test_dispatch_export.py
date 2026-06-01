@@ -211,11 +211,13 @@ def test_all_four_child_span_types(in_memory_exporter):
 def test_redact_github_token_in_branch(in_memory_exporter):
     """branch contendo ghp_* é redactado antes de set_attribute."""
     tid = "task-redact-1"
+    # GitHub PATs têm 36+ chars após o prefixo ghp_ (40 no total é o formato real)
+    token = "ghp_" + "A" * 40
     emit_dispatch_received(
         tid,
         session_id="s1",
         model="m",
-        branch="export GH_TOKEN=ghp_AAAABBBBCCCC1234567890123456",
+        branch=f"export GH_TOKEN={token}",
     )
     emit_dispatch_completed(tid)
 
@@ -226,12 +228,13 @@ def test_redact_github_token_in_branch(in_memory_exporter):
 
 def test_redact_github_token_in_model(in_memory_exporter):
     tid = "task-redact-2"
-    emit_dispatch_received(tid, model="ghp_ABCDEFGHIJKLMNOPabcdefghijklmnop")
+    # GitHub PATs têm 36+ chars após o prefixo ghp_
+    emit_dispatch_received(tid, model="ghp_" + "A" * 36)
     emit_dispatch_completed(tid)
 
     root = _root_span(in_memory_exporter)
     for val in root.attributes.values():
-        assert "ghp_ABCD" not in str(val)
+        assert "ghp_AAAA" not in str(val)
 
 
 def test_redact_in_event_attrs(in_memory_exporter):

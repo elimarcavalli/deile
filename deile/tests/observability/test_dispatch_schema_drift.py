@@ -80,7 +80,7 @@ def test_schema_version_constant_matches_attr(in_memory_exporter):
 def test_dispatch_received_schema_keys_present_in_span(in_memory_exporter):
     """Todas as chaves de DispatchReceivedAttrs estão presentes no root span."""
     tid = "drift-recv"
-    emit_dispatch_received(tid, task_id=tid, session_id="s1", model="m", branch="b")
+    emit_dispatch_received(tid, session_id="s1", model="m", branch="b")
     emit_dispatch_completed(tid)
 
     span = _find_span(in_memory_exporter, DispatchReceivedAttrs.SPAN_NAME)
