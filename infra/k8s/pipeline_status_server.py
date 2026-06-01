@@ -27,6 +27,7 @@ Endpoints (all under Bearer auth except ``/v1/health``):
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import os
 import sys
@@ -39,6 +40,20 @@ from typing import Any, Callable, Deque, Dict, List, Optional
 from aiohttp import web
 
 logger = logging.getLogger("deile.pipeline_status_server")
+
+
+def _default_recent_path() -> Path:
+    """Resolve o path de persistência do ACTIVITY (recent events).
+
+    Env ``DEILE_PIPELINE_STATUS_RECENT_PATH`` sobrescreve; default =
+    ``~/.deile/pipeline/recent_events.jsonl`` — no cluster esse diretório é o
+    PVC ``deile-pipeline-ledger`` (mesma convenção do DispatchLedger), de modo
+    que o ACTIVITY sobrevive a restarts do pod do pipeline em vez de zerar.
+    """
+    env = os.environ.get("DEILE_PIPELINE_STATUS_RECENT_PATH", "").strip()
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".deile" / "pipeline" / "recent_events.jsonl"
 
 
 # --------------------------------------------------------------------------- #
@@ -61,8 +76,10 @@ class PipelineStatusState:
 
     DEFAULT_RECENT_CAPACITY = 200
 
-    def __init__(self, *, recent_capacity: int = DEFAULT_RECENT_CAPACITY) -> None:
+    def __init__(self, *, recent_capacity: int = DEFAULT_RECENT_CAPACITY,
+                 persist_path: Optional[Path] = None) -> None:
         self._lock = threading.Lock()
+        self._persist_path = persist_path
         self.started_at: float = time.time()
         self.last_tick_at: Optional[float] = None
         self.next_tick_at: Optional[float] = None
@@ -76,6 +93,56 @@ class PipelineStatusState:
         self.ledger_snapshot: Dict[str, Dict[str, Any]] = {}
         self.recent_events: Deque[Dict[str, Any]] = deque(maxlen=recent_capacity)
         self._force_tick_callback: Optional[Callable[[], None]] = None
+        if self._persist_path is not None:
+            self._load_persisted()
+
+    # -- persistence ----------------------------------------------------- #
+
+    def _load_persisted(self) -> None:
+        """Repovoa o deque a partir do JSONL no startup (best-effort).
+
+        Lê uma linha por evento (mais antigo→mais novo) e mantém só os últimos
+        ``maxlen`` (o próprio deque descarta o excesso). Falha de I/O ou linha
+        malformada é ignorada — o ACTIVITY apenas começa vazio, nunca derruba
+        o servidor.
+        """
+        path = self._persist_path
+        try:
+            if path is None or not path.is_file():
+                return
+            with path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(event, dict):
+                        self.recent_events.append(event)
+        except OSError as exc:
+            logger.warning("recent-events load falhou (%s): %s", path, exc)
+
+    def _persist_recent_locked(self) -> None:
+        """Reescreve o JSONL com o deque atual (atomic). Chamado SOB lock.
+
+        O deque já é limitado a ``maxlen``, então o arquivo é bounded. Escrita
+        atômica (tmp + ``os.replace``). Best-effort: erro de I/O não propaga
+        para o caminho de ``record_event``.
+        """
+        path = self._persist_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            with tmp.open("w", encoding="utf-8") as fh:
+                for event in self.recent_events:
+                    fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+            os.replace(tmp, path)
+        except OSError as exc:
+            logger.warning("recent-events persist falhou (%s): %s", path, exc)
 
     # -- mutator helpers ------------------------------------------------- #
 
@@ -126,6 +193,7 @@ class PipelineStatusState:
             if details:
                 event["details"] = dict(details)
             self.recent_events.append(event)
+            self._persist_recent_locked()
 
     def set_backlog(self, items: List[Dict[str, Any]]) -> None:
         with self._lock:
@@ -218,7 +286,7 @@ def get_global_state() -> PipelineStatusState:
     global _global_state
     with _global_state_lock:
         if _global_state is None:
-            _global_state = PipelineStatusState()
+            _global_state = PipelineStatusState(persist_path=_default_recent_path())
         return _global_state
 
 
