@@ -596,9 +596,13 @@ def k8s_up(args: dict) -> int:
     if ns == "deile":
         _run([kubectl, "apply", "-f", str(MANIFESTS / "00-namespace.yaml")])
     else:
-        _run([kubectl, "create", "namespace", ns, "--dry-run=client", "-o", "yaml",
-              "|", kubectl, "apply", "-f", "-"],
-             shell=True)
+        # Fix B (issue #477): duas chamadas subprocess sem shell=True elimina o
+        # vetor de shell injection e corrige o pipe silencioso ("|" como argv).
+        yaml_out = _capture([kubectl, "create", "namespace", ns, "--dry-run=client", "-o", "yaml"])
+        if yaml_out is not None:
+            _run([kubectl, "apply", "-f", "-"], input=yaml_out.encode())
+        else:
+            ui.warn(f"não foi possível gerar YAML do namespace `{ns}` via --dry-run=client")
         # Garante a label de managed-by + PSS restricted para o namespace custom.
         _run([kubectl, "label", "namespace", ns,
               _DEILE_NS_LABEL,
