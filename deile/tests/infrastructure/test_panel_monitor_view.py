@@ -98,3 +98,198 @@ def test_footer_visible_when_body_overflows(pm, monkeypatch):
         console.print(layout)
     out = cap.get()
     assert "[i]interval" in out or "interval" in out
+
+
+# ---------------------------------------------------------------------------
+# Testes das correções de bugs (adicionados em 01/jun/2026)
+# ---------------------------------------------------------------------------
+
+def test_force_tick_calls_pkill_sleep_not_rm(pm, monkeypatch):
+    """[t] força-tick usa pkill -x sleep (não rm -f monitor-state.json)."""
+    import types
+
+    captured = []
+
+    def fake_exec(self, args, timeout=8.0):
+        captured.append(list(args))
+        return True, ""
+
+    view = pm.MonitorView(
+        monitor_provider=types.SimpleNamespace(
+            get=lambda: pm.MonitorSnapshot(), invalidate=lambda: None,
+        )
+    )
+    monkeypatch.setattr(pm.MonitorView, "_exec", fake_exec)
+    monkeypatch.setattr(pm.MonitorView, "_ns", lambda self: "deile")
+
+    import _panel
+    view._apply_force_tick(object())
+
+    # Garante que pkill -x sleep foi chamado.
+    assert any("pkill" in arg for args in captured for arg in args), (
+        "pkill não foi chamado; args capturados: " + str(captured)
+    )
+    # Garante que rm NÃO foi chamado (não é destrutivo).
+    assert not any("rm" in arg for args in captured for arg in args), (
+        "rm foi chamado inesperadamente; args: " + str(captured)
+    )
+    # Garante que monitor-state.json não foi deletado.
+    assert not any("monitor-state.json" in arg for args in captured for arg in args), (
+        "monitor-state.json apareceu nos args (state não deve ser apagado); args: " + str(captured)
+    )
+
+
+def test_force_tick_no_sleep_process_ok(pm, monkeypatch):
+    """[t] pkill exit≠0 (nenhum sleep) é tratado como tick já em andamento — não erro."""
+    import types
+
+    view = pm.MonitorView(
+        monitor_provider=types.SimpleNamespace(
+            get=lambda: pm.MonitorSnapshot(), invalidate=lambda: None,
+        )
+    )
+    # pkill retorna falso (exit 1) com saída vazia — nenhum sleep para matar.
+    monkeypatch.setattr(pm.MonitorView, "_exec", lambda self, args, timeout=8.0: (False, ""))
+    monkeypatch.setattr(pm.MonitorView, "_ns", lambda self: "deile")
+
+    view._apply_force_tick(object())
+
+    assert view._last_ok is True
+    assert "andamento" in view._last_msg.lower() or "forçado" in view._last_msg.lower()
+
+
+def test_apply_pause_writes_paused_until(pm, monkeypatch):
+    """_apply_pause('30m') cria kill-switch E grava paused_until no state JSON."""
+    import types
+
+    captured = []
+
+    def fake_exec(self, args, timeout=8.0):
+        captured.append(list(args))
+        return True, ""
+
+    view = pm.MonitorView(
+        monitor_provider=types.SimpleNamespace(
+            get=lambda: pm.MonitorSnapshot(), invalidate=lambda: None,
+        )
+    )
+    monkeypatch.setattr(pm.MonitorView, "_exec", fake_exec)
+    monkeypatch.setattr(pm.MonitorView, "_ns", lambda self: "deile")
+
+    view._apply_pause("30m", object())
+
+    # touch foi chamado (kill-switch).
+    assert any("touch" in arg for args in captured for arg in args), (
+        "touch não foi chamado; args: " + str(captured)
+    )
+    # python3 -c foi chamado com paused_until no script.
+    python_calls = [args for args in captured if "python3" in args]
+    assert python_calls, "python3 não foi chamado para gravar paused_until"
+    script_args = " ".join(python_calls[0])
+    assert "paused_until" in script_args, (
+        "paused_until não está no script python3; script: " + script_args
+    )
+    # Mensagem inclui "pausado" e a duração.
+    assert "30m" in view._last_msg or "pausado" in view._last_msg.lower()
+    assert view._last_ok is True
+
+
+def test_apply_pause_invalid_duration(pm, monkeypatch):
+    """_apply_pause com duração inválida seta _last_ok=False e não chama exec."""
+    import types
+
+    captured = []
+
+    view = pm.MonitorView(
+        monitor_provider=types.SimpleNamespace(
+            get=lambda: pm.MonitorSnapshot(), invalidate=lambda: None,
+        )
+    )
+    monkeypatch.setattr(pm.MonitorView, "_exec", lambda self, args, timeout=8.0: captured.append(args) or (True, ""))
+    monkeypatch.setattr(pm.MonitorView, "_ns", lambda self: "deile")
+
+    view._apply_pause("xyz", object())
+
+    assert view._last_ok is False
+    assert "inválida" in view._last_msg.lower() or "inválido" in view._last_msg.lower()
+    # exec não deve ter sido chamado com touch (kill-switch não ativado para input inválido).
+    assert not any("touch" in str(args) for args in captured), (
+        "touch foi chamado com duração inválida; args: " + str(captured)
+    )
+
+
+def test_parse_duration_s(pm):
+    """_parse_duration_s converte formatos corretamente."""
+    parse = pm.MonitorView._parse_duration_s
+    assert parse("30m") == 1800
+    assert parse("2h") == 7200
+    assert parse("90s") == 90
+    assert parse("120") == 120
+    assert parse("1H") == 3600   # case-insensitive
+    assert parse("xyz") is None
+    assert parse("") is None
+    assert parse("30x") is None
+
+
+def test_apply_user_id_rejects_non_numeric(pm, monkeypatch):
+    """[u] rejeita user ID não-numérico sem chamar kubectl."""
+    import types
+
+    exec_called = []
+
+    view = pm.MonitorView(
+        monitor_provider=types.SimpleNamespace(
+            get=lambda: pm.MonitorSnapshot(), invalidate=lambda: None,
+        )
+    )
+    monkeypatch.setattr(pm.MonitorView, "_exec", lambda self, args, timeout=8.0: exec_called.append(args) or (True, ""))
+    monkeypatch.setattr(pm.MonitorView, "_ns", lambda self: "deile")
+
+    view._apply_user_id("not-a-number", object())
+
+    assert view._last_ok is False
+    assert "inválido" in view._last_msg.lower()
+    # kubectl não foi chamado.
+    assert not exec_called, "kubectl exec foi chamado com UID inválido"
+
+
+def test_apply_user_id_accepts_numeric(pm, monkeypatch):
+    """[u] aceita user ID numérico e chama kubectl com printf."""
+    import types
+
+    captured = []
+
+    view = pm.MonitorView(
+        monitor_provider=types.SimpleNamespace(
+            get=lambda: pm.MonitorSnapshot(), invalidate=lambda: None,
+        )
+    )
+    monkeypatch.setattr(pm.MonitorView, "_exec", lambda self, args, timeout=8.0: captured.append(list(args)) or (True, ""))
+    monkeypatch.setattr(pm.MonitorView, "_ns", lambda self: "deile")
+
+    view._apply_user_id("123456789012345678", object())
+
+    assert view._last_ok is True
+    # printf %s deve estar no comando, não echo.
+    flat = " ".join(str(a) for args in captured for a in args)
+    assert "printf" in flat, "printf não está nos args: " + flat
+    assert "echo" not in flat, "echo (inseguro) presente nos args: " + flat
+
+
+def test_models_fallback_slugs_valid(pm):
+    """Todos os slugs em _MODELS_FALLBACK seguem o padrão provider:model."""
+    import re
+    slug_re = re.compile(r"^[a-z]+:[a-z0-9._-]+$")
+    for slug in pm._MODELS_FALLBACK:
+        assert slug_re.match(slug), (
+            f"Slug inválido em _MODELS_FALLBACK: {slug!r} "
+            "(esperado ^[a-z]+:[a-z0-9._-]+$)"
+        )
+
+
+def test_models_fallback_no_stale_slugs(pm):
+    """_MODELS_FALLBACK não contém slugs antigos removidos do YAML."""
+    stale = {"openai:gpt-4", "deepseek:deepseek-chat", "google:gemini-2.5-pro"}
+    present = set(pm._MODELS_FALLBACK)
+    overlap = stale & present
+    assert not overlap, f"Slugs desatualizados ainda em _MODELS_FALLBACK: {overlap}"

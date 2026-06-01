@@ -21,7 +21,19 @@ Em cada tick:
    FLOOD_CAP_EMITTED_NOTIFY=0
    FLOOD_CAP_EMITTED_FU=0
    ```
-2. **Verifique o kill-switch**: se `/state/monitor-pause` existe, registre no audit log "pausado pelo operador" e **encerre o tick imediatamente** — o shell loop vai dormir e tentar de novo no próximo tick.
+2. **Verifique o kill-switch (com auto-resume por tempo)**: o painel/bot pode pausar por prazo gravando `paused_until` (ISO-8601 UTC) no estado além de criar `/state/monitor-pause`. Primeiro, se `paused_until` existe e o horário atual (UTC) já o ultrapassou, a pausa **expirou**: remova `/state/monitor-pause`, limpe `paused_until` do estado, registre no audit "auto-resume: pausa expirou" e **siga o tick normalmente**. Caso contrário, se `/state/monitor-pause` ainda existe (pausa indefinida, ou `paused_until` no futuro), registre "pausado pelo operador" e **encerre o tick imediatamente** — o shell loop dorme e tenta de novo no próximo tick.
+   ```bash
+   if [ -f /state/monitor-pause ]; then
+     EXPIRED=$(python3 -c "import json,datetime as d; s=json.load(open('/state/monitor-state.json')); pu=s.get('paused_until'); print('1' if pu and d.datetime.now(d.timezone.utc)>=d.datetime.fromisoformat(pu.replace('Z','+00:00')) else '0')" 2>/dev/null || echo 0)
+     if [ "$EXPIRED" = "1" ]; then
+       rm -f /state/monitor-pause
+       python3 -c "import json;p='/state/monitor-state.json';s=json.load(open(p));s.pop('paused_until',None);json.dump(s,open(p,'w'))" 2>/dev/null
+       echo "auto-resume: pausa expirou" >> /state/monitor-audit.log
+     else
+       echo "pausado pelo operador" >> /state/monitor-audit.log  # kill-switch ativo → encerre o tick aqui
+     fi
+   fi
+   ```
 3. **Execute as vigias** (seção abaixo) em ordem de criticidade. Mantenha contadores locais: `ACTIONS=0` (ações autônomas executadas) e `NOTIFICATIONS=0` (notificações enviadas). Incrementar conforme as vigias executam. Acumule em `SKIPPED_VIGIAS` os nomes das vigias que entraram em SKIPPED (ex.: `V1,V6` quando K8s_API_UNREACHABLE).
 4. **Para cada anomalia nova detectada** (não presente em `known_anomalies` com mesmo fingerprint): execute a ação autônoma indicada (incremente `ACTIONS`), ou notifique se exige decisão humana (incremente `NOTIFICATIONS`).
 5. **Atualize o estado**: `write_file /state/monitor-state.json` com o estado corrente.
@@ -408,6 +420,7 @@ if [ "$FLOOD_CAP_EMITTED_NOTIFY" = "0" ]; then
   FLOOD_CAP_EMITTED_NOTIFY=1
 fi
 ```
+- **Ack do operador (supressão)**: ANTES de notificar um fingerprint, cheque `known_anomalies[<fingerprint>].acked_until` no estado; se existe e o horário atual (UTC) é anterior a ele, o operador deu ack pelo painel — **SUPRIMA a notificação** (não envie, não incremente `NOTIFICATIONS`), logando `ack ativo: notificação suprimida para <fingerprint> até <acked_until>`. Aplica-se inclusive a P0. A supressão expira sozinha quando `acked_until` passa.
 - Por anomalia: **mínimo 1h entre notificações do mesmo fingerprint** (exceto P0 — sempre notifica).
 - P0 (OAuth expirado ativo, pipeline down): notifica a cada 15min enquanto persistir.
 - P1: notifica na detecção + a cada 2h enquanto persistir.
