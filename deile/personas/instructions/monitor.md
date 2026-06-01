@@ -55,6 +55,44 @@ print(f'expires_in_s={remaining:.0f}')
 - `expires_in_s == UNREADABLE`: O pod pode estar crashado — cheque `kubectl -n deile get pod -l app=claude-worker` e o status.
 - Após cura bem-sucedida: logue em audit; **não** notifique (cura silenciosa).
 
+**V1b — Detecção reativa: `WORKER_AUTH_EXPIRED` nos logs do pipeline (P0)**
+
+> Gap identificado no incidente de 2026-06: o OAuth expirou e o pipeline travou ~70 min sem notificação. V1 é proativo (verifica o credential file antes do prazo), mas não detecta quando o token **já expirou** e o pipeline já está falhando dispatches. Esta sub-vigia cobre esse caso.
+
+```bash
+# Scanear os logs recentes do pipeline em busca de WORKER_AUTH_EXPIRED
+AUTH_ERR_COUNT=$(kubectl -n deile logs deploy/deile-pipeline --tail=200 --since=10m 2>/dev/null \
+  | grep -c "WORKER_AUTH_EXPIRED" || true)
+
+if [ "${AUTH_ERR_COUNT:-0}" -gt 0 ]; then
+  # Token já expirou — pipeline está em backoff ou falhando dispatches.
+  # Tente renovar imediatamente (mesmo caminho de V1).
+  _V1B_START=$(date +%s)
+  kubectl -n deile exec deploy/deile-pipeline -- \
+    kubectl -n deile exec "${CLAUDE_WORKER_POD}" -- sh -c 'claude auth login' \
+    >/dev/null 2>&1
+  _V1B_RC=$?
+  _V1B_ELAPSED=$(( $(date +%s) - _V1B_START ))
+  _V1B_OK="true" ; [ $_V1B_RC -ne 0 ] && _V1B_OK="false"
+  _emit "monitor.action V=V1 kind=oauth_renew target=${CLAUDE_WORKER_POD} reason='WORKER_AUTH_EXPIRED in logs count=${AUTH_ERR_COUNT}' ok=${_V1B_OK} elapsed_s=${_V1B_ELAPSED}"
+  if [ "$_V1B_OK" = "true" ]; then
+    _emit "monitor.vigia.fix V=V1 kind=oauth_renew target=${CLAUDE_WORKER_POD} elapsed_s=${_V1B_ELAPSED}"
+  else
+    # Renovação falhou — notifique URGENTE (token requer fluxo OAuth interativo).
+    MSG="🔴 [DEILE-MONITOR] P0: OAuth claude-worker expirado e renovação automática falhou.
+Pipeline com WORKER_AUTH_EXPIRED nos últimos 10min (count=${AUTH_ERR_COUNT}).
+Ação necessária: kubectl exec manual ou k8s claude-login --switch
+Comandos rápidos:
+  /status — visão geral do cluster
+  /monitor pause 30m — pausa o monitor por 30min"
+    _notify "oauth_expired_renew_failed_${CLAUDE_WORKER_POD}" "P0" "$MSG"
+  fi
+  ACTIONS=$(( ACTIONS + 1 ))
+fi
+```
+
+Onde `_notify` é o helper que encapsula o `curl` ao deilebot + emit estruturado (definido na seção "Sistema de notificação").
+
 **Emit estruturado após cada tentativa de renovação OAuth (V1):**
 
 > **Regra 5 do schema (sem leak de segredo)**: o stdout do `kubectl exec ... claude auth login` contém o OAuth token — NUNCA capture nem ecoe. Redirecione com `>/dev/null 2>&1` e emita SOMENTE `ok=`/`elapsed_s=`.

@@ -2,8 +2,12 @@
 
 Concurrency:
 - ``watchdog`` runs the observer on its own thread.
-- Editor write-bursts are debounced via a ``threading.Timer`` guarded by
-  ``_timer_lock`` (many editors emit multiple writes per save).
+- Editor write-bursts are debounced by a **single, reused** ``_DebounceWorker``
+  thread (replaces the old per-event ``threading.Timer`` pattern that leaked
+  threads when the reload was slow or FS events arrived in bursts).
+- ``_DebounceWorker`` wakes on ``_event`` (set by ``_on_event``), checks whether
+  the debounce window has elapsed, and loops.  The loop exits when ``_stopping``
+  is True.  At most **one** extra thread is alive regardless of event rate.
 - ``reload_registry`` swaps registry contents atomically via
   ``SkillRegistry.replace_all`` so readers never see a torn state.
 - ``_RELOAD_LOCK`` serializes overlapping reloads (manual + watcher; or two
@@ -15,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional
 
@@ -60,6 +65,87 @@ def reload_registry(
         return len(skills)
 
 
+class _DebounceWorker(threading.Thread):
+    """Single background thread that fires a reload after a quiet period.
+
+    Design rationale
+    ----------------
+    The previous implementation created a new ``threading.Timer`` (= a new OS
+    thread) on *every* filesystem event and cancelled the previous one.  Under
+    heavy load — e.g. a large ``git checkout``, a language server touching many
+    ``.md`` files at once, or a slow ``reload_registry`` call that holds
+    ``_RELOAD_LOCK`` while many new events arrive — cancelled timers accumulated
+    faster than Python's GC reclaimed their thread objects, eventually hitting
+    the OS ``ulimit -u`` ceiling and raising ``RuntimeError: can't start new
+    thread``.
+
+    This class replaces all of that with **one** long-lived thread.  The thread
+    blocks on an ``threading.Event``; ``signal()`` wakes it and records the
+    "last seen" timestamp.  The thread loops: if the debounce window has not
+    elapsed yet it waits the remaining time and checks again; once the window
+    elapses without a new signal it fires the reload and goes back to sleep.
+
+    At most **one** extra OS thread is alive regardless of how many FS events
+    arrive per second.
+    """
+
+    def __init__(
+        self,
+        debounce_seconds: float,
+        trigger: Callable[[], None],
+    ) -> None:
+        super().__init__(daemon=True, name="deile-skills-debounce")
+        self._debounce = debounce_seconds
+        self._trigger = trigger
+        self._event = threading.Event()
+        self._stop_event = threading.Event()
+        # Monotonic timestamp of the last signal; 0 = no pending signal.
+        self._last_signal: float = 0.0
+        self._lock = threading.Lock()
+
+    def signal(self) -> None:
+        """Record a new FS event and wake the worker thread."""
+        with self._lock:
+            self._last_signal = time.monotonic()
+        self._event.set()
+
+    def stop(self) -> None:
+        """Request shutdown and join."""
+        self._stop_event.set()
+        self._event.set()  # unblock the wait
+        self.join(timeout=2.0)
+
+    def run(self) -> None:  # noqa: C901 (acceptable complexity for a loop)
+        while not self._stop_event.is_set():
+            self._event.wait()
+            self._event.clear()
+
+            if self._stop_event.is_set():
+                break
+
+            # Drain the debounce window: keep waiting until no new signal
+            # arrives for the full debounce interval.
+            while True:
+                with self._lock:
+                    last = self._last_signal
+                remaining = last + self._debounce - time.monotonic()
+                if remaining <= 0:
+                    break
+                # Sleep for the remaining window; a new signal will set _event
+                # again and we'll recheck.
+                self._event.wait(timeout=remaining)
+                self._event.clear()
+                if self._stop_event.is_set():
+                    return
+
+            # Clear last_signal so we don't re-fire until the next signal.
+            with self._lock:
+                self._last_signal = 0.0
+
+            if not self._stop_event.is_set():
+                self._trigger()
+
+
 class SkillsWatcher:
     """Filesystem watcher that calls ``reload_registry`` on ``.md`` changes."""
 
@@ -83,8 +169,7 @@ class SkillsWatcher:
         self._on_error = on_error
 
         self._observer: Optional[Any] = None
-        self._timer: Optional[threading.Timer] = None
-        self._timer_lock = threading.Lock()
+        self._debounce_worker: Optional[_DebounceWorker] = None
         self._is_active = False
         self._stopping = False
 
@@ -128,6 +213,14 @@ class SkillsWatcher:
             )
             return False
 
+        # Start the single debounce worker thread before scheduling watchdog.
+        worker = _DebounceWorker(
+            debounce_seconds=self._debounce_seconds,
+            trigger=self._trigger_reload,
+        )
+        worker.start()
+        self._debounce_worker = worker
+
         callback = self._on_event
 
         class _Handler(FileSystemEventHandler):
@@ -152,6 +245,8 @@ class SkillsWatcher:
 
         if scheduled_count == 0:
             logger.warning("skills: hot-reload not started — every observer.schedule() call failed")
+            worker.stop()
+            self._debounce_worker = None
             return False
 
         observer.start()
@@ -161,12 +256,11 @@ class SkillsWatcher:
         return True
 
     def stop(self) -> None:
-        """Idempotent — cancels any pending debounce timer and joins the observer."""
+        """Idempotent — stops the debounce worker and joins the observer."""
         self._stopping = True
-        with self._timer_lock:
-            if self._timer is not None:
-                self._timer.cancel()
-                self._timer = None
+        if self._debounce_worker is not None:
+            self._debounce_worker.stop()
+            self._debounce_worker = None
         if self._observer is not None:
             try:
                 self._observer.stop()
@@ -179,18 +273,10 @@ class SkillsWatcher:
     def _on_event(self, src_path: str) -> None:
         if self._stopping:
             return
-        with self._timer_lock:
-            if self._timer is not None:
-                self._timer.cancel()
-            self._timer = threading.Timer(self._debounce_seconds, self._trigger_reload)
-            self._timer.daemon = True
-            self._timer.start()
+        if self._debounce_worker is not None:
+            self._debounce_worker.signal()
 
     def _trigger_reload(self) -> None:
-        # Clear the timer reference first so a fresh event arriving while we
-        # run can start a new timer without races.
-        with self._timer_lock:
-            self._timer = None
         if self._stopping:
             return
         try:
