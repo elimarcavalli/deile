@@ -573,6 +573,11 @@ def _apply_namespace(
     if rc != 0:
         ui.err(f"[{ns}] falha ao aplicar network policies")
         return False
+    # Estreita a egress policy do apiserver para o /32 real (o manifest 40 acima
+    # só carrega o fallback amplo). Best-effort — mantém o fallback se a
+    # descoberta falhar.
+    from _netpol import apply_apiserver_egress_netpol  # noqa: PLC0415
+    apply_apiserver_egress_netpol(kubectl, ns, info=ui.info, warn=ui.warn)
 
     bot_kv, deile_kv, worker_kv = plan.secrets_kv()
     ui.info(f"[{ns}] criando Secrets (nada é impresso)")

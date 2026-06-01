@@ -207,6 +207,17 @@ def _capture(cmd: List[str], timeout: float = 30.0) -> Optional[str]:
     return proc.stdout if proc.returncode == 0 else None
 
 
+def _apply_apiserver_egress_netpol(kubectl: str, ns: str) -> None:
+    """Wrapper fino sobre :func:`_netpol.apply_apiserver_egress_netpol`.
+
+    A lógica é compartilhada (``infra/k8s/_netpol.py``) com os demais caminhos
+    que aplicam o manifest 40 (``_setup.py``, ``_claude_install.py``); aqui só
+    pluga a UI do ``deploy.py``.
+    """
+    from _netpol import apply_apiserver_egress_netpol  # noqa: PLC0415
+    apply_apiserver_egress_netpol(kubectl, ns, info=ui.info, warn=ui.warn)
+
+
 def read_env() -> Dict[str, str]:
     """Lê o `.env` da raiz como um dicionário simples."""
     data: Dict[str, str] = {}
@@ -597,6 +608,7 @@ def k8s_up(args: dict) -> int:
 
     ui.info("aplicando network policies")
     _run([kubectl, "apply", "-n", ns, "-f", str(MANIFESTS / "40-network-policy.yaml")])
+    _apply_apiserver_egress_netpol(kubectl, ns)
 
     ui.info("criando os Secrets (nada é impresso)")
     deile_secret: Dict[str, str] = {"DEILE_BOT_AUTH_TOKEN": bearer, **llm}
@@ -735,6 +747,10 @@ def k8s_start(args: dict) -> int:
     for dep in K8S_DEPLOYMENTS:
         _run([kubectl, "-n", ns, "scale", f"deployment/{dep}", "--replicas=1"],
              stdout=subprocess.DEVNULL)
+    # Re-estreita a egress policy do apiserver: o IP do node pode ter mudado
+    # enquanto a stack estava parada (ex.: reboot da VM Rancher) — sem isto o
+    # /32 ficaria stale e o auto-renew voltaria a `connection refused`.
+    _apply_apiserver_egress_netpol(kubectl, ns)
     ui.ok("deployments religados (scale → 1).")
     return 0
 
@@ -771,6 +787,9 @@ def k8s_restart(args: dict) -> int:
     for dep in K8S_DEPLOYMENTS:
         _run([kubectl, "-n", ns, "rollout", "restart", f"deployment/{dep}"],
              stdout=subprocess.DEVNULL)
+    # Re-estreita a egress policy do apiserver (endpoint pode ter mudado desde
+    # o último `up`); barato e idempotente, mantém o /32 fresco.
+    _apply_apiserver_egress_netpol(kubectl, ns)
     ui.ok("rollout restart disparado.")
     return 0
 
@@ -1806,6 +1825,7 @@ def do_create_namespace(cfg: CreateNamespaceConfig) -> int:
     ui.info("aplicando NetworkPolicies")
     _run([kubectl, "apply", "-n", ns, "-f",
           str(MANIFESTS / "40-network-policy.yaml")])
+    _apply_apiserver_egress_netpol(kubectl, ns)
 
     # ---- 3. Secrets ---------------------------------------------------------
     ui.info("criando Secrets (nada é impresso)")
