@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from deile.skills.registry import get_skill_registry, reset_skill_registry
-from deile.skills.watcher import SkillsWatcher, reload_registry
+from deile.skills.watcher import _DebounceWorker, SkillsWatcher, reload_registry
 
 
 @pytest.fixture(autouse=True)
@@ -205,6 +205,91 @@ class TestSkillsWatcher:
         watcher.stop()
         watcher.stop()  # second stop should not raise
         assert watcher.is_active is False
+
+
+@pytest.mark.unit
+class TestDebounceWorkerNoThreadLeak:
+    """Verify that rapid FS events do NOT accumulate OS threads.
+
+    Regression test for the bug reported on the deile-monitor pod after ~22h
+    uptime: ``RuntimeError: can't start new thread``.  The old implementation
+    created a new ``threading.Timer`` per event; under heavy load (large git
+    checkout, slow ``reload_registry``, etc.) cancelled-but-not-yet-exited
+    timer threads accumulated until the OS ulimit was hit.
+
+    The new implementation uses a single ``_DebounceWorker`` thread — firing
+    1000 signals must NOT create more than 1 additional thread.
+    """
+
+    def test_single_worker_thread_survives_burst(self) -> None:
+        """1000 rapid signals must not spawn more than 1 extra thread."""
+        reload_calls: list = []
+        barrier = threading.Event()
+
+        def slow_trigger() -> None:
+            reload_calls.append(1)
+            # Simulate a slow reload to maximise thread-accumulation pressure.
+            barrier.wait(timeout=2.0)
+
+        before = threading.active_count()
+        worker = _DebounceWorker(debounce_seconds=0.01, trigger=slow_trigger)
+        worker.start()
+
+        try:
+            # Fire 1000 signals in rapid succession.
+            for _ in range(1000):
+                worker.signal()
+
+            # Give debounce window time to elapse so trigger fires.
+            time.sleep(0.1)
+
+            peak = threading.active_count()
+            # Allow the slow trigger to finish.
+            barrier.set()
+            time.sleep(0.1)
+        finally:
+            worker.stop()
+
+        # The worker itself is 1 extra thread; the watchdog observer is not
+        # started here.  Allow a small slack of 2 for any test-framework
+        # threads that might appear briefly.
+        extra = peak - before
+        assert extra <= 3, (
+            f"Thread leak detected: {extra} extra threads at peak "
+            f"(expected ≤ 3 for single debounce worker). "
+            f"before={before}, peak={peak}"
+        )
+
+    def test_many_signals_produce_single_reload(self) -> None:
+        """A burst of signals within the debounce window fires exactly one reload."""
+        reload_calls: list = []
+
+        def trigger() -> None:
+            reload_calls.append(time.monotonic())
+
+        worker = _DebounceWorker(debounce_seconds=0.05, trigger=trigger)
+        worker.start()
+        try:
+            # Send 50 signals in quick succession — all within debounce window.
+            for _ in range(50):
+                worker.signal()
+            # Wait for 3× the debounce window so the reload must have fired.
+            time.sleep(0.3)
+        finally:
+            worker.stop()
+
+        assert len(reload_calls) == 1, (
+            f"Expected exactly 1 reload from burst of 50 signals, "
+            f"got {len(reload_calls)}: {reload_calls}"
+        )
+
+    def test_stop_cleans_up_worker_thread(self) -> None:
+        """After stop(), the worker thread is no longer alive."""
+        worker = _DebounceWorker(debounce_seconds=0.1, trigger=lambda: None)
+        worker.start()
+        assert worker.is_alive()
+        worker.stop()
+        assert not worker.is_alive(), "Worker thread still alive after stop()"
 
 
 @pytest.mark.unit
