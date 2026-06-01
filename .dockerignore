@@ -91,3 +91,4 @@ infra/
 !infra/k8s/_worker_resume.py
 !infra/k8s/pipeline_status_server.py
 !infra/k8s/dispatch_logger.py
+!infra/k8s/jsonl_cost.py

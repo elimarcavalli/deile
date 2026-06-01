@@ -234,6 +234,14 @@ RUN chmod 0555 /app/_worker_resume.py
 COPY --chown=deile:deile infra/k8s/dispatch_logger.py /app/dispatch_logger.py
 RUN chmod 0555 /app/dispatch_logger.py
 
+# Lógica de custo compartilhada (issue #445). Importado por
+# claude_worker_server.py (harvester do ledger) via ``from jsonl_cost import
+# aggregate_jsonl`` e pelo session_tokens_audit.py. Deve ficar em /app ao lado
+# deles — sem este arquivo o harvester aborta a poda (fail-safe) e os JSONL
+# órfãos jamais são limpos.
+COPY --chown=deile:deile infra/k8s/jsonl_cost.py /app/jsonl_cost.py
+RUN chmod 0555 /app/jsonl_cost.py
+
 # Pipeline status server — HTTP introspection endpoints (issue #347 fix). Roda
 # in-process no wrapper.py mode pipeline (asyncio task no mesmo event loop do
 # monitor). Sem este arquivo no /app o `from pipeline_status_server import ...`
