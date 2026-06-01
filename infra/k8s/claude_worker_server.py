@@ -707,100 +707,6 @@ class SubprocessResult:
     duration_seconds: float
 
 
-class StreamState:
-    """Accumulates ``claude -p --output-format stream-json`` events.
-
-    Tracks mid-flight progress fields (``turn``, ``tool_last``,
-    ``tokens_in``, ``tokens_out``) and extracts the final result
-    for equivalence with ``--output-format json`` output.
-    """
-
-    _NON_JSON_CAP = 8 * 1024  # 8 KiB rolling cap
-
-    def __init__(self) -> None:
-        # Mid-flight snapshot
-        self.turn: int = 0
-        self.tool_last: str = ""
-        self.tokens_in: int = 0
-        self.tokens_out: int = 0
-        # Final result fields (from "result" event)
-        self.is_error: bool = True
-        self.result: str = ""
-        self.total_cost_usd: float = 0.0
-        self.num_turns: int = 0
-        self.session_id: str = ""
-        self._has_result: bool = False
-        # Rolling non-JSON buffer
-        self._non_json_lines: list = []
-        self._non_json_bytes: int = 0
-
-    def ingest(self, event: dict) -> None:
-        """Process one NDJSON event from stream-json output."""
-        etype = event.get("type", "")
-        if etype == "assistant":
-            msg = event.get("message", {})
-            if isinstance(msg, dict):
-                usage = msg.get("usage", {})
-                if isinstance(usage, dict):
-                    self.tokens_in += int(usage.get("input_tokens", 0) or 0)
-                    self.tokens_out += int(usage.get("output_tokens", 0) or 0)
-                content = msg.get("content", [])
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "tool_use":
-                            name = block.get("name")
-                            if name:
-                                self.tool_last = str(name)
-            self.turn += 1
-        elif etype == "result":
-            self._has_result = True
-            self.is_error = bool(event.get("is_error", False))
-            self.result = str(event.get("result", "") or "")
-            self.total_cost_usd = float(event.get("total_cost_usd", 0) or 0)
-            self.num_turns = int(event.get("num_turns", 0) or 0)
-            self.session_id = str(event.get("session_id", "") or "")
-        elif etype == "system" and event.get("subtype") == "init":
-            sid = event.get("session_id")
-            if sid:
-                self.session_id = str(sid)
-
-    def add_non_json(self, line: str) -> None:
-        """Add a non-JSON line to the rolling buffer (cap 8 KiB)."""
-        encoded = line.encode("utf-8", "replace")
-        while (self._non_json_bytes + len(encoded) > self._NON_JSON_CAP
-               and self._non_json_lines):
-            removed = self._non_json_lines.pop(0)
-            self._non_json_bytes -= len(removed.encode("utf-8", "replace"))
-        self._non_json_lines.append(line)
-        self._non_json_bytes += len(encoded)
-
-    @property
-    def non_json_tail(self) -> str:
-        return "".join(self._non_json_lines)
-
-    def to_final_dict(self, duration_seconds: float = 0.0) -> dict:
-        """Fields equivalent to ``_parse_claude_json_output`` output."""
-        return {
-            "is_error": self.is_error,
-            "result": self.result,
-            "session_id": self.session_id,
-            "total_cost_usd": self.total_cost_usd,
-            "duration_ms": int(duration_seconds * 1000),
-            "num_turns": self.num_turns,
-        }
-
-
-#: Active StreamState objects keyed by task_id. Populated while
-#: run_subprocess_with_progress is running; removed on completion.
-#: Allows /v1/progress and dispatch_logger to read mid-flight data.
-_active_stream_states: dict = {}
-
-
-def get_stream_state(task_id: str) -> "Optional[StreamState]":
-    """Return the active StreamState for task_id, or None if not running."""
-    return _active_stream_states.get(task_id)
-
-
 #: Preambles por stage. Cada um descreve identidade + contrato de output, com
 #: placeholders ``$BRANCH``/``$TASK_ID`` substituídos por
 #: :func:`_render_preamble` antes do exec.
@@ -877,16 +783,13 @@ async def run_subprocess_with_progress(
     timeout: int,
     lease_path: Optional[Path] = None,
 ) -> SubprocessResult:
-    """Spawn de ``claude -p`` com leitura incremental de NDJSON (stream-json).
+    """Spawn de ``claude -p`` com persistência de stdout/stderr para o PVC.
 
     Os arquivos ``<task_id>.stdout.log``/``<task_id>.stderr.log`` ficam em
     ``DEILE_CLAUDE_WORKER_ROOT/.progress/`` e serão consumidos pelo
     ``/v1/progress/{task_id}`` (Task 14) para snapshot mid-flight no painel
     TUI. Em timeout, devolvemos ``returncode=124`` (convenção do ``coreutils
     timeout``) com mensagem em ``stderr``.
-
-    Dois readers concorrentes (stdout + stderr) via ``asyncio.gather`` +
-    ``asyncio.wait_for``; cancelamento propaga para ambos em timeout.
 
     Quando ``lease_path`` é informado, gravamos ``claude_pid`` no lease assim
     que o subprocess é spawnado e limpamos ao terminar — isso permite que um
@@ -897,6 +800,7 @@ async def run_subprocess_with_progress(
     """
     start = time.monotonic()
 
+    # Persistir progress files em DEILE_CLAUDE_WORKER_ROOT/.progress/.
     root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
     progress_dir = root / ".progress"
     progress_dir.mkdir(parents=True, exist_ok=True)
@@ -913,61 +817,28 @@ async def run_subprocess_with_progress(
     if lease_path is not None:
         await _update_lease_claude_pid(lease_path, proc.pid)
 
-    stream_state = StreamState()
-    _active_stream_states[task_id] = stream_state
-    stdout_lines: list = []
-    stderr_chunks: list = []
-
-    async def _read_stdout() -> None:
-        assert proc.stdout is not None
-        while True:
-            raw = await proc.stdout.readline()
-            if not raw:
-                break
-            line = raw.decode("utf-8", "replace")
-            stdout_lines.append(line)
-            stripped = line.strip()
-            if stripped:
-                try:
-                    stream_state.ingest(json.loads(stripped))
-                except json.JSONDecodeError:
-                    stream_state.add_non_json(line)
-
-    async def _read_stderr() -> None:
-        assert proc.stderr is not None
-        while True:
-            chunk = await proc.stderr.read(4096)
-            if not chunk:
-                break
-            stderr_chunks.append(chunk.decode("utf-8", "replace"))
-
     try:
-        await asyncio.wait_for(
-            asyncio.gather(_read_stdout(), _read_stderr()),
-            timeout=timeout,
+        stdout_b, stderr_b = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout,
         )
-        await proc.wait()
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
         if lease_path is not None:
             await _update_lease_claude_pid(lease_path, None)
-        _active_stream_states.pop(task_id, None)
         duration = time.monotonic() - start
         return SubprocessResult(
-            returncode=124, stdout="".join(stdout_lines),
+            returncode=124, stdout="",
             stderr=f"claude -p timed out after {timeout}s",
             duration_seconds=duration,
         )
 
     duration = time.monotonic() - start
-    stdout = "".join(stdout_lines)
-    stderr = "".join(stderr_chunks)
+    stdout = stdout_b.decode("utf-8", "replace")
+    stderr = stderr_b.decode("utf-8", "replace")
 
     if lease_path is not None:
         await _update_lease_claude_pid(lease_path, None)
-
-    _active_stream_states.pop(task_id, None)
 
     # Persiste para o ``/v1/progress`` (Task 14) — best-effort; falha em
     # escrita NÃO derruba o dispatch (o cliente já recebeu o resultado).
@@ -2367,8 +2238,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     cmd = [
         claude_bin, "-p",
         "--permission-mode", "bypassPermissions",
-        "--output-format", "stream-json",
-        "--verbose",
+        "--output-format", "json",
     ]
     if is_resume:
         cmd.extend(["-r", session_id])
@@ -2591,23 +2461,10 @@ async def progress_handler(request: web.Request) -> web.Response:
         logger.warning("failed to read %s: %s", stderr_path, exc)
         stderr = ""
 
-    ss = get_stream_state(task_id)
-    stream_snapshot = (
-        {
-            "turn": ss.turn,
-            "tool_last": ss.tool_last,
-            "tokens_in": ss.tokens_in,
-            "tokens_out": ss.tokens_out,
-        }
-        if ss is not None
-        else None
-    )
-
     return web.json_response({
         "task_id": task_id,
         "stdout": stdout[-50_000:],
         "stderr": stderr[-10_000:],
-        "stream_state": stream_snapshot,
     })
 
 
