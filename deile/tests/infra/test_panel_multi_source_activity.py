@@ -498,3 +498,129 @@ class TestAC18IntermediateState:
             assert deploy in pd._SOURCE_COLOR_MAP, (
                 f"{deploy} missing from _SOURCE_COLOR_MAP"
             )
+
+
+# ---------------------------------------------------------------------------
+# AC1–AC5: _action_row_style predicate + _activity_panel action cell styles
+# (issue #488)
+# ---------------------------------------------------------------------------
+
+class TestActivityPanelActionStyle:
+    """Tests for the _action_row_style predicate and its application in the
+    _activity_panel renderer (issue #488)."""
+
+    # AC1 — predicado puro, sem renderização
+    def test_ac1_dropped_returns_dim(self):
+        assert panel._action_row_style("routing.dropped") == "dim"
+
+    def test_ac1_real_action_mention_returns_none(self):
+        assert panel._action_row_style("routing.mention") is None
+
+    def test_ac1_real_action_pr_unified_returns_none(self):
+        assert panel._action_row_style("routing.pr_unified") is None
+
+    def test_ac1_unknown_action_returns_none(self):
+        assert panel._action_row_style("dispatch.started") is None
+
+    # helpers ----------------------------------------------------------------
+
+    def _make_data_with_events(self, events):
+        data = MagicMock()
+        state = pd.MultiSourceActivityState()
+        state.events = events
+        data.activity = MagicMock()
+        data.activity.get.return_value = state
+        return data
+
+    def _render_activity_panel(self, events):
+        """Return the Table's column[2] cells for the given events."""
+        from rich.text import Text as RichText
+        view = panel.DashboardView.__new__(panel.DashboardView)
+        view.data = self._make_data_with_events(events)
+        rendered_panel = view._activity_panel()
+        # panel.renderable is the Table (or a Text when empty)
+        tbl = rendered_panel.renderable
+        return tbl.columns[2]._cells
+
+    # AC2 — render: `routing.dropped` célula action tem style "dim";
+    #              ações reais têm style None ou ""
+    def test_ac2_dropped_action_cell_is_dim(self):
+        ev = _make_event(actor="pipeline", action="routing.dropped", detail="skip")
+        cells = self._render_activity_panel([ev])
+        assert len(cells) == 1
+        cell = cells[0]
+        assert hasattr(cell, "style"), "action cell must be a Text object"
+        assert str(cell.style) == "dim"
+
+    def test_ac2_real_action_cell_has_no_style(self):
+        ev = _make_event(actor="pipeline", action="routing.mention", detail="ok")
+        cells = self._render_activity_panel([ev])
+        assert len(cells) == 1
+        cell = cells[0]
+        assert hasattr(cell, "style"), "action cell must be a Text object"
+        assert cell.style in (None, "")
+
+    def test_ac2_styles_are_distinct(self):
+        ev_drop = _make_event(age_s=2, actor="pipeline", action="routing.dropped")
+        ev_real = _make_event(age_s=1, actor="pipeline", action="routing.mention")
+        cells = self._render_activity_panel([ev_drop, ev_real])
+        assert len(cells) == 2
+        # Most recent first: ev_real (age_s=1) is index 0
+        real_style = str(cells[0].style) if cells[0].style else ""
+        drop_style = str(cells[1].style) if cells[1].style else ""
+        assert drop_style == "dim"
+        assert real_style != "dim"
+
+    # AC3 — baseline: actor and detail cells of real actions unchanged
+    def test_ac3_actor_cell_unchanged_for_real_action(self):
+        from rich.text import Text as RichText
+        ev = _make_event(actor="pipeline", action="routing.mention", detail="ok")
+        view = panel.DashboardView.__new__(panel.DashboardView)
+        view.data = self._make_data_with_events([ev])
+        tbl = view._activity_panel().renderable
+        actor_cell = tbl.columns[1]._cells[0]
+        assert hasattr(actor_cell, "style")
+        assert "bold" in str(actor_cell.style)
+
+    def test_ac3_detail_cell_unchanged_for_real_action(self):
+        ev = _make_event(actor="pipeline", action="routing.mention", detail="ok")
+        view = panel.DashboardView.__new__(panel.DashboardView)
+        view.data = self._make_data_with_events([ev])
+        tbl = view._activity_panel().renderable
+        detail_cell = tbl.columns[4]._cells[0]
+        assert hasattr(detail_cell, "style")
+        assert str(detail_cell.style) == "dim"
+
+    # AC4 — precedência erro>atenuado: detail "bold red" coexiste com
+    #       action "dim" em células distintas
+    def test_ac4_error_detail_and_dim_action_coexist(self):
+        import re
+        # Build a detail that triggers _ACTIVITY_ERROR_RE
+        error_detail = "ERROR: something went wrong"
+        assert pd._ERROR_DETAIL_RE.search(error_detail), (
+            "detail must match _ACTIVITY_ERROR_RE for this test to be valid"
+        )
+        ev = _make_event(actor="pipeline", action="routing.dropped",
+                         detail=error_detail)
+        view = panel.DashboardView.__new__(panel.DashboardView)
+        view.data = self._make_data_with_events([ev])
+        tbl = view._activity_panel().renderable
+        action_cell = tbl.columns[2]._cells[0]
+        detail_cell = tbl.columns[4]._cells[0]
+        assert str(action_cell.style) == "dim", (
+            "action cell must be dim for routing.dropped"
+        )
+        assert str(detail_cell.style) == "bold red", (
+            "detail cell must be bold red when detail matches error pattern"
+        )
+
+    # AC5 — remover o predicado quebra a suite
+    def test_ac5_nonactionable_set_is_nonempty(self):
+        assert len(panel._NONACTIONABLE_ACTIONS) > 0, (
+            "Removing _NONACTIONABLE_ACTIONS would break AC1/AC2/AC4"
+        )
+
+    def test_ac5_action_row_style_exists_and_is_callable(self):
+        assert callable(panel._action_row_style), (
+            "Removing _action_row_style would break AC1 and the render"
+        )
