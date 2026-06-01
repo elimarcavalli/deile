@@ -110,7 +110,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # GitHub's own apt repo, added here with a signed keyring.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        tini git iputils-ping curl ca-certificates gnupg jq \
+        tini git iputils-ping curl ca-certificates gnupg jq procps \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -226,6 +226,13 @@ RUN chmod 0555 /app/worker_server.py
 # /app next to worker_server.py or the worker crashes on import at startup.
 COPY --chown=deile:deile infra/k8s/_worker_resume.py /app/_worker_resume.py
 RUN chmod 0555 /app/_worker_resume.py
+
+# Structured dispatch logger (issue #435). Imported by both worker_server.py
+# and claude_worker_server.py via ``import dispatch_logger as dlog``. Must sit
+# in /app next to them — otherwise the workers crash on import at startup
+# (ModuleNotFoundError: No module named 'dispatch_logger').
+COPY --chown=deile:deile infra/k8s/dispatch_logger.py /app/dispatch_logger.py
+RUN chmod 0555 /app/dispatch_logger.py
 
 # Pipeline status server — HTTP introspection endpoints (issue #347 fix). Roda
 # in-process no wrapper.py mode pipeline (asyncio task no mesmo event loop do

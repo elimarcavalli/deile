@@ -1077,3 +1077,30 @@ class TestTickSummary:
         assert "backlog={issues:3 prs:1}" in msg, (
             f"expected backlog={{issues:3 prs:1}}, got: {msg}"
         )
+
+    async def test_tick_summary_records_count_isolated_from_external_handlers(
+        self, caplog
+    ):
+        """Tick-summary INFO records are captured regardless of prior logging.disable.
+
+        Issue #432: deile/cli.py calls logging.disable(CRITICAL) during CLI runs
+        (TestFlagSmoke → cli_main). Without _clean_logging_handlers restoring
+        logging.root.manager.disable to 0 between tests, all 7 TestTickSummary
+        tests fail when run after TestFlagSmoke because INFO-level records are
+        silently dropped.
+        """
+        assert logging.root.manager.disable == 0, (
+            f"logging.root.manager.disable should be 0 at test start; "
+            f"got {logging.root.manager.disable}. "
+            "_clean_logging_handlers may have failed to restore it."
+        )
+        monitor, _ = _make_monitor()
+        with caplog.at_level(
+            logging.INFO, logger="deile.orchestration.pipeline.monitor"
+        ):
+            await monitor.tick()
+        records = [r for r in caplog.records if "tick #" in r.message]
+        assert len(records) == 1, (
+            f"expected exactly 1 tick-summary record; got {len(records)}. "
+            "Logging isolation may be broken (manager.disable not restored)."
+        )

@@ -43,12 +43,13 @@ import sqlite3
 import subprocess
 import threading
 import time
+from collections import deque
 from concurrent import futures
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, List, Optional, Set, Tuple, TypeVar
+from typing import Any, Callable, Deque, Dict, Generic, List, Optional, Set, Tuple, TypeVar
 
 T = TypeVar("T")
 
@@ -1374,6 +1375,324 @@ class WorkerProvider(_KubectlProviderMixin):
             state.current_task = max(
                 live_tasks.values(), key=lambda t: t.started_ts,
             )
+        return state
+
+
+# ===== MultiSourceActivityProvider (issue #436) =============================
+#
+# Tail em paralelo de 5 deployments fixos. Eventos mergeados num buffer
+# rolling-window (cap 200), top-10 renderizados em ordem cronológica
+# decrescente com cores por role.
+#
+# Parser dual-mode: tenta parser canônico primeiro (vocabulário das issues
+# pré-req #435/#437/#438/#439); se não casa, cai no legacy
+# _classify_pipeline_line (degradação suave). Source sem nenhum parser que
+# case → silêncio (não erro).
+
+# (deploy, role_label, rich_color)
+_MULTI_SOURCE_DEFS: Tuple[Tuple[str, str, str], ...] = (
+    ("deile-pipeline", "pipeline",     "bright_black"),
+    ("deile-worker",   "deile-worker", "cyan"),
+    ("claude-worker",  "claude-worker","orange1"),
+    ("deilebot",       "bot",          "magenta"),
+    ("deile-monitor",  "monitor",      "blue"),
+)
+
+_SOURCE_ROLE_MAP: Dict[str, str] = {d: r for d, r, _ in _MULTI_SOURCE_DEFS}
+_SOURCE_COLOR_MAP: Dict[str, str] = {d: c for d, _, c in _MULTI_SOURCE_DEFS}
+# Maps role_label → color; used by _activity_panel for correct color lookup.
+_ROLE_COLOR_MAP: Dict[str, str] = {r: c for _, r, c in _MULTI_SOURCE_DEFS}
+
+_MULTI_BUFFER_CAP = 200
+_MULTI_TAIL_LINES = 80
+_MULTI_SINCE = "10s"
+
+# AC11 — secret redaction applied before inserting events into the buffer.
+_SECRET_RE = re.compile(
+    r"(?i)(token|bearer|api[-_]?key|secret|password)\s*[=:]\s*\S+",
+)
+# AC8 — extracts task_id from dispatch.progress detail.
+_PROGRESS_TASK_RE = re.compile(r"task=(\S+)")
+# AC10 — burst aggregation thresholds.
+_BURST_THRESHOLD = 20
+_BURST_WINDOW_S = 60.0
+# AC7 — error detail highlight (evaluated in _panel.py _activity_panel).
+_ERROR_DETAIL_RE = re.compile(
+    r"\b(error|failed|traceback|exception)\b|reason=['\"]?\S+['\"]?",
+    re.IGNORECASE,
+)
+
+# Canonical structured-log prefix emitted by issues #435/#437/#438/#439.
+# Format: ``verb.sub [key=val ...]`` at start of log body.
+# Example: ``dispatch.started task=abc123 channel=pipeline-issue-360 stage=implement``
+_CANONICAL_VERB_RE = re.compile(
+    r"^(dispatch|git|forge|inbound|agent|cron"
+    r"|refinement|routing|auth|monitor)\.(\S+)\s*(.*?)$",
+    re.IGNORECASE,
+)
+_KV_PAIR_RE = re.compile(r"(\w+)=(\S+)")
+
+
+def _classify_canonical(ll: LogLine, role: str) -> Optional[ActivityEvent]:
+    """Parser canônico para vocabulário emitido pelas issues #435-#439.
+
+    Retorna None se o padrão não casa — o caller cai no parser legacy.
+    """
+    m = _CANONICAL_VERB_RE.match(ll.body)
+    if not m:
+        return None
+    verb = m.group(1).lower()
+    subaction = m.group(2).lower()
+    rest = m.group(3)
+    kv = dict(_KV_PAIR_RE.findall(rest))
+    action = f"{verb}.{subaction}"
+    target = ""
+    detail = action
+
+    if verb == "dispatch":
+        if subaction == "progress":
+            # AC8: include task_id and elapsed in detail for dedup by task.
+            task_id = kv.get("task", kv.get("id", ""))
+            elapsed = kv.get("elapsed_s", kv.get("elapsed", ""))
+            detail = "dispatch.progress"
+            if task_id:
+                detail += f" task={task_id}"
+            if elapsed:
+                detail += f" elapsed_s={elapsed}"
+        else:
+            channel = kv.get("channel", "")
+            m2 = _PIPELINE_CHANNEL_RE.match(channel)
+            if m2:
+                kind_hint = m2.group(1)
+                num = m2.group(2)
+                target = ("PR#" if kind_hint.endswith("pr") else "#") + num
+            outcome = kv.get("outcome", kv.get("status", ""))
+            detail = f"{action} → {outcome}" if outcome else action
+    elif verb == "inbound" and subaction == "mention":
+        raw_t = kv.get("target", kv.get("issue", ""))
+        m3 = re.match(r"(issue|pr):(\d+)", raw_t)
+        if m3:
+            target = ("PR#" if m3.group(1) == "pr" else "#") + m3.group(2)
+    elif verb == "monitor":
+        queue = kv.get("queue", "")
+        detail = (f"monitor.{subaction} queue={queue}"
+                  if queue else f"monitor.{subaction}")
+    elif verb == "git":
+        ref = kv.get("branch", kv.get("ref", kv.get("sha", "")))
+        if ref:
+            target = ref[:20]
+        detail = f"git.{subaction}"
+    elif verb in ("forge", "auth"):
+        detail = f"{verb}.{subaction}"
+    elif verb in ("refinement", "routing"):
+        issue_ref = kv.get("issue", kv.get("number", ""))
+        if issue_ref:
+            target = f"#{issue_ref}"
+        detail = f"{verb}.{subaction}"
+    elif verb == "agent":
+        task = kv.get("task", kv.get("id", ""))
+        detail = f"agent.{subaction}" + (f" task={task}" if task else "")
+    elif verb == "cron":
+        job = kv.get("job", kv.get("name", ""))
+        detail = f"cron.{subaction}" + (f" {job}" if job else "")
+
+    return ActivityEvent(ts=ll.ts, actor=role, action=action,
+                         target=target, detail=detail)
+
+
+def _classify_source_line(ll: LogLine, role: str) -> Optional[ActivityEvent]:
+    """Dual-mode classifier: canônico primeiro, legacy como fallback.
+
+    Legacy sempre sobrescreve ``actor`` com ``role`` para que o widget
+    mostre a origem correta mesmo para fontes ainda sem vocabulário canônico.
+    """
+    ev = _classify_canonical(ll, role)
+    if ev is not None:
+        return ev
+    ev_legacy = _classify_pipeline_line(ll)
+    if ev_legacy is None:
+        return None
+    return ActivityEvent(
+        ts=ev_legacy.ts,
+        actor=role,
+        action=ev_legacy.action,
+        target=ev_legacy.target,
+        detail=ev_legacy.detail,
+    )
+
+
+@dataclass
+class MultiSourceActivityState:
+    """Buffer rolling-window com eventos de todas as fontes."""
+    events: List[ActivityEvent] = field(default_factory=list)
+
+    def top(self, n: int = 10) -> List[ActivityEvent]:
+        return sorted(self.events, key=lambda e: e.ts, reverse=True)[:n]
+
+
+class MultiSourceActivityProvider(_KubectlProviderMixin):
+    """Tail em paralelo de 5 deployments → buffer rolling-window de eventos.
+
+    Usa ``--since=10s --tail=80 --timestamps`` por source. Cada refresh
+    mescla todas as linhas num buffer capped em 200, ordenado por timestamp.
+    Fontes indisponíveis são silenciosamente ignoradas (provider permanece
+    funcional com eventos das demais fontes).
+    """
+
+    def __init__(self, ttl_s: float = 3.0, namespace: str = NS,
+                 enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
+        self._cache: Cache[MultiSourceActivityState] = Cache(
+            ttl_s, self._fetch, fallback=MultiSourceActivityState(),
+        )
+        # AC1 / AC3: per-source error tracking + thread safety.
+        self._last_errors: Dict[str, str] = {}
+        self._lock = threading.Lock()
+        # AC10: burst aggregation counters — (actor, action) → deque[ts_float].
+        self._burst_counters: Dict[Tuple[str, str], Deque[float]] = {}
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> MultiSourceActivityState:
+        return self._cache.get(force)
+
+    def _fetch_source(self, deploy: str, role: str) -> List[ActivityEvent]:
+        """Fetch + parse de um único deployment. Retorna [] em caso de erro.
+
+        AC3: timeout 3.0s; TimeoutExpired registrado em _last_errors[deploy].
+        AC11: secrets redacted from ev.detail before appending.
+        """
+        if self._kubectl is None:
+            return []
+        cmd = [self._kubectl, "-n", self._namespace, "logs",
+               f"deploy/{deploy}",
+               f"--tail={_MULTI_TAIL_LINES}",
+               f"--since={_MULTI_SINCE}",
+               "--timestamps"]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=3.0)
+        except subprocess.TimeoutExpired:
+            with self._lock:
+                self._last_errors[deploy] = "timeout"
+            return []
+        except OSError:
+            return []
+        if out.returncode != 0:
+            with self._lock:
+                self._last_errors[deploy] = f"exit {out.returncode}"
+            return []
+        text = out.stdout
+        if not text:
+            return []
+        if len(text) > MAX_LOG_BYTES:
+            text = text[-MAX_LOG_BYTES:]
+        events: List[ActivityEvent] = []
+        for raw in text.splitlines():
+            ll = _parse_log_line(raw)
+            if ll is None:
+                continue
+            ev = _classify_source_line(ll, role)
+            if ev is not None:
+                # AC11: redact secrets before inserting into buffer.
+                safe_detail = _SECRET_RE.sub(r"\1=<redacted>", ev.detail)
+                if safe_detail != ev.detail:
+                    ev = ActivityEvent(ts=ev.ts, actor=ev.actor,
+                                       action=ev.action, target=ev.target,
+                                       detail=safe_detail)
+                events.append(ev)
+        return events
+
+    def _fetch(self) -> MultiSourceActivityState:
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+
+        # AC3: parallel fetch via ThreadPoolExecutor.
+        pool: List[ActivityEvent] = []
+        with futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_map = {
+                executor.submit(self._fetch_source, deploy, role): deploy
+                for deploy, role, _ in _MULTI_SOURCE_DEFS
+            }
+            for fut in futures.as_completed(future_map):
+                deploy = future_map[fut]
+                try:
+                    pool.extend(fut.result())
+                except Exception as exc:
+                    with self._lock:
+                        self._last_errors[deploy] = str(exc)
+
+        pool.sort(key=lambda e: e.ts)
+
+        # AC8: dedup dispatch.progress — keep only latest per task_id.
+        progress_latest: Dict[str, int] = {}
+        deduped: List[ActivityEvent] = []
+        for ev in pool:
+            if ev.action == "dispatch.progress":
+                m = _PROGRESS_TASK_RE.search(ev.detail)
+                if m:
+                    task_id = m.group(1)
+                    if task_id in progress_latest:
+                        deduped[progress_latest[task_id]] = ev
+                        continue
+                    progress_latest[task_id] = len(deduped)
+            deduped.append(ev)
+        pool = deduped
+
+        # AC10: burst aggregation — suppress floods of same (actor, action).
+        now_ts = datetime.now(timezone.utc).timestamp()
+        cutoff = now_ts - _BURST_WINDOW_S
+        with self._lock:
+            # Purge timestamps outside the window.
+            for key in list(self._burst_counters):
+                dq = self._burst_counters[key]
+                while dq and dq[0] < cutoff:
+                    dq.popleft()
+            # Register new events.
+            for ev in pool:
+                key = (ev.actor, ev.action)
+                if key not in self._burst_counters:
+                    self._burst_counters[key] = deque()
+                self._burst_counters[key].append(ev.ts.timestamp())
+            # Identify burst keys.
+            burst_keys: Set[Tuple[str, str]] = {
+                k for k, dq in self._burst_counters.items()
+                if len(dq) > _BURST_THRESHOLD
+            }
+            # Build burst summary events and suppress individuals.
+            if burst_keys:
+                burst_events: List[ActivityEvent] = []
+                filtered: List[ActivityEvent] = []
+                seen_burst: Set[Tuple[str, str]] = set()
+                for ev in pool:
+                    key = (ev.actor, ev.action)
+                    if key in burst_keys:
+                        if key not in seen_burst:
+                            seen_burst.add(key)
+                            count = len(self._burst_counters[key])
+                            burst_events.append(ActivityEvent(
+                                ts=ev.ts,
+                                actor=ev.actor,
+                                action=f"{ev.action}.burst",
+                                target=ev.target,
+                                detail=(f"{ev.action}.burst "
+                                        f"{count} em {int(_BURST_WINDOW_S)}s"),
+                            ))
+                            self._burst_counters[key].clear()
+                    else:
+                        filtered.append(ev)
+                pool = filtered + burst_events
+
+        # Rolling window: keep newest _MULTI_BUFFER_CAP events.
+        pool.sort(key=lambda e: e.ts)
+        state = MultiSourceActivityState()
+        state.events = pool[-_MULTI_BUFFER_CAP:]
         return state
 
 
@@ -5344,6 +5663,10 @@ class PanelData:
     # Pod-status provider for claude-worker (issue #395). Instanciado
     # apenas quando k8s está disponível — accessa /v1/pod-status via HTTP.
     claude_worker_info: Optional["ClaudeWorkerInfoProvider"] = None
+    # Multi-source activity feed (issue #436). Tail paralelo dos 5 deploys
+    # fixos V1; buffer rolling-window 200 eventos; parser dual-mode.
+    # ``None`` quando k8s não está disponível (modo local-only ou demo).
+    activity: Optional[MultiSourceActivityProvider] = None
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "PanelData":
@@ -5441,6 +5764,12 @@ class PanelData:
             claude_worker_info=(
                 ClaudeWorkerInfoProvider(enabled=True) if k8s_on else None
             ),
+            # MultiSourceActivityProvider (issue #436): only when k8s is on.
+            activity=(
+                MultiSourceActivityProvider(namespace=context.namespace,
+                                            enabled=k8s_on)
+                if k8s_on else None
+            ),
         )
 
     @classmethod
@@ -5457,7 +5786,7 @@ class PanelData:
         optionals = tuple(p for p in (self.local_processes, self.local_logs,
                                       self.local_audit, self.local_instances,
                                       self.local_registry, self.claude_workers,
-                                      self.claude_worker_info)
+                                      self.claude_worker_info, self.activity)
                           if p is not None)
         return base + optionals
 
@@ -5494,6 +5823,8 @@ class PanelData:
             names.append("local_registry")
         if self.claude_worker_info is not None:
             names.append("claude_worker_info")
+        if self.activity is not None:
+            names.append("activity")
         out: List[tuple] = []
         for name, p in zip(names, self._all_providers()):
             err = p.last_error
