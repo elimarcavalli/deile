@@ -480,8 +480,14 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def _lease_is_stale(lease_path: Path) -> bool:
+def _lease_is_stale(
+    lease_path: Path, alive_pods: Optional[set] = None
+) -> bool:
     """True se o lease expirou E o PID proprietário não está mais vivo.
+
+    Quando ``alive_pods`` é fornecido (registro de presença, issue #495),
+    também retorna True imediatamente se o pod dono não constar no conjunto
+    de vivos — fechando a janela de recuperação de 30 min para ~60 s.
 
     Conservador: se não conseguir ler o lease, assume que NÃO é stale
     (fail-safe — evita apagar workdirs em uso quando o FS está lento).
@@ -490,6 +496,12 @@ def _lease_is_stale(lease_path: Path) -> bool:
         data = json.loads(lease_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
+    # Verificação proativa via presença: se o conjunto está disponível e o
+    # pod dono não aparece nele, o lease é stale independente do heartbeat.
+    if alive_pods is not None:
+        pod = data.get("pod", "")
+        if pod and pod not in alive_pods:
+            return True
     heartbeat_at = data.get("heartbeat_at", 0)
     if (time.time() - float(heartbeat_at)) < _LEASE_TTL_S:
         return False  # heartbeat recente → ativo
@@ -560,6 +572,11 @@ def startup_cleanup(root: Optional[Path] = None) -> dict:
             "errors": ["work root not found"],
         }
 
+    # Registro de presença (issue #495): conjunto de pods vivos no momento.
+    # Permite recuperação imediata de lease cujo pod dono já morreu, sem
+    # aguardar o TTL de 30 min do heartbeat.
+    alive_pods = _get_alive_pods(root)
+
     try:
         candidates = [
             d for d in root.iterdir()
@@ -577,11 +594,11 @@ def startup_cleanup(root: Optional[Path] = None) -> dict:
         lease_path = workdir / ".lease.json"
 
         # Lease vivo → workdir em uso, pula completamente.
-        if lease_path.exists() and not _lease_is_stale(lease_path):
+        if lease_path.exists() and not _lease_is_stale(lease_path, alive_pods=alive_pods):
             continue
 
         # Lease stale → remove só o arquivo de lease (workdir pode ter dados úteis).
-        if lease_path.exists() and _lease_is_stale(lease_path):
+        if lease_path.exists() and _lease_is_stale(lease_path, alive_pods=alive_pods):
             try:
                 lease_path.unlink()
                 leases_removed += 1
@@ -1458,6 +1475,18 @@ _WORKSPACE_CLEANUP_INTERVAL_S: float = float(
     os.environ.get("DEILE_CLAUDE_WORKER_WORKSPACE_CLEANUP_INTERVAL_S", "3600"),
 )
 
+#: Intervalo de escrita do arquivo de presença de pod (default 10s).
+_PRESENCE_INTERVAL_S: int = int(
+    os.environ.get("DEILE_CLAUDE_WORKER_PRESENCE_INTERVAL_S", "10"),
+)
+
+#: TTL de presença em segundos — pod é "vivo" se escrita há menos que isto.
+#: Default 60s = 6× o intervalo; margem para evitar falso-morto por janela de
+#: escrita bloqueada (issue #495).
+_PRESENCE_TTL_S: int = int(
+    os.environ.get("DEILE_CLAUDE_WORKER_PRESENCE_TTL_S", "60"),
+)
+
 
 def _workspace_total_bytes(root: Path) -> int:
     """Estimativa rápida do tamanho total ocupado pela árvore de workdirs.
@@ -1479,10 +1508,18 @@ def _workspace_total_bytes(root: Path) -> int:
     return total
 
 
-def _workspace_is_stale(workspace: Path, *, threshold_s: int, now: float) -> bool:
+def _workspace_is_stale(
+    workspace: Path,
+    *,
+    threshold_s: int,
+    now: float,
+    alive_pods: Optional[set] = None,
+) -> bool:
     """True se ``workspace`` é candidato a remoção.
 
     Critério (em ordem de precedência):
+      * ``.lease.json`` presente e pod dono ausente de ``alive_pods``
+        (registro de presença, issue #495) → stale imediatamente.
       * ``.lease.json`` presente e ``heartbeat_at`` mais velho que
         ``threshold_s`` → stale (pod morreu sem cleanup).
       * ``.lease.json`` ausente: fallback no ``st_mtime`` do diretório
@@ -1509,10 +1546,91 @@ def _workspace_is_stale(workspace: Path, *, threshold_s: int, now: float) -> boo
     # (st_mtime recente) mas o JSON aponta um heartbeat antigo, vale o JSON.
     try:
         data = json.loads(lease.read_text(encoding="utf-8"))
+        # Verificação proativa via presença (issue #495).
+        if alive_pods is not None:
+            pod = data.get("pod", "")
+            if pod and pod not in alive_pods:
+                return True
         hb = float(data.get("heartbeat_at", st.st_mtime))
     except (OSError, json.JSONDecodeError, ValueError):
         return True
     return (now - hb) >= threshold_s
+
+
+def _presence_dir(root: Path) -> Path:
+    """Subdiretório dos arquivos de presença de pod (``<root>/.pods``)."""
+    return root / ".pods"
+
+
+def _write_presence(root: Path) -> None:
+    """Escreve/atualiza ``<root>/.pods/<HOSTNAME>.presence`` de forma atômica.
+
+    Best-effort: erros de I/O são logados e ignorados.
+    """
+    pod_id = os.environ.get("HOSTNAME", f"local-{os.getpid()}")
+    pdir = _presence_dir(root)
+    try:
+        pdir.mkdir(exist_ok=True)
+    except OSError as exc:
+        logger.warning("presence: não criou %s: %s", pdir, exc)
+        return
+    target = pdir / f"{pod_id}.presence"
+    tmp = pdir / f".{pod_id}.presence.tmp"
+    try:
+        tmp.write_text(
+            json.dumps({"pod": pod_id, "written_at": time.time()}),
+            encoding="utf-8",
+        )
+        tmp.rename(target)
+    except OSError as exc:
+        logger.warning("presence: falha ao escrever %s: %s", target, exc)
+
+
+def _get_alive_pods(root: Path) -> Optional[set]:
+    """Retorna nomes dos pods com presença dentro de ``_PRESENCE_TTL_S``.
+
+    Returns:
+        ``None`` quando o diretório ``.pods`` não existe — o registro de
+        presença ainda não foi inicializado; chamadores devem recair no TTL
+        de heartbeat padrão.
+
+        ``set`` (possivelmente vazio) quando o diretório existe — contém
+        apenas os pods que atualizaram presença dentro de ``_PRESENCE_TTL_S``.
+
+    Arquivo ilegível ou TTL expirado → pod omitido do conjunto (conservador:
+    só recupera lease quando pod está comprovadamente ausente do registro).
+    """
+    pdir = _presence_dir(root)
+    if not pdir.is_dir():
+        return None  # presença não inicializada — sem dados suficientes
+    now = time.time()
+    alive: set = set()
+    try:
+        entries = list(pdir.iterdir())
+    except OSError:
+        return alive
+    for entry in entries:
+        if not entry.name.endswith(".presence"):
+            continue
+        try:
+            data = json.loads(entry.read_text(encoding="utf-8"))
+            written_at = float(data.get("written_at", 0))
+            pod = data.get("pod", "")
+            if pod and (now - written_at) < _PRESENCE_TTL_S:
+                alive.add(pod)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+    return alive
+
+
+async def _presence_loop(root: Path) -> None:
+    """Mantém ``<root>/.pods/<HOSTNAME>.presence`` atualizado a cada ``_PRESENCE_INTERVAL_S`` s.
+
+    Cancelado no shutdown do aiohttp (via _on_cleanup). Best-effort.
+    """
+    while True:
+        await asyncio.to_thread(_write_presence, root)
+        await asyncio.sleep(_PRESENCE_INTERVAL_S)
 
 
 def _remove_workspace_tree(workspace: Path) -> int:
@@ -1572,6 +1690,7 @@ def _cleanup_stale_workspaces(
             threshold_s = _WORKSPACE_STALE_TTL_S
         summary["threshold_s"] = threshold_s
 
+    alive_pods = _get_alive_pods(root)
     now = time.time()
     for child in children:
         if not child.is_dir() or child.name.startswith("."):
@@ -1580,7 +1699,7 @@ def _cleanup_stale_workspaces(
         if not _TASK_ID_RE.fullmatch(child.name):
             continue
         summary["inspected"] += 1
-        if not _workspace_is_stale(child, threshold_s=threshold_s, now=now):
+        if not _workspace_is_stale(child, threshold_s=threshold_s, now=now, alive_pods=alive_pods):
             continue
         bytes_freed = _remove_workspace_tree(child)
         summary["removed"] += 1
@@ -3528,23 +3647,31 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
     )
 
     async def _on_startup(_app: web.Application) -> None:
+        # Escreve presença antes do cleanup para que este pod seja incluído
+        # no conjunto de vivos durante a varredura inicial (issue #495).
+        await asyncio.to_thread(_write_presence, _cleanup_root)
         try:
             await asyncio.to_thread(_cleanup_stale_workspaces, _cleanup_root)
         except Exception as exc:  # noqa: BLE001 — startup nunca falha por isso
             logger.warning("startup workspace cleanup raised: %s", exc)
+        _app["_presence_task"] = asyncio.create_task(
+            _presence_loop(_cleanup_root),
+            name="presence-heartbeat",
+        )
         _app["_workspace_cleanup_task"] = asyncio.create_task(
             _workspace_cleanup_loop(_cleanup_root),
             name="workspace-cleanup",
         )
 
     async def _on_cleanup(_app: web.Application) -> None:
-        task = _app.get("_workspace_cleanup_task")
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        for key in ("_presence_task", "_workspace_cleanup_task"):
+            task = _app.get(key)
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
 
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
@@ -3623,6 +3750,11 @@ def main(passthrough: Optional[List[str]] = None) -> int:
     # ``~/.claude/credentials.json`` automaticamente (esse path é
     # convenção macOS — Linux só lê env vars).
     _load_oauth_token_into_env()
+
+    # Escreve presença antes do cleanup (issue #495): garante que este pod
+    # conste como vivo durante a varredura, evitando auto-recuperação do
+    # próprio lease ao reiniciar.
+    _write_presence(root)
 
     # Startup housekeeping hook (issue #408) — varre PVC antes de aceitar
     # conexões. Conservador, idempotente, best-effort.
