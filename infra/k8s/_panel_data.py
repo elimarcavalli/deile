@@ -519,6 +519,22 @@ def _capture_text(cmd: List[str], timeout: float = 5.0) -> Optional[str]:
     return out.stdout
 
 
+def _capture_text_lossy(cmd: List[str], timeout: float = 5.0) -> Optional[str]:
+    """Como ``_capture_text`` mas decodifica UTF-8 com ``errors="replace"``.
+
+    Necessário quando a saída pode conter bytes UTF-8 truncados no meio de
+    um caractere multibyte (ex.: ``head -c N`` sobre um cmdline com prompt
+    acentuado) — ``text=True`` estouraria ``UnicodeDecodeError``.
+    """
+    try:
+        out = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.decode("utf-8", errors="replace")
+
+
 # ===== time helpers =========================================================
 
 _UTC = timezone.utc
@@ -5881,6 +5897,443 @@ class ClaudeWorkerInfoProvider:
         )
 
 
+# ===== ClaudeWorker truth probe (proposta painel — doing-now sem inferência) =
+
+# Extratores do cmdline do ``claude -p`` (ground-truth — não vem de log).
+_CW_MODEL_RE = re.compile(r"--model\s+(\S+)")
+_CW_EFFORT_RE = re.compile(r"--effort\s+(\S+)")
+_CW_BRANCH_RE = re.compile(r"\bbranch\s+(\S+?)[.,\s]")
+
+
+def _cw_short_model(model: Optional[str]) -> Optional[str]:
+    """``claude-sonnet-4-6`` → ``sonnet-4-6`` (mesma regra do audit)."""
+    if not model:
+        return None
+    m = model.strip()
+    for pfx in ("claude-", "anthropic:claude-", "anthropic:"):
+        if m.startswith(pfx):
+            m = m[len(pfx):]
+    return m or None
+
+
+def _cw_summary(cmdline: str) -> str:
+    """Verbo curto do que o claude está fazendo, lido do cmdline (não do log)."""
+    low = cmdline.lower()
+    if "revisor de pr" in low or ("revise" in low and " pr " in low) \
+            or "review" in low and " pr#" in low:
+        return "review PR"
+    if "implement" in low or "implemente" in low:
+        return "implement"
+    if "refin" in low:
+        return "refine"
+    if "decompõe" in low or "decompo" in low or "decompose" in low:
+        return "decompose"
+    if "classif" in low:
+        return "classify"
+    return "dispatch"
+
+
+@dataclass
+class ClaudeDispatch:
+    """Um ``claude -p`` vivo agora num pod, extraído do /proc (ground-truth)."""
+    pod: str
+    claude_pid: int
+    summary: str = "dispatch"
+    branch: Optional[str] = None
+    model: Optional[str] = None       # slug curto (sonnet-4-6)
+    effort: Optional[str] = None
+    heartbeat_age_s: Optional[float] = None  # do lease pareado por claude_pid
+
+
+@dataclass
+class ClaudeWorkerTruth:
+    """Verdade-sempre por pod claude-worker (proposta de UI do painel).
+
+    Fonte exclusiva: ``kubectl exec`` no pod (varre ``/proc`` + lê
+    ``.lease.json`` do PVC compartilhado). NUNCA deriva de ``kubectl logs``.
+
+    - ``claude_running``: há ≥1 ``claude -p`` vivo NESTE pod (via /proc).
+    - ``dispatches``: cada claude vivo, com o que está fazendo (cmdline).
+    - ``heartbeat_age_s``: idade do heartbeat do lease deste pod; quando
+      > 15s a UI marca ``⚠ stale``.
+    - ``probe_ok=False``: o exec falhou (pod inacessível) → UI mostra
+      ``— (pod down)`` sem travar.
+    """
+    pod_name: str
+    probe_ok: bool = False
+    claude_running: bool = False
+    dispatches: List[ClaudeDispatch] = field(default_factory=list)
+    heartbeat_age_s: Optional[float] = None
+
+
+# Script de probe rodado in-pod. Bounded (head -c 400) e sem dependência de
+# ``pgrep`` (indisponível nesses pods). Ancora no executável (1º token do
+# cmdline terminar em ``/claude``) para excluir o próprio ``sh -c`` da varredura.
+_CW_PROBE_SCRIPT = (
+    'for p in /proc/[0-9]*; do pid=${p##*/}; '
+    'c=$(head -c 400 "$p/cmdline" 2>/dev/null | tr "\\0\\n\\r" "   "); '
+    'exe=${c%% *}; '
+    'case "$exe" in */claude) printf "CPID|%s|%s\\n" "$pid" "$c";; esac; '
+    'done; '
+    'for f in /home/claude/work/*/.lease.json; do '
+    '[ -f "$f" ] && { printf "LEASE|"; tr "\\n" " " < "$f"; printf "\\n"; }; '
+    'done'
+)
+
+
+class ClaudeWorkerTruthProvider(_KubectlProviderMixin):
+    """Verdade-sempre dos pods claude-worker via ``kubectl exec`` (proposta UI).
+
+    Um exec por réplica (TTL 2s, off-thread no ``BackgroundRefresher``).
+    Cada exec varre ``/proc`` (claude vivo NESTE pod) e lê os leases do PVC
+    compartilhado. O cross-check ``lease.claude_pid`` ↔ CPID do pod dono dá o
+    heartbeat de cada dispatch. Falha graciosa: pod inacessível → ``probe_ok``
+    False (UI degrada, nunca trava).
+    """
+
+    LABEL_SELECTOR = "app=claude-worker"
+    CONTAINER = "claude-worker"
+
+    def __init__(self, ttl_s: float = 2.0, namespace: str = NS,
+                 enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
+        self._cache: Cache[Dict[str, ClaudeWorkerTruth]] = Cache(
+            ttl_s, self._fetch, fallback={},
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> Dict[str, ClaudeWorkerTruth]:
+        return self._cache.get(force)
+
+    def active_dispatch_count(self) -> int:
+        """Total de ``claude -p`` vivos no deploy (para o rodapé do painel)."""
+        return sum(len(t.dispatches) for t in self._cache.get().values())
+
+    def _fetch(self) -> Dict[str, ClaudeWorkerTruth]:
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        names_raw = _capture_text(
+            [self._kubectl, "-n", self._namespace, "get", "pods",
+             "-l", self.LABEL_SELECTOR,
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            timeout=4.0,
+        )
+        if names_raw is None:
+            raise RuntimeError("kubectl get claude-worker pods falhou")
+        pod_names = [n for n in names_raw.split() if n]
+        now = time.time()
+        # Lease é global (PVC compartilhado) — claude_pid → (pod_dono, hb_age).
+        lease_by_pid: Dict[int, tuple] = {}
+        raw_by_pod: Dict[str, Optional[str]] = {}
+        for name in pod_names:
+            out = _capture_text_lossy(
+                [self._kubectl, "-n", self._namespace, "exec", name,
+                 "-c", self.CONTAINER, "--", "sh", "-c", _CW_PROBE_SCRIPT],
+                timeout=6.0,
+            )
+            raw_by_pod[name] = out
+            if not out:
+                continue
+            for line in out.splitlines():
+                if not line.startswith("LEASE|"):
+                    continue
+                try:
+                    lease = json.loads(line[len("LEASE|"):].strip())
+                except json.JSONDecodeError:
+                    continue
+                cpid = lease.get("claude_pid")
+                hb = lease.get("heartbeat_at")
+                owner = lease.get("pod")
+                if isinstance(cpid, int):
+                    age = (now - hb) if isinstance(hb, (int, float)) else None
+                    lease_by_pid[cpid] = (owner, age)
+        result: Dict[str, ClaudeWorkerTruth] = {}
+        for name in pod_names:
+            out = raw_by_pod.get(name)
+            truth = ClaudeWorkerTruth(pod_name=name, probe_ok=out is not None)
+            if out:
+                hb_ages: List[float] = []
+                for line in out.splitlines():
+                    if not line.startswith("CPID|"):
+                        continue
+                    parts = line.split("|", 2)
+                    if len(parts) < 3:
+                        continue
+                    try:
+                        pid = int(parts[1])
+                    except ValueError:
+                        continue
+                    cmdline = parts[2]
+                    owner_age = lease_by_pid.get(pid)
+                    hb_age = owner_age[1] if owner_age else None
+                    if hb_age is not None:
+                        hb_ages.append(hb_age)
+                    mm = _CW_MODEL_RE.search(cmdline)
+                    ee = _CW_EFFORT_RE.search(cmdline)
+                    bb = _CW_BRANCH_RE.search(cmdline)
+                    truth.dispatches.append(ClaudeDispatch(
+                        pod=name, claude_pid=pid,
+                        summary=_cw_summary(cmdline),
+                        branch=bb.group(1) if bb else None,
+                        model=_cw_short_model(mm.group(1) if mm else None),
+                        effort=ee.group(1) if ee else None,
+                        heartbeat_age_s=hb_age,
+                    ))
+                truth.claude_running = bool(truth.dispatches)
+                truth.heartbeat_age_s = min(hb_ages) if hb_ages else None
+            result[name] = truth
+        return result
+
+
+# ===== DeileWorker truth probe (proposta painel — doing-now sem inferência) ==
+
+def _target_from_channel(channel_id: str) -> Optional[str]:
+    """``pipeline-issue-443`` → ``#443``; ``pipeline-pr-12`` → ``PR#12``.
+
+    Reusa a convenção de nomes de canal do pipeline. ``None`` quando não casa.
+    """
+    m = _PIPELINE_CHANNEL_RE.match(channel_id or "")
+    if not m:
+        return None
+    kind, n = m.group(1), m.group(2)
+    if kind.startswith("mention-"):
+        return f"mention {'PR' if kind.endswith('pr') else '#'}{n}"
+    return f"PR#{n}" if kind.endswith("pr") else f"#{n}"
+
+
+@dataclass
+class DeileWorkerTruth:
+    """Verdade-sempre por pod deile-worker via marcador de dispatch.
+
+    Fonte: ``WORK_ROOT/.current/<task_id>.json`` escrito pelo
+    ``worker_server`` (espelho da lease do claude-worker), lido por
+    ``kubectl exec``. NUNCA deriva de ``kubectl logs``.
+
+    - ``has_marker_dir=False`` → imagem antiga (sem o mecanismo) → o painel
+      cai no comportamento legado (log) em vez de mentir "idle".
+    - ``busy`` → há marcador com ``pid`` vivo NESTE pod.
+    """
+    pod_name: str
+    probe_ok: bool = False
+    has_marker_dir: bool = False
+    busy: bool = False
+    target: Optional[str] = None
+    persona: Optional[str] = None
+    model: Optional[str] = None
+    phase: Optional[str] = None
+    age_s: Optional[float] = None         # now - updated_at (freshness)
+
+
+_DW_PROBE_SCRIPT = (
+    'd=/home/deile/work/.current; '
+    '[ -d "$d" ] && echo "DIR|1" || echo "DIR|0"; '
+    'for f in "$d"/*.json; do '
+    '[ -f "$f" ] || continue; '
+    'pid=$(grep -o \'"pid"[ :]*[0-9]*\' "$f" | grep -o \'[0-9][0-9]*\'); '
+    'alive=0; [ -n "$pid" ] && [ -d "/proc/$pid" ] && alive=1; '
+    'printf "MARK|%s|" "$alive"; tr "\\n" " " < "$f"; printf "\\n"; '
+    'done'
+)
+
+
+class DeileWorkerTruthProvider(_KubectlProviderMixin):
+    """Verdade-sempre dos pods deile-worker via marcador de dispatch + exec.
+
+    Um exec por réplica (TTL 2s, off-thread). Atribui o marcador ao pod cujo
+    ``/proc`` tem o ``pid`` vivo (robusto mesmo se o PVC ``work`` for
+    compartilhado). Falha graciosa: pod inacessível → ``probe_ok`` False.
+    """
+
+    LABEL_SELECTOR = "app=deile-worker"
+
+    def __init__(self, ttl_s: float = 2.0, namespace: str = NS,
+                 enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
+        self._cache: Cache[Dict[str, DeileWorkerTruth]] = Cache(
+            ttl_s, self._fetch, fallback={},
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> Dict[str, DeileWorkerTruth]:
+        return self._cache.get(force)
+
+    def _fetch(self) -> Dict[str, DeileWorkerTruth]:
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        names_raw = _capture_text(
+            [self._kubectl, "-n", self._namespace, "get", "pods",
+             "-l", self.LABEL_SELECTOR,
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            timeout=4.0,
+        )
+        if names_raw is None:
+            raise RuntimeError("kubectl get deile-worker pods falhou")
+        now = time.time()
+        result: Dict[str, DeileWorkerTruth] = {}
+        for name in (n for n in names_raw.split() if n):
+            out = _capture_text_lossy(
+                [self._kubectl, "-n", self._namespace, "exec", name,
+                 "--", "sh", "-c", _DW_PROBE_SCRIPT],
+                timeout=6.0,
+            )
+            truth = DeileWorkerTruth(pod_name=name, probe_ok=out is not None)
+            if out:
+                best: Optional[tuple] = None  # (age_s, marker) do mais recente
+                for line in out.splitlines():
+                    if line.startswith("DIR|"):
+                        truth.has_marker_dir = line.strip().endswith("|1")
+                        continue
+                    if not line.startswith("MARK|"):
+                        continue
+                    parts = line.split("|", 2)
+                    if len(parts) < 3 or parts[1] != "1":  # pid não vivo aqui
+                        continue
+                    try:
+                        m = json.loads(parts[2].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    upd = m.get("updated_at")
+                    age = (now - upd) if isinstance(upd, (int, float)) else None
+                    if best is None or (age is not None and age < best[0]):
+                        best = (age if age is not None else 1e9, m)
+                if best is not None:
+                    m = best[1]
+                    truth.busy = True
+                    truth.target = _target_from_channel(m.get("channel_id", ""))
+                    truth.persona = m.get("persona") or None
+                    truth.model = _cw_short_model(m.get("model"))
+                    truth.phase = m.get("phase") or None
+                    truth.age_s = best[0] if best[0] < 1e9 else None
+            result[name] = truth
+        return result
+
+
+# ===== Custo "hoje" dos claude-workers (proposta painel — rodapé [1]Pods) ====
+
+_BRT = timezone(timedelta(hours=-3))
+
+
+class ClaudeCostTodayProvider(_KubectlProviderMixin):
+    """Custo USD acumulado HOJE (BRT) das sessões ``claude -p`` no PVC.
+
+    Fonte de verdade: o mesmo parser/preços do ``session_tokens_audit`` (sem
+    duplicar a lógica de dedup nem a tabela ``PRICING``). Para não reparsear
+    todo o histórico a cada tick (carga no pod que roda claude), filtra por
+    ``AUDIT_SINCE_MTIME`` = meia-noite BRT — só os JSONL do dia são lidos.
+
+    TTL alto (300s) + roda no ``BackgroundRefresher``. Falha graciosa:
+    ``last_error`` setado, valor cai em ``0.0`` (o rodapé só não mostra custo).
+    """
+
+    LABEL_SELECTOR = "app=claude-worker"
+    CONTAINER = "claude-worker"
+
+    # Intervalo mínimo entre fetches reais — maior que a duração de um parse,
+    # menor que o TTL. Evita o empilhamento de fetches de 30s no cold-start
+    # (quando ``_value is None`` a guarda de TTL do Cache é furada e o
+    # refresher poderia re-submeter a cada tick).
+    _MIN_GAP_S = 60.0
+
+    def __init__(self, ttl_s: float = 300.0, namespace: str = NS,
+                 enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
+        self._last_attempt_mono = 0.0
+        self._cache: Cache[Optional[float]] = Cache(
+            ttl_s, self._fetch, fallback=None,
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> Optional[float]:
+        return self._cache.get(force)
+
+    def peek(self) -> Optional[float]:
+        """Valor cacheado SEM disparar fetch (não bloqueia o render).
+
+        O ``BackgroundRefresher`` aquece o cache off-thread; o render só lê.
+        """
+        return self._cache._value  # noqa: SLF001
+
+    @staticmethod
+    def _today_brt_midnight_epoch() -> float:
+        now = datetime.now(_BRT)
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return midnight.timestamp()
+
+    def _fetch(self) -> Optional[float]:
+        self._check_enabled()
+        # Anti-empilhamento (cold-start): se um fetch real ocorreu há pouco,
+        # devolve o cacheado em vez de rodar outro parse de 30s back-to-back.
+        mono = time.monotonic()
+        if self._last_attempt_mono and (mono - self._last_attempt_mono) < self._MIN_GAP_S:
+            return self._cache._value  # noqa: SLF001
+        self._last_attempt_mono = mono
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        import session_tokens_audit as sta  # lazy — degrada se ausente
+        pod = _capture_text(
+            [self._kubectl, "-n", self._namespace, "get", "pods",
+             "-l", self.LABEL_SELECTOR, "-o",
+             "jsonpath={.items[0].metadata.name}"],
+            timeout=4.0,
+        )
+        pod = (pod or "").strip()
+        if not pod:
+            raise RuntimeError("nenhum pod claude-worker")
+        since = self._today_brt_midnight_epoch()
+        sessions = self._run_parser(sta, pod, since)
+        # Soma o custo reusando a precificação canônica do audit (PRICING +
+        # cost_of_model) sobre os tokens já deduplicados por (id,requestId).
+        total = 0.0
+        for s in sessions:
+            for model, tk in s.get("models", {}).items():
+                total += sta.cost_of_model(tk, model)
+        return round(total, 4)
+
+    def _run_parser(self, sta, pod: str, since: float) -> list:
+        """Roda o IN_POD_PARSER (via stdin) de forma resiliente — sem sys.exit."""
+        try:
+            proc = subprocess.run(
+                [self._kubectl, "-n", self._namespace, "exec", "-i", pod,
+                 "-c", self.CONTAINER, "--", "sh", "-c",
+                 f"AUDIT_NO_GIT=1 AUDIT_SINCE_MTIME={since} python3 -"],
+                input=sta.IN_POD_PARSER, capture_output=True, text=True,
+                timeout=30.0,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"exec do parser falhou: {exc}") from exc
+        if proc.returncode != 0:
+            raise RuntimeError(f"parser rc={proc.returncode}")
+        raw = proc.stdout.strip()
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            for ln in reversed(raw.splitlines()):
+                ln = ln.strip()
+                if ln.startswith("["):
+                    return json.loads(ln)
+            raise RuntimeError("saída do parser não é JSON")
+
+
 # ===== Aggregate hub ========================================================
 
 @dataclass
@@ -5932,6 +6385,13 @@ class PanelData:
     # Pod-status provider for claude-worker (issue #395). Instanciado
     # apenas quando k8s está disponível — accessa /v1/pod-status via HTTP.
     claude_worker_info: Optional["ClaudeWorkerInfoProvider"] = None
+    # Verdade-sempre dos pods claude-worker via ``kubectl exec`` (proposta de
+    # UI do painel — doing-now sem inferência de log). ``None`` em local-only.
+    claude_truth: Optional["ClaudeWorkerTruthProvider"] = None
+    # Idem para deile-worker (lê o marcador de dispatch ``.current/*.json``).
+    deile_worker_truth: Optional["DeileWorkerTruthProvider"] = None
+    # Custo USD acumulado hoje (BRT) das sessões claude -p (rodapé [1]Pods).
+    claude_cost_today: Optional["ClaudeCostTodayProvider"] = None
     # Multi-source activity feed (issue #436). Tail paralelo dos 5 deploys
     # fixos V1; buffer rolling-window 200 eventos; parser dual-mode.
     # ``None`` quando k8s não está disponível (modo local-only ou demo).
@@ -6033,6 +6493,23 @@ class PanelData:
             claude_worker_info=(
                 ClaudeWorkerInfoProvider(enabled=True) if k8s_on else None
             ),
+            # ClaudeWorkerTruthProvider: doing-now via exec/proc (host panel
+            # não alcança o Service in-cluster, então a verdade vem por exec).
+            claude_truth=(
+                ClaudeWorkerTruthProvider(namespace=context.namespace,
+                                          enabled=k8s_on)
+                if k8s_on else None
+            ),
+            deile_worker_truth=(
+                DeileWorkerTruthProvider(namespace=context.namespace,
+                                         enabled=k8s_on)
+                if k8s_on else None
+            ),
+            claude_cost_today=(
+                ClaudeCostTodayProvider(namespace=context.namespace,
+                                        enabled=k8s_on)
+                if k8s_on else None
+            ),
             # MultiSourceActivityProvider (issue #436): only when k8s is on.
             activity=(
                 MultiSourceActivityProvider(namespace=context.namespace,
@@ -6055,7 +6532,9 @@ class PanelData:
         optionals = tuple(p for p in (self.local_processes, self.local_logs,
                                       self.local_audit, self.local_instances,
                                       self.local_registry, self.claude_workers,
-                                      self.claude_worker_info, self.activity)
+                                      self.claude_worker_info, self.claude_truth,
+                                      self.deile_worker_truth, self.claude_cost_today,
+                                      self.activity)
                           if p is not None)
         return base + optionals
 
@@ -6090,8 +6569,18 @@ class PanelData:
             names.append("local_instances")
         if self.local_registry is not None:
             names.append("local_registry")
+        # Ordem TEM de espelhar `_all_providers()` optionals para o zip abaixo
+        # rotular o erro do provider certo.
+        if self.claude_workers is not None:
+            names.append("claude_workers")
         if self.claude_worker_info is not None:
             names.append("claude_worker_info")
+        if self.claude_truth is not None:
+            names.append("claude_truth")
+        if self.deile_worker_truth is not None:
+            names.append("deile_worker_truth")
+        if self.claude_cost_today is not None:
+            names.append("claude_cost_today")
         if self.activity is not None:
             names.append("activity")
         out: List[tuple] = []

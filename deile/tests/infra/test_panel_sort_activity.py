@@ -134,6 +134,11 @@ class TestPodRowsSort:
         last_activity_s: seconds since last activity (None → no activity).
         """
         data = MagicMock()
+        # Providers de verdade (proposta [1]Pods) ausentes neste teste de sort
+        # → as células caem no caminho legado (WorkerState/log), que é o que
+        # estes testes exercitam.
+        data.claude_truth = None
+        data.deile_worker_truth = None
         pods = []
         workers = {}
         now = _utc_now()
@@ -194,6 +199,8 @@ class TestPodRowsSort:
 
     def test_sort_status_running_first(self):
         data = MagicMock()
+        data.claude_truth = None
+        data.deile_worker_truth = None
         pods = []
         p_nr = MagicMock()
         p_nr.name = "not-ready-pod"

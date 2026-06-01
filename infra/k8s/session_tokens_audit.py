@@ -132,6 +132,13 @@ import json, glob, os, subprocess, re
 BASE = "/home/claude/.claude/projects"
 TASKS = "/home/claude/.claude/tasks"
 RUN_GIT = os.environ.get("AUDIT_NO_GIT") != "1"
+# Filtro opt-in por mtime (epoch): pula JSONL mais antigos que SINCE. 0 = tudo
+# (comportamento padrão). Usado pelo painel para custo "hoje" sem reparsear
+# todo o histórico (carga proporcional só aos arquivos do dia).
+try:
+    SINCE_MTIME = float(os.environ.get("AUDIT_SINCE_MTIME") or 0)
+except ValueError:
+    SINCE_MTIME = 0.0
 
 def read_task_meta(project_dir):
     # O JSONL vive em projects/-home-claude-work-<task_id>/<session>.jsonl; o
@@ -215,6 +222,8 @@ def text_of(content):
 
 sessions = []
 for f in sorted(glob.glob(os.path.join(BASE, "**", "*.jsonl"), recursive=True)):
+    if SINCE_MTIME and os.path.getmtime(f) < SINCE_MTIME:
+        continue
     rec = {
         "jsonl": f,
         "project_dir": os.path.dirname(f),
@@ -408,8 +417,11 @@ def resolve_pvc(kubectl: str, ns: str) -> str:
     return "claude-worker-home"
 
 
-def fetch_sessions(kubectl: str, ns: str, pod: str, no_git: bool) -> list:
+def fetch_sessions(kubectl: str, ns: str, pod: str, no_git: bool,
+                   since_mtime: float = 0.0) -> list:
     env_prefix = "AUDIT_NO_GIT=1 " if no_git else ""
+    if since_mtime:
+        env_prefix += f"AUDIT_SINCE_MTIME={since_mtime} "
     cmd = [kubectl, "-n", ns, "exec", "-i", pod, "-c", "claude-worker", "--",
            "sh", "-c", f"{env_prefix}python3 -"]
     proc = subprocess.run(cmd, input=IN_POD_PARSER, capture_output=True, text=True)
