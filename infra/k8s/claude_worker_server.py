@@ -52,9 +52,13 @@ import dispatch_logger as dlog
 try:
     # Sibling stdlib-puro (mesmo dir, no sys.path in-pod como dispatch_logger).
     # Fonte única da agregação de custo, usada pelo harvester do ledger (#445).
+    # ``summarize_jsonl`` é o extrator RICO (superset) que preserva tudo que a
+    # tela de tokens mostra (título/brief/tools/PR/erros), não só os tokens.
     from jsonl_cost import aggregate_jsonl as _aggregate_jsonl
+    from jsonl_cost import summarize_jsonl as _summarize_jsonl
 except Exception:  # pragma: no cover — sibling sempre presente in-pod
     _aggregate_jsonl = None
+    _summarize_jsonl = None
 
 logger = logging.getLogger("deile.claude_worker_server")
 
@@ -3001,11 +3005,25 @@ def _session_jsonl_exists_for_workdir(workdir: Path) -> bool:
 # lê o ledger para sessões já podadas + o JSONL vivo para as recentes.
 # --------------------------------------------------------------------------- #
 
-#: Grace period (default 1 h) — protege contra TOCTOU: um workdir recém
-#: removido pode ter um resume agendado; só colhemos/podamos JSONL cujo
-#: dir não foi modificado dentro dessa janela.
+#: Grace period (default 1 h) — piso TOCTOU absoluto: um workdir recém
+#: removido pode ter um resume agendado; nunca colhemos/podamos JSONL cujo
+#: dir foi modificado dentro dessa janela. NÃO é o gatilho principal de poda
+#: (esse é a retenção em dias abaixo) — só um piso de segurança.
 _JSONL_ORPHAN_GRACE_S: int = int(
     os.environ.get("DEILE_CLAUDE_JSONL_ORPHAN_GRACE_S", "3600"),
+)
+
+#: Retenção dos transcripts JSONL órfãos, em DIAS (default 30) — gatilho
+#: principal da poda. Um transcript órfão (workdir-pai já removido) só é
+#: colhido+podado depois de N dias SEM modificação. Configurável pelo Humano
+#: via env (manifest/painel) — o JSONL é minúsculo (~KB), então retenção longa
+#: é barata e preserva o histórico resumível + o detalhe completo na tela de
+#: tokens. Knob SEPARADO do workdir (``DEILE_CLAUDE_CLEANUP_RETENTION_DAYS``),
+#: que limpa os checkouts volumosos num ritmo mais curto.
+_JSONL_RETENTION_DAYS_ENV = "DEILE_CLAUDE_JSONL_RETENTION_DAYS"
+_JSONL_RETENTION_DAYS_DEFAULT = 30
+_JSONL_RETENTION_DAYS: int = int(
+    os.environ.get(_JSONL_RETENTION_DAYS_ENV, str(_JSONL_RETENTION_DAYS_DEFAULT)),
 )
 
 _PROJECT_MARKER = "-home-claude-work-"
@@ -3028,18 +3046,27 @@ def _cost_ledger_path() -> Path:
 
 def _orphan_jsonl_scan(
     work_root: Path, projects_dir: Path, grace_s: int, now: float,
+    retention_days: Optional[int] = None,
 ) -> tuple:
-    """Lista dirs de projeto JSONL órfãos (workdir-pai ausente, além do grace).
+    """Lista dirs de projeto JSONL órfãos elegíveis à poda.
 
-    Órfão = ``projects/-home-claude-work-<task_id>`` cujo
-    ``work_root/<task_id>`` não existe mais E cujo ``st_mtime`` é anterior a
-    ``now - grace_s``. Returns ``(list[Path], candidate_bytes)``.
+    Órfão elegível = ``projects/-home-claude-work-<task_id>`` cujo
+    ``work_root/<task_id>`` não existe mais (workdir-pai removido) E cujo
+    ``st_mtime`` é mais antigo que o cutoff. O cutoff é o MAIS conservador
+    entre a retenção em dias (gatilho principal, default 30d) e o grace TOCTOU
+    (piso de 1h) — ``now - max(retention_days*86400, grace_s)``. Assim, mesmo
+    uma retenção mal-configurada para 0 nunca ceifa dentro da janela TOCTOU.
+
+    Returns ``(list[Path], candidate_bytes)``.
     """
     orphans: list = []
     candidate_bytes = 0
     if not projects_dir.is_dir():
         return orphans, candidate_bytes
-    cutoff = now - grace_s
+    if retention_days is None:
+        retention_days = _JSONL_RETENTION_DAYS
+    retention_s = max(0, retention_days) * 86400
+    cutoff = now - max(retention_s, grace_s)
     try:
         children = list(projects_dir.iterdir())
     except OSError:
@@ -3053,7 +3080,7 @@ def _orphan_jsonl_scan(
         # Workdir-pai ainda existe → sessão viva/resumível, preservar.
         if (work_root / task_id).exists():
             continue
-        # Grace: protege contra TOCTOU (workdir recém-removido).
+        # Retenção + grace: só órfãos sem modificação além do cutoff.
         try:
             if pdir.stat().st_mtime > cutoff:
                 continue
@@ -3102,16 +3129,21 @@ def _harvest_and_prune_orphan_jsonl(
     projects_dir: Optional[Path] = None,
     ledger_path: Optional[Path] = None,
     grace_s: Optional[int] = None,
+    retention_days: Optional[int] = None,
     now: Optional[float] = None,
     dry_run: bool = False,
 ) -> dict:
-    """Colhe o custo de sessões JSONL órfãs para o ledger e poda os dirs.
+    """Colhe o RESUMO COMPLETO de sessões JSONL órfãs para o ledger e poda.
 
-    Para cada dir de projeto órfão (workdir-pai ausente, além do grace):
-      1. Agrega cada ``*.jsonl`` (tokens por modelo) e anexa ao ledger
+    Para cada dir de projeto órfão (workdir-pai ausente, além da retenção):
+      1. Resume cada ``*.jsonl`` (``summarize_jsonl`` — tokens por modelo +
+         título/brief/tools/PR/erros/stop reasons) + lê o ``session.json``
+         (model/effort/ultracode/stage) e anexa o registro RICO ao ledger
          durável — pulando ``session_id`` já colhidos (idempotente).
-      2. Remove o dir de projeto inteiro (transcript volumoso).
+      2. Remove o dir de projeto inteiro (transcript volumoso) só DEPOIS que
+         tudo foi contabilizado.
 
+    A sessão colhida fica idêntica à viva na tela de tokens (não uma casca).
     ``dry_run=True`` apenas reporta os candidatos sem colher nem podar.
     """
     if projects_dir is None:
@@ -3120,11 +3152,13 @@ def _harvest_and_prune_orphan_jsonl(
         ledger_path = _cost_ledger_path()
     if grace_s is None:
         grace_s = _JSONL_ORPHAN_GRACE_S
+    if retention_days is None:
+        retention_days = _JSONL_RETENTION_DAYS
     if now is None:
         now = time.time()
 
     orphans, candidate_bytes = _orphan_jsonl_scan(
-        work_root, projects_dir, grace_s, now)
+        work_root, projects_dir, grace_s, now, retention_days)
     result = {
         "orphan_jsonl_dirs": [str(p) for p in orphans],
         "sessions_harvested": 0,
@@ -3137,22 +3171,29 @@ def _harvest_and_prune_orphan_jsonl(
     if dry_run or not orphans:
         return result
 
-    # Fail-safe cardinal: NUNCA podar dados de custo não colhidos. Sem o
-    # agregador (ex.: jsonl_cost ausente da imagem) não há como preservar o
-    # custo antes de deletar — então aborta a poda e preserva tudo.
-    if _aggregate_jsonl is None:
+    # Fail-safe cardinal: NUNCA podar dados não colhidos. Sem o extrator
+    # (ex.: jsonl_cost ausente da imagem) não há como preservar o custo +
+    # detalhe antes de deletar — então aborta a poda e preserva tudo.
+    if _summarize_jsonl is None:
         result["errors"].append(
-            "aggregate_jsonl indisponível — poda abortada (fail-safe)")
+            "summarize_jsonl indisponível — poda abortada (fail-safe)")
         logger.error(
-            "cost-ledger harvest ABORTADO: jsonl_cost.aggregate_jsonl "
+            "cost-ledger harvest ABORTADO: jsonl_cost.summarize_jsonl "
             "indisponível; %d dirs órfãos preservados (sem poda) para não "
-            "perder custo", len(orphans),
+            "perder custo/detalhe", len(orphans),
         )
         return result
 
     harvested = _harvested_session_ids(ledger_path)
     for pdir in orphans:
         task_id = pdir.name.split(_PROJECT_MARKER)[-1]
+        # Metadata ground-truth do pipeline (model/effort/ultracode/stage),
+        # gravada em ~/.claude/tasks/<task_id>/session.json. Pode não existir
+        # (sessão antiga / dispatch externo) — degradamos para campos vazios.
+        try:
+            meta = _load_session_meta(task_id) or {}
+        except Exception:  # noqa: BLE001 — meta é best-effort, nunca bloqueia
+            meta = {}
         # Só podamos um dir DEPOIS que todo o seu conteúdo foi contabilizado
         # (colhido para o ledger, já presente nele, ou genuinamente sem
         # tokens). Qualquer falha de agregação/escrita preserva o dir inteiro.
@@ -3164,9 +3205,9 @@ def _harvest_and_prune_orphan_jsonl(
             continue
         for jsonl in jsonls:
             try:
-                data = _aggregate_jsonl(str(jsonl))
-            except Exception as exc:  # noqa: BLE001 — agregação falhou: preserva
-                result["errors"].append(f"aggregate {jsonl}: {exc}")
+                data = _summarize_jsonl(str(jsonl))
+            except Exception as exc:  # noqa: BLE001 — resumo falhou: preserva
+                result["errors"].append(f"summarize {jsonl}: {exc}")
                 dir_fully_accounted = False
                 continue
             sid = data.get("session_id") or jsonl.stem
@@ -3175,8 +3216,12 @@ def _harvest_and_prune_orphan_jsonl(
             if not data.get("models"):
                 continue  # zero tokens — nada a colher, nada a perder
             try:
+                source_mtime = jsonl.stat().st_mtime
+            except OSError:
+                source_mtime = now  # mtime real indisponível — usa harvest time
+            try:
                 written = _append_ledger(ledger_path, {
-                    "v": 1,
+                    "v": 2,
                     "session_id": sid,
                     "task_id": task_id,
                     "models": data["models"],
@@ -3184,6 +3229,29 @@ def _harvest_and_prune_orphan_jsonl(
                     "last_ts": data.get("last_ts"),
                     "assistant_rounds": data.get("assistant_rounds", 0),
                     "harvested_at": now,
+                    "source_mtime": source_mtime,
+                    # Detalhe rico (#445 parte 2) — preserva o que a tela
+                    # de tokens mostra além dos tokens.
+                    "tools": data.get("tools") or {},
+                    "user_msgs": data.get("user_msgs", 0),
+                    "tool_calls": data.get("tool_calls", 0),
+                    "cwd": data.get("cwd"),
+                    "git_branch": data.get("git_branch"),
+                    "version": data.get("version"),
+                    "permission_mode": data.get("permission_mode"),
+                    "entrypoint": data.get("entrypoint"),
+                    "ai_title": data.get("ai_title"),
+                    "pr_number": data.get("pr_number"),
+                    "pr_url": data.get("pr_url"),
+                    "pr_repo": data.get("pr_repo"),
+                    "brief": data.get("brief"),
+                    "errors": data.get("errors") or {},
+                    "stop_reasons": data.get("stop_reasons") or {},
+                    # Metadata ground-truth do pipeline (session.json).
+                    "meta_model": meta.get("model"),
+                    "reasoning_effort": meta.get("reasoning_effort"),
+                    "ultracode": meta.get("ultracode"),
+                    "stage": meta.get("stage"),
                 })
             except OSError as exc:
                 result["errors"].append(f"ledger write {jsonl}: {exc}")
@@ -3292,10 +3360,12 @@ def _cleanup_scan(
             candidate_bytes += _dir_size(workdir)
 
     # Check 5: JSONL órfão em ~/.claude/projects (issue #445) — dirs de
-    # projeto cujo workdir-pai já não existe. Preview do que o harvester
-    # vai colher para o ledger + podar.
+    # projeto cujo workdir-pai já não existe E mais antigos que a retenção
+    # JSONL (knob próprio, default 30d, SEPARADO do retention_days dos
+    # workdirs). Preview do que o harvester vai colher para o ledger + podar.
     orphan_dirs, orphan_bytes = _orphan_jsonl_scan(
-        root, _projects_dir(), _JSONL_ORPHAN_GRACE_S, now)
+        root, _projects_dir(), _JSONL_ORPHAN_GRACE_S, now,
+        _JSONL_RETENTION_DAYS)
     candidate_bytes += orphan_bytes
 
     return {

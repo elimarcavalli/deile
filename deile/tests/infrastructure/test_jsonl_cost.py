@@ -203,3 +203,104 @@ def test_aggregate_parity_with_inpod_reference(jc, golden_session):
     agg = jc.aggregate_jsonl(str(golden_session))
     assert agg["models"] == models
     assert agg["assistant_rounds"] == rounds
+
+
+# --------------------------------------------------------------------------- #
+# summarize_jsonl — extrator rico do harvest do ledger (issue #445 parte 2)    #
+# --------------------------------------------------------------------------- #
+def test_aggregate_is_subset_of_summarize(jc, golden_session):
+    """``aggregate_jsonl`` é exatamente o subset de custo de ``summarize_jsonl``
+    — mesmos models/rounds/timestamps (paridade preservada no refactor)."""
+    agg = jc.aggregate_jsonl(str(golden_session))
+    summ = jc.summarize_jsonl(str(golden_session))
+    assert agg["session_id"] == summ["session_id"]
+    assert agg["models"] == summ["models"]
+    assert agg["assistant_rounds"] == summ["assistant_rounds"]
+    assert agg["first_ts"] == summ["first_ts"]
+    assert agg["last_ts"] == summ["last_ts"]
+
+
+def test_summarize_extracts_full_detail(jc, tmp_path):
+    """``summarize_jsonl`` colhe TUDO que a tela de tokens mostra no detalhe."""
+    f = tmp_path / "sess-detail.jsonl"
+    records = [
+        {"type": "user", "timestamp": "2026-06-01T09:00:00.000Z",
+         "cwd": "/home/claude/work/abc/repo", "gitBranch": "auto/issue-9",
+         "version": "2.1.158", "permissionMode": "bypassPermissions",
+         "entrypoint": "cli", "aiTitle": "Corrige bug X",
+         "prNumber": 42, "prUrl": "https://github.com/o/r/pull/42",
+         "prRepository": "o/r",
+         "message": {"role": "user", "content": "implementa a issue 9 por favor"}},
+        {"type": "assistant", "requestId": "r1",
+         "timestamp": "2026-06-01T09:01:00.000Z",
+         "message": {"id": "m1", "role": "assistant",
+                     "model": "claude-opus-4-5-20260101", "stop_reason": "tool_use",
+                     "content": [
+                         {"type": "text", "text": "vou ler o arquivo"},
+                         {"type": "tool_use", "name": "Read"},
+                         {"type": "tool_use", "name": "Edit"},
+                     ],
+                     "usage": {"input_tokens": 100, "output_tokens": 50}}},
+        # tool result com erro → conta tool_error
+        {"type": "user", "timestamp": "2026-06-01T09:02:00.000Z",
+         "toolUseResult": {"is_error": True},
+         "message": {"role": "user", "content": "erro!"}},
+        {"type": "assistant", "requestId": "r2",
+         "timestamp": "2026-06-01T09:03:00.000Z",
+         "message": {"id": "m2", "role": "assistant",
+                     "model": "claude-opus-4-5-20260101", "stop_reason": "end_turn",
+                     "content": [{"type": "tool_use", "name": "Read"}],
+                     "usage": {"input_tokens": 10, "output_tokens": 5}}},
+    ]
+    _write_session(f, records)
+    s = jc.summarize_jsonl(str(f))
+
+    assert s["session_id"] == "sess-detail"
+    assert s["cwd"] == "/home/claude/work/abc/repo"
+    assert s["git_branch"] == "auto/issue-9"
+    assert s["version"] == "2.1.158"
+    assert s["permission_mode"] == "bypassPermissions"
+    assert s["entrypoint"] == "cli"
+    assert s["ai_title"] == "Corrige bug X"
+    assert s["pr_number"] == 42
+    assert s["pr_url"] == "https://github.com/o/r/pull/42"
+    assert s["pr_repo"] == "o/r"
+    assert s["brief"] == "implementa a issue 9 por favor"  # 1ª msg user
+    assert s["user_msgs"] == 2
+    assert s["assistant_rounds"] == 2
+    assert s["tool_calls"] == 3
+    assert s["tools"] == {"Read": 2, "Edit": 1}
+    assert s["stop_reasons"] == {"tool_use": 1, "end_turn": 1}
+    assert s["errors"]["tool_error"] == 1
+    assert s["models"]["claude-opus-4-5-20260101"]["in"] == 110
+
+
+def test_summarize_counts_synthetic_and_max_tokens(jc, tmp_path):
+    f = tmp_path / "sess-err.jsonl"
+    records = [
+        {"type": "assistant", "requestId": "r1",
+         "message": {"id": "m1", "role": "assistant", "model": "<synthetic>",
+                     "stop_reason": "max_tokens",
+                     "content": "prompt is too long: blah",
+                     "usage": {"input_tokens": 1, "output_tokens": 1}}},
+    ]
+    _write_session(f, records)
+    s = jc.summarize_jsonl(str(f))
+    assert s["errors"]["synthetic"] == 1
+    assert s["errors"]["max_tokens"] == 1
+    assert s["errors"]["api_error"] == 1  # "prompt is too long"
+    assert s["stop_reasons"] == {"max_tokens": 1}
+
+
+def test_summarize_brief_capped(jc, tmp_path):
+    f = tmp_path / "sess-big.jsonl"
+    big = "x" * 9000
+    _write_session(f, [
+        {"type": "user", "message": {"role": "user", "content": big}},
+        {"type": "assistant", "requestId": "r1",
+         "message": {"id": "m1", "role": "assistant", "model": "claude-opus-4-5",
+                     "usage": {"input_tokens": 1, "output_tokens": 1}}},
+    ])
+    s = jc.summarize_jsonl(str(f))
+    assert s["brief"] is not None
+    assert len(s["brief"]) == jc._BRIEF_CAP  # capado em 4000

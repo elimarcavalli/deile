@@ -316,10 +316,12 @@ for f in sorted(glob.glob(os.path.join(BASE, "**", "*.jsonl"), recursive=True)):
         sessions.append(rec)
 
 # Ledger de custo (issue #445): sessões já podadas do disco vivem só aqui.
-# O harvester do claude_worker_server colheu os tokens por modelo ANTES de
-# remover o JSONL volumoso. Emitimos um registro sintético por sessão colhida
-# (não duplicando session_ids que ainda têm JSONL vivo), com a MESMA estrutura
-# ``models`` — o cálculo de custo no host é idêntico.
+# O harvester do claude_worker_server colheu o RESUMO COMPLETO de cada sessão
+# (tokens + título/brief/tools/PR/erros/meta) ANTES de remover o JSONL
+# volumoso. Emitimos um registro sintético por sessão colhida (não duplicando
+# session_ids com JSONL vivo) com a MESMA estrutura — custo E detalhe idênticos
+# aos da sessão viva. Registros v:1 (legados, só tokens) degradam para vazio
+# nos campos de detalhe; v:2 carrega tudo.
 LEDGER = os.environ.get("DEILE_CLAUDE_COST_LEDGER_PATH") or os.path.join(
     os.path.expanduser("~"), ".claude", "cost-ledger.jsonl")
 live_ids = set()
@@ -344,42 +346,49 @@ try:
                 continue
             if not any((sum(v.values()) > 0) for v in models.values()):
                 continue
+            # "Última atividade" real = mtime do transcript colhido (source_mtime,
+            # v:2); v:1 cai para harvested_at. O filtro de recência (painel
+            # "custo hoje") usa o mesmo carimbo.
             harv = r.get("harvested_at") or 0
-            if SINCE_MTIME and harv and harv < SINCE_MTIME:
+            rec_mtime = r.get("source_mtime") or harv or 0
+            if SINCE_MTIME and rec_mtime and rec_mtime < SINCE_MTIME:
                 continue
             seen_led.add(sid)
             tid = r.get("task_id") or ""
+            errs = r.get("errors") or {}
             sessions.append({
                 "jsonl": "<ledger>",
                 "project_dir": os.path.join(BASE, "-home-claude-work-" + tid),
                 "session_file": sid + ".jsonl",
                 "models": models,
-                "tools": {},
+                "tools": r.get("tools") or {},
                 "assistant_rounds": r.get("assistant_rounds", 0) or 0,
-                "user_msgs": 0,
-                "tool_calls": 0,
-                "cwd": None,
-                "git_branch": None,
-                "version": None,
-                "permission_mode": None,
-                "entrypoint": None,
-                "ai_title": None,
-                "pr_number": None,
-                "pr_url": None,
-                "pr_repo": None,
+                "user_msgs": r.get("user_msgs", 0) or 0,
+                "tool_calls": r.get("tool_calls", 0) or 0,
+                "cwd": r.get("cwd"),
+                "git_branch": r.get("git_branch"),
+                "version": r.get("version"),
+                "permission_mode": r.get("permission_mode"),
+                "entrypoint": r.get("entrypoint"),
+                "ai_title": r.get("ai_title"),
+                "pr_number": r.get("pr_number"),
+                "pr_url": r.get("pr_url"),
+                "pr_repo": r.get("pr_repo"),
                 "first_ts": r.get("first_ts"),
                 "last_ts": r.get("last_ts"),
-                "brief": None,
-                "errors": {"synthetic": 0, "max_tokens": 0,
-                           "api_error": 0, "tool_error": 0},
-                "stop_reasons": {},
-                "mtime": harv or None,
+                "brief": r.get("brief"),
+                "errors": {"synthetic": errs.get("synthetic", 0) or 0,
+                           "max_tokens": errs.get("max_tokens", 0) or 0,
+                           "api_error": errs.get("api_error", 0) or 0,
+                           "tool_error": errs.get("tool_error", 0) or 0},
+                "stop_reasons": r.get("stop_reasons") or {},
+                "mtime": rec_mtime or None,
                 "git": {"state": "harvested", "modified": 0,
                         "untracked": 0, "staged": 0, "root": None},
-                "meta_model": None,
-                "reasoning_effort": None,
-                "ultracode": None,
-                "stage": "harvested",
+                "meta_model": r.get("meta_model"),
+                "reasoning_effort": r.get("reasoning_effort"),
+                "ultracode": r.get("ultracode"),
+                "stage": r.get("stage") or "harvested",
                 "harvested": True,
             })
 except Exception:
