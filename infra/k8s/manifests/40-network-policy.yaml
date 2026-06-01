@@ -306,26 +306,32 @@ spec:
         - { protocol: TCP, port: 443 }
 ---
 # ---- pipeline + claude-creds-renewer egress: kube-apiserver --------------------
-# O pipeline pod, o CronJob `claude-credentials-renew` e o deile-monitor invocam
+# O pipeline pod, o deile-monitor e o CronJob `claude-credentials-renew` invocam
 # `kubectl exec` para ler/escrever credenciais OAuth dentro do claude-worker pod.
+# Esse `kubectl exec` precisa falar com o kube-apiserver.
 #
-# DOIS caminhos precisam estar abertos (ambos cobertos abaixo):
+# ARMADILHA (causa do bug que ficou em produção): NetworkPolicy filtra o IP de
+# destino *pós-DNAT* — o endpoint REAL do apiserver — e NÃO o ClusterIP do
+# Service `kubernetes` (10.43.0.1). O kube-proxy faz DNAT do ClusterIP para o
+# endpoint real ANTES de a policy ser avaliada. Logo, liberar o Service CIDR
+# (10.43.0.0/16) nunca casa com o pacote: o `kubectl exec` morre em
+# `dial tcp 10.43.0.1:443: connect: connection refused`.
 #
-# 1. Porta 443 → ClusterIP `kubernetes` (10.43.0.1 em k3s/Rancher Desktop).
-#    Caminho padrão da in-cluster config (KUBERNETES_SERVICE_HOST/PORT injetados
-#    automaticamente). A regra `deile-egress-https-llm` bloqueia este IP (cai
-#    no EXCEPT 10.0.0.0/8); a regra abaixo re-abre para o Service CIDR do k3s.
-#    Service CIDR em outros clusters: EKS=172.20.0.0/16, GKE/AKS varia.
+# O endpoint real varia por cluster e está SEMPRE num range RFC1918:
+#   - k3s/Rancher Desktop : node IP, porta 6443  (ex.: 192.168.64.2:6443)
+#   - EKS/GKE/AKS         : IP do control-plane, porta 443
+# Este bloco é o FALLBACK PORTÁVEL aplicado pelo arquivo cru (`kubectl apply -f`):
+# libera os três ranges privados nas duas portas (443 + 6443), cobrindo qualquer
+# cluster. O `infra/k8s/_netpol.py` (chamado por up/create-namespace/restart/
+# start/setup/claude-login) ESTREITA isto, logo após aplicar este arquivo, para
+# o(s) IP(s) host (/32 IPv4, /128 IPv6) + porta real descobertos via
+# `endpoints/kubernetes` — SOBRESCREVENDO esta policy pelo MESMO nome (overwrite-
+# by-name é o que estreita; NetworkPolicy é aditiva, nome distinto só somaria).
 #
-# 2. Porta 6443 → Node IP direto (qualquer CIDR — endereço real do k3s apiserver).
-#    Em Rancher Desktop / Lima, kube-proxy iptables DNAT não funciona de dentro
-#    de pods: `10.43.0.1:443` recebe TCP RST ("connection refused") em vez de
-#    ser redirecionado para o apiserver real. Solução: pods com SA
-#    `claude-creds-renewer` recebem `NODE_IP` via Downward API e sobrescrevem
-#    `KUBERNETES_SERVICE_HOST`/`KUBERNETES_SERVICE_PORT` para apontar direto ao
-#    apiserver em `<node-ip>:6443`, bypasando o kube-proxy DNAT.
-#    Porta 6443 é exclusiva de kube-apiserver; permitir para qualquer destino não
-#    abre vetor de exfiltração relevante além do que a porta 443 já cobre.
+# CUIDADO ao editar este bloco: a regra `egress` (IPs/portas) é REESCRITA em
+# runtime — edições manuais aqui são perdidas no próximo deploy. Só o
+# `podSelector` (lista de apps) é contrato compartilhado: mantenha-o em sincronia
+# com `_netpol.APISERVER_EGRESS_APPS` (trava em test_k8s_manifest_consistency.py).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -337,19 +343,12 @@ spec:
       - { key: app, operator: In, values: [deile-pipeline, claude-creds-renewer, deile-monitor] }
   policyTypes: ["Egress"]
   egress:
-    # Caminho 1: ClusterIP kubernetes (padrão in-cluster, porta 443).
     - to:
-        - ipBlock:
-            cidr: 10.43.0.0/16
+        - ipBlock: { cidr: 10.0.0.0/8 }
+        - ipBlock: { cidr: 172.16.0.0/12 }
+        - ipBlock: { cidr: 192.168.0.0/16 }
       ports:
         - { protocol: TCP, port: 443 }
-    # Caminho 2: node IP direto na porta 6443 (fallback Rancher Desktop e
-    # ambientes onde kube-proxy DNAT ClusterIP:443 não funciona de dentro
-    # de pods). CIDR 0.0.0.0/0 cobre qualquer node IP (varia por ambiente).
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-      ports:
         - { protocol: TCP, port: 6443 }
 ---
 # ---- deile-monitor ingress: from deilebot only (command proxying) ----------------

@@ -843,8 +843,8 @@ async def run_subprocess_with_progress(
     # Persiste para o ``/v1/progress`` (Task 14) — best-effort; falha em
     # escrita NÃO derruba o dispatch (o cliente já recebeu o resultado).
     try:
-        stdout_path.write_text(stdout)
-        stderr_path.write_text(stderr)
+        await asyncio.to_thread(stdout_path.write_text, stdout)
+        await asyncio.to_thread(stderr_path.write_text, stderr)
     except OSError as exc:
         logger.warning(
             "failed to persist progress logs for task_id=%s: %s", task_id, exc,
@@ -2232,7 +2232,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         "last_duration_seconds": None,
         "last_total_cost_usd": 0.0,
     }
-    _save_session_meta(task_id, meta_pre)
+    await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
 
     claude_bin = shutil.which("claude") or "claude"
     cmd = [
@@ -2267,7 +2267,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     # (issue #347) can show what's being executed even while it's running.
     meta_pre["command"] = list(cmd)
     meta_pre["full_prompt"] = full_prompt
-    _save_session_meta(task_id, meta_pre)
+    await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
 
     async def _cleanup_lease() -> None:
         """Para o heartbeat e libera o lease. Idempotente."""
@@ -2289,7 +2289,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         meta_pre["last_result_summary"] = f"{type(exc).__name__}: {exc}"[:300]
         meta_pre["last_returncode"] = -1
         meta_pre["last_completed_at"] = int(time.time())
-        _save_session_meta(task_id, meta_pre)
+        await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
         await _cleanup_lease()
         return web.json_response({
             "ok": False,
@@ -2335,7 +2335,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     meta_pre["last_completed_at"] = int(time.time())
     meta_pre["last_duration_seconds"] = result.duration_seconds
     meta_pre["last_total_cost_usd"] = claude_result["total_cost_usd"]
-    _save_session_meta(task_id, meta_pre)
+    await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
 
     response = {
         "ok": ok,

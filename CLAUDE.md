@@ -60,6 +60,7 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
 | Lint | `ruff check deile/` |
 | Imports | `isort --check-only deile/` |
 | Complexity | `radon cc deile/ -a` |
+| Multi-seed ordering | `python3 -m pytest deile/tests/ -q --timeout=120 --randomly-seed=<seed>` para seeds `0`, `1`, `2`, `42`, `last` — detecta ordering-issues futuros |
 
 ## Kubernetes / cluster operations
 

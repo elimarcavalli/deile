@@ -15,6 +15,7 @@ Variável                          Default      Significado
 ``DEILE_OTLP_SERVICE_NAME``       ``"deile"``  resource attribute ``service.name``
 ``DEILE_OTLP_SAMPLE_RATIO``       ``"1.0"``    sampling ratio (0.0-1.0)
 ``DEILE_OBSERVABILITY_DISABLED``  ``"false"``  kill-switch global (vence sobre endpoint)
+``DEILE_OTLP_LOGS_DISABLED``      ``"false"``  kill-switch isolado para log records (spans continuam)
 ================================  ===========  ==========================================
 
 Nenhum import de ``opentelemetry.*`` aqui — este módulo é safe mesmo quando
@@ -38,6 +39,7 @@ __all__ = [
     "ENV_SERVICE_NAME",
     "ENV_SAMPLE_RATIO",
     "ENV_DISABLED",
+    "ENV_LOGS_DISABLED",
 ]
 
 ENV_ENDPOINT = "DEILE_OTLP_ENDPOINT"
@@ -46,6 +48,7 @@ ENV_INSECURE = "DEILE_OTLP_INSECURE"
 ENV_SERVICE_NAME = "DEILE_OTLP_SERVICE_NAME"
 ENV_SAMPLE_RATIO = "DEILE_OTLP_SAMPLE_RATIO"
 ENV_DISABLED = "DEILE_OBSERVABILITY_DISABLED"
+ENV_LOGS_DISABLED = "DEILE_OTLP_LOGS_DISABLED"
 
 _DEFAULT_SERVICE_NAME = "deile"
 _DEFAULT_SAMPLE_RATIO = 1.0
@@ -107,6 +110,7 @@ class ObservabilityConfig:
     service_name: str = _DEFAULT_SERVICE_NAME
     sample_ratio: float = _DEFAULT_SAMPLE_RATIO
     disabled: bool = False
+    logs_disabled: bool = False
 
     @classmethod
     def from_env(cls) -> "ObservabilityConfig":
@@ -126,6 +130,9 @@ class ObservabilityConfig:
                 1.0,
             ),
             disabled=_parse_bool(os.environ.get(ENV_DISABLED, "false"), False),
+            logs_disabled=_parse_bool(
+                os.environ.get(ENV_LOGS_DISABLED, "false"), False
+            ),
         )
 
     @property
