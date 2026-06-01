@@ -10,12 +10,12 @@ Exibe estado operacional completo do pod supervisor:
 - Log de notificações (últimas 5 linhas)
 
 Hotkeys locais:
-  t  força tick imediato  (rm /state/monitor-state.json)
-  p  pause com submenu duração
-  r  resume               (rm /state/monitor-pause)
-  a  ack fingerprint      (escreve em monitor-state.json via exec)
+  t  força tick imediato  (pkill -x sleep no pod → loop ticka já)
+  p  pause com submenu duração (grava paused_until p/ auto-resume)
+  r  resume               (rm /state/monitor-pause + limpa paused_until)
+  a  ack fingerprint      (escreve acked_until em monitor-state.json via exec)
   i  editar tick interval (kubectl set env)
-  u  set notify user-id   (echo > /state/notify-user-id via exec)
+  u  set notify user-id   (printf > /state/notify-user-id, validado numérico)
   m  picker de model      (kubectl set env DEILE_PREFERRED_MODEL)
   k  stop (scale to 0) com confirm
   s  start / install com confirm
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -83,13 +84,24 @@ _MANIFEST_DEPLOY = Path(__file__).parent / "manifests" / "55-deile-monitor-deplo
 _PAUSE_DURATIONS = ["30m", "1h", "2h", "custom"]
 
 # Modelos fallback quando ModelsProvider não carregou (sem catálogo YAML).
+# Sincronizado com deile/config/model_providers.yaml — atualizar quando o YAML mudar.
 _MODELS_FALLBACK = (
     "anthropic:claude-opus-4-8",
     "anthropic:claude-sonnet-4-6",
     "anthropic:claude-haiku-4-5",
-    "openai:gpt-4",
-    "deepseek:deepseek-chat",
-    "google:gemini-2.5-pro",
+    "openai:gpt-5.5",
+    "openai:gpt-5.4",
+    "openai:gpt-5.4-mini",
+    "openai:gpt-5.4-nano",
+    "gemini:gemini-3.1-pro-preview",
+    "gemini:gemini-2.5-pro",
+    "gemini:gemini-3.5-flash",
+    "gemini:gemini-3-flash-preview",
+    "gemini:gemini-3.1-flash-lite",
+    "gemini:gemini-2.5-flash",
+    "gemini:gemini-2.5-flash-lite",
+    "deepseek:deepseek-v4-pro",
+    "deepseek:deepseek-v4-flash",
 )
 
 
@@ -125,7 +137,8 @@ class MonitorConfig:
 class MonitorStateData:
     """Conteúdo do /state/monitor-state.json lido via kubectl exec."""
     raw: Optional[Dict[str, Any]] = None
-    last_tick: Optional[str] = None
+    last_tick: Optional[int] = None          # CONTADOR de ticks (não é timestamp)
+    last_tick_epoch: Optional[float] = None  # epoch da última execução (p/ tempo)
     known_anomalies: Dict[str, Any] = field(default_factory=dict)
     notifications_this_hour: int = 0
     paused_until: Optional[str] = None
@@ -311,6 +324,7 @@ class MonitorDataProvider(pd_mod._KubectlProviderMixin):
             return st
         st.raw = data
         st.last_tick = data.get("last_tick")
+        st.last_tick_epoch = data.get("last_tick_epoch")
         st.known_anomalies = data.get("known_anomalies") or {}
         st.notifications_this_hour = int(data.get("notifications_this_hour", 0))
         st.paused_until = data.get("paused_until")
@@ -437,8 +451,8 @@ class MonitorView:
 
         # Estado de UI da view.
         self._mode: Optional[str] = None  # None | "pause-menu" | "ack-input"
-        #   | "interval-input" | "user-id-input" | "model-picker"
-        #   | "confirm-stop" | "confirm-start" | "log-tail"
+        #   | "interval-input" | "pause-custom-input" | "user-id-input"
+        #   | "model-picker" | "confirm-stop" | "confirm-start" | "log-tail"
         self._input_buf: str = ""
         self._pause_cursor: int = 0
         self._model_cursor: int = 0
@@ -560,6 +574,10 @@ class MonitorView:
             sections.append(self._render_input_prompt(
                 "Novo intervalo de tick em segundos (30–3600):",
             ))
+        elif self._mode == "pause-custom-input":
+            sections.append(self._render_input_prompt(
+                "Duração da pausa (ex.: 30m, 2h, 90s):",
+            ))
         elif self._mode == "user-id-input":
             sections.append(self._render_input_prompt(
                 "Discord snowflake (user ID) para notificações:",
@@ -588,11 +606,24 @@ class MonitorView:
                 border_style=border,
             ))
 
-        sections.append(Panel(
+        # Footer PINADO via Layout — não como última seção de um Group, que
+        # o ``Live(screen=True)`` cortaria quando o conteúdo passa da altura
+        # do terminal (era por isso que a barra de atalhos sumia). head fixo
+        # no topo, footer fixo embaixo, body no meio (clipa se transbordar) —
+        # mesmo padrão da DashboardView principal.
+        footer = Panel(
             Text(self.HOTKEYS_BASE, style="dim"),
             border_style="dim", box=box.SIMPLE,
-        ))
-        return Group(*sections)
+        )
+        body: RenderableType = (
+            Group(*sections[1:]) if len(sections) > 1 else Text(""))
+        layout = Layout()
+        layout.split_column(
+            Layout(sections[0], name="head", size=4),
+            Layout(body, name="body", ratio=1),
+            Layout(footer, name="footer", size=3),
+        )
+        return layout
 
     # --- Blocos de render ---
 
@@ -606,16 +637,16 @@ class MonitorView:
         status_style = "bold green" if p.status == "Running" else "bold yellow"
         ready_icon = "✓" if p.ready else "✗"
 
-        # Calcula próximo tick: last_tick + interval_s
+        # Calcula próximo tick: last_tick_epoch + interval_s. O state grava
+        # ``last_tick`` como CONTADOR (int) e ``last_tick_epoch`` como o epoch
+        # da última execução — é este último que serve para o cálculo de tempo.
         next_tick_str = "—"
         try:
             interval_s = int(cfg.tick_interval_s)
-            if st.last_tick:
-                ts = _parse_iso(st.last_tick)
-                if ts:
-                    elapsed = (now - ts).total_seconds()
-                    remaining = max(0, interval_s - elapsed)
-                    next_tick_str = f"{int(remaining)}s"
+            if st.last_tick_epoch:
+                elapsed = now.timestamp() - float(st.last_tick_epoch)
+                remaining = max(0, interval_s - elapsed)
+                next_tick_str = f"{int(remaining)}s"
         except (ValueError, TypeError):
             pass
 
@@ -746,10 +777,13 @@ class MonitorView:
 
     def _render_last_tick(self, snap: MonitorSnapshot) -> RenderableType:
         st = snap.state
-        if st.last_tick:
-            txt = Text.assemble(
-                (st.last_tick[:19] + "Z" if st.last_tick else "—", "bold"),
-            )
+        if st.last_tick_epoch:
+            when = datetime.fromtimestamp(
+                float(st.last_tick_epoch), _UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            label = f"{when}   (tick #{st.last_tick})" if st.last_tick else when
+            txt = Text(label, style="bold")
+        elif st.last_tick is not None:
+            txt = Text(f"tick #{st.last_tick}", style="bold")
         else:
             txt = Text("· sem tick registrado", style="dim")
         return Panel(txt, title="[bold]ÚLTIMO TICK[/bold]",
@@ -849,6 +883,8 @@ class MonitorView:
             return self._handle_pause_menu_key(key, app)
         if self._mode == "ack-input":
             return self._handle_input_key(key, app, self._apply_ack)
+        if self._mode == "pause-custom-input":
+            return self._handle_input_key(key, app, self._apply_pause)
         if self._mode == "interval-input":
             return self._handle_input_key(key, app, self._apply_interval)
         if self._mode == "user-id-input":
@@ -925,7 +961,7 @@ class MonitorView:
         if key == "\r" or key == "\n" or key in ("1", "2", "3", "4"):
             dur = _PAUSE_DURATIONS[self._pause_cursor]
             if dur == "custom":
-                self._mode = "interval-input"
+                self._mode = "pause-custom-input"
                 self._input_buf = ""
                 return ActionResult.refresh()
             self._apply_pause(dur, app)
@@ -1022,31 +1058,89 @@ class MonitorView:
     def _apply_force_tick(self, app) -> Any:
         from _panel import ActionResult  # noqa: PLC0415
 
+        # Mata o `sleep` entre ticks — o loop volta imediatamente ao wrapper.py monitor.
+        # pkill exit≠0 significa que não há sleep rodando (tick já em andamento): OK.
         ok, out = self._exec([
             "-n", self._ns(), "exec",
             f"deploy/{MonitorDataProvider._MONITOR_DEPLOY}",
-            "--", "rm", "-f", "/state/monitor-state.json",
+            "--", "pkill", "-x", "sleep",
         ])
         if ok:
-            self._last_msg = "Tick forçado: monitor-state.json removido → próximo tick imediato."
+            self._last_msg = "Tick forçado: sleep interrompido → próximo tick imediato."
+        elif "no process found" in out.lower() or "no processes found" in out.lower() or (not ok and not out.strip()):
+            # pkill retorna 1 quando nenhum processo casa — significa tick já em andamento.
+            self._last_msg = "Tick forçado (ou já em andamento)."
+            ok = True
         else:
             self._last_msg = f"Falha ao forçar tick: {out[:120]}"
         self._last_ok = ok
         self._mon.invalidate()
         return ActionResult.refresh()
 
+    @staticmethod
+    def _parse_duration_s(duration: str) -> Optional[int]:
+        """Converte string de duração (ex.: '30m', '2h', '90s', '120') em segundos.
+
+        Retorna None se o formato não for reconhecido.
+        """
+        duration = duration.strip()
+        if not duration:
+            return None
+        # Inteiro puro → segundos direto.
+        if duration.isdigit():
+            return int(duration)
+        m = re.fullmatch(r"(\d+)([smh])", duration, re.IGNORECASE)
+        if not m:
+            return None
+        n, unit = int(m.group(1)), m.group(2).lower()
+        return n * {"s": 1, "m": 60, "h": 3600}[unit]
+
     def _apply_pause(self, duration: str, app) -> None:
-        """Cria /state/monitor-pause. Para duração custom, usa 'p' de input."""
+        """Cria /state/monitor-pause e grava paused_until no state JSON."""
+        seconds = self._parse_duration_s(duration)
+        if seconds is None:
+            self._last_msg = f"Duração inválida: {duration!r} (aceito: 30m, 2h, 90s, inteiro=segundos)"
+            self._last_ok = False
+            self._mon.invalidate()
+            return
+
+        # 1. Cria o kill-switch.
         ok, out = self._exec([
             "-n", self._ns(), "exec",
             f"deploy/{MonitorDataProvider._MONITOR_DEPLOY}",
             "--", "touch", "/state/monitor-pause",
         ])
-        if ok:
-            self._last_msg = f"Monitor pausado por {duration} (kill-switch ativo)."
-        else:
+        if not ok:
             self._last_msg = f"Falha ao pausar: {out[:120]}"
-        self._last_ok = ok
+            self._last_ok = False
+            self._mon.invalidate()
+            return
+
+        # 2. Grava paused_until no state JSON (merge — preserva outros campos).
+        script = (
+            "import json,os,time;"
+            "p='/state/monitor-state.json';"
+            "d=json.loads(open(p).read()) if os.path.exists(p) else {};"
+            f"d['paused_until']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(time.time()+{seconds}));"
+            "open(p,'w').write(json.dumps(d))"
+        )
+        ok2, out2 = self._exec([
+            "-n", self._ns(), "exec",
+            f"deploy/{MonitorDataProvider._MONITOR_DEPLOY}",
+            "--", "python3", "-c", script,
+        ])
+        # paused_until é best-effort — kill-switch já está ativo.
+        paused_until_label = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + seconds)
+        )
+        if ok2:
+            self._last_msg = f"Monitor pausado por {duration} (até {paused_until_label})."
+        else:
+            self._last_msg = (
+                f"Monitor pausado por {duration} (kill-switch ativo; "
+                f"paused_until não gravado: {out2[:80]})"
+            )
+        self._last_ok = True  # kill-switch está ativo — considerar sucesso parcial
         self._mon.invalidate()
 
     def _apply_resume(self, app) -> Any:
@@ -1057,11 +1151,29 @@ class MonitorView:
             f"deploy/{MonitorDataProvider._MONITOR_DEPLOY}",
             "--", "rm", "-f", "/state/monitor-pause",
         ])
-        if ok:
-            self._last_msg = "Monitor resumido: monitor-pause removido."
-        else:
+        if not ok:
             self._last_msg = f"Falha ao resumir: {out[:120]}"
-        self._last_ok = ok
+            self._last_ok = False
+            self._mon.invalidate()
+            return ActionResult.refresh()
+
+        # Limpa paused_until do state JSON para evitar que timestamp residual
+        # faça o monitor reconsiderar a pausa na próxima leitura.
+        script = (
+            "import json,os;"
+            "p='/state/monitor-state.json';"
+            "d=json.loads(open(p).read()) if os.path.exists(p) else {};"
+            "d.pop('paused_until',None);"
+            "open(p,'w').write(json.dumps(d))"
+        )
+        self._exec([
+            "-n", self._ns(), "exec",
+            f"deploy/{MonitorDataProvider._MONITOR_DEPLOY}",
+            "--", "python3", "-c", script,
+        ])  # best-effort — kill-switch já foi removido
+
+        self._last_msg = "Monitor resumido: monitor-pause removido e paused_until limpo."
+        self._last_ok = True
         self._mon.invalidate()
         return ActionResult.refresh()
 
@@ -1113,11 +1225,18 @@ class MonitorView:
         self._mon.invalidate()
 
     def _apply_user_id(self, uid: str, app) -> None:
-        # Escreve o UID em /state/notify-user-id via exec sh -c.
+        # Valida: Discord snowflake é sempre numérico.
+        if not uid.isdigit():
+            self._last_msg = f"User ID inválido: {uid!r} (esperado numérico)"
+            self._last_ok = False
+            self._mon.invalidate()
+            return
+        # Escrita segura via printf %s — evita shell injection com echo '{uid}'.
+        safe_uid = shlex.quote(uid)
         ok, out = self._exec([
             "-n", self._ns(), "exec",
             f"deploy/{MonitorDataProvider._MONITOR_DEPLOY}",
-            "--", "sh", "-c", f"echo '{uid}' > /state/notify-user-id",
+            "--", "sh", "-c", f"printf %s {safe_uid} > /state/notify-user-id",
         ])
         if ok:
             self._last_msg = f"notify-user-id atualizado: {uid}"
@@ -1143,6 +1262,8 @@ class MonitorView:
         self._mode = "model-picker"
 
     def _apply_model(self, slug: str, app) -> None:
+        ok = False  # inicializado antes dos branches para evitar NameError
+        out = ""
         if slug == "(limpar override)":
             ok, out = self._exec([
                 "-n", self._ns(), "set", "env",
@@ -1239,6 +1360,8 @@ class MonitorView:
         if kubectl is None:
             self._log_tail_lines = ["kubectl não encontrado"]
             return
+        empty_streak = 0
+        _MAX_EMPTY = 3
         while not self._log_tail_stop.is_set():
             lines = pd_mod._capture_text(
                 [kubectl, "-n", self._ns(), "exec",
@@ -1247,7 +1370,16 @@ class MonitorView:
                 timeout=5.0,
             )
             if lines:
-                self._log_tail_lines = [l for l in lines.splitlines() if l.strip()]
+                self._log_tail_lines = [
+                    line for line in lines.splitlines() if line.strip()
+                ]
+                empty_streak = 0
+            else:
+                empty_streak += 1
+                if empty_streak >= _MAX_EMPTY:
+                    self._log_tail_lines = [
+                        "✗ /state/monitor-audit.log indisponível ou vazio"
+                    ]
             self._log_tail_stop.wait(timeout=2.0)
 
 
@@ -1267,14 +1399,3 @@ def _fmt_age_s(seconds: float) -> str:
         m = (s % 3600) // 60
         return f"{h}h{m:02d}m" if m else f"{h}h"
     return f"{s // 86400}d"
-
-
-def _parse_iso(s: str) -> Optional[datetime]:
-    """Parse leniente de timestamp ISO-8601 → datetime UTC."""
-    if not s:
-        return None
-    s = s.replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(s)
-    except ValueError:
-        return None
