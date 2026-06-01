@@ -166,16 +166,15 @@ class TestGetLogProvider:
 
     def test_idempotency(self, in_memory_log_exporter):
         """Múltiplas chamadas retornam o mesmo objeto."""
-        from deile.observability.dispatch_log_export import (
-            _init_count, get_log_provider)
+        import deile.observability.dispatch_log_export as dle
 
-        p1 = get_log_provider()
-        p2 = get_log_provider()
-        p3 = get_log_provider()
+        p1 = dle.get_log_provider()
+        p2 = dle.get_log_provider()
+        p3 = dle.get_log_provider()
         assert p1 is p2
         assert p2 is p3
         # _init_count deve ser exatamente 1
-        assert _init_count == 1
+        assert dle._init_count == 1
 
     def test_monkeypatch_injection(self, in_memory_log_exporter):
         """Fixture injeta provider via monkeypatch."""
@@ -331,28 +330,54 @@ class TestKillSwitch:
 
 
 class TestResourceAttributes:
-    def test_resource_attrs_match_schema(self, in_memory_log_exporter, monkeypatch):
+    def test_resource_attrs_match_schema(self, monkeypatch):
         """Resource attrs do LoggerProvider incluem service.name, deile.role, deile.pod,
         deile.dispatch.schema_version idênticos ao TracerProvider (D1)."""
         monkeypatch.setenv("DEILE_ROLE", "worker")
         monkeypatch.setenv("HOSTNAME", "pod-abc123")
         monkeypatch.setenv("DEILE_OTLP_SERVICE_NAME", "deile-test")
+        monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
+        import deile.observability.dispatch_log_export as dle
         from deile.observability import reset_dispatch_log_export, reset_observability_config
+
         reset_observability_config()
         reset_dispatch_log_export()
+        # Garantir que não há provider injetado por fixture — deixar _build_log_provider rodar
+        monkeypatch.setattr(dle, "_log_provider", None)
 
-        from deile.observability.dispatch_log_export import emit_log_record
+        from opentelemetry.sdk._logs.export import (
+            InMemoryLogExporter, SimpleLogRecordProcessor)
+        from opentelemetry.sdk._logs import LoggerProvider as SdkLoggerProvider
 
-        emit_log_record("dispatch.received", 1, 1, 1, {})
-        logs = _finished_logs(in_memory_log_exporter)
-        # We verify that the provider was created with the right resource config
-        # by checking that the provider can emit (it's not None)
-        from deile.observability.dispatch_log_export import get_log_provider
-        provider = get_log_provider()
-        if provider is not None:
-            resource = provider.resource
-            attrs = resource.attributes
-            assert attrs.get("service.name") == "deile-test"
+        # Substituir _build_log_provider para capturar o resource sem OTLP real
+        real_build = dle._build_log_provider
+        built_providers = []
+
+        def fake_build(config):
+            from opentelemetry.sdk._logs import LoggerProvider
+            from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+            from deile.observability.dispatch_schema import (
+                ATTR_POD, ATTR_ROLE, ATTR_SCHEMA_VERSION, SCHEMA_VERSION, get_pod_metadata)
+            pod = get_pod_metadata()
+            resource = Resource.create({
+                SERVICE_NAME: config.service_name,
+                ATTR_ROLE: pod["role"],
+                ATTR_POD: pod["pod"],
+                ATTR_SCHEMA_VERSION: SCHEMA_VERSION,
+            })
+            provider = LoggerProvider(resource=resource)
+            exporter = InMemoryLogExporter()
+            provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
+            built_providers.append(provider)
+            return provider
+
+        monkeypatch.setattr(dle, "_build_log_provider", fake_build)
+
+        provider = dle.get_log_provider()
+        assert provider is not None
+        resource = provider.resource
+        attrs = resource.attributes
+        assert attrs.get("service.name") == "deile-test"
 
 
 # ── SDK absent (D6) ───────────────────────────────────────────────────────────

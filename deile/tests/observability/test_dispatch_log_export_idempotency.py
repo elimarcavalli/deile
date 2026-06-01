@@ -27,13 +27,13 @@ class TestIdempotency:
 
     def test_init_count_exactly_one(self, in_memory_log_exporter):
         """_init_count deve ser exatamente 1 após init bem-sucedida."""
-        from deile.observability.dispatch_log_export import _init_count, get_log_provider
+        import deile.observability.dispatch_log_export as dle
 
-        get_log_provider()
-        get_log_provider()
-        get_log_provider()
+        dle.get_log_provider()
+        dle.get_log_provider()
+        dle.get_log_provider()
 
-        assert _init_count == 1
+        assert dle._init_count == 1
 
     def test_get_dispatch_log_export_same_instance(self):
         """get_dispatch_log_export() retorna o mesmo objeto."""
@@ -70,13 +70,12 @@ class TestIdempotency:
 
     def test_reset_clears_init_count(self, in_memory_log_exporter):
         """reset_dispatch_log_export() reseta _init_count para 0."""
-        from deile.observability.dispatch_log_export import _init_count, get_log_provider
+        import deile.observability.dispatch_log_export as dle
         from deile.observability import reset_dispatch_log_export
 
-        get_log_provider()
-        assert _init_count == 1
+        dle.get_log_provider()
+        assert dle._init_count == 1
 
         reset_dispatch_log_export()
 
-        from deile.observability.dispatch_log_export import _init_count as count_after
-        assert count_after == 0
+        assert dle._init_count == 0

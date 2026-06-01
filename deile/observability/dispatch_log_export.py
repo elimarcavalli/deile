@@ -401,8 +401,7 @@ def emit_log_record(
         if provider is None:
             return
 
-        from opentelemetry._logs import SeverityNumber  # pylint: disable=import-outside-toplevel
-        from opentelemetry.sdk._logs import LogRecord  # pylint: disable=import-outside-toplevel
+        from opentelemetry._logs import LogRecord, SeverityNumber  # pylint: disable=import-outside-toplevel
 
         severity_text, severity_number = _severity_for(event_name, attributes)
         safe = _safe_attrs(attributes)
