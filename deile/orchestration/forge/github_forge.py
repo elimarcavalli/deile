@@ -1172,5 +1172,31 @@ class GitHubForge(ForgeClient):
         self._config.default_branch = name
         return name
 
+    async def branch_exists(self, name: str) -> bool:
+        """Return True iff the branch ref exists on the remote.
+
+        Uses ``gh api repos/<repo>/git/refs/heads/<name>`` — 200 means the
+        ref is live; 404 means deleted; any other error is treated as
+        ``True`` (fail-open) so we never mark a healthy PR as orphan on a
+        transient API hiccup.
+        """
+        if not name:
+            return False
+        # URL-encode '/' in branch names like 'auto/issue-448' (gh api needs
+        # literal slashes in the path, but the rest of the segment is opaque).
+        rc, _, _ = await self._run(
+            "api", f"repos/{self.repo}/git/refs/heads/{name}",
+            "--silent",
+        )
+        if rc == 0:
+            return True
+        # gh exits non-zero on 4xx; 404 is the only response that authoritatively
+        # means "branch deleted". Any other rc (network, auth) is fail-open.
+        rc2, body, _ = await self._run(
+            "api", f"repos/{self.repo}/git/refs/heads/{name}",
+            "-i",
+        )
+        return "HTTP/2 404" not in body and "HTTP/1.1 404" not in body
+
 
 __all__ = ["GitHubForge", "GhCommandError"]

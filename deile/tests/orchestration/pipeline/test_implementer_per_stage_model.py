@@ -110,11 +110,11 @@ def _mention_trigger_pr_assignee(number=7):
 class TestStageModelPropagation:
     async def test_implement_sends_implement_stage_model(self, monkeypatch):
         monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT",
-                           "anthropic:claude-opus-4-7")
+                           "anthropic:claude-opus-4-8")
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "done"})
         await WorkerImplementer(client=client).implement(_make_monitor(), _issue())
-        assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-7"
+        assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-8"
 
     async def test_review_sends_pr_review_stage_model(self, monkeypatch):
         monkeypatch.setenv("DEILE_PIPELINE_MODEL_PR_REVIEW",
@@ -156,7 +156,7 @@ class TestStageModelPropagation:
         ``pr_unified`` (substitui ``work_merge``/``review_only``/``address``)
         e mapeia para o stage ``pr_review``."""
         monkeypatch.setenv("DEILE_PIPELINE_MODEL_PR_REVIEW",
-                           "anthropic:claude-opus-4-7")
+                           "anthropic:claude-opus-4-8")
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "merged"})
         trigger = _mention_trigger_pr_assignee(number=7)
@@ -164,7 +164,7 @@ class TestStageModelPropagation:
             _make_monitor(), trigger,
             trigger_types=["assignee"], all_triggers=[trigger], mode="pr_unified",
         )
-        assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-7"
+        assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-8"
 
     async def test_unset_stage_omits_preferred_model_from_payload(self):
         """No env var → resolver returns None → builder omits the key.
@@ -180,12 +180,12 @@ class TestStageModelPropagation:
         """The two additive wire fields (resume + preferred_model) coexist on
         the same payload — issue #305 must not break issue #254."""
         monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT",
-                           "anthropic:claude-opus-4-7")
+                           "anthropic:claude-opus-4-8")
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "done"})
         await WorkerImplementer(client=client).implement(
             _make_monitor(), _issue(), resume=True,
         )
-        assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-7"
+        assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-8"
         assert "resume" in client.last_payload
         assert client.last_payload["resume"]["mode"] == "resume"

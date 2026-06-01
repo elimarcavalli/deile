@@ -34,6 +34,10 @@ def claude_worker_module():
     cross-teste (caches, handlers já registrados, etc.).
     """
     repo_root = Path(__file__).resolve().parents[3]
+    k8s_dir = str(repo_root / "infra" / "k8s")
+    # Ensure sibling modules (e.g. dispatch_logger) are importable.
+    if k8s_dir not in sys.path:
+        sys.path.insert(0, k8s_dir)
     server_path = repo_root / "infra" / "k8s" / "claude_worker_server.py"
     spec = importlib.util.spec_from_file_location(
         "claude_worker_server_under_test", str(server_path),
@@ -213,7 +217,7 @@ async def test_dispatch_rejects_non_anthropic_model(claude_worker_module, monkey
 async def test_dispatch_translates_model_slug(
     claude_worker_module, monkeypatch, tmp_path,
 ):
-    """Slug ``anthropic:claude-opus-4-7`` vira ``--model claude-opus-4-7`` na call.
+    """Slug ``anthropic:claude-opus-4-8`` vira ``--model claude-opus-4-8`` na call.
 
     O prefixo ``anthropic:`` é convenção interna do DEILE; o CLI ``claude``
     espera só a parte após os dois pontos. Também garante que o invocador
@@ -236,7 +240,7 @@ async def test_dispatch_translates_model_slug(
         resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
             "brief": "implement #1",
             "channel_id": "auto/issue-1",
-            "preferred_model": "anthropic:claude-opus-4-7",
+            "preferred_model": "anthropic:claude-opus-4-8",
             "stage": "implement",
             "issue_number": 1,
             "branch": "auto/issue-1",
@@ -248,7 +252,7 @@ async def test_dispatch_translates_model_slug(
     assert "-p" in args
     assert "--model" in args
     model_idx = args.index("--model")
-    assert args[model_idx + 1] == "claude-opus-4-7"
+    assert args[model_idx + 1] == "claude-opus-4-8"
     assert "--permission-mode" in args
     perm_idx = args.index("--permission-mode")
     assert args[perm_idx + 1] == "bypassPermissions"
@@ -1065,7 +1069,7 @@ def test_is_claude_process_alive_finds_match(claude_worker_module, monkeypatch, 
 # Com 3 réplicas de claude-worker + Service round-robin, ``_is_claude_process_alive``
 # scaneava só o /proc local do pod que recebia a request. Quando claude rodava
 # em outra réplica, retornava False enganosamente → pipeline disparava RESUME
-# pensando que estava morto → triple-dispatch de Opus 4.7 paralelos.
+# pensando que estava morto → triple-dispatch de Opus 4.8 paralelos.
 # Fix: fallback pra mtime do JSONL na PVC compartilhada.
 def test_is_claude_alive_falls_back_to_jsonl_mtime_when_proc_does_not_see_it(
     claude_worker_module, monkeypatch, tmp_path,
@@ -2055,3 +2059,59 @@ def test_oauth_broker_state_reset(claude_worker_module):
     assert state.email is None
     assert state.error is None
     assert state.started_at == 0.0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_409_lease_conflict_emits_dispatch_failed(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """AC #435 §2 — 409 lease conflict é caminho terminal; precisa emitir
+    ``dispatch.failed`` para o painel limpar ``current_task`` (senão fica
+    preso quando duas réplicas brigam pelo mesmo workspace).
+    """
+    import logging
+
+    # Lease acquisition always fails (simulates other replica holding it).
+    async def fake_acquire(workspace):
+        return None
+
+    monkeypatch.setattr(claude_worker_module, "_acquire_lease", fake_acquire)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    # Capture deile.dispatch records.
+    records: list[logging.LogRecord] = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    lg = logging.getLogger("deile.dispatch")
+    h = _H()
+    lg.addHandler(h)
+    old_level = lg.level
+    lg.setLevel(logging.DEBUG)
+    try:
+        app = claude_worker_module.build_app(auth_token="test-token")
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
+                "brief": "test",
+                "channel_id": "auto/issue-1",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+                "stage": "implement",
+                "issue_number": 1,
+                "branch": "auto/issue-1",
+            })
+            assert resp.status == 409
+            body = await resp.json()
+            assert body.get("error_code") == "TASK_ALREADY_RUNNING"
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(old_level)
+
+    msgs = [r.getMessage() for r in records]
+    failed = [m for m in msgs if m.startswith("dispatch.failed ")]
+    assert len(failed) == 1, f"expected exactly one dispatch.failed, got {msgs}"
+    assert "error_code=TASK_ALREADY_RUNNING" in failed[0]
+    assert "reason=lease_conflict" in failed[0]

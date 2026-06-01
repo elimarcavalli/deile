@@ -119,6 +119,12 @@ class DispatchPayload(BaseModel):
     # The pipeline uses it to give each stage (classify/refine/implement/
     # pr_review/follow_ups) a different model; tools/CLI callers leave it None.
     preferred_model: Optional[str] = Field(default=None, max_length=128)
+    # Per-turn reasoning-effort override. Resolvido por
+    # ``reasoning_resolver.resolve_stage_reasoning``; o deile-worker injeta em
+    # ``session.context_data["reasoning_effort"]`` (provider traduz para o
+    # parâmetro nativo) e o claude-worker o passa a ``claude --effort``.
+    # Vocabulário em ``deile/core/models/reasoning.py``.
+    preferred_reasoning: Optional[str] = Field(default=None, max_length=32)
     # --- Pipeline context (issue #309 fase 2) -------------------------------
     # Todos opcionais. O worker (deile-worker ou claude-worker) usa quando
     # presente, e ignora silenciosamente quando ausente — workers antigos que
@@ -187,6 +193,28 @@ class DispatchPayload(BaseModel):
         if not _MODEL_SLUG_RE.match(stripped):
             raise ValueError(
                 f"preferred_model must match 'provider:model' (got {stripped!r})"
+            )
+        return stripped
+
+    @field_validator("preferred_reasoning")
+    @classmethod
+    def _validate_reasoning(cls, v: Optional[str]) -> Optional[str]:
+        """Reject unknown reasoning efforts at the wire boundary.
+
+        ``None``/empty/whitespace colapsam para ``None``. Validamos contra a
+        união de níveis conhecidos (:data:`deile.core.models.reasoning.KNOWN_EFFORTS`);
+        o mapeamento por provider/worker (que sabe o que é suportado) acontece
+        no consumidor com fail-open.
+        """
+        if v is None:
+            return None
+        stripped = v.strip().lower()
+        if not stripped:
+            return None
+        from deile.core.models.reasoning import is_valid_effort
+        if not is_valid_effort(stripped):
+            raise ValueError(
+                f"preferred_reasoning must be a known effort (got {stripped!r})"
             )
         return stripped
 
@@ -295,6 +323,8 @@ def build_dispatch_payload(
     # --- Per-stage dispatch tuning (issue #391) -----------------------------
     timeout_s: Optional[int] = None,
     max_retries: Optional[int] = None,
+    # Reasoning effort por etapa — omitido do wire quando ``None``.
+    preferred_reasoning: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the JSON body POSTed to ``POST /v1/dispatch``.
 
@@ -330,6 +360,8 @@ def build_dispatch_payload(
         payload["history"] = str(history)
     if preferred_model:
         payload["preferred_model"] = str(preferred_model)
+    if preferred_reasoning:
+        payload["preferred_reasoning"] = str(preferred_reasoning)
     if stage:
         payload["stage"] = str(stage)
     if action_kind:

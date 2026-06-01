@@ -241,6 +241,35 @@ def _to_optional_dispatcher(value: Any) -> Optional[str]:
     return stripped
 
 
+def _to_optional_reasoning_effort(value: Any) -> Optional[str]:
+    """Strict converter para reasoning effort (global + por etapa).
+
+    Espelha ``_to_optional_dispatcher``: ``None``/vazio colapsa para ``None``;
+    non-string levanta ``TypeError``; token desconhecido levanta ``ValueError``
+    (``apply_overrides`` engole e mantém o valor anterior). O conjunto válido
+    *final* depende do worker/provider da etapa; aqui validamos apenas contra a
+    UNIÃO de tokens conhecidos (:data:`deile.core.models.reasoning.KNOWN_EFFORTS`)
+    — o suficiente para barrar typos sem conhecer o contexto no momento do load.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"expected str, got {type(value).__name__}")
+    stripped = value.strip().lower()
+    if not stripped:
+        return None
+    # Lazy import — reasoning.py não importa nada de deile, mas mantemos o
+    # padrão lazy de ``_to_optional_dispatcher`` por simetria/segurança.
+    from deile.core.models.reasoning import is_valid_effort
+    if not is_valid_effort(stripped):
+        raise ValueError(
+            f"invalid reasoning effort {stripped!r}; expected one of "
+            "low/medium/high/xhigh/max/ultracode/auto (anthropic/claude) "
+            "ou específico do provider (none/off/minimal/...)"
+        )
+    return stripped
+
+
 def _to_optional_positive_decimal(value: Any) -> Optional[Decimal]:
     """Strict converter for per-stage cost cap entries (issue #392).
 
@@ -322,6 +351,13 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.models.implement":  ("pipeline_model_implement",  _to_optional_model_slug),
     "pipeline.models.pr_review":  ("pipeline_model_pr_review",  _to_optional_model_slug),
     "pipeline.models.follow_ups": ("pipeline_model_follow_ups", _to_optional_model_slug),
+    # Per-stage reasoning effort + global default — see reasoning_resolver / reasoning.py.
+    "model.reasoning_effort":       ("reasoning_effort",            _to_optional_reasoning_effort),
+    "pipeline.reasoning.classify":   ("pipeline_reasoning_classify",   _to_optional_reasoning_effort),
+    "pipeline.reasoning.refine":     ("pipeline_reasoning_refine",     _to_optional_reasoning_effort),
+    "pipeline.reasoning.implement":  ("pipeline_reasoning_implement",  _to_optional_reasoning_effort),
+    "pipeline.reasoning.pr_review":  ("pipeline_reasoning_pr_review",  _to_optional_reasoning_effort),
+    "pipeline.reasoning.follow_ups": ("pipeline_reasoning_follow_ups", _to_optional_reasoning_effort),
     # Per-stage dispatcher override (issue #309) — see dispatch_resolver.
     "pipeline.dispatchers.classify":   ("pipeline_dispatcher_classify",   _to_optional_dispatcher),
     "pipeline.dispatchers.refine":     ("pipeline_dispatcher_refine",     _to_optional_dispatcher),
@@ -407,6 +443,11 @@ class Settings:
     default_model_name: str = "gemini-1.5-pro-latest"
     max_context_tokens: int = 8000
     preferred_model: Optional[str] = None
+    # Esforço de raciocínio global (soft) — usado pelo DEILE CLI e como fallback
+    # do pipeline quando uma etapa não tem override próprio. Vocabulário Claude
+    # Code para anthropic/claude (low/medium/high/xhigh/max/ultracode/auto);
+    # específico por provider no deile-worker. Ver deile/core/models/reasoning.py.
+    reasoning_effort: Optional[str] = None
     vision_model: str = "gemini-2.5-flash-lite"
 
     # Tools
@@ -548,6 +589,18 @@ class Settings:
     pipeline_model_implement: Optional[str] = None
     pipeline_model_pr_review: Optional[str] = None
     pipeline_model_follow_ups: Optional[str] = None
+
+    # Reasoning effort por etapa (espelha os modelos per-stage). Resolvido por
+    # ``reasoning_resolver.resolve_stage_reasoning`` e repassado em
+    # ``DispatchPayload.preferred_reasoning``: o deile-worker injeta em
+    # ``session.context_data["reasoning_effort"]`` (provider traduz) e o
+    # claude-worker o passa a ``claude --effort``. Sem override por etapa, cai
+    # no global ``reasoning_effort`` acima.
+    pipeline_reasoning_classify: Optional[str] = None
+    pipeline_reasoning_refine: Optional[str] = None
+    pipeline_reasoning_implement: Optional[str] = None
+    pipeline_reasoning_pr_review: Optional[str] = None
+    pipeline_reasoning_follow_ups: Optional[str] = None
 
     # Pipeline per-stage dispatcher override (issue #309) — CLI persistence layer.
     # Decide qual worker pod recebe o ``POST /v1/dispatch`` por etapa:
@@ -1161,6 +1214,7 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     # Feature flags (deprecated but kept — used by tests + operators)
     ("DEILE_DEBUG",                          "debug_enabled",                  _env_bool),
     ("DEILE_PREFERRED_MODEL",                "preferred_model",                str),
+    ("DEILE_REASONING_EFFORT",               "reasoning_effort",               _to_optional_reasoning_effort),
     ("DEILE_VISION_MODEL",                   "vision_model",                   str.strip),
     ("DEILE_BOT_APPROVAL_AUTO",              "bot_approval_auto",              _env_bool),
     # Loop guard knobs (deprecated but kept — used by test_loop_detection.py)
@@ -1209,6 +1263,15 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     ("DEILE_PIPELINE_MODEL_IMPLEMENT",       "pipeline_model_implement",       _to_optional_model_slug),
     ("DEILE_PIPELINE_MODEL_PR_REVIEW",       "pipeline_model_pr_review",       _to_optional_model_slug),
     ("DEILE_PIPELINE_MODEL_FOLLOW_UPS",      "pipeline_model_follow_ups",      _to_optional_model_slug),
+    # Reasoning effort por etapa — cluster path (painel escreve via
+    # ``kubectl set env deploy/deile-pipeline``). CLI local usa
+    # ``pipeline.reasoning.*`` em settings.json. Validator
+    # ``_to_optional_reasoning_effort`` barra typos contra a união de níveis.
+    ("DEILE_PIPELINE_REASONING_CLASSIFY",    "pipeline_reasoning_classify",    _to_optional_reasoning_effort),
+    ("DEILE_PIPELINE_REASONING_REFINE",      "pipeline_reasoning_refine",      _to_optional_reasoning_effort),
+    ("DEILE_PIPELINE_REASONING_IMPLEMENT",   "pipeline_reasoning_implement",   _to_optional_reasoning_effort),
+    ("DEILE_PIPELINE_REASONING_PR_REVIEW",   "pipeline_reasoning_pr_review",   _to_optional_reasoning_effort),
+    ("DEILE_PIPELINE_REASONING_FOLLOW_UPS",  "pipeline_reasoning_follow_ups",  _to_optional_reasoning_effort),
     # Per-stage dispatcher override (issue #309) — cluster path. Operates em
     # paridade com pipeline.dispatchers.<stage> em settings.json. Validator
     # ``_to_optional_dispatcher`` consulta ``is_valid_dispatcher`` do

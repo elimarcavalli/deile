@@ -243,11 +243,11 @@ async def test_forced_model_unregistered_raises_instead_of_silent_swap():
 
     flagship = _CapturingProvider()
     flagship.provider_id = "anthropic"
-    flagship.model_name = "claude-opus-4-7"
+    flagship.model_name = "claude-opus-4-8"
 
     agent = _build_minimal_agent_with_mock_provider(flagship)
     # Only the flagship is registered; the user-requested haiku is NOT
-    agent.model_router.providers = {"anthropic:claude-opus-4-7": flagship}
+    agent.model_router.providers = {"anthropic:claude-opus-4-8": flagship}
 
     from deile.core.agent import AgentSession
 
@@ -278,7 +278,7 @@ async def test_forced_model_id_picks_exact_instance_not_flagship():
     instances are registered, agent must pick the haiku one, NOT the (flagship) opus."""
     flagship = _CapturingProvider()
     flagship.provider_id = "anthropic"
-    flagship.model_name = "claude-opus-4-7"  # the cascade flagship
+    flagship.model_name = "claude-opus-4-8"  # the cascade flagship
 
     haiku = _CapturingProvider()
     haiku.provider_id = "anthropic"
@@ -286,7 +286,7 @@ async def test_forced_model_id_picks_exact_instance_not_flagship():
 
     agent = _build_minimal_agent_with_mock_provider(flagship)
     agent.model_router.providers = {
-        "anthropic:claude-opus-4-7": flagship,
+        "anthropic:claude-opus-4-8": flagship,
         "anthropic:claude-haiku-4-5": haiku,
     }
 
@@ -491,7 +491,7 @@ async def test_process_input_returns_structured_forced_model_metadata():
 
     async def _raise_forced(*args, **kwargs):
         raise ModelError(
-            "Forced model 'anthropic:nonexistent' is not registered. Available: ['claude-opus-4-7']. Use /model use auto to clear.",
+            "Forced model 'anthropic:nonexistent' is not registered. Available: ['claude-opus-4-8']. Use /model use auto to clear.",
             error_code="FORCED_MODEL_NOT_REGISTERED",
         )
     agent._process_iterative_function_calling = _raise_forced

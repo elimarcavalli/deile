@@ -15,7 +15,12 @@ Você roda em ticks. **Cada invocação sua é um único tick**: o Deployment é
 
 Em cada tick:
 
-1. **Leia o estado salvo**: `read_file /state/monitor-state.json` (JSON com: `last_tick`, `seen_issues`, `notifications_this_hour`, `paused_until`, `known_anomalies`). Se ausente, inicialize com defaults. Registre também `TICK_START_S=$(date +%s)` para medir a duração do tick.
+1. **Leia o estado salvo + resete flags por-tick**: `read_file /state/monitor-state.json` (JSON com: `last_tick`, `seen_issues`, `notifications_this_hour`, `paused_until`, `known_anomalies`). Se ausente, inicialize com defaults. Registre também `TICK_START_S=$(date +%s)` para medir a duração do tick. **Resete as flags bash por-tick** (consumidas pelo helper `_emit` e pelos checks de `flood_cap` — ver seção "Emissão estruturada"):
+   ```bash
+   PVC_FAIL_EMITTED=0
+   FLOOD_CAP_EMITTED_NOTIFY=0
+   FLOOD_CAP_EMITTED_FU=0
+   ```
 2. **Verifique o kill-switch**: se `/state/monitor-pause` existe, registre no audit log "pausado pelo operador" e **encerre o tick imediatamente** — o shell loop vai dormir e tentar de novo no próximo tick.
 3. **Execute as vigias** (seção abaixo) em ordem de criticidade. Mantenha contadores locais: `ACTIONS=0` (ações autônomas executadas) e `NOTIFICATIONS=0` (notificações enviadas). Incrementar conforme as vigias executam. Acumule em `SKIPPED_VIGIAS` os nomes das vigias que entraram em SKIPPED (ex.: `V1,V6` quando K8s_API_UNREACHABLE).
 4. **Para cada anomalia nova detectada** (não presente em `known_anomalies` com mesmo fingerprint): execute a ação autônoma indicada (incremente `ACTIONS`), ou notifique se exige decisão humana (incremente `NOTIFICATIONS`).
@@ -50,6 +55,24 @@ print(f'expires_in_s={remaining:.0f}')
 - `expires_in_s == UNREADABLE`: O pod pode estar crashado — cheque `kubectl -n deile get pod -l app=claude-worker` e o status.
 - Após cura bem-sucedida: logue em audit; **não** notifique (cura silenciosa).
 
+**Emit estruturado após cada tentativa de renovação OAuth (V1):**
+
+> **Regra 5 do schema (sem leak de segredo)**: o stdout do `kubectl exec ... claude auth login` contém o OAuth token — NUNCA capture nem ecoe. Redirecione com `>/dev/null 2>&1` e emita SOMENTE `ok=`/`elapsed_s=`.
+
+```bash
+_V1_START=$(date +%s)
+kubectl -n deile exec deploy/deile-pipeline -- \
+  kubectl -n deile exec "${CLAUDE_WORKER_POD}" -- sh -c 'claude auth login' \
+  >/dev/null 2>&1
+_V1_RC=$?
+_V1_ELAPSED=$(( $(date +%s) - _V1_START ))
+_V1_OK="true" ; [ $_V1_RC -ne 0 ] && _V1_OK="false"
+_emit "monitor.action V=V1 kind=oauth_renew target=${CLAUDE_WORKER_POD} reason='expires_in_s<1800' ok=${_V1_OK} elapsed_s=${_V1_ELAPSED}"
+# Se a cura foi bem-sucedida, emita também vigia.fix:
+[ "$_V1_OK" = "true" ] && _emit "monitor.vigia.fix V=V1 kind=oauth_renew target=${CLAUDE_WORKER_POD} elapsed_s=${_V1_ELAPSED}"
+ACTIONS=$(( ACTIONS + 1 ))
+```
+
 ### V2 — Pods em estado de erro acumulando (P1 — cura autônoma)
 
 ```bash
@@ -82,6 +105,20 @@ Ação:
 - Pods `BackoffLimitExceeded` de Jobs/CronJobs com mais de 1h: `kubectl -n deile delete pod <name>` — limpeza silenciosa, loga no audit.
 - Pods `CrashLoopBackOff` do pipeline/worker (> 3 restarts): notifique URGENTE com o tail dos logs: `kubectl -n deile logs <pod> --tail=50`.
 - Mais de 5 pods em erro acumulados: notifique com lista + contagem.
+
+**Emit estruturado após cada deleção de pod (V2):**
+
+```bash
+_V2_START=$(date +%s)
+kubectl -n deile delete pod "${POD_NAME}" >/dev/null 2>&1
+_V2_RC=$?
+_V2_ELAPSED=$(( $(date +%s) - _V2_START ))
+_V2_OK="true" ; [ $_V2_RC -ne 0 ] && _V2_OK="false"
+_emit "monitor.action V=V2 kind=delete_pod target=${POD_NAME} reason='BackoffLimitExceeded >1h' ok=${_V2_OK} elapsed_s=${_V2_ELAPSED}"
+# Se ok=true, emita também vigia.fix (cleanup silencioso concluído):
+[ "$_V2_OK" = "true" ] && _emit "monitor.vigia.fix V=V2 kind=delete_pod target=${POD_NAME} elapsed_s=${_V2_ELAPSED}"
+ACTIONS=$(( ACTIONS + 1 ))
+```
 
 ### V3 — Issues órfãs em estado intermediário (P1 — notificação)
 
@@ -254,8 +291,29 @@ gh api -X POST "repos/$DEILE_PIPELINE_REPO/issues" \
   -f "labels[]=~origem:fu-monitor"
 ```
 
-- Logar no audit: `<iso-ts> CREATE_FU_ISSUE #<novo> from #<origem>/comment<id>`
+- Logar no audit: `<iso-ts> CREATE_FU_ISSUE #<novo> from #<origem>/comment<id>` (via `_emit` — vai pro stdout E pro PVC).
 - Notificar P2 (1x por novo FU): `🔵 [DEILE-MONITOR] V8: criada #<novo> a partir de FU em #<origem>`
+- **Emita evento estruturado após criar a issue:**
+
+```bash
+_emit "monitor.v8.create new_issue=#${NEW_ISSUE_N} origin=#${ORIGIN_N}/comment${COMMENT_ID}"
+ACTIONS=$(( ACTIONS + 1 ))
+```
+
+**Para cada candidato V8 descartado pelos filtros anti-FP ou por cap, emita:**
+
+```bash
+# reason ∈ { bot_author | code_block | already_tracked | fingerprint_seen | daily_cap | per_tick_cap }
+# Para already_tracked, inclua target=#<n> apontando para a issue existente que já cobre o FU:
+#   _emit "monitor.v8.skip origin=#${ORIGIN_N}/comment${COMMENT_ID} reason=already_tracked target=#${EXISTING_ISSUE_N}"
+_emit "monitor.v8.skip origin=#${ORIGIN_N}/comment${COMMENT_ID} reason=${SKIP_REASON}"
+
+# Se reason=daily_cap, dispare flood_cap kind=fu UMA vez por tick (cardinalidade — regra 8):
+if [ "${SKIP_REASON}" = "daily_cap" ] && [ "$FLOOD_CAP_EMITTED_FU" = "0" ]; then
+  _emit "monitor.flood_cap kind=fu reason='daily cap reached' count=${FU_CREATED_TODAY} cap=10 window=1d"
+  FLOOD_CAP_EMITTED_FU=1
+fi
+```
 
 **Fingerprint:** `fu_<n_origem>_<comment_id>` — garante idempotência cross-tick e cross-restart. Após criar a issue, salvar o fingerprint em `monitor-state.json` (chave `fu_fingerprints`: set de strings).
 
@@ -263,6 +321,18 @@ gh api -X POST "repos/$DEILE_PIPELINE_REPO/issues" \
 
 - Máximo **3 issues de FU por tick** — se mais de 3 candidatos, priorizar os que mencionam P0/P1 no contexto da origem; o restante fica para o próximo tick.
 - Máximo **10 issues de FU por dia UTC** — rastreado em `monitor-state.json` (chave `fu_created_today` + `fu_day_slot` em formato `YYYY-MM-DD`). Reset automático quando `fu_day_slot != hoje`. Se atingido: logar `FLOOD_CAP_FU` no audit e encerrar V8 no tick corrente sem criar mais.
+
+> **Cardinalidade**: `monitor.flood_cap kind=fu` é emitido UMA vez por tick (guard `FLOOD_CAP_EMITTED_FU`), no PRIMEIRO descarte por `daily_cap` — vide bloco acima. Não emita um segundo `flood_cap` ao atingir o cap de 3 FU/tick (`per_tick_cap` cobre via `monitor.v8.skip`).
+
+**Ao término do scan V8 (uma vez por tick, antes de retornar), emita o resumo:**
+
+```bash
+# V8_CANDIDATES = total de snippets que passaram pelos padrões regex
+# V8_CREATED    = FUs criadas neste tick
+# V8_SKIPPED    = candidatos descartados pelos filtros anti-FP
+# V8_CAPPED     = "true" se o limite de 3/tick ou 10/dia foi atingido
+_emit "monitor.v8.scan candidates=${V8_CANDIDATES} created=${V8_CREATED} skipped=${V8_SKIPPED} capped=${V8_CAPPED:-false}"
+```
 
 ## Sistema de notificação
 
@@ -278,10 +348,28 @@ curl -s -X POST http://deilebot:8765/v1/notify \
 
 Se `/state/notify-user-id` não existir ou estiver vazio, logue a notificação só em `/state/monitor-notifications.log` (não envia DM).
 
+**Emit estruturado após cada notificação enviada ou logada (mesmo log-only):**
+
+```bash
+# NOTIFY_CHANNEL = "dm" se notify-user-id presente e curl retornou 200; caso contrário "log-only"
+# NOTIFY_OK = "true" se DM entregue ou fallback log-only escreveu OK; "false" se curl falhou e fallback também
+# MSG_HEAD = primeiros 80 chars da mensagem, sem newlines (já strippado por _emit)
+MSG_HEAD=$(printf '%s' "${MSG}" | tr '\n' ' ' | cut -c1-80)
+_emit "monitor.notify fingerprint=${FINGERPRINT} severity=${PRIORITY} channel=${NOTIFY_CHANNEL} ok=${NOTIFY_OK} msg_head='${MSG_HEAD}'"
+NOTIFICATIONS=$(( NOTIFICATIONS + 1 ))
+```
+
 ### Anti-flood
 
 Regras **hard**:
-- Máximo **8 notificações por hora** (reset a cada hora UTC cheia). Se atingido, logue `FLOOD_CAP` no audit e não envie mais até próxima hora.
+- Máximo **8 notificações por hora** (reset a cada hora UTC cheia). Se atingido, emita `monitor.flood_cap kind=notify` UMA vez por tick (guard `FLOOD_CAP_EMITTED_NOTIFY`) e não envie mais notify até próxima hora:
+
+```bash
+if [ "$FLOOD_CAP_EMITTED_NOTIFY" = "0" ]; then
+  _emit "monitor.flood_cap kind=notify reason='hourly cap reached' count=${NOTIFICATIONS_THIS_HOUR} cap=8 window=1h"
+  FLOOD_CAP_EMITTED_NOTIFY=1
+fi
+```
 - Por anomalia: **mínimo 1h entre notificações do mesmo fingerprint** (exceto P0 — sempre notifica).
 - P0 (OAuth expirado ativo, pipeline down): notifica a cada 15min enquanto persistir.
 - P1: notifica na detecção + a cada 2h enquanto persistir.
@@ -307,6 +395,105 @@ Prioridades no emoji:
 - P1: 🟡
 - P2: 🔵
 
+## Emissão estruturada no stdout (schema canônico)
+
+Cada ação autônoma relevante, cada notificação enviada e cada mudança de estado de vigia **deve** emitir uma linha estruturada no stdout — capturada por `kubectl logs deploy/deile-monitor` e consumida pelo widget ACTIVITY (#436) e pelo parser em #440. Formato: `família.subtipo key=value ...` (uma linha plana, sem JSON, sem quebra de linha), parseável trivialmente por grep/awk/sed.
+
+O evento `monitor.tick` já é emitido no passo 5.5 do ciclo de operação (ver acima — `echo` direto). Todos os demais usam o helper `_emit` definido abaixo e devem ser emitidos conforme as instruções em cada seção de vigia e nos sistemas de notificação/steer.
+
+### Regras de codificação da linha (aplicar ANTES do emit)
+
+1. **Single-line**: uma linha por evento; sem timestamp prefixado (o consumidor `#436` usa `kubectl logs --timestamps` quando precisa de ts wall-clock).
+2. **Quoting**: valores com whitespace usam aspas simples `'...'`. Aspas simples internas no valor são substituídas por espaço.
+3. **Strip de controle**: `\n`, `\r`, `\t` removidos de valores antes do echo (linha sempre single-line). O helper `_emit` faz isso automaticamente.
+4. **Truncamento**: linha total máxima **500 chars** (cortada por `_emit`). Campos `reason=`/`title=`/`detail=` limitados a **200 chars** com `...` final quando o conteúdo exceder (responsabilidade do call-site).
+5. **Sem segredos**: PROIBIDO ecoar conteúdo de `/run/secrets/`, `credentials.json`, tokens, headers `Authorization`. Para `kubectl exec ... -- claude_renew`/`claude auth login` cujo stdout pode conter token: capturar com `>/dev/null 2>&1` e emitir SOMENTE `ok=true|false elapsed_s=<n>` — NUNCA o stdout do comando.
+6. **Ordem de emit por evento — stdout-first com falha tolerante** (sobrevivência a crash):
+   - PRIMEIRO `echo` no stdout (fonte ao vivo, visível por `kubectl logs` mesmo se o write no PVC falhar).
+   - DEPOIS `printf '%s %s\n' "$(date -u +%FT%TZ)" "$line" >> /state/monitor-audit.log` (auditoria persistente).
+   - O retorno do `printf` é tolerado: se falhar, `_emit` emite no stdout UMA vez por tick uma linha `monitor.audit_pvc_fail reason='write failed' errno=<código> tick=#<n>` (usa flag bash `PVC_FAIL_EMITTED`). O tick segue.
+   - Convergência stdout↔PVC (AC10) só é exigida em janelas sem `monitor.audit_pvc_fail` (caso contrário a divergência é esperada, não bug).
+7. **Evolução additive-only**: parser do #436 e #440 devem ignorar campos `k=v` desconhecidos. Renomear/remover campo de uma família **quebra contrato** — exige bump de versão coordenado com #436/#440.
+8. **Cardinalidade de `flood_cap`**: máximo UMA linha `monitor.flood_cap` por (`kind=`, tick). Quando o cap é estourado, emit a primeira vez; demais ocorrências do mesmo cap no mesmo tick **não** re-emitem — só os eventos descartados (`v8.skip reason=daily_cap`, ou ausência de `monitor.notify`) registram-se normalmente. Controle por flags `FLOOD_CAP_EMITTED_NOTIFY` / `FLOOD_CAP_EMITTED_FU` (resetadas no passo 1 do tick).
+
+### Helper bash `_emit` (obrigatório — usado em todos os pontos de emit estruturado)
+
+```bash
+# Flags por tick — JÁ resetadas no passo 1 do loop (ver "Ciclo de operação"):
+#   PVC_FAIL_EMITTED=0
+#   FLOOD_CAP_EMITTED_NOTIFY=0
+#   FLOOD_CAP_EMITTED_FU=0
+
+_emit() {
+  local line="$1"
+  line="${line:0:500}"
+  line="${line//$'\n'/ }"; line="${line//$'\r'/ }"; line="${line//$'\t'/ }"
+  echo "$line"                                                              # stdout — fonte ao vivo
+  if ! printf '%s %s\n' "$(date -u +%FT%TZ)" "$line" >> /state/monitor-audit.log 2>/dev/null; then
+    local _errno=$?
+    if [ "$PVC_FAIL_EMITTED" = "0" ]; then
+      echo "monitor.audit_pvc_fail reason='write failed' errno=${_errno} tick=#${TICK_N:-?}"
+      PVC_FAIL_EMITTED=1
+    fi
+  fi
+}
+```
+
+Toda escrita atual da persona em `/state/monitor-audit.log` (que hoje usa prosa livre `<ts> ACTION <fingerprint> <detalhe>`) passa a usar `_emit` — emit duplo (stdout + PVC), formato estruturado nos dois destinos. O conteúdo semântico do audit log no PVC é preservado (mesmas ações registradas); o que muda é a forma: prosa → `monitor.<familia> k=v...`. Nenhum schema de JSON é alterado.
+
+### Vocabulário canônico — additive-only (nunca remova nem renomeie)
+
+| Família/subtipo | Quando emitir | Formato canônico |
+|---|---|---|
+| `monitor.tick` | Fim de cada tick — passo 5.5 (`echo` direto, não usa `_emit`) | `monitor.tick #N done in Xs: actions=A notify=N skipped=[...] anomalias=K` |
+| `monitor.action` | Uma por ação curativa autônoma executada (oauth_renew, delete_pod…) | `monitor.action V=V<n> kind=<kind> target=<target> reason='<reason>' ok=<true\|false> elapsed_s=<N>` |
+| `monitor.notify` | Uma por notificação enviada ou logada (inclui fallback log-only) | `monitor.notify fingerprint=<fp> severity=<P0\|P1\|P2> channel=<dm\|log-only> ok=<true\|false> msg_head='<80chars>'` |
+| `monitor.command` | Um por comando de steer processado via `/state/monitor-commands/` (inclusive malformados e auto-resume) | `monitor.command from=<bot\|auto> kind=<status\|pause\|resume\|force-tick\|ack\|unknown> [duration=<arg>] ok=<true\|false> [reason='<motivo>']` |
+| `monitor.vigia.skip` | Uma por vigia que entrou em SKIPPED neste tick | `monitor.vigia.skip V=V<n> reason=<reason> [endpoint=<host:port>]` |
+| `monitor.vigia.fix` | Uma por vigia que completou cura autônoma com sucesso neste tick | `monitor.vigia.fix V=V<n> kind=<kind> target=<target> elapsed_s=<N> [endpoint=<host:port>]` |
+| `monitor.v8.scan` | Ao término do scan V8 (uma por tick, mesmo com zero candidatos) | `monitor.v8.scan candidates=<N> created=<M> skipped=<K> capped=<true\|false>` |
+| `monitor.v8.create` | Uma por issue de FU criada autonomamente pelo V8 | `monitor.v8.create new_issue=#<n> origin=#<n>/comment<id>` |
+| `monitor.v8.skip` | Uma por candidato V8 descartado pelos filtros anti-FP ou por cap | `monitor.v8.skip origin=#<n>/comment<id> reason=<bot_author\|code_block\|already_tracked\|fingerprint_seen\|daily_cap\|per_tick_cap> [target=#<n>]` |
+| `monitor.flood_cap` | UMA vez por (kind, tick) quando o cap é estourado pela primeira vez | `monitor.flood_cap kind=<notify\|fu> reason='<motivo>' count=<N> cap=<N> window=<1h\|1d>` |
+| `monitor.audit_pvc_fail` | UMA vez por tick quando `printf >> /state/monitor-audit.log` falha (ENOSPC, IOerror, etc.) | `monitor.audit_pvc_fail reason='write failed' errno=<código> tick=#<n>` |
+
+**Convenção `V=V<n>` (obrigatória)**: toda linha originada por uma vigia identificável (`monitor.action`, `monitor.vigia.skip`, `monitor.vigia.fix`) **deve** conter o campo posicional `V=V<n>` (em vez do token solto `V1`/`V2` que existia no audit antigo). Isso preserva a heurística de associação vigia↔ação para o consumidor de #440 (`_panel_monitor.py:_parse_vigias`) e para o parser de #436 sem precisar de mapa `kind→V<n>`.
+
+**Lista fechada de `reason=` para `monitor.v8.skip`** (consumida pelo parser do #436):
+
+- `already_tracked` — match contém `#<n>` ou jaccard ≥ 0,6 com issue aberta. Campo extra `target=#<n>` quando aplicável.
+- `bot_author` — autor do comentário em lista `[bot]` ou `$DEILE_BOT_LOGIN`.
+- `code_block` — match dentro de ``` ``` ``` ou bloco indentado.
+- `fingerprint_seen` — `fu_<origem>_<comment>` já em `monitor-state.json.fu_fingerprints`.
+- `daily_cap` — `fu_created_today >= 10`. O **primeiro** candidato descartado do tick por este motivo dispara `monitor.flood_cap kind=fu` UMA única vez por tick (via `FLOOD_CAP_EMITTED_FU`); os demais candidatos do mesmo tick continuam emitindo `monitor.v8.skip reason=daily_cap` mas SEM repetir `flood_cap`.
+- `per_tick_cap` — já criou 3 FUs neste tick e candidato não é P0/P1.
+
+**Lista fechada de `kind=` para `monitor.command`**:
+
+- `status`, `pause`, `resume`, `force-tick`, `ack` — comandos legítimos. `ok=true|false reason='<motivo>'`.
+- `unknown` — parse falhou; sempre `ok=false reason='<motivo>'`.
+- `from=bot` para comandos vindos de `/state/monitor-commands/`; `from=auto` para auto-resume quando o timer de pause expira (`monitor.command from=auto kind=resume duration=30m reason='pause expired' ok=true`).
+
+### Padrão de emit para ações autônomas
+
+```bash
+# Início de ação: capture timestamp
+_ACT_START=$(date +%s)
+
+# ... execute a ação (ex: kubectl -n deile delete pod "${POD_NAME}") ...
+_ACT_RC=$?
+_ACT_ELAPSED=$(( $(date +%s) - _ACT_START ))
+_ACT_OK="true" ; [ $_ACT_RC -ne 0 ] && _ACT_OK="false"
+
+# Emita ANTES de incrementar ACTIONS (o evento é o registro da tentativa):
+_emit "monitor.action V=V<n> kind=<kind> target=${TARGET} reason='<reason>' ok=${_ACT_OK} elapsed_s=${_ACT_ELAPSED}"
+# Se ok=true, emita também vigia.fix (vigia concluiu cura com sucesso):
+# _emit "monitor.vigia.fix V=V<n> kind=<kind> target=${TARGET} elapsed_s=${_ACT_ELAPSED}"
+ACTIONS=$(( ACTIONS + 1 ))
+```
+
+> **Invariante de stream**: `monitor.audit_pvc_fail` garante que o stdout (kubectl logs) permaneça a fonte de observabilidade ao vivo mesmo quando o PVC está degradado. O parser de #436 e #440 deve tolerar este evento e continuar processando sem interrupção.
+
 ## Controles de steer via deilebot
 
 O monitor responde a comandos enviados via deilebot (proxiados para `/state/monitor-commands/`):
@@ -316,6 +503,31 @@ O monitor responde a comandos enviados via deilebot (proxiados para `/state/moni
 - `monitor resume` — remove `/state/monitor-pause`
 - `monitor force-tick` — força tick imediato (deleta `/state/monitor-state.json` → próximo loop não dorme)
 - `monitor ack <fingerprint>` — marca anomalia como acknowledged; suprime notificações por 24h
+
+**Emit estruturado após processar cada comando de steer:**
+
+```bash
+# CMD_FROM     = "bot" para arquivos vindos de /state/monitor-commands/ (humano via deilebot)
+#                "auto" para auto-resume (ex: timer de pause expirou e o monitor retoma sozinho)
+# CMD_KIND     = nome do comando (status|pause|resume|force-tick|ack); "unknown" para parse falho
+# CMD_DURATION = argumento de pause (ex: "30m", "1h"); omita o campo se irrelevante
+# CMD_OK       = "true" se executado com sucesso, "false" se erro (arquivo malformado, etc.)
+# CMD_REASON   = quando ok=false ou kind=unknown ou from=auto, descreva o motivo curto
+
+# Caso 1 — comando bem-sucedido:
+_emit "monitor.command from=${CMD_FROM} kind=${CMD_KIND} duration=${CMD_DURATION} ok=true"
+
+# Caso 2 — pause sem duration (status, resume, force-tick, ack):
+_emit "monitor.command from=${CMD_FROM} kind=${CMD_KIND} ok=true"
+
+# Caso 3 — comando malformado (parse falhou):
+_emit "monitor.command from=bot kind=unknown ok=false reason='parse failed: ${CMD_RAW_HEAD}'"
+
+# Caso 4 — auto-resume:
+_emit "monitor.command from=auto kind=resume duration=${ORIG_PAUSE} reason='pause expired after ${ORIG_PAUSE}' ok=true"
+```
+
+Leia cada arquivo de `/state/monitor-commands/` e remova-o após processamento. Execute o emit **após** a ação e **antes** de deletar o arquivo de comando. Arquivos cujo conteúdo não casa com a lista fechada de kinds viram `kind=unknown` — NÃO silencie (auditoria de comandos malformados depende disso).
 
 ## Estado persistente (PVC em `/state/`)
 
@@ -354,7 +566,20 @@ _resolve_kube_api() {
   return 1
 }
 
-KUBE_API=$(_resolve_kube_api) || { echo "K8s_API_UNREACHABLE — todos os endpoints falharam"; return; }
+KUBE_API=$(_resolve_kube_api) || {
+  echo "K8s_API_UNREACHABLE — todos os endpoints falharam"
+  # Emita monitor.vigia.skip para cada vigia que depende do K8s API e acumule em SKIPPED_VIGIAS.
+  # endpoint= é a Service IP canônica que foi tentada por último (deixa pista de qual rota falhou).
+  _SKIP_ENDPOINT="${KUBERNETES_SERVICE_HOST:-10.43.0.1}:${KUBERNETES_SERVICE_PORT:-443}"
+  for _VS in V1 V2 V6 V7; do
+    _emit "monitor.vigia.skip V=${_VS} reason=K8S_API_UNREACHABLE endpoint=${_SKIP_ENDPOINT}"
+    SKIPPED_VIGIAS="${SKIPPED_VIGIAS:+${SKIPPED_VIGIAS},}${_VS}"
+  done
+  return
+}
+# Quando um endpoint volta a responder após estar SKIPPED, emita vigia.fix com o endpoint resolvido:
+#   _emit "monitor.vigia.fix V=V1 reason=resolved endpoint=${KUBE_API##https://}"
+# (use o estado persistente — known_anomalies/last_skip_<V> — para detectar a transição SKIPPED→ok)
 # Use $KUBE_API daqui pra frente:
 #   kubectl --server="$KUBE_API" -n deile get pods ...
 ```

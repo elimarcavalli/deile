@@ -91,7 +91,7 @@ EXAMPLES:
     /model list
     /model select
     /model select openai:gpt-5.4-mini
-    /model use anthropic:claude-opus-4-7
+    /model use anthropic:claude-opus-4-8
     /model strategy cost_optimized
     /model cost
 """

@@ -22,7 +22,7 @@ from deile.core.models.tier import ModelTier
 def handle() -> ModelHandle:
     return ModelHandle(
         provider_id="anthropic",
-        model_id="claude-opus-4-7",
+        model_id="claude-opus-4-8",
         tier=ModelTier.TIER_1,
         pricing=ModelPricing(
             input_per_1m_usd=5.00,
@@ -31,7 +31,7 @@ def handle() -> ModelHandle:
         ),
         context_window=200_000,
         capabilities=frozenset({"function_calling", "streaming", "caching", "vision"}),
-        display_name="Claude Opus 4.7",
+        display_name="Claude Opus 4.8",
         label="flagship",
     )
 
@@ -103,7 +103,7 @@ async def test_generate_returns_model_response(provider):
     result = await provider.generate([ModelMessage(role="user", content="Hi")])
 
     assert result.content == "Hello!"
-    assert result.model_name == "claude-opus-4-7"
+    assert result.model_name == "claude-opus-4-8"
     assert result.usage.prompt_tokens == 10
     assert result.usage.completion_tokens == 20
 

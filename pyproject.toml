@@ -80,6 +80,7 @@ test = [
     "pytest>=7",
     "pytest-asyncio>=0.23",
     "pytest-cov>=4",
+    "pytest-randomly>=3",
     "pytest-textual-snapshot>=1.0",
     "pytest-timeout>=2.3",
 ]

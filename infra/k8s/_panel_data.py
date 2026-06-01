@@ -43,12 +43,13 @@ import sqlite3
 import subprocess
 import threading
 import time
+from collections import deque
 from concurrent import futures
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, List, Optional, Set, Tuple, TypeVar
+from typing import Any, Callable, Deque, Dict, Generic, List, Optional, Set, Tuple, TypeVar
 
 T = TypeVar("T")
 
@@ -1437,11 +1438,23 @@ _WORKER_BUSY_WINDOW_S = 90  # se houve POST /v1/dispatch nos últimos 90s, está
 # worker doing right now" header in :class:`PodWatchView`. Format must
 # stay in sync with the ``logger.info`` calls there; key order is
 # flexible (we extract by regex), but key NAMES are the wire contract.
+# Accepts both the legacy ``dispatch_started`` (snake) and the new
+# ``dispatch.received`` (dot) formats for 1-release overlap (#435).
+# Removal of the legacy compat branch is tracked in issue #444.
 _DISPATCH_STARTED_RE = re.compile(
-    r"dispatch_started\s+(?P<kv>.+)$", re.IGNORECASE,
+    r"dispatch[._](received|started)\s+(?P<kv>.+)$", re.IGNORECASE,
 )
+# Same dual-format compat for the terminal marker: ``dispatch.completed``
+# (new) and ``dispatch_completed`` (legacy).  Removal → #444.
 _DISPATCH_COMPLETED_RE = re.compile(
-    r"dispatch_completed\s+task=(?P<task_id>[a-f0-9]+)(?P<rest>[^\n]*)$",
+    r"dispatch[._](completed)\s+task=(?P<task_id>[a-f0-9]+)(?P<rest>[^\n]*)$",
+    re.IGNORECASE,
+)
+# ``dispatch.failed`` is a new terminal event (#435) signalling task failure
+# (timeout / cancellation / internal error).  Treated identically to a
+# ``dispatch.completed ok=False`` for the purpose of clearing current_task.
+_DISPATCH_FAILED_RE = re.compile(
+    r"dispatch\.failed\s+task=(?P<task_id>[a-f0-9]+)(?P<rest>[^\n]*)$",
     re.IGNORECASE,
 )
 _KV_RE = re.compile(r"(\w+)=(\S+)")
@@ -1540,9 +1553,10 @@ class WorkerProvider(_KubectlProviderMixin):
             ll = _parse_log_line(raw)
             if ll is None:
                 continue
-            # Pareamento started/completed — feito ANTES do dispatch-RE
+            # Pareamento started/completed|failed — feito ANTES do dispatch-RE
             # genérico porque ambos casam com "dispatch" no body.
-            m_done = _DISPATCH_COMPLETED_RE.search(ll.body)
+            # ``dispatch.failed`` (#435) é tratado como terminal igual a completed.
+            m_done = _DISPATCH_COMPLETED_RE.search(ll.body) or _DISPATCH_FAILED_RE.search(ll.body)
             if m_done:
                 tid = m_done.group("task_id")
                 started_task = live_tasks.pop(tid, None)
@@ -1630,6 +1644,324 @@ class WorkerProvider(_KubectlProviderMixin):
             state.current_task = max(
                 live_tasks.values(), key=lambda t: t.started_ts,
             )
+        return state
+
+
+# ===== MultiSourceActivityProvider (issue #436) =============================
+#
+# Tail em paralelo de 5 deployments fixos. Eventos mergeados num buffer
+# rolling-window (cap 200), top-10 renderizados em ordem cronológica
+# decrescente com cores por role.
+#
+# Parser dual-mode: tenta parser canônico primeiro (vocabulário das issues
+# pré-req #435/#437/#438/#439); se não casa, cai no legacy
+# _classify_pipeline_line (degradação suave). Source sem nenhum parser que
+# case → silêncio (não erro).
+
+# (deploy, role_label, rich_color)
+_MULTI_SOURCE_DEFS: Tuple[Tuple[str, str, str], ...] = (
+    ("deile-pipeline", "pipeline",     "bright_black"),
+    ("deile-worker",   "deile-worker", "cyan"),
+    ("claude-worker",  "claude-worker","orange1"),
+    ("deilebot",       "bot",          "magenta"),
+    ("deile-monitor",  "monitor",      "blue"),
+)
+
+_SOURCE_ROLE_MAP: Dict[str, str] = {d: r for d, r, _ in _MULTI_SOURCE_DEFS}
+_SOURCE_COLOR_MAP: Dict[str, str] = {d: c for d, _, c in _MULTI_SOURCE_DEFS}
+# Maps role_label → color; used by _activity_panel for correct color lookup.
+_ROLE_COLOR_MAP: Dict[str, str] = {r: c for _, r, c in _MULTI_SOURCE_DEFS}
+
+_MULTI_BUFFER_CAP = 200
+_MULTI_TAIL_LINES = 80
+_MULTI_SINCE = "10s"
+
+# AC11 — secret redaction applied before inserting events into the buffer.
+_SECRET_RE = re.compile(
+    r"(?i)(token|bearer|api[-_]?key|secret|password)\s*[=:]\s*\S+",
+)
+# AC8 — extracts task_id from dispatch.progress detail.
+_PROGRESS_TASK_RE = re.compile(r"task=(\S+)")
+# AC10 — burst aggregation thresholds.
+_BURST_THRESHOLD = 20
+_BURST_WINDOW_S = 60.0
+# AC7 — error detail highlight (evaluated in _panel.py _activity_panel).
+_ERROR_DETAIL_RE = re.compile(
+    r"\b(error|failed|traceback|exception)\b|reason=['\"]?\S+['\"]?",
+    re.IGNORECASE,
+)
+
+# Canonical structured-log prefix emitted by issues #435/#437/#438/#439.
+# Format: ``verb.sub [key=val ...]`` at start of log body.
+# Example: ``dispatch.started task=abc123 channel=pipeline-issue-360 stage=implement``
+_CANONICAL_VERB_RE = re.compile(
+    r"^(dispatch|git|forge|inbound|agent|cron"
+    r"|refinement|routing|auth|monitor)\.(\S+)\s*(.*?)$",
+    re.IGNORECASE,
+)
+_KV_PAIR_RE = re.compile(r"(\w+)=(\S+)")
+
+
+def _classify_canonical(ll: LogLine, role: str) -> Optional[ActivityEvent]:
+    """Parser canônico para vocabulário emitido pelas issues #435-#439.
+
+    Retorna None se o padrão não casa — o caller cai no parser legacy.
+    """
+    m = _CANONICAL_VERB_RE.match(ll.body)
+    if not m:
+        return None
+    verb = m.group(1).lower()
+    subaction = m.group(2).lower()
+    rest = m.group(3)
+    kv = dict(_KV_PAIR_RE.findall(rest))
+    action = f"{verb}.{subaction}"
+    target = ""
+    detail = action
+
+    if verb == "dispatch":
+        if subaction == "progress":
+            # AC8: include task_id and elapsed in detail for dedup by task.
+            task_id = kv.get("task", kv.get("id", ""))
+            elapsed = kv.get("elapsed_s", kv.get("elapsed", ""))
+            detail = "dispatch.progress"
+            if task_id:
+                detail += f" task={task_id}"
+            if elapsed:
+                detail += f" elapsed_s={elapsed}"
+        else:
+            channel = kv.get("channel", "")
+            m2 = _PIPELINE_CHANNEL_RE.match(channel)
+            if m2:
+                kind_hint = m2.group(1)
+                num = m2.group(2)
+                target = ("PR#" if kind_hint.endswith("pr") else "#") + num
+            outcome = kv.get("outcome", kv.get("status", ""))
+            detail = f"{action} → {outcome}" if outcome else action
+    elif verb == "inbound" and subaction == "mention":
+        raw_t = kv.get("target", kv.get("issue", ""))
+        m3 = re.match(r"(issue|pr):(\d+)", raw_t)
+        if m3:
+            target = ("PR#" if m3.group(1) == "pr" else "#") + m3.group(2)
+    elif verb == "monitor":
+        queue = kv.get("queue", "")
+        detail = (f"monitor.{subaction} queue={queue}"
+                  if queue else f"monitor.{subaction}")
+    elif verb == "git":
+        ref = kv.get("branch", kv.get("ref", kv.get("sha", "")))
+        if ref:
+            target = ref[:20]
+        detail = f"git.{subaction}"
+    elif verb in ("forge", "auth"):
+        detail = f"{verb}.{subaction}"
+    elif verb in ("refinement", "routing"):
+        issue_ref = kv.get("issue", kv.get("number", ""))
+        if issue_ref:
+            target = f"#{issue_ref}"
+        detail = f"{verb}.{subaction}"
+    elif verb == "agent":
+        task = kv.get("task", kv.get("id", ""))
+        detail = f"agent.{subaction}" + (f" task={task}" if task else "")
+    elif verb == "cron":
+        job = kv.get("job", kv.get("name", ""))
+        detail = f"cron.{subaction}" + (f" {job}" if job else "")
+
+    return ActivityEvent(ts=ll.ts, actor=role, action=action,
+                         target=target, detail=detail)
+
+
+def _classify_source_line(ll: LogLine, role: str) -> Optional[ActivityEvent]:
+    """Dual-mode classifier: canônico primeiro, legacy como fallback.
+
+    Legacy sempre sobrescreve ``actor`` com ``role`` para que o widget
+    mostre a origem correta mesmo para fontes ainda sem vocabulário canônico.
+    """
+    ev = _classify_canonical(ll, role)
+    if ev is not None:
+        return ev
+    ev_legacy = _classify_pipeline_line(ll)
+    if ev_legacy is None:
+        return None
+    return ActivityEvent(
+        ts=ev_legacy.ts,
+        actor=role,
+        action=ev_legacy.action,
+        target=ev_legacy.target,
+        detail=ev_legacy.detail,
+    )
+
+
+@dataclass
+class MultiSourceActivityState:
+    """Buffer rolling-window com eventos de todas as fontes."""
+    events: List[ActivityEvent] = field(default_factory=list)
+
+    def top(self, n: int = 10) -> List[ActivityEvent]:
+        return sorted(self.events, key=lambda e: e.ts, reverse=True)[:n]
+
+
+class MultiSourceActivityProvider(_KubectlProviderMixin):
+    """Tail em paralelo de 5 deployments → buffer rolling-window de eventos.
+
+    Usa ``--since=10s --tail=80 --timestamps`` por source. Cada refresh
+    mescla todas as linhas num buffer capped em 200, ordenado por timestamp.
+    Fontes indisponíveis são silenciosamente ignoradas (provider permanece
+    funcional com eventos das demais fontes).
+    """
+
+    def __init__(self, ttl_s: float = 3.0, namespace: str = NS,
+                 enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
+        self._cache: Cache[MultiSourceActivityState] = Cache(
+            ttl_s, self._fetch, fallback=MultiSourceActivityState(),
+        )
+        # AC1 / AC3: per-source error tracking + thread safety.
+        self._last_errors: Dict[str, str] = {}
+        self._lock = threading.Lock()
+        # AC10: burst aggregation counters — (actor, action) → deque[ts_float].
+        self._burst_counters: Dict[Tuple[str, str], Deque[float]] = {}
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> MultiSourceActivityState:
+        return self._cache.get(force)
+
+    def _fetch_source(self, deploy: str, role: str) -> List[ActivityEvent]:
+        """Fetch + parse de um único deployment. Retorna [] em caso de erro.
+
+        AC3: timeout 3.0s; TimeoutExpired registrado em _last_errors[deploy].
+        AC11: secrets redacted from ev.detail before appending.
+        """
+        if self._kubectl is None:
+            return []
+        cmd = [self._kubectl, "-n", self._namespace, "logs",
+               f"deploy/{deploy}",
+               f"--tail={_MULTI_TAIL_LINES}",
+               f"--since={_MULTI_SINCE}",
+               "--timestamps"]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=3.0)
+        except subprocess.TimeoutExpired:
+            with self._lock:
+                self._last_errors[deploy] = "timeout"
+            return []
+        except OSError:
+            return []
+        if out.returncode != 0:
+            with self._lock:
+                self._last_errors[deploy] = f"exit {out.returncode}"
+            return []
+        text = out.stdout
+        if not text:
+            return []
+        if len(text) > MAX_LOG_BYTES:
+            text = text[-MAX_LOG_BYTES:]
+        events: List[ActivityEvent] = []
+        for raw in text.splitlines():
+            ll = _parse_log_line(raw)
+            if ll is None:
+                continue
+            ev = _classify_source_line(ll, role)
+            if ev is not None:
+                # AC11: redact secrets before inserting into buffer.
+                safe_detail = _SECRET_RE.sub(r"\1=<redacted>", ev.detail)
+                if safe_detail != ev.detail:
+                    ev = ActivityEvent(ts=ev.ts, actor=ev.actor,
+                                       action=ev.action, target=ev.target,
+                                       detail=safe_detail)
+                events.append(ev)
+        return events
+
+    def _fetch(self) -> MultiSourceActivityState:
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+
+        # AC3: parallel fetch via ThreadPoolExecutor.
+        pool: List[ActivityEvent] = []
+        with futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_map = {
+                executor.submit(self._fetch_source, deploy, role): deploy
+                for deploy, role, _ in _MULTI_SOURCE_DEFS
+            }
+            for fut in futures.as_completed(future_map):
+                deploy = future_map[fut]
+                try:
+                    pool.extend(fut.result())
+                except Exception as exc:
+                    with self._lock:
+                        self._last_errors[deploy] = str(exc)
+
+        pool.sort(key=lambda e: e.ts)
+
+        # AC8: dedup dispatch.progress — keep only latest per task_id.
+        progress_latest: Dict[str, int] = {}
+        deduped: List[ActivityEvent] = []
+        for ev in pool:
+            if ev.action == "dispatch.progress":
+                m = _PROGRESS_TASK_RE.search(ev.detail)
+                if m:
+                    task_id = m.group(1)
+                    if task_id in progress_latest:
+                        deduped[progress_latest[task_id]] = ev
+                        continue
+                    progress_latest[task_id] = len(deduped)
+            deduped.append(ev)
+        pool = deduped
+
+        # AC10: burst aggregation — suppress floods of same (actor, action).
+        now_ts = datetime.now(timezone.utc).timestamp()
+        cutoff = now_ts - _BURST_WINDOW_S
+        with self._lock:
+            # Purge timestamps outside the window.
+            for key in list(self._burst_counters):
+                dq = self._burst_counters[key]
+                while dq and dq[0] < cutoff:
+                    dq.popleft()
+            # Register new events.
+            for ev in pool:
+                key = (ev.actor, ev.action)
+                if key not in self._burst_counters:
+                    self._burst_counters[key] = deque()
+                self._burst_counters[key].append(ev.ts.timestamp())
+            # Identify burst keys.
+            burst_keys: Set[Tuple[str, str]] = {
+                k for k, dq in self._burst_counters.items()
+                if len(dq) > _BURST_THRESHOLD
+            }
+            # Build burst summary events and suppress individuals.
+            if burst_keys:
+                burst_events: List[ActivityEvent] = []
+                filtered: List[ActivityEvent] = []
+                seen_burst: Set[Tuple[str, str]] = set()
+                for ev in pool:
+                    key = (ev.actor, ev.action)
+                    if key in burst_keys:
+                        if key not in seen_burst:
+                            seen_burst.add(key)
+                            count = len(self._burst_counters[key])
+                            burst_events.append(ActivityEvent(
+                                ts=ev.ts,
+                                actor=ev.actor,
+                                action=f"{ev.action}.burst",
+                                target=ev.target,
+                                detail=(f"{ev.action}.burst "
+                                        f"{count} em {int(_BURST_WINDOW_S)}s"),
+                            ))
+                            self._burst_counters[key].clear()
+                    else:
+                        filtered.append(ev)
+                pool = filtered + burst_events
+
+        # Rolling window: keep newest _MULTI_BUFFER_CAP events.
+        pool.sort(key=lambda e: e.ts)
+        state = MultiSourceActivityState()
+        state.events = pool[-_MULTI_BUFFER_CAP:]
         return state
 
 
@@ -2771,9 +3103,30 @@ _STAGE_ENV_VARS: tuple = (
 #: result into ``DispatchPayload.preferred_model`` sent to claude-worker /
 #: deile-worker. Writing these env vars to ``deile-worker`` instead is silent
 #: cost amplifier: the override is invisible to the resolver, so the worker /
-#: claude-worker fall back to OAuth default (Opus 4.7 = $5/$25 per 1M tokens).
+#: claude-worker fall back to OAuth default (Opus 4.8 = $5/$25 per 1M tokens).
 #: Bug found 2026-05-27 — user configured sonnet-4-6 in the panel and got Opus.
 _STAGE_DEPLOYMENT = "deile-pipeline"
+
+#: Per-stage reasoning-effort env vars (espelha _STAGE_ENV_VARS). Escritos no
+#: mesmo Deployment ``deile-pipeline`` (o resolver ``resolve_stage_reasoning``
+#: roda ali e injeta em ``DispatchPayload.preferred_reasoning``).
+_STAGE_REASONING_ENV_VARS: tuple = (
+    ("classify",    "DEILE_PIPELINE_REASONING_CLASSIFY"),
+    ("refine",      "DEILE_PIPELINE_REASONING_REFINE"),
+    ("implement",   "DEILE_PIPELINE_REASONING_IMPLEMENT"),
+    ("pr_review",   "DEILE_PIPELINE_REASONING_PR_REVIEW"),
+    ("follow_ups",  "DEILE_PIPELINE_REASONING_FOLLOW_UPS"),
+)
+#: Esforço global (fallback de todas as etapas). Lido pelo resolver e pelo CLI.
+_GLOBAL_REASONING_ENV_VAR = "DEILE_REASONING_EFFORT"
+#: União dos níveis válidos — espelha ``KNOWN_EFFORTS`` em
+#: ``deile/core/models/reasoning.py`` (mantido local pois o painel roda de
+#: ``infra/k8s/`` sem o pacote ``deile`` no path). Tudo ``[a-z]`` puro → seguro
+#: no argv do kubectl (sem metacaractere de shell).
+_VALID_REASONING_EFFORTS: frozenset = frozenset({
+    "low", "medium", "high", "xhigh", "max", "ultracode", "auto",
+    "none", "off", "minimal",
+})
 
 
 @dataclass(frozen=True)
@@ -3029,6 +3382,124 @@ def clear_stage_model(stage: str, timeout: float = 15.0) -> tuple:
         stage, None, result="completed", detail=msg,
     )
     return True, f"{env_var} unset ({msg})"
+
+
+# ── Reasoning effort (espelha set/clear_stage_model) ───────────────────────
+
+
+def _audit_reasoning_change(env_var: str, level: Optional[str], *,
+                            result: str, detail: str, namespace: str = NS) -> None:
+    """Emite ``AuditEvent(SECURITY_POLICY_CHANGED)`` para escrita de reasoning.
+
+    Mesma envelope de :func:`_audit_stage_model_change` (paridade nos dashboards).
+    """
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEventType, SeverityLevel, get_audit_logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit logger indisponível para reasoning: %s", exc)
+        return
+    severity = (SeverityLevel.INFO
+                if result in ("allowed", "completed", "cancelled")
+                else SeverityLevel.WARNING)
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=severity,
+            actor="panel:set_reasoning",
+            resource=f"deployment:{namespace}/{_STAGE_DEPLOYMENT}:{env_var}",
+            action="kubectl_set_env" if level else "kubectl_unset_env",
+            result=result,
+            details={"env_var": env_var, "level": level or "", "detail": detail[:200]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("falha emitindo AuditEvent (reasoning): %s", exc)
+
+
+def _reasoning_env_var_for_stage(stage: str) -> Optional[str]:
+    """Return ``DEILE_PIPELINE_REASONING_<STAGE>`` para uma stage canônica."""
+    return next((env for s, env in _STAGE_REASONING_ENV_VARS if s == stage), None)
+
+
+def _kubectl_set_env(env_var: str, value: Optional[str], timeout: float,
+                     audit_level: Optional[str], *, namespace: str = NS) -> tuple:
+    """Executa ``kubectl set env deploy/deile-pipeline <VAR>=<value>`` (ou unset).
+
+    ``value=None`` → unset (sufixo ``-``). Retorna ``(ok, msg)``. Emite audit.
+    Único ponto de I/O kubectl para reasoning (per-stage + global compartilham).
+    ``namespace`` honra a seleção do painel (paridade com set_stage_timeout/retries).
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_reasoning_change(env_var, audit_level, result="failed",
+                                detail="kubectl não encontrado", namespace=namespace)
+        return False, "kubectl não encontrado"
+    arg = f"{env_var}={value}" if value is not None else f"{env_var}-"
+    _audit_reasoning_change(env_var, audit_level, result="allowed",
+                            detail=f"executando kubectl set env {arg}", namespace=namespace)
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "set", "env", f"deploy/{_STAGE_DEPLOYMENT}", arg],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_reasoning_change(env_var, audit_level, result="failed",
+                                detail=f"subprocess: {exc}", namespace=namespace)
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        _audit_reasoning_change(env_var, audit_level, result="failed",
+                                detail=f"rc={proc.returncode} {err}", namespace=namespace)
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_reasoning_change(env_var, audit_level, result="completed", detail=msg,
+                            namespace=namespace)
+    suffix = f"={value}" if value is not None else " unset"
+    return True, f"{env_var}{suffix} ({msg})"
+
+
+def set_stage_reasoning(stage: str, level: str, timeout: float = 15.0,
+                        *, namespace: str = NS) -> tuple:
+    """Fixa o reasoning effort por etapa em ``deile-pipeline``. Returns ``(ok, msg)``.
+
+    Valida ``level`` contra :data:`_VALID_REASONING_EFFORTS` ANTES do argv —
+    todos ``[a-z]`` puro, sem risco de injection. Espelha :func:`set_stage_model`.
+    """
+    env_var = _reasoning_env_var_for_stage(stage)
+    if env_var is None:
+        allowed = ", ".join(s for s, _ in _STAGE_REASONING_ENV_VARS)
+        return False, f"stage '{stage}' inválido — esperado um de: {allowed}"
+    norm = (level or "").strip().lower() if isinstance(level, str) else ""
+    if norm not in _VALID_REASONING_EFFORTS:
+        return False, (f"nível '{level}' inválido — esperado um de: "
+                       f"{', '.join(sorted(_VALID_REASONING_EFFORTS))}")
+    return _kubectl_set_env(env_var, norm, timeout, norm, namespace=namespace)
+
+
+def clear_stage_reasoning(stage: str, timeout: float = 15.0,
+                          *, namespace: str = NS) -> tuple:
+    """Remove o override de reasoning por etapa. Returns ``(ok, msg)``."""
+    env_var = _reasoning_env_var_for_stage(stage)
+    if env_var is None:
+        return False, f"stage '{stage}' inválido"
+    return _kubectl_set_env(env_var, None, timeout, None, namespace=namespace)
+
+
+def set_global_reasoning(level: str, timeout: float = 15.0,
+                         *, namespace: str = NS) -> tuple:
+    """Fixa o reasoning effort GLOBAL (``DEILE_REASONING_EFFORT``). ``(ok, msg)``."""
+    norm = (level or "").strip().lower() if isinstance(level, str) else ""
+    if norm not in _VALID_REASONING_EFFORTS:
+        return False, (f"nível '{level}' inválido — esperado um de: "
+                       f"{', '.join(sorted(_VALID_REASONING_EFFORTS))}")
+    return _kubectl_set_env(_GLOBAL_REASONING_ENV_VAR, norm, timeout, norm,
+                            namespace=namespace)
+
+
+def clear_global_reasoning(timeout: float = 15.0, *, namespace: str = NS) -> tuple:
+    """Remove o override de reasoning global. Returns ``(ok, msg)``."""
+    return _kubectl_set_env(_GLOBAL_REASONING_ENV_VAR, None, timeout, None,
+                            namespace=namespace)
 
 
 # ===== Pipeline dispatch mode (issue #309) ==================================
@@ -3943,7 +4414,7 @@ class StageDispatchEntry:
     - ``stage`` — canonical stage name (one of :data:`PIPELINE_STAGES`).
     - ``worker`` — qual worker pod receberá o dispatch deste stage:
       ``deile-worker`` (default) ou ``claude-worker``.
-    - ``model`` — slug do modelo (ex.: ``anthropic:claude-opus-4-7``) ou
+    - ``model`` — slug do modelo (ex.: ``anthropic:claude-opus-4-8``) ou
       ``None`` quando nenhum override per-stage nem global está setado.
     - ``source`` — ``"env"`` quando o WORKER veio de
       ``DEILE_PIPELINE_DISPATCH_<STAGE>`` (override específico do stage),
@@ -3965,6 +4436,10 @@ class StageDispatchEntry:
     timeout_s: Optional[int] = None
     max_retries: Optional[int] = None
     cost_cap_usd: Optional[str] = None
+    #: Esforço de raciocínio efetivo (per-stage override OU global), ou None.
+    #: Lido de ``DEILE_PIPELINE_REASONING_<STAGE>`` com fallback ao global
+    #: ``DEILE_REASONING_EFFORT`` — paridade com o folding do ``model``.
+    reasoning: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -4126,6 +4601,9 @@ class StageDispatchProvider(_KubectlProviderMixin):
         # com ``StageModelsProvider``).
         global_model = (worker_env.get("DEILE_PIPELINE_MODEL")
                         or worker_env.get("DEILE_PREFERRED_MODEL") or None)
+        # Esforço global (fallback de todas as etapas) — lido do mesmo Deployment.
+        global_reasoning = (pipeline_env.get(_GLOBAL_REASONING_ENV_VAR)
+                            or "").strip() or None
 
         result: List[StageDispatchEntry] = []
         for stage in PIPELINE_STAGES:
@@ -4176,10 +4654,16 @@ class StageDispatchProvider(_KubectlProviderMixin):
                 f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}"
             )
             cost_cap_usd = (cost_cap_raw or "").strip() or None
+            # Reasoning chain: per-stage env → global env → None (paridade com model).
+            stage_reasoning_raw = pipeline_env.get(
+                f"DEILE_PIPELINE_REASONING_{stage.upper()}"
+            )
+            reasoning = ((stage_reasoning_raw or "").strip()
+                         or global_reasoning or None)
             result.append(StageDispatchEntry(
                 stage, worker, model, source,
                 timeout_s=timeout_s, max_retries=max_retries,
-                cost_cap_usd=cost_cap_usd,
+                cost_cap_usd=cost_cap_usd, reasoning=reasoning,
             ))
         return result
 
@@ -5448,6 +5932,10 @@ class PanelData:
     # Pod-status provider for claude-worker (issue #395). Instanciado
     # apenas quando k8s está disponível — accessa /v1/pod-status via HTTP.
     claude_worker_info: Optional["ClaudeWorkerInfoProvider"] = None
+    # Multi-source activity feed (issue #436). Tail paralelo dos 5 deploys
+    # fixos V1; buffer rolling-window 200 eventos; parser dual-mode.
+    # ``None`` quando k8s não está disponível (modo local-only ou demo).
+    activity: Optional[MultiSourceActivityProvider] = None
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "PanelData":
@@ -5545,6 +6033,12 @@ class PanelData:
             claude_worker_info=(
                 ClaudeWorkerInfoProvider(enabled=True) if k8s_on else None
             ),
+            # MultiSourceActivityProvider (issue #436): only when k8s is on.
+            activity=(
+                MultiSourceActivityProvider(namespace=context.namespace,
+                                            enabled=k8s_on)
+                if k8s_on else None
+            ),
         )
 
     @classmethod
@@ -5561,7 +6055,7 @@ class PanelData:
         optionals = tuple(p for p in (self.local_processes, self.local_logs,
                                       self.local_audit, self.local_instances,
                                       self.local_registry, self.claude_workers,
-                                      self.claude_worker_info)
+                                      self.claude_worker_info, self.activity)
                           if p is not None)
         return base + optionals
 
@@ -5598,6 +6092,8 @@ class PanelData:
             names.append("local_registry")
         if self.claude_worker_info is not None:
             names.append("claude_worker_info")
+        if self.activity is not None:
+            names.append("activity")
         out: List[tuple] = []
         for name, p in zip(names, self._all_providers()):
             err = p.last_error

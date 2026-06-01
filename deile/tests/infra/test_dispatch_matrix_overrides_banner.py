@@ -98,12 +98,12 @@ def test_banner_visible_when_retries_zero():
 
 def test_banner_visible_when_model_overridden():
     entries = [
-        _Entry("classify", model="anthropic:claude-opus-4-7"),
+        _Entry("classify", model="anthropic:claude-opus-4-8"),
     ]
     out, text = _render(entries)
     assert out is not None
     assert "classify" in text
-    assert "model=anthropic:claude-opus-4-7" in text
+    assert "model=anthropic:claude-opus-4-8" in text
 
 
 def test_banner_visible_when_timeout_overridden():

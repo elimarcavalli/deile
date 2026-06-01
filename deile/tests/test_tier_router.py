@@ -166,14 +166,14 @@ class TestTierRouter:
         return TierRouter(catalog, policy, cb)
 
     def test_select_returns_registered_provider(self):
-        router = self._make_router(["anthropic:claude-opus-4-7"])
+        router = self._make_router(["anthropic:claude-opus-4-8"])
         router.register_provider(_make_provider("anthropic"))
 
         provider = router.select(ModelTier.TIER_1)
         assert provider.provider_id == "anthropic"
 
     def test_select_skips_unregistered_provider(self):
-        router = self._make_router(["openai:gpt-4o", "anthropic:claude-opus-4-7"])
+        router = self._make_router(["openai:gpt-4o", "anthropic:claude-opus-4-8"])
         router.register_provider(_make_provider("anthropic"))  # openai not registered
 
         provider = router.select(ModelTier.TIER_1)
@@ -181,7 +181,7 @@ class TestTierRouter:
 
     def test_select_skips_tripped_circuit(self):
         cb = CircuitBreaker(failure_threshold=1)
-        router = self._make_router(["openai:gpt-4o", "anthropic:claude-opus-4-7"], cb)
+        router = self._make_router(["openai:gpt-4o", "anthropic:claude-opus-4-8"], cb)
         router.register_provider(_make_provider("openai"))
         router.register_provider(_make_provider("anthropic"))
 
@@ -205,7 +205,7 @@ class TestTierRouter:
 
     def test_record_failure_trips_circuit_after_threshold(self):
         cb = CircuitBreaker(failure_threshold=3)
-        router = self._make_router(["openai:gpt-4o", "anthropic:claude-opus-4-7"], cb)
+        router = self._make_router(["openai:gpt-4o", "anthropic:claude-opus-4-8"], cb)
         router.register_provider(_make_provider("openai"))
         router.register_provider(_make_provider("anthropic"))
 
@@ -218,7 +218,7 @@ class TestTierRouter:
 
     def test_record_success_resets_circuit(self):
         cb = CircuitBreaker(failure_threshold=1)
-        router = self._make_router(["openai:gpt-4o", "anthropic:claude-opus-4-7"], cb)
+        router = self._make_router(["openai:gpt-4o", "anthropic:claude-opus-4-8"], cb)
         router.register_provider(_make_provider("openai"))
         router.register_provider(_make_provider("anthropic"))
 
@@ -244,7 +244,7 @@ class TestTierRouter:
     def test_first_in_cascade_preferred(self):
         """TierRouter must return the FIRST available provider, not any provider."""
         cb = CircuitBreaker()
-        router = self._make_router(["anthropic:claude-opus-4-7", "openai:gpt-4o"], cb)
+        router = self._make_router(["anthropic:claude-opus-4-8", "openai:gpt-4o"], cb)
         router.register_provider(_make_provider("anthropic"))
         router.register_provider(_make_provider("openai"))
 
