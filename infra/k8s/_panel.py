@@ -152,6 +152,12 @@ if os.name == "nt":  # pragma: no cover - Windows fallback
         def __exit__(self, *exc):
             pass
 
+        def pause_cbreak(self) -> None:  # no-op no Windows (sem cbreak)
+            pass
+
+        def resume_cbreak(self) -> None:
+            pass
+
         def read(self, timeout: float = 0.0) -> Optional[str]:
             end = time.monotonic() + max(timeout, 0)
             while True:
@@ -238,6 +244,24 @@ else:
                     pass
             self._prev_handlers.clear()
 
+        def pause_cbreak(self) -> None:
+            """Volta o terminal ao modo cozido (canônico) sem desfazer o
+            context-manager — para rodar um subprocess interativo que precisa
+            de input por linha. Pareie sempre com :meth:`resume_cbreak`."""
+            if self._fd is not None and self._old is not None:
+                try:
+                    termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+                except (OSError, termios.error):
+                    pass
+
+        def resume_cbreak(self) -> None:
+            """Reentra no cbreak após :meth:`pause_cbreak`."""
+            if self._fd is not None and not self._restored:
+                try:
+                    tty.setcbreak(self._fd)
+                except (OSError, termios.error):
+                    pass
+
         def _signal_handler(self, signum, frame):
             # Restaura o terminal e re-dispara o sinal com o handler default
             # — o processo sai com o status canônico do sinal.
@@ -294,6 +318,7 @@ class Action(Enum):
     QUIT = "quit"
     NAV = "nav"
     REFRESH = "refresh"
+    SUSPEND = "suspend"  # suspende o Live + cbreak e roda um subprocess interativo
 
 
 @dataclass
@@ -317,6 +342,11 @@ class ActionResult:
     @classmethod
     def refresh(cls) -> "ActionResult":
         return cls(kind=Action.REFRESH)
+
+    @classmethod
+    def suspend(cls, command: List[str]) -> "ActionResult":
+        """Suspende o painel e roda ``command`` como subprocess interativo."""
+        return cls(kind=Action.SUSPEND, payload={"command": command})
 
 
 class View(ABC):
@@ -705,7 +735,7 @@ class DashboardView(View):
     def HOTKEYS(self) -> str:
         return (
             "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
-            "[5]Tokens  [M]onitor  [n]otifier  [a]ctions  [m]odel/runtime  "
+            "[t]okens  [M]onitor  [n]otifier  [a]ctions  [m]odel/runtime  "
             f"[d]ispatch  [s]ort:{self.sort_mode}  [?]help  [q]uit"
         )
 
@@ -979,7 +1009,7 @@ class DashboardView(View):
 
     def _health_pulse_panel(self) -> Panel:
         """Widget compacto de saúde do cluster — substitui TOKENS & CUSTOS
-        no dashboard (Tarefa 3). TOKENS mantém view dedicada em [5].
+        no dashboard (Tarefa 3). TOKENS abre o relatório completo via [t].
 
         Exibe:
         - Status do deile-monitor (se instalado): próximo tick + anomalias
@@ -1055,7 +1085,7 @@ class DashboardView(View):
         else:
             lines.append(Text("Forge: github.com · elimarcavalli/deile", style="dim"))
 
-        # ---- Tokens resumido (ponteiro para [5]) ----
+        # ---- Tokens resumido (ponteiro para [t]) ----
         if self.data is not None:
             c = self.data.costs.get()
             total_str = f"${c.total_24h:.2f}"
@@ -1064,10 +1094,10 @@ class DashboardView(View):
                 ("Tokens 24h: ", "dim"),
                 (total_str, "bold green"),
                 (f"  ·  1h: {hour_str}", "dim"),
-                ("  [5] detalhes", "dim"),
+                ("  [t] detalhes", "dim"),
             ))
         else:
-            lines.append(Text("Tokens 24h: $11.40  ·  1h: $1.32  [5] detalhes",
+            lines.append(Text("Tokens 24h: $11.40  ·  1h: $1.32  [t] detalhes",
                                style="dim"))
 
         body = Group(*lines) if lines else Text("· sem dados", style="dim")
@@ -1082,7 +1112,6 @@ class DashboardView(View):
             "2": "pipeline-timeline",
             "3": "issues-prs",
             "4": "logs-split",
-            "5": "tokens",
             "n": "notifier-echo",
             "a": "actions",
             "m": "model-switcher",
@@ -1103,6 +1132,16 @@ class DashboardView(View):
         }
         if key in nav:
             return ActionResult.nav(nav[key])
+        if key == "t":
+            # [t]okens — suspende o painel e roda o relatório completo de uso
+            # de Claude Code nos PVCs (session_tokens_audit.py). Substitui a
+            # antiga view [5] Tokens (UsageRepository local).
+            ns = _NS_DEFAULT
+            if self.data is not None and self.data.context is not None:
+                ns = getattr(self.data.context, "namespace", None) or _NS_DEFAULT
+            script = Path(__file__).resolve().parent / "session_tokens_audit.py"
+            return ActionResult.suspend(
+                [sys.executable, str(script), "-n", ns])
         if key == "s":
             idx = _SORT_MODES.index(self.sort_mode)
             self.sort_mode = _SORT_MODES[(idx + 1) % len(_SORT_MODES)]
@@ -6516,6 +6555,9 @@ class PanelApp:
         self.data = data
         self.last_payload: Dict[str, Any] = {}
         self._last_render = 0.0
+        # Comando externo pendente (Action.SUSPEND) — executado no _run_loop
+        # após suspender Live + cbreak. None = nada pendente.
+        self._pending_suspend: Optional[List[str]] = None
         # `--memdebug`: liga tracemalloc + amostragem periódica do top N.
         # Default OFF (não há overhead em uso normal). Quando ligado,
         # `_memdebug_line()` devolve a string que vai pro head do painel.
@@ -6779,6 +6821,11 @@ class PanelApp:
                         # NOOP = tecla ignorada pela view; não força render.
                         if result.kind != Action.NOOP:
                             consumed = True
+                if self._pending_suspend is not None:
+                    cmd = self._pending_suspend
+                    self._pending_suspend = None
+                    self._run_external(cmd, live, keys)
+                    consumed = True
                 if not self.running:
                     break
                 # Render imediato quando: (a) tecla mudou o estado,
@@ -6802,6 +6849,40 @@ class PanelApp:
         elif result.kind == Action.NAV and result.target:
             self.push(result.target, **result.payload)
         elif result.kind == Action.REFRESH:
+            self._last_render = 0.0
+        elif result.kind == Action.SUSPEND:
+            # Não roda aqui (sem acesso a Live/KeyReader). Marca pendente;
+            # o _run_loop suspende o painel e executa.
+            self._pending_suspend = result.payload.get("command")
+
+    def _run_external(self, command: List[str], live: "Live",
+                      keys: "KeyReader") -> None:
+        """Suspende Live + cbreak, roda ``command`` herdando o terminal, retoma.
+
+        Usado pela ``Action.SUSPEND`` (ex.: ``[t]okens`` → session_tokens_audit).
+        Best-effort em toda etapa: nenhuma falha do subprocess derruba o painel.
+        """
+        try:
+            live.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        keys.pause_cbreak()
+        try:
+            subprocess.run(command)
+        except KeyboardInterrupt:
+            pass
+        except Exception as exc:  # noqa: BLE001 — nunca derruba o painel
+            self.console.print(f"[red]falha ao rodar comando externo: {exc}[/red]")
+            try:
+                input("Enter para voltar ao painel...")
+            except (EOFError, KeyboardInterrupt):
+                pass
+        finally:
+            keys.resume_cbreak()
+            try:
+                live.start(refresh=True)
+            except Exception:  # noqa: BLE001
+                pass
             self._last_render = 0.0
 
 
@@ -6858,51 +6939,13 @@ def run_panel(context: "Optional[Any]" = None,
     """
     # Import local para evitar import circular no topo.
     from _panel_data import RuntimeContext  # noqa: PLC0415
-    from _panel_data import discover_deile_namespaces  # noqa: PLC0415
 
     if force_demo:
         data: Optional[PanelData] = None
     else:
-        # Quando o operador não especificou --namespace explicitamente E há
-        # múltiplos namespaces DEILE no cluster, apresenta um menu de seleção
-        # antes de abrir o painel.
-        if context is None or (
-            getattr(context, "namespace", _NS_DEFAULT) == _NS_DEFAULT
-            and not getattr(context, "k8s_force", False)
-            and not getattr(context, "local_force", False)
-        ):
-            available_ns = discover_deile_namespaces()
-            if len(available_ns) > 1:
-                # Prompt simples sem Rich (terminal pode não suportar fancy UI
-                # antes do Live iniciar) — mostra a lista e pede número.
-                print("\nVários namespaces DEILE detectados no cluster:")
-                for idx, ns in enumerate(available_ns, 1):
-                    print(f"  [{idx}] {ns}")
-                selected_ns: Optional[str] = None
-                while selected_ns is None:
-                    try:
-                        raw = input(
-                            f"Escolha o namespace [1-{len(available_ns)}] "
-                            f"(Enter = {available_ns[0]}): "
-                        ).strip()
-                        if raw == "":
-                            selected_ns = available_ns[0]
-                        elif raw.isdigit() and 1 <= int(raw) <= len(available_ns):
-                            selected_ns = available_ns[int(raw) - 1]
-                        else:
-                            print("  Número inválido — tente novamente.")
-                    except (EOFError, KeyboardInterrupt):
-                        # Não-interativo ou Ctrl-C: usa o primeiro NS.
-                        selected_ns = available_ns[0]
-                        print(f"\nUsando namespace: {selected_ns}")
-                if context is None:
-                    context = RuntimeContext.detect(namespace=selected_ns)
-                elif hasattr(context, "__class__"):
-                    # RuntimeContext é frozen; cria novo com namespace correto.
-                    from dataclasses import \
-                        replace as _dc_replace  # noqa: PLC0415
-                    context = _dc_replace(context, namespace=selected_ns)
-
+        # O namespace já vem resolvido pelo chamador (deploy.py cmd_panel faz
+        # a seleção multi-NS com UI rica, incluindo contagem de pods). run_panel
+        # apenas confia no context — sem segundo prompt redundante.
         ctx = context if context is not None else RuntimeContext.detect()
         try:
             data = PanelData.from_context(ctx)
