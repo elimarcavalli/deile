@@ -190,14 +190,37 @@ def test_apply_retention_clear_removes_override(view_with_data):
     assert "default" in (view_with_data.last_msg or "").lower()
 
 
-def test_apply_retention_partial_failure(view_with_data):
-    """Um alvo ok + um falho → last_ok False e mensagem de parcial."""
+def test_apply_retention_cron_notfound_is_skipped_not_failed(view_with_data):
+    """CronJob ausente (NotFound) é PULADO — deployment ok → sucesso geral.
+    O cron de cleanup nem sempre está aplicado; só o deployment é obrigatório."""
     def fake_run(cmd, **kw):
         m = MagicMock()
         flat = " ".join(cmd)
         if "cronjob" in flat:
             m.returncode = 1
-            m.stderr = "cronjob not found"
+            m.stderr = 'Error from server (NotFound): cronjobs.batch "x" not found'
+        else:
+            m.returncode = 0
+            m.stderr = ""
+        return m
+
+    with patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"), \
+         patch("subprocess.run", side_effect=fake_run):
+        view_with_data._apply_retention("30")
+
+    assert view_with_data.last_ok is True
+    assert "claude-worker" in (view_with_data.last_msg or "")
+    assert "pulado" in (view_with_data.last_msg or "").lower()
+
+
+def test_apply_retention_hard_failure_on_deployment(view_with_data):
+    """Falha REAL no deployment (não-NotFound) → last_ok False."""
+    def fake_run(cmd, **kw):
+        m = MagicMock()
+        flat = " ".join(cmd)
+        if "deployment" in flat:
+            m.returncode = 1
+            m.stderr = "Error from server (Forbidden): deployments forbidden"
         else:
             m.returncode = 0
             m.stderr = ""

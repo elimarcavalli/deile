@@ -6746,8 +6746,9 @@ class DispatchMatrixView(View):
 
     def _apply_retention(self, value: Optional[str]) -> ActionResult:
         """Aplica DEILE_CLAUDE_JSONL_RETENTION_DAYS no Deployment claude-worker
-        E no CronJob claude-worker-cleanup (backstop diário) — mantém os dois
-        em sincronia para não criar inconsistência de poda.
+        (alvo principal — o cleanup vivo roda no pod) E, se existir, no CronJob
+        claude-worker-cleanup (backstop opcional). O CronJob nem sempre está
+        aplicado (NotFound) — nesse caso é PULADO, não conta como falha.
 
         ``value=None`` → remove o override (volta ao default do código = 30).
         ``value="N"`` → seta valor numérico (dias).
@@ -6779,25 +6780,31 @@ class DispatchMatrixView(View):
         env_arg = ("DEILE_CLAUDE_JSONL_RETENTION_DAYS-"  # remove
                    if value is None
                    else f"DEILE_CLAUDE_JSONL_RETENTION_DAYS={value}")
-        targets = ("deployment/claude-worker", "cronjob/claude-worker-cleanup")
-        ok_targets, failed = [], []
-        for tgt in targets:
+        # (target, obrigatório?) — só o deployment é obrigatório.
+        targets = (("deployment/claude-worker", True),
+                   ("cronjob/claude-worker-cleanup", False))
+        ok_targets, failed, skipped = [], [], []
+        for tgt, required in targets:
             try:
                 result = subprocess.run(
                     [kubectl, "-n", ns, "set", "env", tgt, env_arg],
                     capture_output=True, text=True, timeout=15,
                 )
+                name = tgt.split("/")[-1]
                 if result.returncode == 0:
-                    ok_targets.append(tgt.split("/")[-1])
+                    ok_targets.append(name)
+                elif not required and "not found" in result.stderr.lower():
+                    skipped.append(name)  # CronJob ausente nesse namespace — ok
                 else:
                     failed.append(f"{tgt}: {result.stderr.strip()[:80]}")
             except Exception as exc:  # noqa: BLE001
                 failed.append(f"{tgt}: {exc}")
 
         action = "removida (default: 30d)" if value is None else f"→ {value}d"
+        skip_note = f" (cron pulado: {', '.join(skipped)})" if skipped else ""
         if ok_targets and not failed:
-            self.last_msg = (f"retenção JSONL {action} em {', '.join(ok_targets)} "
-                             "(claude-worker rollout em curso)")
+            self.last_msg = (f"retenção JSONL {action} em {', '.join(ok_targets)}"
+                             f"{skip_note} (claude-worker rollout em curso)")
             self.last_ok = True
         elif ok_targets:
             self.last_msg = (f"retenção JSONL {action} parcial — ok: "
