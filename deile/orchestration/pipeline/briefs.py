@@ -175,7 +175,9 @@ Implemente a issue #{number} de {repo} e abra uma {pr_noun}. Execute de verdade 
 # trigger só diz QUAL PR olhar. O worker abre a PR, descobre o estado real e
 # monta a work-list a partir DELE — não do trigger que o acordou. Resume é
 # coberto pelo PASSO 0 lendo ``.deile-progress.md``; merge só acontece quando
-# o autor sou eu E meu review atual está APPROVED E threads ok E suíte verde.
+# o autor sou eu (PR própria auto/issue-N): o GitHub PROÍBE aprovar a própria PR
+# (422), então NÃO existe review formal APPROVED nesse caso — o merge é DIRETO
+# com suíte verde + threads ok (autor pode mergear a própria PR sem aprovação).
 _WORKER_PR_BRIEF = """\
 {pr_noun} #{number} de {repo}. Descubra o que fazer pelo ESTADO REAL da {pr_noun}, não pelo trigger.
 
@@ -193,9 +195,10 @@ PASSO 1 — WORK-LIST (do estado, não do trigger):
 - HEAD novo + sou reviewer/assignee → revisar
 - thread aberta dirigida a mim → responder/resolver
 - comment dirigido a mim sem resposta → atender o pedido
-- sou assignee + APPROVED + threads ok + CI verde → MERGEAR
+- sou assignee + autor é OUTRO + meu review APPROVED na HEAD + threads ok + CI verde → MERGEAR
+- **autor==`{gh_login}` E sou assignee (PR PRÓPRIA, ex: `auto/issue-N`) + SUÍTE VERDE + threads ok + zero regressão funcional → MERGEAR DIRETO** com `{merge_cmd}`. NÃO tente `--approve`/review formal na própria PR: o GitHub rejeita com 422 "Can not approve your own pull request" — por isso APPROVED nunca existe em PR própria, e insistir nisso é EXATAMENTE o que gera o loop de comentário infinito. O autor mergeia a própria PR sem aprovação. Se sobra só AC de doc/qualidade (não bug funcional), MERGEIE assim mesmo e abra UMA sub-issue de follow-up agregada (anti-flood) com o checklist.
 - reviewer só, HEAD igual → comentar curto "já APPROVED em <sha>, sem novidade"
-- **autor==`{gh_login}` (sou eu) + meu_review_atual.body contém "REQUEST_CHANGES" OU "CHANGES" → IMPLEMENTAR**: tratar este tick como `implement-resume`. Ler o último review meu (`gh api repos/{repo}/pulls/{number}/reviews | last`), extrair os achados, escrever code que atende OU comentar justificando por que cada achado é fora-de-escopo/inválido. NUNCA re-revisar a mesma HEAD pedindo as mesmas mudanças — isso é o loop infinito que bate attempt cap. O ciclo é: review-pede → próximo tick implementa OU justifica → review aprova.
+- **autor==`{gh_login}` (sou eu) + (meu_review_atual.body OU meu último comentário) pede mudança ("REQUEST_CHANGES"/"CHANGES") → RESOLVER AGORA, nunca re-revisar**: se a SUÍTE está VERDE e não há regressão real, o pedido já está atendido → **MERGEAR** (não re-comente). Se há mudança real pendente, trate como `implement-resume`: leia o achado, escreva o code que atende OU comente UMA vez justificando por que é fora-de-escopo. NUNCA re-revisar/re-comentar a mesma HEAD repetindo o mesmo pedido — esse é o loop infinito. O ciclo é: pediu-mudança → próximo tick IMPLEMENTA ou MERGEIA, nunca re-pede.
 
 REGRA — execute o pedido SEMPRE (não importa o autor):
 - {pr_noun} está OPEN → push direto na própria branch.
@@ -206,7 +209,7 @@ PASSO 2 — Executar a work-list:
 - Review: `{review_post_cmd}` (APPROVE/REQUEST_CHANGES). Merge: `{merge_cmd}` (fallback `{merge_fallback_cmd}`); confirme `{check_merged_cmd}`. Comment: `{comment_pr_cmd}`.
 - Para revisar/mergear: rode a SUÍTE COMPLETA `{full_suite_cmd}` ({pip_guard}). Vermelha por sua mudança = bloqueante; vermelha por testes pré-existentes intocados = documenta e segue.
 - **Suite com failures suspeitas de regressão?** ANTES de votar REQUEST_CHANGES, prove via bisseção empírica: `git checkout $(git merge-base origin/{main} HEAD) -- <arquivos modificados pela PR> && pytest <testes falhando> -q && git checkout HEAD -- <mesmos arquivos>`. Se as failures persistem no baseline sem o diff = **pré-existentes, NÃO bloqueantes** (APPROVE com nota); só introduzidas pela PR = REQUEST_CHANGES.
-- **Quando sou autor+assignee (sou o time):** se zero regressão funcional E ACs abertos são apenas docs/qualidade (não bug funcional) → **APPROVE com ressalvas** + abra UMA sub-issue de follow-up agregada (regra anti-flood) listando os ACs abertos como checklist. REQUEST_CHANGES só quando há bug funcional, regressão real ou requisito CORE não atendido.
+- **Quando sou autor+assignee (PR própria, sou o time):** zero regressão funcional + suíte verde → **MERGEAR DIRETO** (`{merge_cmd}` — não dá pra aprovar formalmente a própria PR; o merge É o veredito). ACs abertos só de doc/qualidade NÃO bloqueiam o merge → mergeie e abra UMA sub-issue de follow-up agregada (anti-flood) com o checklist. Só NÃO mergeie se há bug funcional, regressão real ou requisito CORE não atendido — aí grave o achado e o PRÓXIMO tick implementa (não re-comenta).
 - Se PR fecha issue (`Closes #N` no body): leia `gh issue view N` e confronte entrega vs requisito.
 - Se PR toca `briefs.py`/`*_brief*.py`: rode `pytest deile/tests/orchestration/pipeline/test_briefs* -v` E `grep -E 'CHECKPOINT|SUÍTE COMPLETA|anti-eco|gh pr comment|.deile-progress.md' deile/orchestration/pipeline/briefs.py` — invariantes ausentes = REQUEST_CHANGES cirúrgico.
 
@@ -219,7 +222,7 @@ PASSO 4 — ÚLTIMA LINHA:
 - `{pr_url_pattern} MERGED` — mergeado de fato (`{check_merged_cmd}`).
 - `{pr_url_pattern} REVIEWED:APPROVED` — review APPROVE postada.
 - `{pr_url_pattern} REVIEWED:CHANGES` — review REQUEST_CHANGES postada.
-- `{pr_url_pattern} COMMENTED` — só comentário, sem review formal.
+- `{pr_url_pattern} COMMENTED` — só comentário, sem review formal. **PROIBIDO** como veredito final de PR PRÓPRIA com suíte verde: nesse caso o correto é `MERGED`.
 - `{blocked_contract}` — impedimento real.
 NUNCA invente resultado. NUNCA termine sem veredito quando TEM decisão.
 """
