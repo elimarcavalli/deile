@@ -9,7 +9,9 @@
 #   - workdir com last_modified anterior ao cutoff de retenção (default 7 dias)
 #
 # Variáveis relevantes:
-#   DEILE_CLAUDE_CLEANUP_RETENTION_DAYS   default: 7
+#   DEILE_CLAUDE_CLEANUP_RETENTION_DAYS   default: 7  (workdirs volumosos)
+#   DEILE_CLAUDE_JSONL_RETENTION_DAYS     default: 30 (transcripts JSONL órfãos
+#                                         — colhe p/ ledger + poda após N dias)
 #   DEILE_CLAUDE_WORKER_ROOT              default: /home/claude/work
 #   DEILE_CLAUDE_LEASE_TTL_S              default: 30
 apiVersion: batch/v1
@@ -74,6 +76,7 @@ spec:
               env:
                 - { name: DEILE_CLAUDE_WORKER_ROOT, value: "/home/claude/work" }
                 - { name: DEILE_CLAUDE_CLEANUP_RETENTION_DAYS, value: "7" }
+                - { name: DEILE_CLAUDE_JSONL_RETENTION_DAYS, value: "30" }
                 - { name: DEILE_CLAUDE_LEASE_TTL_S, value: "30" }
               volumeMounts:
                 - { name: claude-home, mountPath: /home/claude }

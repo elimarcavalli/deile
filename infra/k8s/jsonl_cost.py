@@ -94,24 +94,55 @@ def _empty_model() -> Dict[str, int]:
     return {"in": 0, "out": 0, "cc": 0, "cr": 0, "cc_5m": 0, "cc_1h": 0}
 
 
-def aggregate_jsonl(path: str) -> dict:
-    """Agrega UM arquivo JSONL de sessão ``claude -p`` nos tokens por modelo.
+#: Teto do brief capturado no resumo (mesmo do parser in-pod do audit). Mantém
+#: o registro do ledger em escala de KB mesmo preservando o comando completo.
+_BRIEF_CAP = 4000
 
-    Conta cada resposta da API uma única vez por ``(message.id, requestId)``
-    — o claude grava o mesmo registro assistant repetido (deltas de
-    streaming) com o ``usage`` final idêntico; sem dedup os totais inflam
-    13-32x. Respostas sem ``id``/``requestId`` recebem chave sintética.
+
+def _text_of(content) -> str:
+    """Extrai o texto de um ``content`` (string ou lista de blocos)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text":
+                parts.append(b.get("text", ""))
+        return "\n".join(parts)
+    return ""
+
+
+def summarize_jsonl(path: str) -> dict:
+    """Resumo COMPLETO de uma sessão ``claude -p`` — superset de :func:`aggregate_jsonl`.
+
+    Extrai os MESMOS campos que o parser in-pod do ``session_tokens_audit``
+    usa para renderizar a tabela e o detalhe — tokens por modelo, tools,
+    rodadas, mensagens, brief, título IA, PR, versão, erros, stop reasons —
+    EXCETO o git status (que depende do ``cwd`` vivo, já removido na poda).
+
+    É a fonte única do harvest rico do ledger de custo (issue #445): a sessão
+    colhida para o ledger antes da poda fica IDÊNTICA à viva na tela de tokens,
+    não uma casca só com tokens. A agregação de custo (dedup por
+    ``(message.id, requestId)`` + soma) é a mesma de :func:`aggregate_jsonl`.
 
     Returns:
-        dict com ``session_id`` (stem do arquivo), ``models`` (model ->
-        {in,out,cc,cr,cc_5m,cc_1h}), ``first_ts``, ``last_ts`` e
-        ``assistant_rounds``.
+        dict com ``session_id``, ``models`` (model -> {in,out,cc,cr,cc_5m,
+        cc_1h}), ``tools``, ``assistant_rounds``, ``user_msgs``, ``tool_calls``,
+        ``cwd``, ``git_branch``, ``version``, ``permission_mode``,
+        ``entrypoint``, ``ai_title``, ``pr_number``, ``pr_url``, ``pr_repo``,
+        ``first_ts``, ``last_ts``, ``brief``, ``errors`` e ``stop_reasons``.
     """
     session_id = os.path.splitext(os.path.basename(path))[0]
     models: Dict[str, Dict[str, int]] = {}
+    tools: Dict[str, int] = {}
+    stop_reasons: Dict[str, int] = {}
+    errors = {"synthetic": 0, "max_tokens": 0, "api_error": 0, "tool_error": 0}
     first_ts: Optional[str] = None
     last_ts: Optional[str] = None
-    rounds = 0
+    cwd = git_branch = version = permission_mode = entrypoint = None
+    ai_title = pr_number = pr_url = pr_repo = None
+    brief: Optional[str] = None
+    rounds = user_msgs = tool_calls = 0
     seen = set()
     noid = 0
 
@@ -130,8 +161,41 @@ def aggregate_jsonl(path: str) -> dict:
                     if first_ts is None:
                         first_ts = ts
                     last_ts = ts
+                if o.get("cwd") and not cwd:
+                    cwd = o.get("cwd")
+                if o.get("gitBranch") and not git_branch:
+                    git_branch = o.get("gitBranch")
+                if o.get("version"):
+                    version = o.get("version")
+                if o.get("permissionMode"):
+                    permission_mode = o.get("permissionMode")
+                if o.get("entrypoint"):
+                    entrypoint = o.get("entrypoint")
+                if o.get("aiTitle"):
+                    ai_title = o.get("aiTitle")
+                if o.get("prNumber"):
+                    pr_number = o.get("prNumber")
+                if o.get("prUrl"):
+                    pr_url = o.get("prUrl")
+                if o.get("prRepository"):
+                    pr_repo = o.get("prRepository")
+                if o.get("isApiErrorMessage"):
+                    errors["api_error"] += 1
+                tur = o.get("toolUseResult")
+                if isinstance(tur, dict) and tur.get("is_error"):
+                    errors["tool_error"] += 1
+
                 msg = o.get("message")
-                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role")
+                if role == "user" or o.get("type") == "user":
+                    user_msgs += 1
+                    if brief is None:
+                        t = _text_of(msg.get("content"))
+                        if t.strip():
+                            brief = t[:_BRIEF_CAP]
+                if role != "assistant":
                     continue
                 rkey = (msg.get("id"), o.get("requestId"))
                 if rkey == (None, None):
@@ -141,10 +205,26 @@ def aggregate_jsonl(path: str) -> dict:
                     continue
                 seen.add(rkey)
                 rounds += 1
+                model = msg.get("model") or "unknown"
+                sr = msg.get("stop_reason")
+                if sr:
+                    stop_reasons[sr] = stop_reasons.get(sr, 0) + 1
+                    if sr == "max_tokens":
+                        errors["max_tokens"] += 1
+                if model == "<synthetic>":
+                    errors["synthetic"] += 1
+                if "prompt is too long" in _text_of(msg.get("content")).lower():
+                    errors["api_error"] += 1
+                c = msg.get("content")
+                if isinstance(c, list):
+                    for b in c:
+                        if isinstance(b, dict) and b.get("type") == "tool_use":
+                            tool_calls += 1
+                            nm = b.get("name", "?")
+                            tools[nm] = tools.get(nm, 0) + 1
                 u = msg.get("usage")
                 if not isinstance(u, dict):
                     continue
-                model = msg.get("model") or "unknown"
                 mm = models.setdefault(model, _empty_model())
                 mm["in"] += u.get("input_tokens", 0) or 0
                 mm["out"] += u.get("output_tokens", 0) or 0
@@ -160,7 +240,45 @@ def aggregate_jsonl(path: str) -> dict:
     return {
         "session_id": session_id,
         "models": models,
+        "tools": tools,
+        "assistant_rounds": rounds,
+        "user_msgs": user_msgs,
+        "tool_calls": tool_calls,
+        "cwd": cwd,
+        "git_branch": git_branch,
+        "version": version,
+        "permission_mode": permission_mode,
+        "entrypoint": entrypoint,
+        "ai_title": ai_title,
+        "pr_number": pr_number,
+        "pr_url": pr_url,
+        "pr_repo": pr_repo,
         "first_ts": first_ts,
         "last_ts": last_ts,
-        "assistant_rounds": rounds,
+        "brief": brief,
+        "errors": errors,
+        "stop_reasons": stop_reasons,
+    }
+
+
+def aggregate_jsonl(path: str) -> dict:
+    """Subset de custo de :func:`summarize_jsonl` (back-compat + paridade #445).
+
+    Conta cada resposta da API uma única vez por ``(message.id, requestId)``
+    — o claude grava o mesmo registro assistant repetido (deltas de
+    streaming) com o ``usage`` final idêntico; sem dedup os totais inflam
+    13-32x. Respostas sem ``id``/``requestId`` recebem chave sintética.
+
+    Returns:
+        dict com ``session_id`` (stem do arquivo), ``models`` (model ->
+        {in,out,cc,cr,cc_5m,cc_1h}), ``first_ts``, ``last_ts`` e
+        ``assistant_rounds``.
+    """
+    s = summarize_jsonl(path)
+    return {
+        "session_id": s["session_id"],
+        "models": s["models"],
+        "first_ts": s["first_ts"],
+        "last_ts": s["last_ts"],
+        "assistant_rounds": s["assistant_rounds"],
     }

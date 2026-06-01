@@ -90,6 +90,71 @@ def test_parser_emits_harvested_session(audit, jc, tmp_path):
         (100 * 5 + 50 * 25 + 150 * 6.25 + 50 * 10 + 300 * 0.5) / 1_000_000.0)
 
 
+def test_parser_reads_rich_v2_detail(audit, tmp_path):
+    """Registro v:2 → o registro sintético carrega o DETALHE completo
+    (título/brief/tools/PR/meta), não só tokens. Detalhe da sessão colhida
+    fica idêntico ao da viva na tela de tokens (issue #445 parte 2)."""
+    ledger = tmp_path / ".claude" / "cost-ledger.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({
+        "v": 2, "session_id": "sess-rich-1", "task_id": "cccccccccccc0003",
+        "models": {"claude-opus-4-5-20260101": {
+            "in": 100, "out": 50, "cc": 0, "cr": 0, "cc_5m": 0, "cc_1h": 0}},
+        "first_ts": "2026-04-01T09:00:00.000Z",
+        "last_ts": "2026-04-01T09:05:00.000Z", "assistant_rounds": 2,
+        "harvested_at": 1_790_000_000.0, "source_mtime": 1_780_500_000.0,
+        "tools": {"Read": 3, "Edit": 1}, "user_msgs": 4, "tool_calls": 4,
+        "cwd": "/home/claude/work/x/repo", "git_branch": "auto/issue-9",
+        "version": "2.1.158", "permission_mode": "bypassPermissions",
+        "entrypoint": "cli", "ai_title": "Corrige X", "pr_number": 42,
+        "pr_url": "https://github.com/o/r/pull/42", "pr_repo": "o/r",
+        "brief": "implementa a issue 9", "stop_reasons": {"end_turn": 2},
+        "errors": {"synthetic": 0, "max_tokens": 1, "api_error": 0, "tool_error": 0},
+        "meta_model": "anthropic:claude-opus-4-5", "reasoning_effort": "xhigh",
+        "ultracode": True, "stage": "implement",
+    }) + "\n", encoding="utf-8")
+
+    sessions = _run_parser(audit.IN_POD_PARSER, ledger)
+    s = next(x for x in sessions if x["session_file"] == "sess-rich-1.jsonl")
+    assert s["harvested"] is True
+    assert s["ai_title"] == "Corrige X"
+    assert s["brief"] == "implementa a issue 9"
+    assert s["tools"] == {"Read": 3, "Edit": 1}
+    assert s["tool_calls"] == 4
+    assert s["user_msgs"] == 4
+    assert s["pr_number"] == 42
+    assert s["pr_repo"] == "o/r"
+    assert s["git_branch"] == "auto/issue-9"
+    assert s["version"] == "2.1.158"
+    assert s["stage"] == "implement"
+    assert s["meta_model"] == "anthropic:claude-opus-4-5"
+    assert s["reasoning_effort"] == "xhigh"
+    assert s["ultracode"] is True
+    assert s["stop_reasons"] == {"end_turn": 2}
+    assert s["errors"]["max_tokens"] == 1
+    assert s["mtime"] == 1_780_500_000.0   # source_mtime, não harvested_at
+
+
+def test_parser_v1_backcompat_empty_detail(audit, tmp_path):
+    """Registro v:1 (legado, só tokens) → detalhe vazio sem quebrar."""
+    ledger = tmp_path / ".claude" / "cost-ledger.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps({
+        "v": 1, "session_id": "old-1", "task_id": "dddddddddddd0004",
+        "models": {"claude-sonnet-4-5": {"in": 10, "out": 5, "cc": 0,
+                                         "cr": 0, "cc_5m": 0, "cc_1h": 0}},
+        "first_ts": None, "last_ts": None, "assistant_rounds": 1,
+        "harvested_at": 1_780_000_000.0,
+    }) + "\n", encoding="utf-8")
+    sessions = _run_parser(audit.IN_POD_PARSER, ledger)
+    s = next(x for x in sessions if x["session_file"] == "old-1.jsonl")
+    assert s["ai_title"] is None
+    assert s["brief"] is None
+    assert s["tools"] == {}
+    assert s["stage"] == "harvested"          # sem meta → fallback
+    assert s["mtime"] == 1_780_000_000.0      # sem source_mtime → harvested_at
+
+
 def test_parser_dedups_ledger_session_ids(audit, tmp_path):
     ledger = tmp_path / ".claude" / "cost-ledger.jsonl"
     ledger.parent.mkdir(parents=True)

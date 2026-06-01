@@ -4490,6 +4490,7 @@ class DispatchMatrixView(View):
         "[s]caling row: enter digita réplicas (0-10)   "
         "[c] cleanup on-demand (preview + confirm)   "
         "[p] editar max_parallel (parallelism do pipeline)   "
+        "[J] editar retenção JSONL em dias (claude-worker + cron, default 30d)   "
         "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run) 5=Reasoning   "
         "retries=0 EXIGE confirmação: digite '0!' (fail-fast, sem retry)   "
         "linha monitor: Worker=in-pod (não editável)  Model=DEILE_PREFERRED_MODEL do deile-monitor"
@@ -4990,6 +4991,9 @@ class DispatchMatrixView(View):
             title = "CLEANUP ON-DEMAND — CONFIRMAR?"
         elif kind == "max_parallel_prompt":
             title = "MAX_PARALLEL DO PIPELINE (DEILE_PIPELINE_MAX_PARALLEL)"
+        elif kind == "retention_prompt":
+            title = ("RETENÇÃO JSONL EM DIAS (DEILE_CLAUDE_JSONL_RETENTION_DAYS"
+                     " — enter vazio = default 30d)")
         else:  # defensivo
             title = "AÇÃO"
 
@@ -5047,6 +5051,16 @@ class DispatchMatrixView(View):
             hint_line = Text(
                 "[0-9] digita   [a] = 'auto' (replica count)   "
                 "[backspace] apaga   [enter] confirma   [esc] cancela",
+                style="dim cyan",
+            )
+            body = Group(input_line, Text(""), hint_line)
+        elif kind == "retention_prompt":
+            # ``options[0]`` é o buffer atual (número de dias).
+            buf = options[0] if options else ""
+            input_line = Text(f"› {buf}_", style="bold cyan")
+            hint_line = Text(
+                "[0-9] digita dias   [backspace] apaga   [enter] confirma   "
+                "[esc] cancela   (default 30d; aplica em claude-worker + cron)",
                 style="dim cyan",
             )
             body = Group(input_line, Text(""), hint_line)
@@ -5126,6 +5140,11 @@ class DispatchMatrixView(View):
         # --- [p] editar max_parallel ---------------------------------------
         if key == "p":
             return self._open_max_parallel_prompt()
+
+        # --- [J] editar retenção JSONL (issue #445) -------------------------
+        # Maiúsculo de propósito: 'j' minúsculo é navegação DOWN (vim).
+        if key == "J":
+            return self._open_retention_prompt()
 
         # --- navegação row ------------------------------------------------
         if key in ("UP", "k"):
@@ -6177,6 +6196,8 @@ class DispatchMatrixView(View):
             return self._handle_cleanup_confirm_key(key)
         if self.mode is not None and self.mode[0] == "max_parallel_prompt":
             return self._handle_max_parallel_prompt_key(key)
+        if self.mode is not None and self.mode[0] == "retention_prompt":
+            return self._handle_retention_prompt_key(key)
         if key == "ESC":
             self.mode = None
             self.picker_cursor = 0
@@ -6654,6 +6675,136 @@ class DispatchMatrixView(View):
                 self.last_ok = False
         except Exception as exc:  # noqa: BLE001
             self.last_msg = f"erro ao setar max_parallel: {exc}"
+            self.last_ok = False
+        return ActionResult.refresh()
+
+    # --- retenção JSONL (issue #445) ------------------------------------
+
+    def _read_retention_env(self) -> str:
+        """Lê DEILE_CLAUDE_JSONL_RETENTION_DAYS do Deployment claude-worker.
+
+        Retorna string vazia se não conseguir ler (kubectl indisponível,
+        deployment ausente, env não setada → default do código = 30).
+        """
+        if self.data is None:
+            return ""
+        ns = (self.data.context.namespace
+              if getattr(self.data, "context", None) is not None
+              else _NS_DEFAULT)
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "get", "deployment", "claude-worker",
+                 "-o",
+                 "jsonpath={.spec.template.spec.containers[0].env"
+                 "[?(@.name=='DEILE_CLAUDE_JSONL_RETENTION_DAYS')].value}"],
+                capture_output=True, text=True, timeout=8,
+            )
+            return result.stdout.strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _open_retention_prompt(self) -> ActionResult:
+        """Abre modal de edição numérica da retenção JSONL (dias)."""
+        current = self._read_retention_env() or ""
+        self.mode = ("retention_prompt", None, [current])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _handle_retention_prompt_key(self, key: str) -> ActionResult:
+        """Captura entrada numérica para DEILE_CLAUDE_JSONL_RETENTION_DAYS."""
+        _, stage, options = self.mode  # type: ignore[misc]
+        buf: str = options[0] if options else ""
+
+        if key == "ESC":
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "edição de retenção JSONL cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+
+        if key == "BACKSPACE" or key == "\x7f":
+            self.mode = ("retention_prompt", stage, [buf[:-1]])
+            return ActionResult.refresh()
+
+        if key in ("\r", "\n"):
+            self.mode = None
+            self.picker_cursor = 0
+            if buf.strip() == "":
+                return self._apply_retention(None)  # remove override → 30
+            return self._apply_retention(buf.strip())
+
+        if key.isdigit():
+            self.mode = ("retention_prompt", stage, [buf + key])
+            return ActionResult.refresh()
+
+        return ActionResult()
+
+    def _apply_retention(self, value: Optional[str]) -> ActionResult:
+        """Aplica DEILE_CLAUDE_JSONL_RETENTION_DAYS no Deployment claude-worker
+        E no CronJob claude-worker-cleanup (backstop diário) — mantém os dois
+        em sincronia para não criar inconsistência de poda.
+
+        ``value=None`` → remove o override (volta ao default do código = 30).
+        ``value="N"`` → seta valor numérico (dias).
+        """
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            self.last_msg = f"[demo] retenção JSONL → {value!r} (sem cluster, no-op)"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            self.last_msg = "kubectl não encontrado — retenção não alterada"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        if value is not None:
+            try:
+                n = int(value)
+                if n < 1:
+                    raise ValueError(f"valor deve ser >= 1, got {n}")
+            except ValueError as exc:
+                self.last_msg = f"valor inválido para retenção JSONL: {exc}"
+                self.last_ok = False
+                return ActionResult.refresh()
+
+        env_arg = ("DEILE_CLAUDE_JSONL_RETENTION_DAYS-"  # remove
+                   if value is None
+                   else f"DEILE_CLAUDE_JSONL_RETENTION_DAYS={value}")
+        targets = ("deployment/claude-worker", "cronjob/claude-worker-cleanup")
+        ok_targets, failed = [], []
+        for tgt in targets:
+            try:
+                result = subprocess.run(
+                    [kubectl, "-n", ns, "set", "env", tgt, env_arg],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode == 0:
+                    ok_targets.append(tgt.split("/")[-1])
+                else:
+                    failed.append(f"{tgt}: {result.stderr.strip()[:80]}")
+            except Exception as exc:  # noqa: BLE001
+                failed.append(f"{tgt}: {exc}")
+
+        action = "removida (default: 30d)" if value is None else f"→ {value}d"
+        if ok_targets and not failed:
+            self.last_msg = (f"retenção JSONL {action} em {', '.join(ok_targets)} "
+                             "(claude-worker rollout em curso)")
+            self.last_ok = True
+        elif ok_targets:
+            self.last_msg = (f"retenção JSONL {action} parcial — ok: "
+                             f"{', '.join(ok_targets)}; falhou: {'; '.join(failed)}")
+            self.last_ok = False
+        else:
+            self.last_msg = f"set env falhou: {'; '.join(failed)}"
             self.last_ok = False
         return ActionResult.refresh()
 

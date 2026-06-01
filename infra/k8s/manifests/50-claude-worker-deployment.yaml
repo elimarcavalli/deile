@@ -140,6 +140,14 @@ spec:
             # atualização do lease. Ajustar conforme carga da workload.
             - { name: DEILE_CLAUDE_LEASE_TTL_S, value: "30" }
             - { name: DEILE_CLAUDE_LEASE_HEARTBEAT_S, value: "5" }
+            # Retenção dos transcripts JSONL órfãos, em DIAS (issue #445). O
+            # startup hook + a task periódica de cleanup só colhem+podam um
+            # transcript órfão (workdir-pai removido) após N dias SEM
+            # modificação. JSONL é minúsculo (~KB) — retenção longa preserva o
+            # histórico resumível + o detalhe completo na tela de tokens.
+            # Knob SEPARADO do workdir (CLEANUP_RETENTION_DAYS, mais curto).
+            # Editável pelo painel [d] (kubectl set env + rollout, sem rebuild).
+            - { name: DEILE_CLAUDE_JSONL_RETENTION_DAYS, value: "30" }
           ports:
             - { name: claude-api, containerPort: 8767, protocol: TCP }
           volumeMounts:
