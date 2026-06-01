@@ -1243,8 +1243,9 @@ def main():
                     metavar="DIR", help="grava JSON + CSV no diretório (default ./audit-out)")
     ap.add_argument("--no-git", action="store_true",
                     help="pula git status por worktree (mais rápido)")
-    ap.add_argument("--last", action="store_true",
-                    help="ordena por última atividade ↓ (em vez de custo)")
+    ap.add_argument("--last", nargs="?", type=int, const=-1, default=None, metavar="N",
+                    help="ordena por última atividade ↓ (em vez de custo); "
+                         "com N, mostra só as N sessões mais recentes")
     args = ap.parse_args()
 
     kubectl = find_kubectl()
@@ -1259,8 +1260,12 @@ def main():
     if not sessions:
         sys.exit("Nenhuma sessão com tokens encontrada no PVC.")
     sessions = enrich(sessions, pvc)
-    if args.last:
+    last_requested = args.last is not None
+    last_n = args.last if (last_requested and args.last and args.last > 0) else 0
+    if last_requested:
         sessions.sort(key=lambda x: x.get("mtime") or 0, reverse=True)
+        if last_n:
+            sessions = sessions[:last_n]
     print(f"• {len(sessions)} sessões com uso de tokens.\n", file=sys.stderr)
 
     if args.export is not None:
@@ -1273,7 +1278,7 @@ def main():
         return
 
     if args.no_interactive or not sys.stdin.isatty():
-        col = "Últ.ativ" if args.last else "USD"
+        col = "Últ.ativ" if last_requested else "USD"
         render_table(console, sessions, args.top, sort_col=col, sort_desc=True)
         render_aggregates(console, sessions)
         return
@@ -1285,7 +1290,11 @@ def main():
         """
         try:
             p = resolve_pod(kubectl, ns, args.pod)
-            return enrich(fetch_sessions(kubectl, ns, p, args.no_git), pvc)
+            data = enrich(fetch_sessions(kubectl, ns, p, args.no_git), pvc)
+            if last_n:  # preserva o corte das N mais recentes no refresh
+                data.sort(key=lambda x: x.get("mtime") or 0, reverse=True)
+                data = data[:last_n]
+            return data
         except (SystemExit, Exception):
             return None
 
