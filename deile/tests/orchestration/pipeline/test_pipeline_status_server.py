@@ -288,3 +288,50 @@ def test_record_tick_accepts_monitor_publisher_kwargs(status_module):
     assert snap["errors_total"] == 2
     assert snap["last_tick_duration_seconds"] == 0.42
     assert snap["last_tick_at"] is not None
+
+
+def test_recent_events_persist_across_restart(status_module, tmp_path):
+    """ACTIVITY deve sobreviver a um restart do pod do pipeline.
+
+    Antes do fix, ``recent_events`` era um deque só em RAM — todo restart
+    zerava a tela ACTIVITY. Com ``persist_path`` os eventos vão para um JSONL
+    e uma nova instância (= pod novo) os recarrega.
+    """
+    State = status_module.PipelineStatusState
+    path = tmp_path / "recent_events.jsonl"
+
+    s1 = State(persist_path=path)
+    s1.record_event(event_type="tick", summary="tick #1")
+    s1.record_event(event_type="merge", summary="PR #480 merged")
+    assert path.is_file()
+
+    # Nova instância simula o pod reiniciado: recarrega do arquivo.
+    s2 = State(persist_path=path)
+    summaries = [e["summary"] for e in s2.snapshot_recent()]
+    assert "PR #480 merged" in summaries
+    assert "tick #1" in summaries
+    assert len(summaries) == 2
+
+
+def test_recent_events_no_persistence_when_path_none(status_module, tmp_path):
+    """Sem ``persist_path`` (default) o comportamento legado é preservado:
+    nenhum arquivo é criado e o deque funciona normalmente em RAM."""
+    State = status_module.PipelineStatusState
+    state = State()  # persist_path=None
+    state.record_event(event_type="tick", summary="apenas em RAM")
+    assert list(tmp_path.iterdir()) == []
+    assert len(state.snapshot_recent()) == 1
+
+
+def test_recent_events_persist_respects_capacity(status_module, tmp_path):
+    """O JSONL persistido é limitado por ``recent_capacity`` (deque maxlen)."""
+    State = status_module.PipelineStatusState
+    path = tmp_path / "recent_events.jsonl"
+    s1 = State(recent_capacity=3, persist_path=path)
+    for i in range(6):
+        s1.record_event(event_type="tick", summary=f"evento {i}")
+    s2 = State(recent_capacity=3, persist_path=path)
+    summaries = [e["summary"] for e in s2.snapshot_recent()]
+    assert len(summaries) == 3
+    assert "evento 5" in summaries
+    assert "evento 0" not in summaries
