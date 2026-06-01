@@ -49,6 +49,13 @@ from aiohttp import web
 
 import dispatch_logger as dlog
 
+try:
+    # Sibling stdlib-puro (mesmo dir, no sys.path in-pod como dispatch_logger).
+    # Fonte única da agregação de custo, usada pelo harvester do ledger (#445).
+    from jsonl_cost import aggregate_jsonl as _aggregate_jsonl
+except Exception:  # pragma: no cover — sibling sempre presente in-pod
+    _aggregate_jsonl = None
+
 logger = logging.getLogger("deile.claude_worker_server")
 
 #: ``secrets.token_hex(8)`` gera exatamente 16 chars hex; qualquer outra
@@ -2979,6 +2986,201 @@ def _session_jsonl_exists_for_workdir(workdir: Path) -> bool:
         return False
 
 
+# --------------------------------------------------------------------------- #
+# Ledger de custo + poda de JSONL órfão (issue #445)
+#
+# O cleanup acima só varre ``/home/claude/work`` (workdirs). Os transcripts
+# do ``claude -p`` vivem em ``~/.claude/projects/-home-claude-work-<task_id>/``
+# e NÃO eram podados por ninguém — acumularam 200+ dirs / 85 MB.
+#
+# O transcript carrega duas responsabilidades acopladas com ciclos de vida
+# opostos: continuidade ``--resume`` (volumoso, efêmero) e auditoria de custo
+# (minúsculo, permanente). A solução desacopla: ANTES de podar o transcript
+# volumoso, o harvester colhe o custo da sessão (tokens por modelo) para um
+# ledger append-only durável em escala de KB. O ``session_tokens_audit.py``
+# lê o ledger para sessões já podadas + o JSONL vivo para as recentes.
+# --------------------------------------------------------------------------- #
+
+#: Grace period (default 1 h) — protege contra TOCTOU: um workdir recém
+#: removido pode ter um resume agendado; só colhemos/podamos JSONL cujo
+#: dir não foi modificado dentro dessa janela.
+_JSONL_ORPHAN_GRACE_S: int = int(
+    os.environ.get("DEILE_CLAUDE_JSONL_ORPHAN_GRACE_S", "3600"),
+)
+
+_PROJECT_MARKER = "-home-claude-work-"
+
+
+def _projects_dir() -> Path:
+    """Diretório de projetos do claude (onde vivem os JSONL de sessão)."""
+    home = Path(os.environ.get("HOME", "/home/claude"))
+    return home / ".claude" / "projects"
+
+
+def _cost_ledger_path() -> Path:
+    """Caminho do ledger de custo durável (no PVC, sobrevive à poda)."""
+    env = os.environ.get("DEILE_CLAUDE_COST_LEDGER_PATH")
+    if env:
+        return Path(env)
+    home = Path(os.environ.get("HOME", "/home/claude"))
+    return home / ".claude" / "cost-ledger.jsonl"
+
+
+def _orphan_jsonl_scan(
+    work_root: Path, projects_dir: Path, grace_s: int, now: float,
+) -> tuple:
+    """Lista dirs de projeto JSONL órfãos (workdir-pai ausente, além do grace).
+
+    Órfão = ``projects/-home-claude-work-<task_id>`` cujo
+    ``work_root/<task_id>`` não existe mais E cujo ``st_mtime`` é anterior a
+    ``now - grace_s``. Returns ``(list[Path], candidate_bytes)``.
+    """
+    orphans: list = []
+    candidate_bytes = 0
+    if not projects_dir.is_dir():
+        return orphans, candidate_bytes
+    cutoff = now - grace_s
+    try:
+        children = list(projects_dir.iterdir())
+    except OSError:
+        return orphans, candidate_bytes
+    for pdir in children:
+        if not pdir.is_dir() or _PROJECT_MARKER not in pdir.name:
+            continue
+        task_id = pdir.name.split(_PROJECT_MARKER)[-1]
+        if not _TASK_ID_RE.fullmatch(task_id):
+            continue
+        # Workdir-pai ainda existe → sessão viva/resumível, preservar.
+        if (work_root / task_id).exists():
+            continue
+        # Grace: protege contra TOCTOU (workdir recém-removido).
+        try:
+            if pdir.stat().st_mtime > cutoff:
+                continue
+        except OSError:
+            continue
+        orphans.append(pdir)
+        candidate_bytes += _dir_size(pdir)
+    return orphans, candidate_bytes
+
+
+def _harvested_session_ids(ledger_path: Path) -> set:
+    """Conjunto de ``session_id`` já presentes no ledger (dedup do harvest)."""
+    ids: set = set()
+    if not ledger_path.exists():
+        return ids
+    try:
+        with open(ledger_path, errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                sid = rec.get("session_id")
+                if sid:
+                    ids.add(sid)
+    except OSError:
+        pass
+    return ids
+
+
+def _append_ledger(ledger_path: Path, record: dict) -> int:
+    """Anexa um registro ao ledger (append-only). Returns bytes escritos."""
+    line = json.dumps(record, separators=(",", ":")) + "\n"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger_path, "a", encoding="utf-8") as fh:
+        fh.write(line)
+    return len(line.encode("utf-8"))
+
+
+def _harvest_and_prune_orphan_jsonl(
+    work_root: Path,
+    *,
+    projects_dir: Optional[Path] = None,
+    ledger_path: Optional[Path] = None,
+    grace_s: Optional[int] = None,
+    now: Optional[float] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Colhe o custo de sessões JSONL órfãs para o ledger e poda os dirs.
+
+    Para cada dir de projeto órfão (workdir-pai ausente, além do grace):
+      1. Agrega cada ``*.jsonl`` (tokens por modelo) e anexa ao ledger
+         durável — pulando ``session_id`` já colhidos (idempotente).
+      2. Remove o dir de projeto inteiro (transcript volumoso).
+
+    ``dry_run=True`` apenas reporta os candidatos sem colher nem podar.
+    """
+    if projects_dir is None:
+        projects_dir = _projects_dir()
+    if ledger_path is None:
+        ledger_path = _cost_ledger_path()
+    if grace_s is None:
+        grace_s = _JSONL_ORPHAN_GRACE_S
+    if now is None:
+        now = time.time()
+
+    orphans, candidate_bytes = _orphan_jsonl_scan(
+        work_root, projects_dir, grace_s, now)
+    result = {
+        "orphan_jsonl_dirs": [str(p) for p in orphans],
+        "sessions_harvested": 0,
+        "jsonl_dirs_removed": 0,
+        "ledger_bytes_written": 0,
+        "bytes_freed": 0,
+        "candidate_bytes": candidate_bytes,
+        "errors": [],
+    }
+    if dry_run or not orphans:
+        return result
+
+    harvested = _harvested_session_ids(ledger_path)
+    for pdir in orphans:
+        task_id = pdir.name.split(_PROJECT_MARKER)[-1]
+        if _aggregate_jsonl is not None:
+            try:
+                for jsonl in sorted(pdir.glob("*.jsonl")):
+                    data = _aggregate_jsonl(str(jsonl))
+                    sid = data.get("session_id") or jsonl.stem
+                    if sid in harvested or not data.get("models"):
+                        continue
+                    written = _append_ledger(ledger_path, {
+                        "v": 1,
+                        "session_id": sid,
+                        "task_id": task_id,
+                        "models": data["models"],
+                        "first_ts": data.get("first_ts"),
+                        "last_ts": data.get("last_ts"),
+                        "assistant_rounds": data.get("assistant_rounds", 0),
+                        "harvested_at": now,
+                    })
+                    result["ledger_bytes_written"] += written
+                    result["sessions_harvested"] += 1
+                    harvested.add(sid)
+            except OSError as exc:
+                result["errors"].append(f"harvest {pdir}: {exc}")
+        size = _dir_size(pdir)
+        try:
+            shutil.rmtree(pdir, ignore_errors=True)
+            if not pdir.exists():
+                result["jsonl_dirs_removed"] += 1
+                result["bytes_freed"] += size
+        except OSError as exc:
+            result["errors"].append(f"rmtree {pdir}: {exc}")
+
+    logger.info(
+        "cost-ledger harvest: sessions=%d dirs_removed=%d freed=%d bytes "
+        "ledger=+%d bytes errors=%d",
+        result["sessions_harvested"], result["jsonl_dirs_removed"],
+        result["bytes_freed"], result["ledger_bytes_written"],
+        len(result["errors"]),
+    )
+    return result
+
+
 def _cleanup_scan(
     root: Path,
     retention_days: int = _CLEANUP_RETENTION_DAYS_DEFAULT,
@@ -2996,7 +3198,7 @@ def _cleanup_scan(
         return {
             "dead_leases": [], "old_workdirs": [],
             "empty_workdirs": [], "active_workdirs": [],
-            "total_candidate_bytes": 0,
+            "orphan_jsonl_dirs": [], "total_candidate_bytes": 0,
         }
 
     now = time.time()
@@ -3057,11 +3259,19 @@ def _cleanup_scan(
             empty_workdirs.append(str(workdir))
             candidate_bytes += _dir_size(workdir)
 
+    # Check 5: JSONL órfão em ~/.claude/projects (issue #445) — dirs de
+    # projeto cujo workdir-pai já não existe. Preview do que o harvester
+    # vai colher para o ledger + podar.
+    orphan_dirs, orphan_bytes = _orphan_jsonl_scan(
+        root, _projects_dir(), _JSONL_ORPHAN_GRACE_S, now)
+    candidate_bytes += orphan_bytes
+
     return {
         "dead_leases": dead_leases,
         "old_workdirs": old_workdirs,
         "empty_workdirs": empty_workdirs,
         "active_workdirs": active_workdirs,
+        "orphan_jsonl_dirs": [str(p) for p in orphan_dirs],
         "total_candidate_bytes": candidate_bytes,
     }
 
@@ -3127,11 +3337,20 @@ def _do_cleanup(
             logger.warning("cleanup: falha ao remover workdir %s: %s",
                            workdir_str, exc)
 
+    # JSONL órfão (issue #445): colhe o custo para o ledger durável e poda
+    # os transcripts cujo workdir-pai já não existe — inclui os workdirs
+    # recém-removidos acima, que acabam de virar órfãos.
+    harvest = _harvest_and_prune_orphan_jsonl(root)
+    freed_bytes += harvest.get("bytes_freed", 0)
+
     return {
         **scan,
         "removed_leases": removed_leases,
         "removed_workdirs": removed_workdirs,
         "freed_bytes": freed_bytes,
+        "sessions_harvested": harvest.get("sessions_harvested", 0),
+        "jsonl_dirs_removed": harvest.get("jsonl_dirs_removed", 0),
+        "ledger_bytes_written": harvest.get("ledger_bytes_written", 0),
         "dry_run": False,
     }
 

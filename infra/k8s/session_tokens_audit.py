@@ -52,6 +52,12 @@ try:
 except ImportError:  # Windows / sem POSIX termios
     _HAS_CBREAK = False
 
+# Fonte única da lógica de custo (issue #445) — compartilhada com o harvester
+# do ledger em ``claude_worker_server``. Garante que o custo de uma sessão
+# colhida para o ledger é idêntico ao calculado a partir do JSONL vivo.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from jsonl_cost import cost_of_model, nocache_cost_of_model  # noqa: E402
+
 # Todas as datas exibidas neste relatório são em BRT (UTC−3, sem DST desde 2019).
 BRT = timezone(timedelta(hours=-3))
 
@@ -66,61 +72,9 @@ def _iso_brt(iso_str: str) -> str:
     except Exception:
         return iso_str
 
-# --------------------------------------------------------------------------- #
-# Preços oficiais (USD por MILHÃO de tokens). read = cache hit (0.1x input).   #
-# w5 = cache write 5m (1.25x input); w1h = cache write 1h (2x input).          #
-# --------------------------------------------------------------------------- #
-PRICING = {
-    "opus":         {"in": 5.0,  "out": 25.0, "w5": 6.25,  "w1h": 10.0, "read": 0.50},
-    "opus_legacy":  {"in": 15.0, "out": 75.0, "w5": 18.75, "w1h": 30.0, "read": 1.50},
-    "sonnet":       {"in": 3.0,  "out": 15.0, "w5": 3.75,  "w1h": 6.0,  "read": 0.30},
-    "haiku":        {"in": 1.0,  "out": 5.0,  "w5": 1.25,  "w1h": 2.0,  "read": 0.10},
-    "haiku_legacy": {"in": 0.80, "out": 4.0,  "w5": 1.0,   "w1h": 1.60, "read": 0.08},
-    "free":         {"in": 0.0,  "out": 0.0,  "w5": 0.0,   "w1h": 0.0,  "read": 0.0},
-}
-
-
-def pricing_for(model: str) -> dict:
-    """Mapeia um nome de modelo para a sua tabela de preços."""
-    m = (model or "").lower()
-    if "haiku" in m:
-        return PRICING["haiku_legacy"] if ("3-5" in m or "3.5" in m) else PRICING["haiku"]
-    if "sonnet" in m:
-        return PRICING["sonnet"]
-    if "opus" in m:
-        # Opus 4.0 e 4.1 usam preço legado ($15/$75); 4.5+ usam o novo ($5/$25).
-        # Parseia major/minor da versão, descartando o sufixo de data (-YYYYMMDD):
-        # 'claude-opus-4-20250514' → major=4, minor=0 → legado;
-        # 'claude-opus-4-7-...'     → major=4, minor=7 → novo.
-        base = re.sub(r"-\d{6,}.*$", "", m)
-        ver = re.search(r"opus[-_.]?(\d+)(?:[-_.](\d+))?", base)
-        legacy = bool(ver) and int(ver.group(1)) == 4 and (
-            ver.group(2) is None or int(ver.group(2)) <= 1)
-        return PRICING["opus_legacy"] if legacy else PRICING["opus"]
-    return PRICING["free"]  # <synthetic> e desconhecidos não são cobrados
-
-
-def cost_of_model(tk: dict, model: str) -> float:
-    """Custo em USD de um bloco de tokens {in,out,cc,cr,cc_5m,cc_1h} de um modelo."""
-    p = pricing_for(model)
-    cc_5m = tk.get("cc_5m") or 0
-    cc_1h = tk.get("cc_1h") or 0
-    if not cc_5m and not cc_1h:
-        cc_5m = tk.get("cc", 0)  # sem breakdown → trata tudo como write 5m
-    return (
-        tk.get("in", 0) * p["in"]
-        + tk.get("out", 0) * p["out"]
-        + cc_5m * p["w5"]
-        + cc_1h * p["w1h"]
-        + tk.get("cr", 0) * p["read"]
-    ) / 1_000_000.0
-
-
-def nocache_cost_of_model(tk: dict, model: str) -> float:
-    """Custo hipotético se NADA fosse cacheado (todo input a preço cheio)."""
-    p = pricing_for(model)
-    fresh = tk.get("in", 0) + tk.get("cc", 0) + tk.get("cr", 0)
-    return (fresh * p["in"] + tk.get("out", 0) * p["out"]) / 1_000_000.0
+# Preços e cálculo de custo migrados para ``jsonl_cost`` (fonte única, #445):
+# ``PRICING`` / ``pricing_for`` / ``cost_of_model`` / ``nocache_cost_of_model``
+# são importados no topo deste arquivo.
 
 
 # --------------------------------------------------------------------------- #
@@ -360,6 +314,76 @@ for f in sorted(glob.glob(os.path.join(BASE, "**", "*.jsonl"), recursive=True)):
     # só inclui sessões que tenham ao menos uma resposta assistant com tokens
     if any((sum(v.values()) > 0) for v in rec["models"].values()):
         sessions.append(rec)
+
+# Ledger de custo (issue #445): sessões já podadas do disco vivem só aqui.
+# O harvester do claude_worker_server colheu os tokens por modelo ANTES de
+# remover o JSONL volumoso. Emitimos um registro sintético por sessão colhida
+# (não duplicando session_ids que ainda têm JSONL vivo), com a MESMA estrutura
+# ``models`` — o cálculo de custo no host é idêntico.
+LEDGER = os.environ.get("DEILE_CLAUDE_COST_LEDGER_PATH") or os.path.join(
+    os.path.expanduser("~"), ".claude", "cost-ledger.jsonl")
+live_ids = set()
+for s in sessions:
+    sf = s.get("session_file") or ""
+    if sf.endswith(".jsonl"):
+        live_ids.add(sf[:-6])
+seen_led = set()
+try:
+    with open(LEDGER, errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            sid = r.get("session_id")
+            models = r.get("models") or {}
+            if not sid or sid in live_ids or sid in seen_led:
+                continue
+            if not any((sum(v.values()) > 0) for v in models.values()):
+                continue
+            harv = r.get("harvested_at") or 0
+            if SINCE_MTIME and harv and harv < SINCE_MTIME:
+                continue
+            seen_led.add(sid)
+            tid = r.get("task_id") or ""
+            sessions.append({
+                "jsonl": "<ledger>",
+                "project_dir": os.path.join(BASE, "-home-claude-work-" + tid),
+                "session_file": sid + ".jsonl",
+                "models": models,
+                "tools": {},
+                "assistant_rounds": r.get("assistant_rounds", 0) or 0,
+                "user_msgs": 0,
+                "tool_calls": 0,
+                "cwd": None,
+                "git_branch": None,
+                "version": None,
+                "permission_mode": None,
+                "entrypoint": None,
+                "ai_title": None,
+                "pr_number": None,
+                "pr_url": None,
+                "pr_repo": None,
+                "first_ts": r.get("first_ts"),
+                "last_ts": r.get("last_ts"),
+                "brief": None,
+                "errors": {"synthetic": 0, "max_tokens": 0,
+                           "api_error": 0, "tool_error": 0},
+                "stop_reasons": {},
+                "mtime": harv or None,
+                "git": {"state": "harvested", "modified": 0,
+                        "untracked": 0, "staged": 0, "root": None},
+                "meta_model": None,
+                "reasoning_effort": None,
+                "ultracode": None,
+                "stage": "harvested",
+                "harvested": True,
+            })
+except Exception:
+    pass
 
 print(json.dumps(sessions))
 '''

@@ -256,8 +256,12 @@ python3 infra/k8s/deploy.py k8s claude-login --no-interactive
 |---|---|---|
 | `DEILE_CLAUDE_CLEANUP_RETENTION_DAYS` | `7` | Dias de retenção dos workdirs (startup hook + CronJob). Workdirs sem sessão JSONL ou mais antigos que N dias são removidos. |
 | `DEILE_PIPELINE_MAX_PARALLEL` | `2` | Número máximo de dispatches simultâneos no pipeline. Aceita inteiro ≥ 1. Muda via `[p]` no painel (rollout do `deile-pipeline` sem rebuild). |
+| `DEILE_CLAUDE_COST_LEDGER_PATH` | `~/.claude/cost-ledger.jsonl` | Ledger append-only durável de custo (issue #445). Cada sessão JSONL órfã tem os tokens por modelo colhidos para cá ANTES de o transcript ser podado. |
+| `DEILE_CLAUDE_JSONL_ORPHAN_GRACE_S` | `3600` | Grace period (s) para podar JSONL órfão. Só dirs de projeto cujo workdir-pai sumiu E sem modificação dentro dessa janela são colhidos+podados (guarda TOCTOU contra resume agendado). |
 
 **CronJob diário:** `claude-worker-cleanup` (03:00 UTC) — monta o PVC `claude-worker-home` e varre leases stale + workdirs abandonados. `kubectl get cronjobs -n deile` para verificar.
+
+**Ledger de custo (issue #445):** os transcripts do `claude -p` (`~/.claude/projects/-home-claude-work-<task_id>/`) carregam duas responsabilidades acopladas com ciclos de vida opostos — continuidade `--resume` (volumoso, efêmero) e auditoria de custo (minúsculo, permanente). O cleanup antes só varria `/home/claude/work` (workdirs) e deixava os transcripts acumularem (200+ dirs / 85 MB). Agora o `_do_cleanup` (startup + CronJob + `/v1/cleanup`) **colhe o custo de cada sessão órfã para o ledger durável ANTES de podar** o transcript: `infra/k8s/jsonl_cost.py` (`aggregate_jsonl` + tabela de preços, fonte única) agrega tokens por modelo; o harvester anexa ao ledger (dedup por `session_id`, idempotente); o `session_tokens_audit.py` lê o ledger (sessões podadas) + o JSONL vivo (recentes), com custo idêntico (mesma `cost_of_model`). Resultado: custo histórico permanente em escala de KB, transcripts podam livremente.
 
 ### Threat model resumido
 
