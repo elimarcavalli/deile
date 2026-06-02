@@ -3647,13 +3647,15 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
     )
 
     async def _on_startup(_app: web.Application) -> None:
-        # Escreve presença antes do cleanup para que este pod seja incluído
-        # no conjunto de vivos durante a varredura inicial (issue #495).
-        await asyncio.to_thread(_write_presence, _cleanup_root)
+        # Cleanup ANTES de escrever presença: na primeira execução o diretório
+        # .pods/ não existe → _get_alive_pods retorna None → detecção por TTL
+        # (conservador, sem falso-positivo). Escreve presença em seguida para
+        # que os ciclos subsequentes do _presence_loop já incluam este pod.
         try:
             await asyncio.to_thread(_cleanup_stale_workspaces, _cleanup_root)
         except Exception as exc:  # noqa: BLE001 — startup nunca falha por isso
             logger.warning("startup workspace cleanup raised: %s", exc)
+        await asyncio.to_thread(_write_presence, _cleanup_root)
         _app["_presence_task"] = asyncio.create_task(
             _presence_loop(_cleanup_root),
             name="presence-heartbeat",
