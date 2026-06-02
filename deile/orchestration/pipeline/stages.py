@@ -503,10 +503,18 @@ async def _collect_mention_triggers(
     """Poll all four mention sources and return the raw trigger list.
 
     Comment mentions are cursor-bounded (only comments newer than the saved
-    cursor fire). The sticky sources (assignee / reviewer / body) carry the
-    target's labels with no timestamp, so any target already marked
-    ``~mention:processado`` is filtered out here — see :func:`process_mentions`
-    for the cross-tick dedup rationale.
+    cursor fire).
+
+    Sticky trigger behaviour by source:
+
+    * **assignee/reviewer (PR)** — NOT filtered by ``~mention:processado``.
+      Discovery-by-state: the unified PR brief opens the PR and decides whether
+      there is real work to do.  Sticky-success marks the marker to avoid churn.
+    * **assignee (issue)** — NOT filtered by ``~mention:processado``, but IS
+      gated by ``~workflow:*``: issues already owned by the pipeline (gate label
+      present) are skipped to prevent EVENTS panel flooding (issue #483).
+    * **body** — still filtered by ``~mention:processado`` because the body is
+      static: without the marker it would re-fire every tick indefinitely.
     """
     triggers: list[MentionTrigger] = []
 
@@ -553,6 +561,11 @@ async def _collect_mention_triggers(
             return []
 
     for issue in await _poll("assigned issues", monitor.forge.list_issues_assigned_to(gh_login)):
+        # Gate: skip issues already owned by the pipeline (any ~workflow:* label).
+        # Without this, every tick re-arms a MentionTrigger for every in-flight
+        # issue, flooding the EVENTS panel (issue #483 — V1 fix).
+        if any(lb.startswith("~workflow:") for lb in (issue.labels or [])):
+            continue
         triggers.append(
             MentionTrigger(
                 trigger_type="assignee", issue=issue, trigger_author=gh_login,

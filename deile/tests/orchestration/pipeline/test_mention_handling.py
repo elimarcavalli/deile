@@ -376,15 +376,16 @@ class TestProcessMentionsCrossTickDedup:
         github.add_labels.assert_any_call("issue", 42, [MENTION_DONE])
 
     async def test_assignee_issue_already_in_pipeline_not_reclassified(self):
-        """If the issue already carries a ~workflow:* label, don't re-add nova —
-        just mark processed."""
+        """If the issue already carries a ~workflow:* label it is gated OUT in
+        the collector (issue #483 V1 fix) — no trigger is produced, so no label
+        is ever added (neither WORKFLOW_NEW nor MENTION_DONE)."""
         monitor, github, notifier = _make_monitor()
         github.list_issues_assigned_to = AsyncMock(
             return_value=[_issue_ref(42, labels=("~workflow:em_revisao",))]
         )
         await monitor._process_mentions()
-        # only the MENTION_DONE marker, never WORKFLOW_NEW
-        github.add_labels.assert_called_once_with("issue", 42, [MENTION_DONE])
+        # The collector skips the issue entirely — no label mutations at all.
+        github.add_labels.assert_not_called()
 
     async def test_assignee_pr_dispatch_marks_processed_with_pr_kind(self):
         monitor, github, notifier = _make_monitor()
