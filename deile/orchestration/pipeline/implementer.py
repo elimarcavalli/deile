@@ -25,6 +25,7 @@ themselves.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -505,6 +506,18 @@ class WorkerImplementer(PipelineImplementer):
 
     name = "deile_worker"
 
+    #: Buffer (segundos) somado ao budget HTTP do worker para derivar o teto do
+    #: watchdog de tick (:meth:`_post_dispatch`). Pequeno e positivo de propósito:
+    #: o ``asyncio.wait_for`` no nível do tick é o HARD-STOP que garante que um
+    #: dispatch pendurado NUNCA congela o monitor (regressão de produção
+    #: 2026-06-01: o tick travou ~52min num único dispatch que não retornava).
+    #: O buffer dá uma janela para o timeout interno do httpx
+    #: (``MAX_DISPATCH_BUDGET_S``) disparar primeiro e produzir o
+    #: ``WORKER_TIMEOUT`` mais informativo; só se ESSE não disparar (socket
+    #: pendurado abaixo do read-timeout, bug do transport) é que o watchdog
+    #: assume e converte o hang num ``WorkerDispatchError`` recuperável.
+    _TICK_WATCHDOG_BUFFER_S: float = 120.0
+
     def __init__(
         self,
         client: Optional[object] = None,
@@ -572,13 +585,47 @@ class WorkerImplementer(PipelineImplementer):
         ``endpoint_url``, usa-se introspecção para só passar o kwarg
         quando o client real o suporta — assim a refatoração não
         quebra fakes pré-existentes.
+
+        HARD-STOP do tick (regressão de produção 2026-06-01): dispatches
+        ``wait=True`` (review/resume) bloqueiam o tick inteiro até o resultado.
+        Se o socket ficar pendurado, o tick congelaria por até o budget de 2h —
+        a liveness probe não detecta (o status server segue saudável). Aqui
+        envolvemos cada dispatch bloqueante num ``asyncio.wait_for`` cujo teto é
+        o budget HTTP do worker + um buffer curto, de modo que a chamada SEMPRE
+        retorne (sucesso, erro tipado, ou timeout) e o tick prossiga.
+        ``asyncio.CancelledError`` é re-levantado (shutdown do monitor) —
+        nunca silenciado.
         """
         sig = inspect.signature(self._client.dispatch)
         if "endpoint_url" in sig.parameters:
-            return await self._client.dispatch(
-                payload, wait=wait, endpoint_url=url,
+            coro = self._client.dispatch(payload, wait=wait, endpoint_url=url)
+        else:
+            coro = self._client.dispatch(payload, wait=wait)
+
+        if not wait:
+            # Fire-and-forget já tem timeout curto (``_NOWAIT_TIMEOUT_S``) no
+            # client; não precisa de watchdog adicional.
+            return await coro
+
+        from deile.infrastructure.deile_worker_client import (
+            MAX_DISPATCH_BUDGET_S, WorkerDispatchError)
+
+        watchdog_s = MAX_DISPATCH_BUDGET_S + self._TICK_WATCHDOG_BUFFER_S
+        try:
+            return await asyncio.wait_for(coro, timeout=watchdog_s)
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError as exc:
+            logger.error(
+                "worker dispatch watchdog fired after %.0fs — converting hang "
+                "to recoverable failure so the tick proceeds (url=%s)",
+                watchdog_s, url,
             )
-        return await self._client.dispatch(payload, wait=wait)
+            raise WorkerDispatchError(
+                f"worker dispatch exceeded tick watchdog ({watchdog_s:.0f}s) "
+                f"and was abandoned to keep the monitor alive",
+                error_code="WORKER_TICK_WATCHDOG",
+            ) from exc
 
     async def _resolve_resume_meta(
         self,

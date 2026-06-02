@@ -315,7 +315,13 @@ async def test_dispatch_success(monkeypatch):
 
 
 async def test_dispatch_timeout_value_changes_with_wait(monkeypatch):
-    """Sanity: timeout is float and reflects ``wait``."""
+    """Structured ``httpx.Timeout``: read/write follow ``wait`` budget, but
+    connect/pool are capped tight so a hung connect can't freeze the tick.
+
+    Regressão de produção 2026-06-01: ``httpx.AsyncClient(timeout=<float>)``
+    aplicava o budget de 2h também ao connect, deixando um socket pendurado
+    travar o tick por 2h. O fix passa um ``httpx.Timeout`` estruturado.
+    """
     seen = {}
 
     def handler(request):
@@ -337,8 +343,20 @@ async def test_dispatch_timeout_value_changes_with_wait(monkeypatch):
     cli = DeileWorkerClient()
     await cli.dispatch(_good_payload(), wait=False)
     await cli.dispatch(_good_payload(), wait=True)
-    assert captured_timeouts[0] == 30.0
-    assert captured_timeouts[1] == DEFAULT_TIMEOUT_S + 60.0
+
+    nowait_t, wait_t = captured_timeouts
+    # Ambos são ``httpx.Timeout`` estruturados (NÃO floats escalares).
+    assert isinstance(nowait_t, httpx.Timeout)
+    assert isinstance(wait_t, httpx.Timeout)
+    # nowait: budget curto (30s) em todas as fases.
+    assert nowait_t.read == 30.0
+    assert nowait_t.connect == 30.0
+    # wait: read/write seguem o budget do task (2h+); connect/pool ficam curtos
+    # — é exatamente isto que impede um connect pendurado de travar o tick.
+    assert wait_t.read == DEFAULT_TIMEOUT_S + 60.0
+    assert wait_t.write == DEFAULT_TIMEOUT_S + 60.0
+    assert wait_t.connect == 30.0
+    assert wait_t.pool == 30.0
 
 
 def test_default_timeout_is_float():

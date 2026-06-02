@@ -46,6 +46,19 @@ DEFAULT_TIMEOUT_S: float = float(os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "
 MAX_DISPATCH_BUDGET_S: float = DEFAULT_TIMEOUT_S + 60.0
 _NOWAIT_TIMEOUT_S: float = 30.0
 
+# Connect/pool ceilings independentes do budget total (regressão observada em
+# produção 2026-06-01: o ``deile-pipeline`` congelou ~52min após "worker
+# dispatch starting" porque ``httpx.AsyncClient(timeout=<float>)`` aplica o
+# MESMO valor a connect/read/write/pool — com ``MAX_DISPATCH_BUDGET_S`` ≈ 2h,
+# um socket pendurado na fase de connect/handshake só estouraria depois de 2h,
+# travando o tick inteiro). Mantemos ``read``/``write`` no budget do task
+# (o worker pode legitimamente levar até 2h), mas ``connect`` e ``pool`` ganham
+# um teto curto para que uma falha de rede falhe rápido. O hard-stop final
+# (mesmo que ``read`` legitimamente seja 2h) é garantido pelo
+# ``asyncio.wait_for`` no nível do tick (``WorkerImplementer._dispatch``).
+_CONNECT_TIMEOUT_S: float = 30.0
+_POOL_TIMEOUT_S: float = 30.0
+
 _DISPATCH_PATH = "/v1/dispatch"
 _PROGRESS_PATH = "/v1/progress/{task_id}"
 _RESULT_PATH = "/v1/result/{task_id}"
@@ -566,7 +579,17 @@ class DeileWorkerClient:
         token, httpx = await _resolve_auth_and_httpx()
 
         request_id = str(uuid.uuid4())
-        timeout: float = MAX_DISPATCH_BUDGET_S if wait else _NOWAIT_TIMEOUT_S
+        # Structured timeout (NÃO um float escalar): no httpx, passar um float
+        # único define connect/read/write/pool TODOS com o mesmo valor — com o
+        # budget de 2h isso deixa um connect pendurado travar até 2h. Aqui o
+        # ``read``/``write`` segue o budget do task (o worker pode legitimamente
+        # levar até 2h), mas ``connect``/``pool`` ganham um teto curto.
+        total_budget: float = MAX_DISPATCH_BUDGET_S if wait else _NOWAIT_TIMEOUT_S
+        timeout = httpx.Timeout(
+            total_budget,
+            connect=min(_CONNECT_TIMEOUT_S, total_budget),
+            pool=min(_POOL_TIMEOUT_S, total_budget),
+        )
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -581,7 +604,7 @@ class DeileWorkerClient:
                 resp = await cli.post(endpoint, json=body, headers=headers)
             except httpx.TimeoutException as exc:
                 raise WorkerDispatchError(
-                    f"worker timeout after {timeout}s "
+                    f"worker timeout after {total_budget}s "
                     f"(request_id={request_id}): {str(exc)[:200]}",
                     error_code="WORKER_TIMEOUT",
                 ) from exc

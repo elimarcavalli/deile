@@ -7,6 +7,7 @@ Covers the factory selection, the Claude strategy (delegates to the injected
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -278,6 +279,84 @@ class TestWorkerImplementer:
         assert client.last_payload["channel_id"] == "pipeline-mention-issue-1"
         # Mentions run under the developer persona (only PR review uses reviewer).
         assert client.last_payload["persona"] == "developer"
+
+
+class _HangingClient:
+    """Cliente cujo ``dispatch`` nunca retorna — simula o worker pendurado.
+
+    Reproduz a regressão de produção 2026-06-01: o dispatch ``wait=True``
+    bloqueava o tick indefinidamente quando o worker aceitava a conexão mas
+    não respondia. ``started`` permite asserir que a chamada de fato começou.
+    """
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.last_wait = None
+
+    async def dispatch(self, payload, *, wait, endpoint_url=None):
+        self.last_wait = wait
+        self.started.set()
+        # Espera "para sempre" — o watchdog do tick deve interromper.
+        await asyncio.Event().wait()
+
+
+class TestTickWatchdog:
+    """Regressão: um dispatch ``wait=True`` pendurado NUNCA congela o tick.
+
+    O watchdog em :meth:`WorkerImplementer._post_dispatch` envolve a chamada
+    HTTP bloqueante num ``asyncio.wait_for``; ao estourar, converte o hang num
+    :class:`WorkerDispatchError` recuperável (``WORKER_TICK_WATCHDOG``) que o
+    stage handler trata como falha do alvo — o tick prossegue.
+    """
+
+    async def test_hung_dispatch_does_not_freeze_the_tick(self, monkeypatch):
+        import deile.orchestration.pipeline.implementer as impl_mod
+
+        # Encolhe o budget HTTP (lido via import local em _post_dispatch) e o
+        # buffer do watchdog para o teste rodar em milissegundos em vez de 2h.
+        monkeypatch.setattr(
+            "deile.infrastructure.deile_worker_client.MAX_DISPATCH_BUDGET_S",
+            0.05,
+        )
+        monkeypatch.setattr(
+            impl_mod.WorkerImplementer, "_TICK_WATCHDOG_BUFFER_S", 0.05,
+        )
+
+        client = _HangingClient()
+        impl = WorkerImplementer(client=client)
+
+        # ``review`` despacha com wait=True (caminho bloqueante do tick).
+        out = await asyncio.wait_for(
+            impl.review(_make_monitor(), _pr(number=7)), timeout=5.0,
+        )
+
+        assert client.started.is_set()
+        assert client.last_wait is True
+        # Hang convertido em falha recuperável — NÃO uma exceção que derruba o tick.
+        assert out.ok is False
+        assert "WORKER_TICK_WATCHDOG" in out.error
+
+    async def test_watchdog_reraises_cancellation(self, monkeypatch):
+        """``asyncio.CancelledError`` (shutdown do monitor) é re-levantado,
+        nunca silenciado pelo watchdog."""
+        import deile.orchestration.pipeline.implementer as impl_mod
+
+        monkeypatch.setattr(
+            "deile.infrastructure.deile_worker_client.MAX_DISPATCH_BUDGET_S",
+            3600.0,
+        )
+        monkeypatch.setattr(
+            impl_mod.WorkerImplementer, "_TICK_WATCHDOG_BUFFER_S", 0.0,
+        )
+
+        client = _HangingClient()
+        impl = WorkerImplementer(client=client)
+
+        task = asyncio.ensure_future(impl.review(_make_monitor(), _pr(number=7)))
+        await client.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 class TestWorkOutcome:
