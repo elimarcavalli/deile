@@ -225,7 +225,7 @@ async def test_dispatch_translates_model_slug(
     """
     captured = {}
 
-    async def fake_run(args, *, cwd, task_id, timeout):
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         captured["args"] = list(args)
         return claude_worker_module.SubprocessResult(
             returncode=0, stdout="ok\n", stderr="", duration_seconds=1.0,
@@ -266,7 +266,7 @@ async def test_dispatch_response_shape(
     ``session_id``, ``attempt``, ``duration_seconds`` e ``returncode``
     — contrato consumido pelo ``deile-pipeline`` e pelo painel TUI."""
     import json as _json
-    async def fake_run(args, *, cwd, task_id, timeout):
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         # Com --output-format json, stdout é UM JSON object (resultado final).
         out = _json.dumps({
             "is_error": False, "result": "ok", "session_id": "abc-123",
@@ -314,7 +314,7 @@ async def test_dispatch_creates_workspace_dir(
     arquivos/staged changes."""
     captured_cwd = []
 
-    async def fake_run(args, *, cwd, task_id, timeout):
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         captured_cwd.append(cwd)
         assert cwd.exists(), f"workspace {cwd} should exist before exec"
         return claude_worker_module.SubprocessResult(0, "", "", 0.1)
@@ -348,7 +348,7 @@ async def test_dispatch_passes_brief_with_preamble(
     ``$BRANCH`` é substituído no template antes do exec."""
     captured_args = []
 
-    async def fake_run(args, *, cwd, task_id, timeout):
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         captured_args.extend(args)
         return claude_worker_module.SubprocessResult(0, "", "", 0.1)
 
@@ -522,7 +522,7 @@ async def test_dispatch_returns_auth_expired_when_claude_reports_not_logged_in(
     from infra.k8s import claude_worker_server as mod
     import types
 
-    async def fake_run_subprocess(args, *, cwd, task_id, timeout):
+    async def fake_run_subprocess(args, *, cwd, task_id, timeout, lease_path=None):
         return types.SimpleNamespace(
             returncode=1,
             stdout="Not logged in · Please run /login\n",
@@ -558,7 +558,7 @@ async def test_dispatch_returns_ok_when_claude_succeeds_normally(
     import json as _json
     import types
 
-    async def fake_run_subprocess(args, *, cwd, task_id, timeout):
+    async def fake_run_subprocess(args, *, cwd, task_id, timeout, lease_path=None):
         out = _json.dumps({
             "is_error": False,
             "result": "Review completed STATUS: APPROVE",
@@ -601,7 +601,7 @@ async def test_dispatch_persists_session_metadata(
     session_id, workdir, stage, attempt=1, started_at, last_*."""
     import json as _json
 
-    async def fake_run(args, *, cwd, task_id, timeout):
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         out = _json.dumps({
             "is_error": False, "result": "done", "session_id": "fake-sess",
             "total_cost_usd": 0.07, "duration_ms": 5000, "num_turns": 2,
@@ -644,7 +644,7 @@ async def test_dispatch_passes_session_id_flag_to_claude(
     import json as _json
     captured = {}
 
-    async def fake_run(args, *, cwd, task_id, timeout):
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         captured["args"] = list(args)
         out = _json.dumps({"is_error": False, "result": "ok", "session_id": "x"})
         return claude_worker_module.SubprocessResult(0, out, "", 1.0)
@@ -682,7 +682,7 @@ async def test_dispatch_resume_uses_minus_r_flag(
     import json as _json
     captured = {}
 
-    async def fake_run(args, *, cwd, task_id, timeout):
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         captured["args"] = list(args)
         captured["cwd"] = cwd
         captured["task_id"] = task_id
@@ -846,7 +846,7 @@ async def test_dispatch_detects_auth_expired_via_json_output(
     'Not logged in' → ok=False, error_code=WORKER_AUTH_EXPIRED.
     """
     import json as _json
-    async def fake_run(args, *, cwd, task_id, timeout):
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         out = _json.dumps({
             "is_error": True,
             "result": "Not logged in · Please run /login",
@@ -1808,7 +1808,7 @@ async def test_pod_status_endpoint_redacts_lease_payload(
         body = await resp.json()
     lease = body["lease"]
     assert lease is not None
-    allowed_keys = {"task_id", "heartbeat_at", "pid"}
+    allowed_keys = {"task_id", "heartbeat_at", "pid", "claude_pid", "claude_running"}
     assert set(lease.keys()) <= allowed_keys, (
         f"Lease exposed extra fields: {set(lease.keys()) - allowed_keys}"
     )
