@@ -103,6 +103,14 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+_NONACTIONABLE_ACTIONS: frozenset = frozenset({"routing.dropped"})
+
+
+def _action_row_style(action: str) -> "str | None":
+    """Estilo da célula `action`: atenua eventos não-acionáveis; None = default."""
+    return "dim" if action in _NONACTIONABLE_ACTIONS else None
+
+
 logger = logging.getLogger(__name__)
 
 _HEALTH_LINE_RE = re.compile(r"GET /v1/health")
@@ -1097,7 +1105,7 @@ class DashboardView(View):
                 tbl.add_row(
                     r.hhmmss,
                     Text(r.actor, style=f"bold {actor_color}"),
-                    r.action,
+                    Text(r.action, style=_action_row_style(r.action)),
                     r.target,
                     Text(r.detail, style=detail_style),
                 )
