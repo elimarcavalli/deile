@@ -208,6 +208,33 @@ WORKFLOW_LABELS = (
     WORKFLOW_BLOCKED,
 )
 
+#: Comment-routing truth table (issue #442). A comment on an OPEN issue carrying
+#: one of these ``~workflow:*`` states is SAFE to defer to the gate: each state
+#: has an active worker dispatch whose brief re-reads the issue comments
+#: (critique/refine/implement/resume — see ``briefs.py``), so a new comment is
+#: picked up on the next dispatch without spawning a parallel one-shot.
+GATE_REDISPATCHES_COMMENT = frozenset((
+    WORKFLOW_NEW,
+    WORKFLOW_REVIEWING,
+    WORKFLOW_REFINING,
+    WORKFLOW_ARCHITECTURE,
+    WORKFLOW_REVIEWED,
+    WORKFLOW_IMPLEMENTING,
+))
+
+#: Terminal pipeline states for an issue: NO stage selects an issue carrying one
+#: of these (they are explicitly excluded in implement/resume/reconcile), so its
+#: comments are NEVER re-read by a worker dispatch. A comment on such an issue
+#: must be routed to a one-shot handler, NOT silently deferred to a gate that
+#: will never run — the issue #442 limbo bug. ``WORKFLOW_WAITING`` is handled
+#: separately (the comment lifts the pause), so it is in neither set; together
+#: with these two sets it partitions all of ``WORKFLOW_LABELS``.
+GATE_TERMINAL_NO_REDISPATCH = frozenset((
+    WORKFLOW_PR,
+    WORKFLOW_DECOMPOSED,
+    WORKFLOW_BLOCKED,
+))
+
 #: The two refine states are the same logical step, chosen by issue type:
 #: intent → em_refinamento (analyst); code types → em_arquitetura (architect/
 #: debugger). ``refine_workflow_state`` is the single source of that mapping.

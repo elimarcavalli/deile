@@ -43,6 +43,7 @@ from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
                                                  REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING, TYPE_INTENT,
+                                                 GATE_REDISPATCHES_COMMENT,
                                                  WORKFLOW_BLOCKED,
                                                  WORKFLOW_DECOMPOSED,
                                                  WORKFLOW_IMPLEMENTING,
@@ -630,15 +631,20 @@ async def _dispatch_mention_group(
         await _route_issue_to_pipeline(monitor, group, number, dedup_key, gh_login)
         return
 
-    # Comment mention on an ISSUE: integrate with the flow it is ALREADY in
-    # (issue #257) instead of spawning a parallel one-shot. Mentioning the target
-    # by name in a comment is NORMAL and must NOT pull an issue out of the gate.
+    # Comment mention on an ISSUE: route by a TRUTH TABLE keyed on whether the
+    # issue's current state has a future worker dispatch that re-reads its
+    # comments (issue #442). Mentioning the target by name in a comment is NORMAL
+    # and must NOT pull an OPEN issue out of an active gate — but it must also
+    # never be silently dropped on a TERMINAL/closed issue, where no gate will
+    # ever run (the #442 limbo bug).
     if kind == "issue":
         try:
             gated = await monitor.forge.get_issue(number)
             glabels = set(gated.labels)
+            gstate = gated.state
         except Exception:  # noqa: BLE001 — best-effort; fall through to one-shot
             glabels = set()
+            gstate = "open"
         if WORKFLOW_WAITING in glabels:
             # The comment IS the stakeholder's decision → lift the pause so the
             # refine loop resumes (the refiner reads this comment on its next pass).
@@ -649,11 +655,33 @@ async def _dispatch_mention_group(
             logger.info("mention #%d: decisão do stakeholder → retoma refino (sem one-shot)", number)
             return
         active = next((lb for lb in glabels if lb.startswith("~workflow:")), None)
-        if active:
-            # Already owned by the gate — do NOT spawn a parallel flow; the gate's
-            # next worker dispatch reads the new comment.
-            logger.info("mention #%d ignorada p/ roteamento: já está no gate (%s)", number, active)
+        if active in GATE_REDISPATCHES_COMMENT and gstate == "open":
+            # An OPEN issue in a re-dispatched state: critique/refine/implement/
+            # resume re-reads the issue comments on its next pass (briefs.py reads
+            # ``gh issue view --comments``), so defer — do NOT spawn a parallel
+            # one-shot.
+            logger.info("mention #%d ignorada p/ roteamento: já está no gate ativo (%s)", number, active)
             return
+        if active == WORKFLOW_BLOCKED:
+            # Blocked is human-gated. Per operator policy (issue #442 alignment)
+            # the comment is NOT dropped silently: surface the blocked status AND
+            # attend the request one-shot below. A human removing the label
+            # resumes the normal flow.
+            try:
+                await monitor.forge.comment_on_issue(
+                    number,
+                    f"⏸️ Esta issue está em `{WORKFLOW_BLOCKED}` — vou atender seu "
+                    f"comentário agora, mas o fluxo automático só retoma quando "
+                    f"você remover `{WORKFLOW_BLOCKED}`.",
+                )
+            except Exception as exc:  # noqa: BLE001 — status note is best-effort
+                logger.warning("mention #%d: blocked-status note failed: %s", number, exc)
+        # Fall through to mode="comment" (one-shot) for: a TERMINAL state
+        # (em_pr / decomposta / bloqueada), a CLOSED issue in any state, or no
+        # ~workflow:* label. None of these has a future gate dispatch that would
+        # read the comment, so the one-shot handler is the ONLY way it is acted
+        # upon — and because it IS handled, the mention cursor may advance past it
+        # safely (the #442 limbo came from advancing past a DROPPED comment).
 
     # Decide the dispatch mode from the role.
     #
@@ -684,6 +712,24 @@ async def _dispatch_mention_group(
                     "pr_review (em_andamento/batch) — evita dispatch duplo",
                     dedup_key,
                 )
+                return
+            if WORKFLOW_BLOCKED in pr_labels:
+                # Consistency with pr_review (which EXCLUDES blocked PRs from its
+                # candidate set, stages.py:2080) and with the blocked-issue policy
+                # above: a blocked PR is human-gated, so a mention must NOT auto-
+                # dispatch pr_unified (which could merge a PR the human blocked —
+                # the silent re-dispatch was a real hole, issue #442 audit). Surface
+                # the status and stop; a human removing ~workflow:bloqueada resumes.
+                try:
+                    await monitor.forge.comment_on_pr(
+                        number,
+                        f"⏸️ Esta PR está em `{WORKFLOW_BLOCKED}` — o fluxo "
+                        f"automático só retoma quando você remover "
+                        f"`{WORKFLOW_BLOCKED}`.",
+                    )
+                except Exception as exc:  # noqa: BLE001 — status note is best-effort
+                    logger.warning("mention %s: blocked-PR status note failed: %s", dedup_key, exc)
+                logger.info("mention %s ignorada p/ roteamento: PR em %s (human-gated)", dedup_key, WORKFLOW_BLOCKED)
                 return
         mode = "pr_unified"
     else:

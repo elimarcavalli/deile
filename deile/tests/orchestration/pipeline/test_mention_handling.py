@@ -11,7 +11,12 @@ from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
 from deile.orchestration.pipeline.implementer import WorkOutcome
 from deile.orchestration.pipeline.labels import (MENTION_DONE,
                                                  WORKFLOW_ARCHITECTURE,
+                                                 WORKFLOW_BLOCKED,
+                                                 WORKFLOW_DECOMPOSED,
+                                                 WORKFLOW_IMPLEMENTING,
                                                  WORKFLOW_NEW,
+                                                 WORKFLOW_PR,
+                                                 WORKFLOW_REVIEWED,
                                                  WORKFLOW_WAITING)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
@@ -570,3 +575,97 @@ class TestCommentMentionGateIntegration:
         # diretamente. A semântica do teste (one-shot dispatch ocorreu) é
         # preservada validando que o implementer.mention foi chamado.
         monitor.implementer.mention.assert_called()  # one-shot dispatched
+
+
+class TestCommentMentionTerminalStates:
+    """Issue #442: a comment on an issue whose state has NO future gate dispatch
+    (em_pr / decomposta / blocked / closed) must be handled one-shot — NEVER
+    silently dropped. Dropping it stranded the comment forever once the mention
+    cursor advanced past it (and removing the label did not recover it)."""
+
+    async def test_comment_on_em_pr_issue_routes_one_shot(self):
+        # The exact #442 scenario: comment on an issue parked in ~workflow:em_pr.
+        comment = _comment(1, "@deile-one ainda falta o teste X")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        github.get_issue = AsyncMock(return_value=IssueRef(
+            number=1, title="t", url="https://github.com/o/r/issues/1",
+            labels=(WORKFLOW_PR,), state="open",
+        ))
+        await monitor._process_mentions()
+        monitor.implementer.mention.assert_called()
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "comment"
+        assert monitor.stats.mentions_processed == 1
+
+    async def test_comment_on_decomposed_issue_routes_one_shot(self):
+        comment = _comment(1, "@deile-one adiciona a derivada Y")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        github.get_issue = AsyncMock(return_value=IssueRef(
+            number=1, title="t", url="https://github.com/o/r/issues/1",
+            labels=(WORKFLOW_DECOMPOSED,), state="open",
+        ))
+        await monitor._process_mentions()
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "comment"
+        assert monitor.stats.mentions_processed == 1
+
+    async def test_comment_on_closed_gated_issue_routes_one_shot(self):
+        # A CLOSED issue carrying a re-dispatched label still has NO live stage
+        # (every stage queries OPEN issues), so the comment must one-shot, not DROP.
+        comment = _comment(1, "@deile-one reabre e ajusta Z")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        github.get_issue = AsyncMock(return_value=IssueRef(
+            number=1, title="t", url="https://github.com/o/r/issues/1",
+            labels=(WORKFLOW_IMPLEMENTING,), state="closed",
+        ))
+        await monitor._process_mentions()
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "comment"
+        assert monitor.stats.mentions_processed == 1
+
+    async def test_comment_on_open_redispatched_issue_still_defers(self):
+        # Regression guard: an OPEN issue in a re-dispatched state still DEFERS
+        # (no one-shot) — the gate's worker reads the comment on its next pass.
+        comment = _comment(1, "@deile-one segue a opção A")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        github.get_issue = AsyncMock(return_value=IssueRef(
+            number=1, title="t", url="https://github.com/o/r/issues/1",
+            labels=(WORKFLOW_REVIEWED,), state="open",
+        ))
+        await monitor._process_mentions()
+        monitor.implementer.mention.assert_not_called()
+        assert monitor.stats.mentions_processed == 0
+
+    async def test_comment_on_blocked_issue_posts_status_and_one_shot(self):
+        comment = _comment(1, "@deile-one aqui está a info que faltava")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        github.comment_on_issue = AsyncMock()
+        github.get_issue = AsyncMock(return_value=IssueRef(
+            number=1, title="t", url="https://github.com/o/r/issues/1",
+            labels=(WORKFLOW_BLOCKED,), state="open",
+        ))
+        await monitor._process_mentions()
+        github.comment_on_issue.assert_awaited()  # blocked-status note posted
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "comment"
+        assert monitor.stats.mentions_processed == 1
+
+
+class TestPrBlockedMentionGuard:
+    """Issue #442 audit: a blocked PR is human-gated (pr_review EXCLUDES it from
+    its candidate set). A mention must NOT auto-dispatch pr_unified — which could
+    merge a PR the human deliberately blocked. It surfaces the status and stops."""
+
+    def _spy_monitor(self, **kw):
+        monitor, github, notifier = _make_monitor(**kw)
+        monitor.implementer = MagicMock()
+        monitor.implementer.mention = AsyncMock(
+            return_value=WorkOutcome(ok=True, text="done")
+        )
+        return monitor, github, notifier
+
+    async def test_comment_on_blocked_pr_does_not_dispatch(self):
+        pr_comment = _comment(1, "@deile-one mergeia aí", kind="pr_review")
+        monitor, github, notifier = self._spy_monitor(pr_comments=[pr_comment])
+        github.comment_on_pr = AsyncMock()
+        github.get_pr = AsyncMock(return_value=_pr_ref(1, labels=(WORKFLOW_BLOCKED,)))
+        await monitor._process_mentions()
+        monitor.implementer.mention.assert_not_called()
+        github.comment_on_pr.assert_awaited()
+        assert monitor.stats.mentions_processed == 0
