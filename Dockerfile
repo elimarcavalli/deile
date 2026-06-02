@@ -249,6 +249,15 @@ RUN chmod 0555 /app/jsonl_cost.py
 COPY --chown=deile:deile infra/k8s/pipeline_status_server.py /app/pipeline_status_server.py
 RUN chmod 0555 /app/pipeline_status_server.py
 
+# DEILE-Monitor Phase A (deterministic tick). monitor_tick.py imports its siblings
+# monitor_core/monitor_vigias by bare name, so all three must sit in /app together
+# (the shell loop runs `python3 /app/monitor_tick.py`). Each needs a matching
+# `!infra/k8s/monitor_*.py` exception in .dockerignore.
+COPY --chown=deile:deile infra/k8s/monitor_core.py /app/monitor_core.py
+COPY --chown=deile:deile infra/k8s/monitor_vigias.py /app/monitor_vigias.py
+COPY --chown=deile:deile infra/k8s/monitor_tick.py /app/monitor_tick.py
+RUN chmod 0555 /app/monitor_core.py /app/monitor_vigias.py /app/monitor_tick.py
+
 WORKDIR /app
 USER deile:deile
 

@@ -92,3 +92,6 @@ infra/
 !infra/k8s/pipeline_status_server.py
 !infra/k8s/dispatch_logger.py
 !infra/k8s/jsonl_cost.py
+!infra/k8s/monitor_core.py
+!infra/k8s/monitor_vigias.py
+!infra/k8s/monitor_tick.py
