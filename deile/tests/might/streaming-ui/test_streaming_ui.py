@@ -20,6 +20,13 @@ import time
 from pathlib import Path
 from typing import List
 
+import pytest
+
+# Faz uma requisição real ao provider quando a chave existe — opt-in only
+# (issue #499). Sem isto, um dev com ANTHROPIC_API_KEY no shell queimaria
+# tokens num `pytest` comum, pois o skip embutido só dispara sem a chave.
+pytestmark = pytest.mark.llm
+
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(PROJECT_ROOT))
 

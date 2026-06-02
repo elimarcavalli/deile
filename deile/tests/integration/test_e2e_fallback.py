@@ -7,10 +7,13 @@ import os
 import pytest
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-pytestmark = pytest.mark.skipif(
-    not OPENAI_API_KEY,
-    reason="OPENAI_API_KEY not set — skipping fallback integration test",
-)
+pytestmark = [
+    pytest.mark.llm,
+    pytest.mark.skipif(
+        not OPENAI_API_KEY,
+        reason="OPENAI_API_KEY not set — skipping fallback integration test",
+    ),
+]
 
 
 @pytest.mark.integration

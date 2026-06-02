@@ -12,10 +12,13 @@ from unittest.mock import patch
 import pytest
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-pytestmark = pytest.mark.skipif(
-    not GOOGLE_API_KEY,
-    reason="GOOGLE_API_KEY not set — skipping Gemini tool E2E test",
-)
+pytestmark = [
+    pytest.mark.llm,
+    pytest.mark.skipif(
+        not GOOGLE_API_KEY,
+        reason="GOOGLE_API_KEY not set — skipping Gemini tool E2E test",
+    ),
+]
 
 # ---------------------------------------------------------------------------
 # Shared helpers

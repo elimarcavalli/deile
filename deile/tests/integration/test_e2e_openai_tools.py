@@ -12,10 +12,13 @@ from unittest.mock import patch
 import pytest
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-pytestmark = pytest.mark.skipif(
-    not OPENAI_API_KEY,
-    reason="OPENAI_API_KEY not set — skipping OpenAI tool E2E test",
-)
+pytestmark = [
+    pytest.mark.llm,
+    pytest.mark.skipif(
+        not OPENAI_API_KEY,
+        reason="OPENAI_API_KEY not set — skipping OpenAI tool E2E test",
+    ),
+]
 
 # ---------------------------------------------------------------------------
 # Shared helpers

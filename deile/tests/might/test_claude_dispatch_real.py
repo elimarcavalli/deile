@@ -18,9 +18,12 @@ import pytest
 
 # Pytest skip: este smoke roda manualmente (precisa cluster vivo + claude-login).
 # Invocado como script via `python3 deile/tests/might/test_claude_dispatch_real.py`.
-pytestmark = pytest.mark.skip(
-    reason="manual smoke E2E — requires live K8s cluster + claude-login completed"
-)
+pytestmark = [
+    pytest.mark.llm,
+    pytest.mark.skip(
+        reason="manual smoke E2E — requires live K8s cluster + claude-login completed"
+    ),
+]
 
 SHELL_POD = "deploy/deile-shell"  # ajuste se label diferente
 

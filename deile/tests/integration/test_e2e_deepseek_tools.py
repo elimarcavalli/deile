@@ -12,10 +12,13 @@ from unittest.mock import patch
 import pytest
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-pytestmark = pytest.mark.skipif(
-    not DEEPSEEK_API_KEY,
-    reason="DEEPSEEK_API_KEY not set — skipping DeepSeek tool E2E test",
-)
+pytestmark = [
+    pytest.mark.llm,
+    pytest.mark.skipif(
+        not DEEPSEEK_API_KEY,
+        reason="DEEPSEEK_API_KEY not set — skipping DeepSeek tool E2E test",
+    ),
+]
 
 # ---------------------------------------------------------------------------
 # Shared helpers

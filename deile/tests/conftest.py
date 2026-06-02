@@ -24,6 +24,21 @@ TestTickSummary (×7 failures)   | TestFlagSmoke._run_cli() → cli_main()     |
                                 |                                            | logging.root.manager.disable = 50
 test_renderer_task_awaited_     | test that swaps sys.stdout without         | sys.stdout replaced without restore;
 before_stdout_restore           | monkeypatch.setattr                        | next test captures wrong reference
+
+Issue #499 — Leaker table (reincidence of #432):
+=================================================
+test_dispatch_resolver_settings.py (9) | test_dispatch_matrix_max_parallel.py::
+test_deile_md_loader.py (4)            | test_settings_has_pipeline_max_parallel_env_var
+                                       | did ``del sys.modules["deile.config.settings"]``
+                                       | + re-import, forging a SECOND copy of the
+                                       | module with its own ``_settings`` singleton.
+                                       | Modules that bound ``get_settings`` at import
+                                       | time (dispatch_resolver, deile_md_loader) kept
+                                       | the original copy, so the failing tests mutated
+                                       | one singleton while the code under test read the
+                                       | other. Fixed AT THE SOURCE by removing the
+                                       | destructive re-import (``reset_settings()`` gives
+                                       | a fresh instance without duplicating the module).
 """
 from __future__ import annotations
 
@@ -32,6 +47,44 @@ import os
 import sys
 
 import pytest
+
+
+def pytest_addoption(parser):
+    """Register ``--run-llm`` to opt into tests that hit a real LLM provider.
+
+    Off by default: ``@pytest.mark.llm`` tests are skipped during a normal run
+    even when a provider API key is present in the environment. They run only
+    with ``--run-llm`` or ``DEILE_RUN_LLM_TESTS=1`` (see
+    ``pytest_collection_modifyitems``). This makes the LLM isolation key-proof
+    instead of relying on each test's ``skipif(not API_KEY)`` guard.
+    """
+    parser.addoption(
+        "--run-llm",
+        action="store_true",
+        default=False,
+        help=(
+            "Run tests marked @pytest.mark.llm that make real LLM API calls "
+            "(costs tokens). Off by default."
+        ),
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip ``@pytest.mark.llm`` tests unless explicitly opted in.
+
+    Opt-in via ``--run-llm`` or ``DEILE_RUN_LLM_TESTS=1``. Without either,
+    every ``llm``-marked item gets a skip marker so a developer with a live
+    ``ANTHROPIC_API_KEY`` / ``OPENAI_API_KEY`` / etc. in their shell never
+    burns budget on an ordinary ``pytest`` run.
+    """
+    if config.getoption("--run-llm") or os.getenv("DEILE_RUN_LLM_TESTS") == "1":
+        return
+    skip = pytest.mark.skip(
+        reason="teste LLM: use --run-llm ou DEILE_RUN_LLM_TESTS=1"
+    )
+    for item in items:
+        if "llm" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)
@@ -132,6 +185,17 @@ def _guard_sys_stdio():
 
 @pytest.fixture(autouse=True)
 def _reset_settings_singleton():
+    """Force a fresh ``Settings`` singleton around each test.
+
+    General hygiene so a test that mutates ``get_settings()`` in place does not
+    leak its residue into the next test. NOTE: this fixture canNOT undo a test
+    that does ``del sys.modules["deile.config.settings"]`` + re-import — that
+    forges a *second* module object with its own ``_settings`` global, and this
+    fixture (lazily importing ``reset_settings``) only resets whichever copy is
+    current in ``sys.modules``. The #499 ordering failures were caused by
+    exactly such a re-import in ``test_dispatch_matrix_max_parallel.py`` and are
+    fixed at the source (the destructive re-import was removed), not here.
+    """
     from deile.config.settings import reset_settings
 
     reset_settings()

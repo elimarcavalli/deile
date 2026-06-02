@@ -394,19 +394,21 @@ def test_render_max_parallel_prompt_modal_visible(view_demo, app_stub):
 # ---------------------------------------------------------------------------
 
 def test_settings_has_pipeline_max_parallel_env_var(monkeypatch):
-    """DEILE_PIPELINE_MAX_PARALLEL deve ser aplicado via _apply_env_overrides."""
+    """DEILE_PIPELINE_MAX_PARALLEL deve ser aplicado via _apply_env_overrides.
+
+    NÃO recriar o módulo ``deile.config.settings`` via ``del sys.modules`` +
+    re-import: isso forja uma SEGUNDA cópia do módulo com seu próprio singleton
+    ``_settings``, enquanto módulos que já ligaram ``get_settings`` no topo
+    (``dispatch_resolver``, ``deile_md_loader``) continuam apontando para a
+    cópia original — o teste muta uma cópia e o código lê a outra (pollution de
+    ordenação confirmada em #499). ``reset_settings()`` já garante uma instância
+    fresca sem duplicar o módulo.
+    """
+    from deile.config.settings import (_apply_env_overrides, get_settings,
+                                        reset_settings)
+
     monkeypatch.setenv("DEILE_PIPELINE_MAX_PARALLEL", "7")
-
-    # Import settings fresh (sem cache de módulo anterior)
-    import importlib
-    import sys
-
-    # Remove módulo do cache se necessário
-    for key in list(sys.modules.keys()):
-        if "deile.config.settings" in key:
-            del sys.modules[key]
-
-    from deile.config.settings import get_settings, _apply_env_overrides
+    reset_settings()
 
     settings_obj = get_settings()
     # Aplica overrides manualmente para o teste não depender de ordem de init
