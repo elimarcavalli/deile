@@ -196,13 +196,23 @@ for f in sorted(glob.glob(os.path.join(BASE, "**", "*.jsonl"), recursive=True)):
         "pr_number": None,
         "pr_url": None,
         "pr_repo": None,
+        "meta_branch": None,     # branch real (session.json) — issue via auto/issue-N
+        "created_prs": [],       # PRs/MRs criados via gh/glab create (lado "A" azul)
+        "created_issues": [],    # issues criadas via gh/glab create (lado "A" rosa)
+        "acted_prs": [],         # PR alvo de review/merge/comment (fallback do worked)
         "first_ts": None,
         "last_ts": None,
         "brief": None,
+        "last_response": None,   # último texto do assistant (resumo do que fez)
+        "terminal_stop_reason": None,  # stop_reason do ÚLTIMO round (como terminou)
+        "service_tier": None,    # standard | priority | batch (guarda do custo)
+        "speed": None,           # standard | fast
+        "web_tool_calls": 0,     # web_search + web_fetch (custo oculto + egress)
         "errors": {"synthetic": 0, "max_tokens": 0, "api_error": 0, "tool_error": 0},
         "stop_reasons": {},
     }
     seen_resp = set()   # dedup de respostas assistant por (message.id, requestId)
+    create_ids = {}     # tool_use_id -> "pr"|"issue" (comandos gh/glab create)
     nonid_ctr = [0]
     try:
         with open(f, errors="replace") as fh:
@@ -252,8 +262,58 @@ for f in sorted(glob.glob(os.path.join(BASE, "**", "*.jsonl"), recursive=True)):
                     if rec["brief"] is None:
                         t = text_of(msg.get("content"))
                         if t.strip():
-                            rec["brief"] = t[:4000]
+                            rec["brief"] = t   # completo (sem corte)
+                    # pareia resultado de gh/glab create pelo tool_use_id e colhe o
+                    # número criado da URL do stdout (/pull/N, /issues/N, /merge_requests/N).
+                    if create_ids:
+                        cont = msg.get("content")
+                        for b in (cont if isinstance(cont, list) else []):
+                            if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                                continue
+                            kind = create_ids.get(b.get("tool_use_id"))
+                            if not kind:
+                                continue
+                            rc = b.get("content")
+                            rtxt = rc if isinstance(rc, str) else json.dumps(rc)
+                            if isinstance(tur, (dict, list)):
+                                rtxt += " " + json.dumps(tur)
+                            elif isinstance(tur, str):
+                                rtxt += " " + tur
+                            if kind == "pr":
+                                for mt in re.finditer(r"/(?:pull|merge_requests)/(\d+)", rtxt):
+                                    rec["created_prs"].append(int(mt.group(1)))
+                            else:
+                                for mt in re.finditer(r"/issues/(\d+)", rtxt):
+                                    rec["created_issues"].append(int(mt.group(1)))
                 if role == "assistant":
+                    # Detecção de comandos gh/glab roda em TODOS os records assistant
+                    # (antes do dedup de round). Motivo: os deltas de streaming têm
+                    # `content` PROGRESSIVO — o primeiro (que o dedup mantém) costuma vir
+                    # SEM os tool_use; os comandos reais chegam em deltas posteriores
+                    # (dup=True), que o dedup pula. Os números deduplicam via set no fim.
+                    cc0 = msg.get("content")
+                    if isinstance(cc0, list):
+                        for b in cc0:
+                            if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                                continue
+                            inp = b.get("input")
+                            cmd = str(inp.get("command") or "") if isinstance(inp, dict) else ""
+                            if not cmd:
+                                continue
+                            if re.search(r"gh pr create|glab mr create", cmd, re.I):
+                                create_ids[b.get("id")] = "pr"
+                            elif re.search(r"gh issue create|glab issue create", cmd, re.I):
+                                create_ids[b.get("id")] = "issue"
+                            # PR alvo de uma ação (review/merge/comment/api) — fallback
+                            # do "worked PR" quando não há registro pr-link.
+                            for mt in re.finditer(
+                                    r"gh (?:pr (?:review|merge|comment|ready|edit|close|reopen)|issue comment)\s+(\d+)"
+                                    r"|/pulls?/(\d+)"
+                                    r"|/merge_requests/(\d+)"
+                                    r"|glab mr \w+\s+(\d+)", cmd):
+                                nstr = next((g for g in mt.groups() if g), None)
+                                if nstr:
+                                    rec["acted_prs"].append(int(nstr))
                     # claude grava o MESMO registro assistant repetido (deltas de
                     # streaming), todos com o usage final IDÊNTICO. Sem dedup, In/
                     # Out/Cache/Rnd/Tools/custo inflam ~13-32x. Conta cada resposta
@@ -271,6 +331,7 @@ for f in sorted(glob.glob(os.path.join(BASE, "**", "*.jsonl"), recursive=True)):
                     sr = msg.get("stop_reason")
                     if sr:
                         rec["stop_reasons"][sr] = rec["stop_reasons"].get(sr, 0) + 1
+                        rec["terminal_stop_reason"] = sr  # último round vence
                         if sr == "max_tokens":
                             rec["errors"]["max_tokens"] += 1
                     if model == "<synthetic>":
@@ -278,6 +339,8 @@ for f in sorted(glob.glob(os.path.join(BASE, "**", "*.jsonl"), recursive=True)):
                     txt = text_of(msg.get("content"))
                     if "Prompt is too long" in txt or "prompt is too long" in txt:
                         rec["errors"]["api_error"] += 1
+                    if txt.strip():
+                        rec["last_response"] = txt   # completo (sem corte)
                     c = msg.get("content")
                     if isinstance(c, list):
                         for b in c:
@@ -298,6 +361,17 @@ for f in sorted(glob.glob(os.path.join(BASE, "**", "*.jsonl"), recursive=True)):
                         if isinstance(ccd, dict):
                             mm["cc_5m"] += ccd.get("ephemeral_5m_input_tokens", 0) or 0
                             mm["cc_1h"] += ccd.get("ephemeral_1h_input_tokens", 0) or 0
+                        stt = u.get("service_tier")
+                        if stt:
+                            rec["service_tier"] = stt
+                        spd = u.get("speed")
+                        if spd:
+                            rec["speed"] = spd
+                        stu = u.get("server_tool_use")
+                        if isinstance(stu, dict):
+                            rec["web_tool_calls"] += (
+                                (stu.get("web_search_requests", 0) or 0)
+                                + (stu.get("web_fetch_requests", 0) or 0))
     except Exception:
         pass
     try:
@@ -309,6 +383,10 @@ for f in sorted(glob.glob(os.path.join(BASE, "**", "*.jsonl"), recursive=True)):
     rec["meta_model"] = meta.get("model")
     rec["reasoning_effort"] = meta.get("reasoning_effort")
     rec["ultracode"] = meta.get("ultracode")
+    rec["meta_branch"] = meta.get("branch")
+    rec["created_prs"] = sorted(set(rec["created_prs"]))
+    rec["created_issues"] = sorted(set(rec["created_issues"]))
+    rec["acted_prs"] = sorted(set(rec["acted_prs"]))
     # stage do meta é ground truth (o pipeline gravou); regex do brief é fallback.
     rec["stage"] = meta.get("stage") or guess_stage(rec["brief"])
     # só inclui sessões que tenham ao menos uma resposta assistant com tokens
@@ -374,9 +452,18 @@ try:
                 "pr_number": r.get("pr_number"),
                 "pr_url": r.get("pr_url"),
                 "pr_repo": r.get("pr_repo"),
+                "meta_branch": r.get("meta_branch"),
+                "created_prs": r.get("created_prs") or [],
+                "created_issues": r.get("created_issues") or [],
+                "acted_prs": r.get("acted_prs") or [],
                 "first_ts": r.get("first_ts"),
                 "last_ts": r.get("last_ts"),
                 "brief": r.get("brief"),
+                "last_response": r.get("last_response"),
+                "terminal_stop_reason": r.get("terminal_stop_reason"),
+                "service_tier": r.get("service_tier"),
+                "speed": r.get("speed"),
+                "web_tool_calls": r.get("web_tool_calls", 0) or 0,
                 "errors": {"synthetic": errs.get("synthetic", 0) or 0,
                            "max_tokens": errs.get("max_tokens", 0) or 0,
                            "api_error": errs.get("api_error", 0) or 0,
@@ -518,7 +605,7 @@ def enrich(sessions: list, pvc: str) -> list:
             if mt:
                 s["last_activity"] = (
                     datetime.fromtimestamp(mt, BRT).strftime("%m-%d %H:%M:%S")
-                    + f" ({fmt_age(now.timestamp() - mt)})")
+                    + f" ({fmt_age_secmin(now.timestamp() - mt)})")
             else:
                 s["last_activity"] = "?"
         except Exception:
@@ -623,6 +710,21 @@ def fmt_age(sec) -> str:
     return f"{sec // 86400}d{(sec % 86400) // 3600:02d}h"
 
 
+def fmt_age_secmin(sec) -> str:
+    """Idade compacta para a coluna 'Últ.ativ': segundos até 1m, daí só minutos.
+
+    Diferente de ``fmt_age`` (que quebra em ``Nh MMm`` / ``Nd HHh``), aqui de 1
+    minuto em diante mostramos apenas minutos — mais legível quando o foco é
+    recência (linhas mais frescas no topo da ordenação por última atividade).
+    """
+    if sec is None:
+        return "?"
+    sec = int(sec)
+    if sec < 60:
+        return f"{sec}s"
+    return f"{sec // 60}m"
+
+
 def fmt_dur(sec) -> str:
     if sec is None:
         return "?"
@@ -675,18 +777,163 @@ def session_kind(s: dict) -> str:
     return "sessão"
 
 
-def pr_label(s: dict) -> str:
-    n = s.get("pr_number")
-    if not n:
+def _branch_issue(s: dict):
+    """Número da issue a partir do branch real (session.json), ex.: auto/issue-499.
+
+    O ``gitBranch`` do JSONL é sempre ``HEAD`` (worktree detached); a fonte de
+    verdade é ``session.json.branch``, exposto como ``meta_branch``.
+    """
+    br = s.get("meta_branch") or s.get("git_branch") or ""
+    m = re.search(r"issue-(\d+)", br)
+    return int(m.group(1)) if m else None
+
+
+def _issue_pr_sides(s: dict):
+    """Constrói (texto_lado_issue, texto_lado_pr) com prefixos T (trabalhou) / A (abriu).
+
+    Modelo (validado contra os exemplos do operador):
+      - lado issue = rosa; lado PR = azul; separados por ' / ' quando ambos.
+      - dentro de cada lado: T <worked> primeiro, A <opened> depois.
+    Semântica por stage:
+      - pr_review/pr_unified → trabalhou no PR (prNumber).
+      - implement → trabalhou na issue (branch) + abriu o PR (prNumber/created).
+      - classify/refine/decompose → trabalhou na issue (branch).
+      - criados (gh/glab create) sempre entram como 'A' no lado correspondente.
+      - fallback: prNumber sem stage conhecido (ex.: harvested) aparece como T no PR.
+    """
+    stage = s.get("stage") or ""
+    pr = s.get("pr_number")
+    try:
+        pr = int(pr) if pr else None
+    except (TypeError, ValueError):
+        pr = None
+    bissue = _branch_issue(s)
+    cpr = set(s.get("created_prs") or [])
+    ciss = set(s.get("created_issues") or [])
+
+    iw, io_, pw, po = set(), set(), set(), set()
+    if stage in ("pr_review", "pr_unified"):
+        if pr:
+            pw.add(pr)
+        else:                                  # sem pr-link: usa o PR alvo da ação
+            pw |= set(s.get("acted_prs") or [])
+    elif stage in ("implement", "implement_resume", "classify", "refine",
+                   "decompose", "follow_ups"):
+        if bissue:
+            iw.add(bissue)
+    po |= cpr
+    io_ |= ciss
+    if stage in ("implement", "implement_resume") and pr:
+        po.add(pr)
+    if pr and pr not in pw and pr not in po:   # garante que o PR primário apareça
+        pw.add(pr)
+    po -= pw          # worked tem precedência sobre opened (sem duplicar)
+    io_ -= iw
+
+    def _side(worked, opened):
+        parts = []
+        if worked:
+            parts.append("T " + " ".join(f"#{n}" for n in sorted(worked)))
+        if opened:
+            parts.append("A " + " ".join(f"#{n}" for n in sorted(opened)))
+        return " ".join(parts)
+
+    return _side(iw, io_), _side(pw, po)
+
+
+def issue_pr_cell(s: dict) -> str:
+    """Célula colorida 'Issue / PR' (rosa=issue, azul=PR)."""
+    iss, prr = _issue_pr_sides(s)
+    if iss and prr:
+        return f"[magenta]{iss}[/magenta] [dim]/[/dim] [blue]{prr}[/blue]"
+    if iss:
+        return f"[magenta]{iss}[/magenta]"
+    if prr:
+        return f"[blue]{prr}[/blue]"
+    return "—"
+
+
+def issue_pr_plain(s: dict) -> str:
+    """Versão sem cor para detalhe plain / CSV."""
+    iss, prr = _issue_pr_sides(s)
+    return (iss + (" / " if iss and prr else "") + prr) or "—"
+
+
+def last_response_cell(s: dict) -> str:
+    """Última mensagem (texto) do assistant, achatada numa linha para a tabela.
+
+    Colapsa quebras de linha e espaços; o overflow=ellipsis da coluna corta o
+    resto. Sessões colhidas para o ledger sem esse campo mostram '—'.
+    """
+    txt = (s.get("last_response") or "").strip()
+    if not txt:
         return "—"
-    return f"trab #{n}" if s.get("stage") in ("pr_review", "pr_unified") else f"abriu #{n}"
+    return re.sub(r"\s+", " ", txt)
+
+
+def is_mid_work_dead(s: dict) -> bool:
+    """Heurística forense: a sessão morreu no meio do trabalho.
+
+    Se o ÚLTIMO round terminou em ``tool_use``, o assistant pediu uma ferramenta
+    e o loop nunca voltou com o resultado — órfã. ``end_turn``/``stop_sequence``
+    são fins limpos; ``max_tokens`` é truncamento (não morte). Sessões colhidas
+    para o ledger não têm o stop terminal preservado → nunca marcadas.
+    """
+    if s.get("harvested"):
+        return False
+    return s.get("terminal_stop_reason") == "tool_use"
+
+
+def fim_label(s: dict) -> str:
+    """Coluna 'Fim' — como a sessão terminou, com sinal de cor."""
+    if s.get("harvested"):
+        return "[dim]—[/dim]"
+    sr = s.get("terminal_stop_reason")
+    if not sr:
+        return "[dim]?[/dim]"
+    if sr == "end_turn":
+        return "[green]🟢 fim[/green]"
+    if sr == "stop_sequence":
+        return "[green]🟢 stop[/green]"
+    if sr == "max_tokens":
+        return "[yellow]🟡 trunc[/yellow]"
+    if sr == "tool_use":
+        return "[red]🔴 órfã[/red]"
+    return f"[dim]{sr[:7]}[/dim]"
+
+
+def flags_label(s: dict) -> str:
+    """Coluna 'Tier/Web' — só acende fora do caso comum (standard, sem web).
+
+    Surfacing seletivo: tier/speed != standard ou qualquer web tool. No caso
+    normal mostra '—' para não poluir a tabela.
+    """
+    parts = []
+    web = s.get("web_tool_calls", 0) or 0
+    if web:
+        parts.append(f"[red]web:{web}[/red]")
+    st = (s.get("service_tier") or "").lower()
+    if st and st != "standard":
+        parts.append(f"[yellow]{st}[/yellow]")
+    sp = (s.get("speed") or "").lower()
+    if sp and sp != "standard":
+        parts.append(f"[yellow]⚡{sp}[/yellow]")
+    return " ".join(parts) or "[dim]—[/dim]"
 
 
 def title_of(s: dict) -> str:
+    # Subagents (e sessões helper) não têm aiTitle/stage/PR — em vez de "unknown",
+    # cai na primeira mensagem enviada (brief), achatada numa linha. A coluna
+    # ellipsa o resto.
+    brief = (s.get("brief") or "").strip()
+    brief_snippet = re.sub(r"\s+", " ", brief) if brief else None
+    stage = s.get("stage")
+    stage = stage if stage and stage != "unknown" else None
     return (s.get("ai_title")
             or (f"[{s['stage']}] {s.get('pr_repo') or ''} #{s['pr_number']}"
                 if s.get("pr_number") else None)
-            or s.get("stage")
+            or brief_snippet
+            or stage
             or s["session_file"][:8])
 
 
@@ -721,21 +968,30 @@ def render_table(console, sessions: list, top: int | None, start: int = 0,
            if count is not None else "")
     t = Table(show_lines=False, expand=True,
               title=f"Claude Code — uso por sessão (PVC {pvc}) — {len(sessions)} sessões{rng}")
-    t.add_column("#", justify="right", style="bold", no_wrap=True)
-    t.add_column("Tipo", no_wrap=True)
-    t.add_column("USD", justify="right", style="bold green", no_wrap=True)
-    t.add_column("Modelo", style="cyan", no_wrap=True)
-    t.add_column("Título / brief", overflow="ellipsis", no_wrap=True, max_width=36)
-    t.add_column("PR", justify="right", style="blue", no_wrap=True)
+    t.add_column("#", justify="right", style="bold", no_wrap=True, min_width=3)
+    t.add_column("Tipo", no_wrap=True, max_width=10)
+    t.add_column("USD", justify="right", style="bold green", no_wrap=True, max_width=7)
+    t.add_column("Modelo", style="cyan", no_wrap=True, max_width=18)
+    # As duas únicas colunas flexíveis (ratio): absorvem toda a folga do expand,
+    # mantendo as numéricas (#, In, Out, Idade) justas ao conteúdo.
+    t.add_column("Título / brief", overflow="ellipsis", no_wrap=True,
+                 ratio=1, min_width=16)
+    t.add_column("Última resposta", overflow="ellipsis", no_wrap=True,
+                 ratio=1, min_width=16, style="dim")
+    t.add_column("[magenta]Issue[/magenta] [dim]/[/dim] [blue]PR[/blue]",
+                 justify="left", no_wrap=True,
+                 overflow="ellipsis", min_width=11, max_width=28)
     t.add_column("Git", justify="center", no_wrap=True)
     t.add_column("Working", justify="center", no_wrap=True)
     t.add_column("Rnd", justify="right", no_wrap=True)
     t.add_column("Tools c/d", justify="right", no_wrap=True)
-    t.add_column("In", justify="right", no_wrap=True)
-    t.add_column("Out", justify="right", no_wrap=True)
+    t.add_column("In", justify="right", no_wrap=True, min_width=4)
+    t.add_column("Out", justify="right", no_wrap=True, min_width=4)
     t.add_column("Cache%", justify="right", no_wrap=True)
+    t.add_column("Fim", justify="center", no_wrap=True)
+    t.add_column("Tier/Web", justify="center", no_wrap=True)
     t.add_column("Últ.ativ", justify="right", style="dim", no_wrap=True)
-    t.add_column("Idade", justify="right", style="dim", no_wrap=True)
+    t.add_column("Idade", justify="right", style="dim", no_wrap=True, min_width=6)
     if sort_col:  # setinha ↓/↑ na coluna ordenada
         arrow = "↓" if sort_desc else "↑"
         for col in t.columns:
@@ -761,7 +1017,8 @@ def render_table(console, sessions: list, top: int | None, start: int = 0,
             f"{s['cost_usd']:.4f}",
             model_label(s, dim=True),
             title_of(s) + err_flag,
-            pr_label(s),
+            last_response_cell(s),
+            issue_pr_cell(s),
             f"[{gstyle}]{st}[/{gstyle}]",
             wl_cell,
             str(s["assistant_rounds"]),
@@ -769,6 +1026,8 @@ def render_table(console, sessions: list, top: int | None, start: int = 0,
             _human(s["totals"]["in"]),
             _human(s["totals"]["out"]),
             f"{s['cache_pct']:.0f}%",
+            fim_label(s),
+            flags_label(s),
             s.get("last_activity", "?"),
             fmt_age(s.get("created_s")),
         )
@@ -795,11 +1054,27 @@ def _render_grand_footer(console, sessions: list):
     parts = "  ".join(f"{_model_family(m)}=${v:.2f}"
                       for m, v in sorted(by_model.items(), key=lambda x: -x[1])
                       if v > 0)
+    # Detectores de controle do harness (só aparecem quando disparam).
+    dead = sum(1 for s in sessions if is_mid_work_dead(s))
+    web = sum(1 for s in sessions if (s.get("web_tool_calls") or 0) > 0)
+    nonstd = sum(1 for s in sessions
+                 if (s.get("service_tier") or "standard").lower() != "standard"
+                 or (s.get("speed") or "standard").lower() != "standard")
+    alerts = []
+    if dead:
+        alerts.append(f"🔴 {dead} órfã(s) (morte mid-work: último round = tool_use)")
+    if web:
+        alerts.append(f"🌐 {web} com web tool (custo oculto + egress)")
+    if nonstd:
+        alerts.append(f"⚡ {nonstd} fora do tier/speed standard (custo recalcular)")
+    alert_line = "  •  ".join(alerts)
     if console is None:
         print(f"\nTOTAL: ${total_usd:.4f} | tokens {total_tok:,} | "
               f"sem-cache custaria ${total_nocache:.2f} "
               f"(cache economizou ${total_nocache - total_usd:.2f})")
         print(f"Por modelo: {parts}")
+        if alert_line:
+            print(f"Alertas: {alert_line}")
         return
     from rich.panel import Panel
     body = (f"[bold green]Custo total: ${total_usd:.4f}[/bold green]   "
@@ -809,6 +1084,8 @@ def _render_grand_footer(console, sessions: list):
             f"~${total_nocache:.2f} — o cache economizou "
             f"${total_nocache - total_usd:.2f} "
             f"({(1 - total_usd / total_nocache) * 100 if total_nocache else 0:.0f}%).[/dim]")
+    if alert_line:
+        body += f"\n{alert_line}"
     console.print(Panel(body, title="TOTAL", border_style="green"))
 
 
@@ -831,9 +1108,10 @@ def render_detail(console, s: dict, rank: int):
     head.add_row("Pasta JSONL", s["jsonl"])
     head.add_row("Worktree (cwd)", s.get("cwd") or "—")
     head.add_row("Git status", _git_detail(s["git"]))
-    head.add_row("Branch", s.get("git_branch") or "—")
+    head.add_row("Branch", s.get("meta_branch") or s.get("git_branch") or "—")
+    head.add_row("Issue / PR", issue_pr_cell(s))
     if s.get("pr_number"):
-        head.add_row("PR", f"#{s['pr_number']}  {s.get('pr_repo') or ''}  {s.get('pr_url') or ''}")
+        head.add_row("PR (link)", f"#{s['pr_number']}  {s.get('pr_repo') or ''}  {s.get('pr_url') or ''}")
     head.add_row("Claude Code", f"v{s.get('version') or '?'}  "
                                 f"(entrypoint={s.get('entrypoint') or '?'}, "
                                 f"permission={s.get('permission_mode') or '?'})")
@@ -871,6 +1149,14 @@ def render_detail(console, s: dict, rank: int):
     act.add_row("Tool calls (total)", str(s["tool_calls"]))
     act.add_row("Tools (breakdown)", tools)
     act.add_row("Stop reasons", stops)
+    fim_txt = fim_label(s)
+    if is_mid_work_dead(s):
+        fim_txt += "  [red](sessão morreu no meio do trabalho)[/red]"
+    act.add_row("Como terminou", fim_txt)
+    tier_txt = (f"tier={s.get('service_tier') or '?'}  "
+                f"speed={s.get('speed') or '?'}  "
+                f"web_tools={s.get('web_tool_calls', 0) or 0}")
+    act.add_row("Tier / web", tier_txt)
     act.add_row("Erros/interrupções", errline)
     save = s["nocache_usd"] - s["cost_usd"]
     save_txt = (f"economia ${save:.4f}" if save >= 0
@@ -884,8 +1170,12 @@ def render_detail(console, s: dict, rank: int):
     console.print(Panel(Group(head, "", mt, "", act),
                         title=f"DETALHE — ${s['cost_usd']:.4f}",
                         border_style="green"))
-    console.print(Panel(brief, title="Brief / comando claude -p (até 4000 chars)",
+    console.print(Panel(brief, title="Brief / comando claude -p (completo)",
                         border_style="blue"))
+    last = (s.get("last_response") or "").strip()
+    if last:
+        console.print(Panel(last, title="Última resposta do assistant",
+                            border_style="magenta"))
 
 
 def _git_detail(g: dict) -> str:
@@ -904,9 +1194,10 @@ def _render_detail_plain(s: dict, rank: int):
     print(f"JSONL       : {s['jsonl']}")
     print(f"Worktree    : {s.get('cwd') or '—'}")
     print(f"Git         : {_git_detail(s['git'])}")
-    print(f"Branch      : {s.get('git_branch') or '—'}")
+    print(f"Branch      : {s.get('meta_branch') or s.get('git_branch') or '—'}")
+    print(f"Issue / PR  : {issue_pr_plain(s)}")
     if s.get("pr_number"):
-        print(f"PR          : #{s['pr_number']}  {s.get('pr_repo') or ''}  {s.get('pr_url') or ''}")
+        print(f"PR (link)   : #{s['pr_number']}  {s.get('pr_repo') or ''}  {s.get('pr_url') or ''}")
     print(f"Claude Code : v{s.get('version')}  entrypoint={s.get('entrypoint')}  "
           f"permission={s.get('permission_mode')}")
     print(f"Quando      : {_iso_brt(s.get('first_ts'))} → {_iso_brt(s.get('last_ts'))} BRT  "
@@ -920,7 +1211,12 @@ def _render_detail_plain(s: dict, rank: int):
     print("Tools: " + ("  ".join(f"{k}:{v}" for k, v in
                                   sorted(s['tools'].items(), key=lambda x: -x[1])) or "—"))
     print(f"Erros: {s['errors']}")
-    print(f"Brief:\n{(s.get('brief') or '—')[:2000]}")
+    print(f"Como terminou: {s.get('terminal_stop_reason') or '?'}"
+          f"{'  (MORREU MID-WORK)' if is_mid_work_dead(s) else ''}  "
+          f"tier={s.get('service_tier') or '?'} speed={s.get('speed') or '?'} "
+          f"web_tools={s.get('web_tool_calls', 0) or 0}")
+    print(f"Brief:\n{s.get('brief') or '—'}")
+    print(f"Última resposta:\n{s.get('last_response') or '—'}")
 
 
 def render_aggregates(console, sessions: list):
@@ -975,11 +1271,13 @@ def export(sessions: list, outdir: str):
     cols = ["rank", "cost_usd", "nocache_usd", "session_file", "ai_title", "stage",
             "meta_model", "reasoning_effort", "ultracode",
             "pvc", "cwd", "jsonl", "git_state", "git_modified", "git_untracked",
-            "git_staged", "git_branch", "pr_number", "pr_repo", "pr_url", "version",
+            "git_staged", "git_branch", "meta_branch", "issue_pr",
+            "created_prs", "created_issues", "pr_number", "pr_repo", "pr_url", "version",
             "permission_mode", "models", "assistant_rounds", "user_msgs", "tool_calls",
             "total_tokens", "in", "out", "cache_creation", "cache_read", "cache_pct",
             "duration_s", "age_s", "last_date", "tokens_per_min", "usd_per_round",
-            "errors", "tools"]
+            "terminal_stop_reason", "mid_work_dead", "service_tier", "speed",
+            "web_tool_calls", "errors", "tools", "last_response"]
     with open(cpath, "w", newline="") as fh:
         w = _csv.writer(fh)
         w.writerow(cols)
@@ -992,14 +1290,22 @@ def export(sessions: list, outdir: str):
                 s.get("meta_model") or "", s.get("reasoning_effort") or "",
                 s.get("ultracode"), s["pvc"], s.get("cwd") or "",
                 s["jsonl"], g.get("state"), g.get("modified"), g.get("untracked"),
-                g.get("staged"), s.get("git_branch") or "", s.get("pr_number") or "",
+                g.get("staged"), s.get("git_branch") or "",
+                s.get("meta_branch") or "", issue_pr_plain(s),
+                " ".join(map(str, s.get("created_prs") or [])),
+                " ".join(map(str, s.get("created_issues") or [])),
+                s.get("pr_number") or "",
                 s.get("pr_repo") or "", s.get("pr_url") or "", s.get("version") or "",
                 s.get("permission_mode") or "", "+".join(sorted(s["per_model"])),
                 s["assistant_rounds"], s["user_msgs"], s["tool_calls"], s["total_tokens"],
                 tot["in"], tot["out"], tot["cc"], tot["cr"], f"{s['cache_pct']:.1f}",
                 s.get("duration_s") or "", s.get("age_s") or "", s["last_date"],
                 f"{s['tokens_per_min']:.0f}", f"{s['usd_per_round']:.6f}",
+                s.get("terminal_stop_reason") or "", is_mid_work_dead(s),
+                s.get("service_tier") or "", s.get("speed") or "",
+                s.get("web_tool_calls", 0) or 0,
                 json.dumps(s["errors"]), json.dumps(s["tools"]),
+                (s.get("last_response") or "").replace("\n", " "),
             ])
     return jpath, cpath
 
@@ -1014,6 +1320,10 @@ SORT_MODES = [
     ("custo USD ↓", lambda s: s["cost_usd"], True, "USD"),
     ("custo USD ↑", lambda s: s["cost_usd"], False, "USD"),
     ("última atividade ↓", lambda s: s.get("mtime") or 0, True, "Últ.ativ"),
+    ("idade ↓ (mais antigas)", lambda s: s.get("created_s") or 0, True, "Idade"),
+    ("idade ↑ (mais novas)", lambda s: s.get("created_s") or 0, False, "Idade"),
+    ("órfãs primeiro (morte mid-work)",
+     lambda s: (is_mid_work_dead(s), s.get("mtime") or 0), True, "Fim"),
     ("tokens ↓", lambda s: s["total_tokens"], True, None),
     ("rodadas ↓", lambda s: s["assistant_rounds"], True, "Rnd"),
     ("tool calls ↓", lambda s: s["tool_calls"], True, "Tools c/d"),
