@@ -54,10 +54,13 @@ from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
                                                  WORKFLOW_REVIEWING,
                                                  WORKFLOW_WAITING,
                                                  current_attempt_from_labels,
+                                                 current_refine_attempt_from_labels,
                                                  is_attempt_label,
                                                  is_batch_label,
+                                                 is_refine_attempt_label,
                                                  issue_type_from_labels,
                                                  make_attempt_label,
+                                                 make_refine_attempt_label,
                                                  parse_priority_from_labels,
                                                  refine_workflow_state)
 
@@ -921,6 +924,27 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     await monitor.notifier.issue_reviewed(target.number, target.title, target.url)
 
 
+async def _persist_refine_attempt(monitor: "PipelineMonitor", number: int) -> None:
+    """Grava ``~refine:<N>`` na issue refletindo o contador in-memory atual.
+
+    Remove a label ``~refine:*`` anterior (se houver) e adiciona a nova. Opera
+    em best-effort: erro de label não derruba o stage — apenas registra warning.
+    Chamado logo após cada :meth:`ResumeTracker.bump_refine` em
+    :func:`refine_one_issue` para tornar o contador durável a restarts.
+    """
+    n = monitor._resume_tracker.refine_attempt(number)
+    try:
+        cur = await monitor.forge.get_issue(number)
+        old = [lb for lb in cur.labels if is_refine_attempt_label(lb)]
+        if old:
+            await monitor.forge.remove_labels("issue", number, old)
+        await monitor.forge.add_labels("issue", number, [make_refine_attempt_label(n)])
+    except Exception as exc:  # noqa: BLE001 — label durável é best-effort
+        logger.warning(
+            "refine #%d: não foi possível persistir ~refine:%d: %s", number, n, exc
+        )
+
+
 async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
     """Critique gate (issue #257): judge scope, route to revisada or refinement."""
     number = target.number
@@ -962,15 +986,23 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
         await monitor.forge.transition_issue(
             number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_REVIEWED
         )
-        # Scope is clear now: drop the refinement marker AND any stale refine
-        # state (em_refinamento/em_arquitetura) so the issue carries exactly one
-        # ~workflow: label — defensive against residue from a raced cycle.
-        await monitor.forge.remove_labels("issue", number, [REFINAR, *REFINE_WORKFLOW_STATES])
+        # Escopo claro: remove o marcador de refinamento, qualquer estado residual
+        # de refino e o contador durável ~refine:N — o ciclo de refino encerrou.
+        refine_labels_to_remove = [REFINAR, *REFINE_WORKFLOW_STATES]
+        refine_labels_to_remove += [
+            lb for lb in target.labels if is_refine_attempt_label(lb)
+        ]
+        await monitor.forge.remove_labels("issue", number, refine_labels_to_remove)
         monitor._stats.issues_reviewed += 1
         await monitor.notifier.issue_reviewed(number, target.title, target.url)
         return
 
-    # POOR — block to the author once the refinement budget is exhausted.
+    # POOR — reconcilia o contador in-memory com a label durável antes de checar
+    # o teto. Após restart do pod, ~refine:N é a fonte da verdade.
+    monitor._resume_tracker.set_refine_attempt(
+        number, current_refine_attempt_from_labels(target.labels)
+    )
+    # Block to the author once the refinement budget is exhausted.
     if monitor._resume_tracker.refine_attempt(number) >= monitor.config.refine_max_attempts:
         await _block_refinement(monitor, target, reason)
         return
@@ -1067,6 +1099,11 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
         except GhCommandError as exc:
             logger.warning("refine #%d: could not re-add 'refinar' label: %s", number, exc)
 
+    # Reconcilia o contador in-memory com a label durável ~refine:N ANTES de
+    # checar o teto. Após restart do pod, a label é a fonte da verdade.
+    monitor._resume_tracker.set_refine_attempt(
+        number, current_refine_attempt_from_labels(target.labels)
+    )
     # Ceiling guard (belt-and-suspenders with the critique-side check).
     if monitor._resume_tracker.refine_attempt(number) >= monitor.config.refine_max_attempts:
         await _block_refinement(monitor, target, "teto de refinamentos atingido")
@@ -1074,9 +1111,10 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
 
     outcome = await monitor.implementer.refine(monitor, target)
     if not outcome.ok:
-        # Count the failed attempt so a DETERMINISTIC failure (e.g. a payload the
-        # worker rejects) hits the ceiling → block, instead of looping forever.
+        # Conta a tentativa falha para que falhas determinísticas (payload
+        # rejeitado pelo worker) atinjam o teto e bloqueiem — evita loop eterno.
         monitor._resume_tracker.bump_refine(number)
+        await _persist_refine_attempt(monitor, number)
         logger.warning(
             "refine #%d failed (passe %d): %s", number,
             monitor._resume_tracker.refine_attempt(number), (outcome.error or "")[:200],
@@ -1089,8 +1127,9 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
         await monitor.forge.add_labels("issue", number, [WORKFLOW_WAITING])
         logger.info("refine #%d → aguardando stakeholder", number)
         return
-    # OK / unknown → count it and send back for re-critique (the safety net).
+    # OK / unknown → incrementa e persiste antes de enviar de volta para re-crítica.
     monitor._resume_tracker.bump_refine(number)
+    await _persist_refine_attempt(monitor, number)
     refine_state = next(
         (s for s in REFINE_WORKFLOW_STATES if s in target.labels),
         refine_workflow_state(issue_type),
@@ -1119,11 +1158,14 @@ async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> N
     # Pre-fix the issue could end up wearing 4+ workflow labels at once
     # (~workflow:em_revisao + em_arquitetura + refinar + bloqueada), which left
     # humans confused about the actual state — observed on #281 on 2026-05-23.
+    # Remove também o contador durável ~refine:N: o unblock começa com contagem
+    # fresca (o tracker in-memory já foi limpo por _block → clear).
     stale = [
         s for s in (WORKFLOW_REVIEWING, WORKFLOW_NEW, WORKFLOW_IMPLEMENTING,
                     *REFINE_WORKFLOW_STATES)
         if s in issue.labels and s != refine_state
     ]
+    stale += [lb for lb in issue.labels if is_refine_attempt_label(lb)]
     if stale:
         try:
             await monitor.forge.remove_labels("issue", number, stale)

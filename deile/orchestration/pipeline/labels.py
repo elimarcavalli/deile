@@ -366,3 +366,40 @@ def current_attempt_from_labels(labels) -> int:
         if m:
             nums.append(int(m.group(1)))
     return max(nums) if nums else 0
+
+
+# --- Refine attempt label (issue R1 — contador durável de passes de refino) -
+# O pipeline grava ``~refine:N`` na issue após cada pass de refino para tornar
+# o contador durável a restarts do pod ``deile-pipeline``. Diferente de
+# ``~attempt:N`` (que é gerenciado pelo reaper para issues/PRs stuck), o
+# ``~refine:N`` é gerenciado exclusivamente pelo portão de refinamento.
+REFINE_ATTEMPT_LABEL_PREFIX = "~refine:"
+_REFINE_ATTEMPT_LABEL_RE = re.compile(r"^~refine:(\d+)$")
+
+
+def is_refine_attempt_label(label: str) -> bool:
+    """Retorna True se *label* for um contador de passes de refino (``~refine:N``)."""
+    return bool(_REFINE_ATTEMPT_LABEL_RE.match(label))
+
+
+def make_refine_attempt_label(n: int) -> str:
+    """Constrói a label ``~refine:N`` para o contador *n*."""
+    return f"{REFINE_ATTEMPT_LABEL_PREFIX}{n}"
+
+
+def parse_refine_attempt_label(label: str) -> int:
+    """Extrai N de ``~refine:N``. Lança ValueError se não for uma label de refino."""
+    m = _REFINE_ATTEMPT_LABEL_RE.match(label)
+    if not m:
+        raise ValueError(f"not a refine attempt label: {label!r}")
+    return int(m.group(1))
+
+
+def current_refine_attempt_from_labels(labels) -> int:
+    """Maior valor N entre labels ~refine:N do conjunto (0 se ausentes)."""
+    nums = []
+    for lb in labels or ():
+        m = _REFINE_ATTEMPT_LABEL_RE.match(lb)
+        if m:
+            nums.append(int(m.group(1)))
+    return max(nums) if nums else 0

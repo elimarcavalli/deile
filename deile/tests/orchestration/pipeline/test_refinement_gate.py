@@ -30,7 +30,9 @@ from deile.orchestration.pipeline.labels import (REFINAR,
                                                  WORKFLOW_REFINING,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING,
-                                                 WORKFLOW_WAITING)
+                                                 WORKFLOW_WAITING,
+                                                 is_refine_attempt_label,
+                                                 make_refine_attempt_label)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 
@@ -94,6 +96,12 @@ def _make_monitor(
     github.transition_issue = AsyncMock()
     github.add_labels = AsyncMock()
     github.remove_labels = AsyncMock()
+    # get_issue é chamado por _persist_refine_attempt para ler as labels atuais
+    # antes de trocar ~refine:N. O mock retorna issue vazia (sem ~refine:*) por
+    # padrão; testes específicos sobrescrevem quando precisam de estado durável.
+    github.get_issue = AsyncMock(
+        side_effect=lambda number: _issue(number)
+    )
     github.assign_issue = AsyncMock()
     github.comment_on_issue = AsyncMock()
     github.comment_on_pr = AsyncMock()
@@ -499,3 +507,141 @@ class TestRefineByState:
         # Não levanta — apenas retorna sem dispatch.
         await monitor._refine_one_issue()
         assert client.payloads == []
+
+
+# ===========================================================================
+# R1 — ~refine:N durável: persistência, reconciliação e limpeza
+# ===========================================================================
+
+class TestRefineAttemptDurable:
+    """Prova que o contador de passes é persistido como label ~refine:N e
+    reconciliado após restart (issue R1)."""
+
+    async def test_ok_persiste_label_refine_apos_bump(self):
+        """Após REFINO: OK, a label ~refine:1 deve ser gravada na issue."""
+        issue = _issue(300, "feature", REFINAR, WORKFLOW_ARCHITECTURE)
+        monitor, _, _ = _make_monitor(
+            label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
+            worker_responses=[_resp("REFINO: OK")],
+        )
+        await monitor._refine_one_issue()
+        # Verifica que add_labels foi chamado com ~refine:1
+        added_all = [
+            lb
+            for call in monitor.github.add_labels.await_args_list
+            if call.args[1] == 300
+            for lb in call.args[2]
+        ]
+        assert make_refine_attempt_label(1) in added_all
+
+    async def test_falha_dispatch_persiste_label_refine(self):
+        """Dispatch falho também deve persistir ~refine:N (evita loop eterno)."""
+        issue = _issue(301, "feature", REFINAR, WORKFLOW_ARCHITECTURE)
+        monitor, _, _ = _make_monitor(
+            label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
+            worker_responses=[_resp("", ok=False)],
+        )
+        await monitor._refine_one_issue()
+        added_all = [
+            lb
+            for call in monitor.github.add_labels.await_args_list
+            if call.args[1] == 301
+            for lb in call.args[2]
+        ]
+        assert make_refine_attempt_label(1) in added_all
+
+    async def test_reconciliacao_com_label_duravel_apos_restart(self):
+        """Issue com ~refine:5 (label durável, teto=5) deve bloquear imediatamente
+        após restart, em vez de recomeçar do 0 (comportamento pré-R1).
+
+        Sem a reconciliação: in-memory=0 < teto=5 → refina (custo extra indevido).
+        Com a reconciliação: in-memory é elevado para 5 → 5 >= 5 → bloqueia.
+        """
+        # A issue já tem ~refine:5 gravada (sobreviveu ao restart).
+        issue = _issue(302, "feature", REFINAR, WORKFLOW_ARCHITECTURE,
+                       make_refine_attempt_label(5))
+        monitor, _, client = _make_monitor(
+            label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
+            worker_responses=[_resp("REFINO: OK")],
+            refine_max_attempts=5,
+        )
+        # In-memory começa zerado (simula restart).
+        assert monitor._resume_tracker.refine_attempt(302) == 0
+        await monitor._refine_one_issue()
+        # Após reconciliação in-memory=5 >= teto=5, deve ter bloqueado.
+        assert WORKFLOW_BLOCKED in _added(monitor.github, 302)
+        # Nenhum dispatch deve ter ocorrido (teto atingido antes de refinar).
+        assert client.payloads == []
+
+    async def test_reconciliacao_nao_encolhe_contador(self):
+        """set_refine_attempt nunca encolhe o contador in-memory."""
+        issue = _issue(303, "feature", REFINAR, WORKFLOW_ARCHITECTURE,
+                       make_refine_attempt_label(2))
+        monitor, _, _ = _make_monitor(
+            label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
+            worker_responses=[_resp("REFINO: OK")],
+            refine_max_attempts=5,
+        )
+        # In-memory já está em 3 (maior que a label 2).
+        monitor._resume_tracker.get(303).refine_attempt = 3
+        await monitor._refine_one_issue()
+        # Reconciliação com label=2 NÃO deve encolher o contador para 2.
+        # Após bump(+1), deve ser 4 (não 3).
+        assert monitor._resume_tracker.refine_attempt(303) == 4
+
+    async def test_claro_remove_label_refine_na_critica(self):
+        """Quando a crítica retorna CLARO, a label ~refine:N deve ser removida."""
+        issue = _issue(304, "feature", REFINAR, make_refine_attempt_label(3))
+        monitor, _, _ = _make_monitor(
+            label_map={WORKFLOW_NEW: [issue]},
+            worker_responses=[_resp("VEREDITO: CLARO")],
+        )
+        await monitor._review_one_new_issue()
+        # Verifica que remove_labels foi chamado incluindo ~refine:3
+        removed_all = [
+            lb
+            for call in monitor.github.remove_labels.await_args_list
+            if call.args[1] == 304
+            for lb in call.args[2]
+        ]
+        assert make_refine_attempt_label(3) in removed_all
+
+    async def test_block_refinement_remove_label_refine(self):
+        """_block_refinement deve remover ~refine:N para que o unblock recomece
+        com contagem fresca."""
+        issue = _issue(305, "bug", REFINAR, WORKFLOW_ARCHITECTURE,
+                       make_refine_attempt_label(5), author="carol")
+        monitor, _, client = _make_monitor(
+            label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
+            worker_responses=[_resp("REFINO: OK")],
+            refine_max_attempts=5,
+        )
+        # In-memory já está no teto.
+        monitor._resume_tracker.get(305).refine_attempt = 5
+        await monitor._refine_one_issue()
+        # Deve ter bloqueado (sem dispatch).
+        assert WORKFLOW_BLOCKED in _added(monitor.github, 305)
+        assert client.payloads == []
+        # ~refine:5 deve ter sido removida.
+        removed_all = [
+            lb
+            for call in monitor.github.remove_labels.await_args_list
+            if call.args[1] == 305
+            for lb in call.args[2]
+        ]
+        assert make_refine_attempt_label(5) in removed_all
+
+    async def test_persist_best_effort_nao_derruba_stage(self):
+        """Erro ao gravar ~refine:N (get_issue falha) não deve propagar — stage
+        deve continuar e voltar a issue para nova."""
+        issue = _issue(306, "feature", REFINAR, WORKFLOW_ARCHITECTURE)
+        monitor, _, _ = _make_monitor(
+            label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
+            worker_responses=[_resp("REFINO: OK")],
+        )
+        # Simula get_issue falhando (rede down, etc.).
+        monitor.github.get_issue = AsyncMock(side_effect=Exception("network error"))
+        # Não deve levantar — stage continua normalmente.
+        await monitor._refine_one_issue()
+        # Issue deve ter voltado a nova apesar do erro de persistência.
+        assert (306, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) in _transitions(monitor.github)

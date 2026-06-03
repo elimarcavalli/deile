@@ -113,15 +113,25 @@ class ResumeTracker:
             state.budget_s = max(state.budget_s, budget_s)
 
     def bump_refine(self, number: int) -> int:
-        """Increment and return the refinement-pass counter for *number*."""
+        """Incrementa e retorna o contador de passes de refino para *number*."""
         state = self.get(number)
         state.refine_attempt += 1
         return state.refine_attempt
 
     def refine_attempt(self, number: int) -> int:
-        """Return the refinement passes applied so far for *number* (0 if none)."""
+        """Retorna os passes de refino já aplicados a *number* (0 se nenhum)."""
         state = self.peek(number)
         return state.refine_attempt if state is not None else 0
+
+    def set_refine_attempt(self, number: int, n: int) -> None:
+        """Define o contador de passes de refino se *n* for MAIOR que o atual.
+
+        Usado para reconciliar o estado in-memory com a label durável ``~refine:N``
+        após restart do pod. Nunca encolhe o contador — garante monotonicidade.
+        """
+        state = self.get(number)
+        if n > state.refine_attempt:
+            state.refine_attempt = n
 
     def clear(self, number: int) -> None:
         """Drop tracked state for *number* (e.g. once it reaches em_pr/blocked)."""

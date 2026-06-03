@@ -12,8 +12,12 @@ from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
                                                  WORKFLOW_BLOCKED,
                                                  WORKFLOW_LABELS, WORKFLOW_NEW,
                                                  batch_id_from_label,
+                                                 current_refine_attempt_from_labels,
                                                  is_batch_label,
-                                                 make_batch_label)
+                                                 is_refine_attempt_label,
+                                                 make_batch_label,
+                                                 make_refine_attempt_label,
+                                                 parse_refine_attempt_label)
 
 
 class TestLabelConstants:
@@ -71,3 +75,58 @@ class TestBatchHelpers:
     def test_batch_id_from_label_rejects_non_batch(self):
         with pytest.raises(ValueError):
             batch_id_from_label(WORKFLOW_NEW)
+
+
+class TestRefineAttemptHelpers:
+    """Testa os helpers de label ~refine:N (issue R1 — contador durável de
+    passes de refino)."""
+
+    def test_make_refine_label_usa_prefixo(self):
+        assert make_refine_attempt_label(0) == "~refine:0"
+        assert make_refine_attempt_label(5) == "~refine:5"
+
+    def test_is_refine_attempt_label_verdadeiro(self):
+        assert is_refine_attempt_label("~refine:0")
+        assert is_refine_attempt_label("~refine:5")
+        assert is_refine_attempt_label("~refine:99")
+
+    def test_is_refine_attempt_label_falso_para_outros(self):
+        assert not is_refine_attempt_label(WORKFLOW_NEW)
+        assert not is_refine_attempt_label("~attempt:1")
+        assert not is_refine_attempt_label("refine:1")        # sem ~
+        assert not is_refine_attempt_label("~refine:")        # sem número
+        assert not is_refine_attempt_label("~refinar:1")      # confusão com REFINAR
+        assert not is_refine_attempt_label("~refine:1a")      # sufixo não numérico
+
+    def test_parse_refine_attempt_label_extrai_n(self):
+        assert parse_refine_attempt_label("~refine:0") == 0
+        assert parse_refine_attempt_label("~refine:3") == 3
+        assert parse_refine_attempt_label("~refine:42") == 42
+
+    def test_parse_refine_attempt_label_levanta_para_invalido(self):
+        with pytest.raises(ValueError):
+            parse_refine_attempt_label("~attempt:1")
+        with pytest.raises(ValueError):
+            parse_refine_attempt_label(WORKFLOW_NEW)
+        with pytest.raises(ValueError):
+            parse_refine_attempt_label("~refine:")
+
+    def test_current_refine_zero_sem_label(self):
+        """Sem nenhuma label ~refine:N, retorna 0."""
+        assert current_refine_attempt_from_labels([]) == 0
+        assert current_refine_attempt_from_labels(None) == 0
+        assert current_refine_attempt_from_labels(["~workflow:nova", "refinar"]) == 0
+
+    def test_current_refine_maior_com_multiplas(self):
+        """Quando há múltiplas labels (edge case pós-race), retorna o maior N."""
+        labels = ["~refine:2", "~refine:4", "~refine:1"]
+        assert current_refine_attempt_from_labels(labels) == 4
+
+    def test_current_refine_ignora_labels_irrelevantes(self):
+        """Labels não-refine não interferem no resultado."""
+        labels = ["~workflow:em_arquitetura", "refinar", "~refine:3", "~attempt:2"]
+        assert current_refine_attempt_from_labels(labels) == 3
+
+    def test_current_refine_valor_unico(self):
+        """Caso comum: exatamente uma label ~refine:N."""
+        assert current_refine_attempt_from_labels(["~refine:5"]) == 5

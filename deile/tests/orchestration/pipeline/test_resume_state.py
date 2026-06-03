@@ -174,3 +174,50 @@ class TestIncompleteNoPrCounter:
         t = ResumeTracker()
         t.update_from_worker(1, fingerprint="abc", attempt=1, budget_s=0.0)
         assert t.is_zero_progress(1, "") is False
+
+
+class TestSetRefineAttempt:
+    """Testa a reconciliação do contador in-memory com a label durável ~refine:N
+    (issue R1 — set_refine_attempt nunca encolhe)."""
+
+    def test_set_quando_maior_atualiza(self):
+        """Quando n > atual, o contador deve ser atualizado."""
+        t = ResumeTracker()
+        t.set_refine_attempt(10, 4)
+        assert t.refine_attempt(10) == 4
+
+    def test_set_quando_menor_nao_encolhe(self):
+        """Quando n < atual, o contador NÃO deve ser reduzido."""
+        t = ResumeTracker()
+        t.get(10).refine_attempt = 3
+        t.set_refine_attempt(10, 1)
+        assert t.refine_attempt(10) == 3
+
+    def test_set_quando_igual_nao_muda(self):
+        """Quando n == atual, o valor deve permanecer inalterado."""
+        t = ResumeTracker()
+        t.get(10).refine_attempt = 2
+        t.set_refine_attempt(10, 2)
+        assert t.refine_attempt(10) == 2
+
+    def test_set_com_zero_em_estado_novo(self):
+        """set_refine_attempt(n=0) em issue sem estado não altera o contador
+        (0 == 0, condição n > atual é falsa)."""
+        t = ResumeTracker()
+        t.set_refine_attempt(20, 0)
+        assert t.refine_attempt(20) == 0
+
+    def test_set_cria_estado_se_ausente(self):
+        """set_refine_attempt deve criar o IssueResumeState se não existir."""
+        t = ResumeTracker()
+        assert t.peek(30) is None
+        t.set_refine_attempt(30, 3)
+        assert t.refine_attempt(30) == 3
+
+    def test_set_isolado_por_issue(self):
+        """set_refine_attempt não deve afetar outras issues."""
+        t = ResumeTracker()
+        t.set_refine_attempt(1, 5)
+        t.set_refine_attempt(2, 2)
+        assert t.refine_attempt(1) == 5
+        assert t.refine_attempt(2) == 2
