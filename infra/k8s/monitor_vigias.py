@@ -59,10 +59,15 @@ class MonitorContext:
     repo: str
     namespace: str
     kube_api: Optional[str] = None
+    kubeconfig: Optional[str] = None
 
     def kubectl(self, *args: str, timeout: int = 15) -> "core.CmdResult":
         cmd = ["kubectl"]
-        if self.kube_api:
+        if self.kubeconfig:
+            # In-pod: the kubeconfig carries server + SA token + CA (issue #504).
+            cmd += ["--kubeconfig", self.kubeconfig]
+        elif self.kube_api:
+            # Local/dev fallback (no ServiceAccount kubeconfig).
             cmd += ["--server", self.kube_api]
         cmd += ["-n", self.namespace, *args]
         return self.run(cmd, timeout=timeout)

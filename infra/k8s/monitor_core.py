@@ -412,7 +412,8 @@ def resolve_kube_api(runner: Callable[[str], int]) -> Optional[str]:
     """Return the first reachable kube-api endpoint, or None if all fail.
 
     ``runner(endpoint)`` returns a process return code (0 = reachable). The
-    Service-IP fallback is appended from the in-pod env vars.
+    Service-IP fallback is appended from the in-pod env vars. Used for local/dev
+    (no ServiceAccount); in-pod the :func:`resolve_incluster_kube` path is used.
     """
     host = os.environ.get("KUBERNETES_SERVICE_HOST", "10.43.0.1")
     port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
@@ -421,6 +422,85 @@ def resolve_kube_api(runner: Callable[[str], int]) -> Optional[str]:
         try:
             if runner(endpoint) == 0:
                 return endpoint
+        except Exception:
+            continue
+    return None
+
+
+# ---------------------------------------------------------------------------
+# In-cluster kubectl auth (issue #504 fix)
+#
+# kubectl does NOT auto-load ServiceAccount credentials in-pod (unlike client-go
+# InClusterConfig). Proven in-pod: plain ``kubectl`` → localhost:8080;
+# ``kubectl --server <url>`` without --token → prompts for a username. We build a
+# 0600 kubeconfig that references the SA token via ``tokenFile`` (read live, never
+# copied) + the SA CA, so every kubectl call authenticates via ``--kubeconfig``
+# with no token in argv (which would leak via /proc/<pid>/cmdline).
+# ---------------------------------------------------------------------------
+
+SA_DIR_DEFAULT = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+_KUBECONFIG_TEMPLATE = """\
+apiVersion: v1
+kind: Config
+clusters:
+- name: in-cluster
+  cluster:
+    server: {server}
+    certificate-authority: {ca}
+contexts:
+- name: monitor
+  context:
+    cluster: in-cluster
+    user: monitor-sa
+current-context: monitor
+users:
+- name: monitor-sa
+  user:
+    tokenFile: {token}
+"""
+
+
+def write_incluster_kubeconfig(path: str, server: str, *, sa_dir: str = SA_DIR_DEFAULT) -> None:
+    """Write a 0600 kubeconfig pointing at *server* with the SA token+CA.
+
+    Uses ``tokenFile`` so kubectl reads the (rotating) SA token live — the secret
+    is never copied into the kubeconfig.
+    """
+    content = _KUBECONFIG_TEMPLATE.format(
+        server=server,
+        ca=os.path.join(sa_dir, "ca.crt"),
+        token=os.path.join(sa_dir, "token"),
+    )
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    os.chmod(path, 0o600)
+
+
+def resolve_incluster_kube(
+    run: Callable[..., "CmdResult"],
+    kc_path: str,
+    *,
+    sa_dir: str = SA_DIR_DEFAULT,
+) -> Optional[str]:
+    """DNS-first: write a kubeconfig per candidate server and probe it; return the
+    first server that authenticates (kubeconfig left at *kc_path* for the vigias),
+    or None if all fail.
+    """
+    host = os.environ.get("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+    port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+    servers = (*_KUBE_API_ENDPOINTS, f"https://{host}:{port}")
+    for server in servers:
+        try:
+            write_incluster_kubeconfig(kc_path, server, sa_dir=sa_dir)
+            res = run(
+                ["kubectl", "--kubeconfig", kc_path, "version",
+                 "--request-timeout=3s", "--client=false"],
+                timeout=5,
+            )
+            if res.rc == 0:
+                return server
         except Exception:
             continue
     return None

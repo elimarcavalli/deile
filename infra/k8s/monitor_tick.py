@@ -18,6 +18,7 @@ import asyncio
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -45,6 +46,30 @@ def _default_kube_probe(run: Callable[..., core.CmdResult]) -> Callable[[str], i
             timeout=5,
         ).rc
     return probe
+
+
+def _resolve_kube(
+    run: Callable[..., core.CmdResult],
+    kube_probe: Optional[Callable[[str], int]],
+    sa_dir: Optional[str],
+    kubeconfig_path: Optional[str],
+):
+    """Return ``(kube_api, kubeconfig_path|None)``.
+
+    Tests inject ``kube_probe`` → legacy ``--server`` path (no SA). In-pod
+    (``kube_probe is None``) with a ServiceAccount token present, build a 0600
+    kubeconfig (issue #504) so kubectl authenticates; the resolved server doubles
+    as the reachability signal.
+    """
+    if kube_probe is not None:
+        return core.resolve_kube_api(kube_probe), None
+    sa = sa_dir or core.SA_DIR_DEFAULT
+    if os.path.exists(os.path.join(sa, "token")):
+        kc = kubeconfig_path or os.path.join(tempfile.gettempdir(), "deile-monitor-kubeconfig")
+        server = core.resolve_incluster_kube(run, kc, sa_dir=sa)
+        return (server, kc) if server else (None, None)
+    # Local/dev outside a pod: no SA → legacy probe.
+    return core.resolve_kube_api(_default_kube_probe(run)), None
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +165,8 @@ async def run_tick(
     bot_token: str,
     user_id: str,
     kube_probe: Optional[Callable[[str], int]] = None,
+    sa_dir: Optional[str] = None,
+    kubeconfig_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     sd = Path(state_dir)
     state_path = sd / "monitor-state.json"
@@ -168,10 +195,11 @@ async def run_tick(
         bot_endpoint=bot_endpoint, bot_token=bot_token, user_id=user_id,
         notif_log_path=str(notif_log), clock=lambda: now,
     )
-    kube_api = core.resolve_kube_api(kube_probe or _default_kube_probe(run))
+    kube_api, kubeconfig = _resolve_kube(run, kube_probe, sa_dir, kubeconfig_path)
     ctx = vigias.MonitorContext(
         run=run, emitter=emitter, notifier=notifier, state=state, flags=flags,
         now=now, repo=repo, namespace=namespace, kube_api=kube_api,
+        kubeconfig=kubeconfig,
     )
 
     skipped: List[str] = []
