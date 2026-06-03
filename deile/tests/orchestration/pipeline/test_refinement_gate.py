@@ -96,11 +96,13 @@ def _make_monitor(
     github.transition_issue = AsyncMock()
     github.add_labels = AsyncMock()
     github.remove_labels = AsyncMock()
-    # get_issue é chamado por _persist_refine_attempt para ler as labels atuais
-    # antes de trocar ~refine:N. O mock retorna issue vazia (sem ~refine:*) por
-    # padrão; testes específicos sobrescrevem quando precisam de estado durável.
+    # get_issue é chamado por _persist_refine_attempt (lê labels) e pelo guard de
+    # convergência do refino (compara o body antes/depois). Por padrão devolve um
+    # body DIFERENTE do candidato (que usa "corpo") → simula "o refino mudou o
+    # body" = caminho normal (volta pra nova). Testes de convergência sobrescrevem
+    # get_issue para devolver o MESMO body do candidato (= passe sem mudança).
     github.get_issue = AsyncMock(
-        side_effect=lambda number: _issue(number)
+        side_effect=lambda number: _issue(number, body="corpo refinado")
     )
     github.assign_issue = AsyncMock()
     github.comment_on_issue = AsyncMock()
@@ -645,3 +647,52 @@ class TestRefineAttemptDurable:
         await monitor._refine_one_issue()
         # Issue deve ter voltado a nova apesar do erro de persistência.
         assert (306, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) in _transitions(monitor.github)
+
+
+class TestRefineConvergence:
+    """Guard de convergência (loop fix #438): um passe de refino que NÃO altera
+    o body promove a issue a ``revisada`` em vez de re-circular para ``nova``."""
+
+    async def test_body_inalterado_promove_a_revisada(self):
+        issue = _issue(700, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="spec estável")
+        monitor, _, client = _make_monitor(
+            label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
+            worker_responses=[_resp("Já está pronto.\nREFINO: OK")],
+        )
+        # O refino NÃO altera o body: get_issue devolve o MESMO body do candidato.
+        monitor.github.get_issue = AsyncMock(
+            side_effect=lambda number: _issue(
+                number, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="spec estável"
+            )
+        )
+        await monitor._refine_one_issue()
+        t = _transitions(monitor.github)
+        # Convergiu → revisada (NÃO volta pra nova).
+        assert (700, WORKFLOW_ARCHITECTURE, WORKFLOW_REVIEWED) in t
+        assert (700, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) not in t
+        # refinar removido (ciclo de refino encerrou).
+        removed = [
+            lb for c in monitor.github.remove_labels.await_args_list
+            if c.args[1] == 700 for lb in c.args[2]
+        ]
+        assert REFINAR in removed
+        # NÃO bumpou o contador — convergência não é um passe "gasto".
+        assert monitor._resume_tracker.refine_attempt(700) == 0
+
+    async def test_body_alterado_volta_para_nova(self):
+        issue = _issue(701, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="spec v1")
+        monitor, _, _ = _make_monitor(
+            label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
+            worker_responses=[_resp("Reescrevi.\nREFINO: OK")],
+        )
+        # O refino ALTERA o body → caminho normal (re-crítica).
+        monitor.github.get_issue = AsyncMock(
+            side_effect=lambda number: _issue(
+                number, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="spec v2 reescrito"
+            )
+        )
+        await monitor._refine_one_issue()
+        t = _transitions(monitor.github)
+        assert (701, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) in t
+        assert (701, WORKFLOW_ARCHITECTURE, WORKFLOW_REVIEWED) not in t
+        assert monitor._resume_tracker.refine_attempt(701) == 1

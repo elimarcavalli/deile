@@ -1127,13 +1127,49 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
         await monitor.forge.add_labels("issue", number, [WORKFLOW_WAITING])
         logger.info("refine #%d → aguardando stakeholder", number)
         return
-    # OK / unknown → incrementa e persiste antes de enviar de volta para re-crítica.
-    monitor._resume_tracker.bump_refine(number)
-    await _persist_refine_attempt(monitor, number)
+    # OK / unknown. Antes de re-circular, detecta CONVERGÊNCIA: se ESTE passe de
+    # refino NÃO alterou o body, o refinador não consegue/precisa melhorar mais
+    # — promove a ``revisada`` em vez de devolver pra ``nova`` e re-circular pra
+    # sempre. Esse é o loop do #438 (o refino dizia "não reescrevi, está pronto"
+    # mas a issue voltava ao gate indefinidamente). O teto durável ~refine:N (R1)
+    # segue como backstop caso o body mude marginalmente a cada passe.
     refine_state = next(
         (s for s in REFINE_WORKFLOW_STATES if s in target.labels),
         refine_workflow_state(issue_type),
     )
+    before_body = (target.body or "").strip()
+    try:
+        refreshed = await monitor.forge.get_issue(number)
+        after_body = (refreshed.body or "").strip()
+    except Exception:  # noqa: BLE001 — na dúvida, segue o fluxo normal de re-crítica
+        after_body = None
+    if after_body is not None and after_body == before_body:
+        cleanup = [REFINAR, *REFINE_WORKFLOW_STATES] + [
+            lb for lb in target.labels if is_refine_attempt_label(lb)
+        ]
+        try:
+            await monitor.forge.transition_issue(
+                number, from_label=refine_state, to_label=WORKFLOW_REVIEWED
+            )
+            await monitor.forge.remove_labels("issue", number, cleanup)
+            await monitor.forge.comment_on_issue(
+                number,
+                "✅ Refino convergiu: o passe não alterou o body — escopo "
+                "estável. Promovido a `~workflow:revisada`. Se o escopo ainda "
+                "estiver insuficiente, aplique `~workflow:bloqueada` para revisão "
+                "manual.",
+            )
+            monitor._resume_tracker.clear(number)
+            monitor._stats.issues_reviewed += 1
+            logger.info("refine #%d convergiu (body inalterado) → revisada", number)
+        except GhCommandError as exc:
+            await _record_forge_error(
+                monitor, f"could not promote converged #{number} to revisada", exc
+            )
+        return
+    # Body mudou → conta o passe, persiste e devolve pra re-crítica.
+    monitor._resume_tracker.bump_refine(number)
+    await _persist_refine_attempt(monitor, number)
     try:
         await monitor.forge.transition_issue(number, from_label=refine_state, to_label=WORKFLOW_NEW)
     except GhCommandError as exc:
