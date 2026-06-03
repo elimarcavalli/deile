@@ -2072,7 +2072,8 @@ async def test_dispatch_409_lease_conflict_emits_dispatch_failed(
     import logging
 
     # Lease acquisition always fails (simulates other replica holding it).
-    async def fake_acquire(workspace):
+    # ``**kwargs`` aceita os novos channel=/session_id= do dedup por channel.
+    async def fake_acquire(workspace, **kwargs):
         return None
 
     monkeypatch.setattr(claude_worker_module, "_acquire_lease", fake_acquire)
@@ -2115,3 +2116,54 @@ async def test_dispatch_409_lease_conflict_emits_dispatch_failed(
     assert len(failed) == 1, f"expected exactly one dispatch.failed, got {msgs}"
     assert "error_code=TASK_ALREADY_RUNNING" in failed[0]
     assert "reason=lease_conflict" in failed[0]
+
+
+# --- Channel-based fresh-dispatch dedup (anti dup-dispatch #433/#446) --------
+
+def test_find_live_task_for_channel(claude_worker_module, monkeypatch, tmp_path):
+    """Dedup por channel: encontra o task_id de um workdir cujo lease casa o
+    channel E cujo claude está vivo; ignora channel divergente, claude morto,
+    lease ausente/corrompido e channel vazio."""
+    import json
+    cws = claude_worker_module
+    # A: channel alvo + claude vivo
+    (tmp_path / "aaaa").mkdir()
+    (tmp_path / "aaaa" / ".lease.json").write_text(
+        json.dumps({"channel": "pipeline-issue-446", "session_id": "sid-a"})
+    )
+    # B: channel divergente (claude vivo, mas channel != alvo)
+    (tmp_path / "bbbb").mkdir()
+    (tmp_path / "bbbb" / ".lease.json").write_text(
+        json.dumps({"channel": "pipeline-issue-999", "session_id": "sid-b"})
+    )
+    # C: channel alvo MAS claude morto → não conta
+    (tmp_path / "cccc").mkdir()
+    (tmp_path / "cccc" / ".lease.json").write_text(
+        json.dumps({"channel": "pipeline-issue-446", "session_id": "sid-dead"})
+    )
+    # D: workdir sem lease → ignorado
+    (tmp_path / "dddd").mkdir()
+
+    monkeypatch.setattr(
+        cws, "_is_claude_process_alive", lambda sid: sid in {"sid-a", "sid-b"},
+    )
+    # acha A (channel casa + vivo); ignora C (mesmo channel, claude morto)
+    assert cws._find_live_task_for_channel(tmp_path, "pipeline-issue-446") == "aaaa"
+    # channel sem nenhum vivo casando → None (B existe mas é outro channel)
+    assert cws._find_live_task_for_channel(tmp_path, "pipeline-issue-000") is None
+    # channel vazio → None (nunca dedupa sem channel)
+    assert cws._find_live_task_for_channel(tmp_path, "") is None
+
+
+def test_find_live_task_for_channel_dead_only_returns_none(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Channel casa mas o único claude está morto → None (permite fresh)."""
+    import json
+    cws = claude_worker_module
+    (tmp_path / "x1").mkdir()
+    (tmp_path / "x1" / ".lease.json").write_text(
+        json.dumps({"channel": "pipeline-issue-433", "session_id": "dead"})
+    )
+    monkeypatch.setattr(cws, "_is_claude_process_alive", lambda sid: False)
+    assert cws._find_live_task_for_channel(tmp_path, "pipeline-issue-433") is None

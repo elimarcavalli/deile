@@ -549,7 +549,8 @@ class TestDispatch409WhenLeaseHeld:
         from aiohttp.web import Application
 
         # Substitui _acquire_lease por versão que sempre nega.
-        async def _always_deny(_workspace):  # noqa: ARG001
+        # ``**kwargs`` aceita os novos channel=/session_id= do dedup por channel.
+        async def _always_deny(_workspace, **kwargs):  # noqa: ARG001
             return None
 
         # Monta request via objeto mínimo com json() mockado.

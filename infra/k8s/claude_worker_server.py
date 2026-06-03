@@ -273,7 +273,9 @@ def _validate_task_id_for_path(task_id: str) -> bool:
     return bool(_TASK_ID_RE.fullmatch(task_id)) if task_id else False
 
 
-async def _acquire_lease(workspace: Path) -> Optional[dict]:
+async def _acquire_lease(
+    workspace: Path, *, channel: str = "", session_id: str = "",
+) -> Optional[dict]:
     """Tenta adquirir o lease do workspace.
 
     Algoritmo:
@@ -316,6 +318,14 @@ async def _acquire_lease(workspace: Path) -> Optional[dict]:
         "started_at": now,
         "heartbeat_at": now,
     }
+    # Channel + session_id habilitam o dedup cross-workdir de fresh dispatches
+    # (:func:`_find_live_task_for_channel`): uma 2ª dispatch fresca para o mesmo
+    # channel é recusada enquanto o 1º claude ainda está vivo. Gravados no
+    # acquire (antes do spawn) para existirem cedo o bastante para o scan.
+    if channel:
+        lease["channel"] = channel
+    if session_id:
+        lease["session_id"] = session_id
 
     def _write_and_confirm() -> Optional[dict]:
         tmp = workspace / f".lease.tmp.{pod_id}"
@@ -383,6 +393,39 @@ async def _release_lease(lease_path: Path) -> None:
             logger.warning("falha ao remover lease %s: %s", lease_path, exc)
 
     await asyncio.to_thread(_unlink)
+
+
+def _find_live_task_for_channel(root: Path, channel: str) -> Optional[str]:
+    """Return the task_id of a workdir whose lease matches *channel* and whose
+    claude subprocess is still alive — or ``None``.
+
+    Dedup cross-workdir para o FRESH dispatch: rejeita uma 2ª dispatch para o
+    mesmo channel (ex.: ``pipeline-issue-446``) enquanto o 1º claude roda. O dup
+    surge quando o nowait timeout curto (~30s) do cliente dispara durante o
+    setup lento de um workdir fresco e a dispatch é re-tentada mesmo já tendo
+    sucedido server-side (observado: 2 claudes na mesma issue #433/#446).
+    Espelha a guarda do resume path (``CONCURRENT_DISPATCH_BLOCKED``), mas keyed
+    por channel — uma dispatch fresca não tem prev_task_id/session para checar.
+    """
+    if not channel:
+        return None
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return None
+    for wd in children:
+        if not wd.is_dir():
+            continue
+        try:
+            lease = json.loads((wd / ".lease.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if lease.get("channel") != channel:
+            continue
+        sid = str(lease.get("session_id") or "")
+        if sid and _is_claude_process_alive(sid):
+            return wd.name
+    return None
 
 
 async def _heartbeat_loop(lease_path: Path, stop_event: asyncio.Event) -> None:
@@ -2244,6 +2287,30 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         # claude pode dar pull no próprio (tem `gh`/`git` no shell).
         await _git_fast_forward_workdir(workspace, branch)
     else:
+        # Defense-in-depth contra DUP fresh dispatch (dedup por channel): se já
+        # existe um claude VIVO para o mesmo channel (ex.: pipeline-issue-N), NÃO
+        # cria um 2º workdir — devolve 409 com o task_id existente. Espelha a
+        # guarda do resume path. Causa do dup: o nowait timeout curto (~30s) do
+        # cliente dispara durante o setup lento de um workdir fresco e a dispatch
+        # é re-tentada mesmo já tendo sucedido server-side (2 claudes na mesma
+        # issue #433/#446). O caller trata CONCURRENT_DISPATCH_BLOCKED como
+        # não-fatal (issue fica em em_implementacao; reconcile no próximo tick).
+        if _channel_id:
+            _live = _find_live_task_for_channel(root, _channel_id)
+            if _live is not None:
+                logger.warning(
+                    "fresh dispatch BLOCKED — channel=%s já tem claude vivo "
+                    "(task_id=%s); recusando dup", _channel_id, _live,
+                )
+                return web.json_response({
+                    "ok": False,
+                    "error_code": "CONCURRENT_DISPATCH_BLOCKED",
+                    "error": (
+                        f"channel={_channel_id!r} já tem claude em execução "
+                        f"(task_id={_live}); pipeline deve aguardar próximo tick"
+                    ),
+                    "task_id": _live,
+                }, status=409)
         # Fresh path: novo task_id + session-id + workspace.
         task_id = secrets.token_hex(8)
         session_id = str(uuid.uuid4())
@@ -2305,7 +2372,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 
     # Mecanismo 2 — Lease: garante que NUNCA dois pods trabalhem no mesmo
     # workspace simultaneamente. Adquirido ANTES do spawn; liberado no finally.
-    lease = await _acquire_lease(workspace)
+    lease = await _acquire_lease(workspace, channel=_channel_id, session_id=session_id)
     if lease is None:
         logger.warning(
             "dispatch RECUSADO — lease ativo em %s (outro pod está trabalhando "
