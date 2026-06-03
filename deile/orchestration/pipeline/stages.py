@@ -1716,8 +1716,8 @@ async def _count_total_in_flight(monitor: "PipelineMonitor") -> int:
 
     Cada despachador (crítica / refino) subtrai esse total de ``max_parallel``
     pra decidir quantos candidatos novos pode claimar no tick, distribuindo o
-    paralelismo pelos três workers (issue #373). Estados bloqueada/em_pr não
-    contam (não consomem slot de worker).
+    paralelismo pelos três workers (issue #373). Estados bloqueada/em_pr/
+    aguardando_stakeholder não contam (não consomem slot de worker).
     """
     own = monitor.identity.ownership_label()
 
@@ -1740,7 +1740,17 @@ async def _count_total_in_flight(monitor: "PipelineMonitor") -> int:
         for i in issues:
             if i.number in seen_issue:
                 continue
-            if WORKFLOW_BLOCKED in i.labels or WORKFLOW_PR in i.labels:
+            # Parked states NÃO consomem slot de worker. ``bloqueada`` (block
+            # duro) e ``aguardando_stakeholder`` (esperando humano por tempo
+            # indefinido) ambos ficam num lock state (ex.: em_arquitetura) mas
+            # SEM worker rodando. Contá-los esfomeia trabalho genuinamente novo:
+            # um backlog de issues em aguardando_stakeholder fixa ``in_flight``
+            # em ``max_parallel`` e bloqueia toda crítica/refino nova (observado:
+            # #515 esfomeada com in_flight=3 = #508 órfã + #418/#416
+            # aguardando_stakeholder). Espelha a exclusão já feita no candidate
+            # filter do refino (``_excluded``).
+            if (WORKFLOW_BLOCKED in i.labels or WORKFLOW_PR in i.labels
+                    or WORKFLOW_WAITING in i.labels):
                 continue
             if _mine(i):
                 seen_issue.add(i.number)
