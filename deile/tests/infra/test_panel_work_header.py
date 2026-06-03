@@ -2,13 +2,13 @@
 
 Cobertura:
 
-1. ``WorkerProvider._parse`` extrai ``model`` do ``dispatch_started``.
+1. ``WorkerProvider._parse`` extrai ``model`` do ``dispatch.received``.
 2. ``WorkerProvider._parse`` cria ``LastCompletedTask`` ao parear
-   ``dispatch_started`` ↔ ``dispatch_completed``.
+   ``dispatch.received`` ↔ ``dispatch.completed``.
 3. ``WorkerProvider._parse`` resolve ``cost_usd`` via ``CostsProvider``
    quando disponível; ``None`` quando DB ausente.
 4. ``WorkerProvider._parse`` mantém ``last_completed = None`` quando
-   o buffer só tem ``dispatch_started`` (sem completed).
+   o buffer só tem ``dispatch.received`` (sem completed).
 5. ``PodWatchView._header_body`` renderiza linha ``WORK`` com modelo.
 6. ``PodWatchView._header_body`` renderiza ``WORK: — (idle)`` quando idle.
 7. ``PodWatchView._header_body`` renderiza ``LAST_COMPLETED`` com outcome
@@ -92,10 +92,10 @@ def _worker_view(current_task=None, last_completed=None, busy: bool = False,
 # ---------------------------------------------------------------------------
 
 class TestWorkerProviderExtractsModel:
-    def test_extracts_model_from_dispatch_started(self):
+    def test_extracts_model_from_dispatch_received(self):
         prov = _build_provider()
         text = (
-            f"{_ts(5)} dispatch_started task=abc123def456 "
+            f"{_ts(5)} dispatch.received task=abc123def456 "
             f"channel=pipeline-issue-396 stage=implement issue=396 "
             f"model=anthropic:claude-sonnet-4-6 branch=auto/issue-396"
         )
@@ -106,21 +106,21 @@ class TestWorkerProviderExtractsModel:
     def test_model_none_when_absent_in_started(self):
         prov = _build_provider()
         text = (
-            f"{_ts(5)} dispatch_started task=abc123def456 "
+            f"{_ts(5)} dispatch.received task=abc123def456 "
             f"channel=pipeline-issue-396 stage=implement issue=396"
         )
         state = prov._parse("w-1", text)
         assert state.current_task is not None
         assert state.current_task.model is None
 
-    def test_model_preserved_after_second_dispatch_started(self):
-        """Dois dispatch_started sobrepostos — o mais recente prevalece."""
+    def test_model_preserved_after_second_dispatch_received(self):
+        """Dois dispatch.received sobrepostos — o mais recente prevalece."""
         prov = _build_provider()
         text = "\n".join([
-            f"{_ts(10)} dispatch_started task=old1old1old1 "
+            f"{_ts(10)} dispatch.received task=old1old1old1 "
             f"channel=pipeline-issue-100 model=anthropic:claude-opus-4-8",
-            f"{_ts(8)} dispatch_completed task=old1old1old1 ok=True",
-            f"{_ts(5)} dispatch_started task=new1new1new1 "
+            f"{_ts(8)} dispatch.completed task=old1old1old1 ok=True",
+            f"{_ts(5)} dispatch.received task=new1new1new1 "
             f"channel=pipeline-issue-396 model=anthropic:claude-sonnet-4-6",
         ])
         state = prov._parse("w-1", text)
@@ -136,10 +136,10 @@ class TestWorkerProviderLastCompleted:
     def test_pairs_started_with_completed(self):
         prov = _build_provider()
         text = "\n".join([
-            f"{_ts(10)} dispatch_started task=aabbccdd1122 "
+            f"{_ts(10)} dispatch.received task=aabbccdd1122 "
             f"channel=pipeline-issue-386 stage=pr_review issue=386 "
             f"model=anthropic:claude-sonnet-4-6",
-            f"{_ts(3)} dispatch_completed task=aabbccdd1122 ok=True",
+            f"{_ts(3)} dispatch.completed task=aabbccdd1122 ok=True",
         ])
         state = prov._parse("w-1", text)
         assert state.current_task is None  # task completed — idle now
@@ -155,22 +155,22 @@ class TestWorkerProviderLastCompleted:
     def test_outcome_fail_when_ok_false(self):
         prov = _build_provider()
         text = "\n".join([
-            f"{_ts(10)} dispatch_started task=aabbccdd1122 "
+            f"{_ts(10)} dispatch.received task=aabbccdd1122 "
             f"channel=pipeline-issue-1 issue=1",
-            f"{_ts(3)} dispatch_completed task=aabbccdd1122 ok=False",
+            f"{_ts(3)} dispatch.completed task=aabbccdd1122 ok=False",
         ])
         state = prov._parse("w-1", text)
         assert state.last_completed is not None
         assert state.last_completed.outcome == "FAIL"
 
     def test_outcome_from_explicit_outcome_field(self):
-        """When dispatch_completed carries ``outcome=APPROVE``, that wins
+        """When dispatch.completed carries ``outcome=APPROVE``, that wins
         over the ok= field normalization."""
         prov = _build_provider()
         text = "\n".join([
-            f"{_ts(10)} dispatch_started task=aabbccdd1122 "
+            f"{_ts(10)} dispatch.received task=aabbccdd1122 "
             f"channel=pipeline-pr-291 issue=291",
-            f"{_ts(3)} dispatch_completed task=aabbccdd1122 ok=True outcome=APPROVE",
+            f"{_ts(3)} dispatch.completed task=aabbccdd1122 ok=True outcome=APPROVE",
         ])
         state = prov._parse("w-1", text)
         assert state.last_completed is not None
@@ -180,7 +180,7 @@ class TestWorkerProviderLastCompleted:
         """In-flight task — no completed line — last_completed stays None."""
         prov = _build_provider()
         text = (
-            f"{_ts(5)} dispatch_started task=aabbccdd1122 "
+            f"{_ts(5)} dispatch.received task=aabbccdd1122 "
             f"channel=pipeline-issue-396 issue=396"
         )
         state = prov._parse("w-1", text)
@@ -191,12 +191,12 @@ class TestWorkerProviderLastCompleted:
         """With two completed tasks, last_completed reflects the later one."""
         prov = _build_provider()
         text = "\n".join([
-            f"{_ts(20)} dispatch_started task=aaaa11110000 "
+            f"{_ts(20)} dispatch.received task=aaaa11110000 "
             f"channel=pipeline-issue-100 issue=100",
-            f"{_ts(15)} dispatch_completed task=aaaa11110000 ok=True",
-            f"{_ts(10)} dispatch_started task=bbbb22220000 "
+            f"{_ts(15)} dispatch.completed task=aaaa11110000 ok=True",
+            f"{_ts(10)} dispatch.received task=bbbb22220000 "
             f"channel=pipeline-issue-200 issue=200",
-            f"{_ts(5)} dispatch_completed task=bbbb22220000 ok=False",
+            f"{_ts(5)} dispatch.completed task=bbbb22220000 ok=False",
         ])
         state = prov._parse("w-1", text)
         assert state.last_completed is not None
@@ -206,9 +206,9 @@ class TestWorkerProviderLastCompleted:
     def test_duration_calculated_correctly(self):
         prov = _build_provider()
         text = "\n".join([
-            f"{_ts(60)} dispatch_started task=aabbccdd1122 "
+            f"{_ts(60)} dispatch.received task=aabbccdd1122 "
             f"channel=pipeline-issue-1 issue=1",
-            f"{_ts(13)} dispatch_completed task=aabbccdd1122 ok=True",
+            f"{_ts(13)} dispatch.completed task=aabbccdd1122 ok=True",
         ])
         state = prov._parse("w-1", text)
         assert state.last_completed is not None
@@ -216,10 +216,10 @@ class TestWorkerProviderLastCompleted:
         assert 44 <= state.last_completed.duration_s <= 50
 
     def test_completed_without_matching_started_does_not_crash(self):
-        """A dangling dispatch_completed (no matching started) is silently
+        """A dangling dispatch.completed (no matching started) is silently
         ignored — no exception, no last_completed."""
         prov = _build_provider()
-        text = f"{_ts(3)} dispatch_completed task=orphan12345 ok=True"
+        text = f"{_ts(3)} dispatch.completed task=orphan12345 ok=True"
         state = prov._parse("w-1", text)
         assert state.last_completed is None
 
@@ -250,8 +250,8 @@ class TestWorkerProviderCostResolution:
         costs = pd.CostsProvider(db_path=db)
         prov = _build_provider(costs=costs)
         text = "\n".join([
-            f"{_ts(10)} dispatch_started task={tid} channel=pipeline-issue-386 issue=386",
-            f"{_ts(3)} dispatch_completed task={tid} ok=True",
+            f"{_ts(10)} dispatch.received task={tid} channel=pipeline-issue-386 issue=386",
+            f"{_ts(3)} dispatch.completed task={tid} ok=True",
         ])
         state = prov._parse("w-1", text)
         assert state.last_completed is not None
@@ -261,9 +261,9 @@ class TestWorkerProviderCostResolution:
         costs = pd.CostsProvider(db_path=Path("/nonexistent/usage.db"))
         prov = _build_provider(costs=costs)
         text = "\n".join([
-            f"{_ts(10)} dispatch_started task=aabbccdd1122 "
+            f"{_ts(10)} dispatch.received task=aabbccdd1122 "
             f"channel=pipeline-issue-1 issue=1",
-            f"{_ts(3)} dispatch_completed task=aabbccdd1122 ok=True",
+            f"{_ts(3)} dispatch.completed task=aabbccdd1122 ok=True",
         ])
         state = prov._parse("w-1", text)
         assert state.last_completed is not None
@@ -272,9 +272,9 @@ class TestWorkerProviderCostResolution:
     def test_cost_none_when_no_provider(self):
         prov = _build_provider(costs=None)
         text = "\n".join([
-            f"{_ts(10)} dispatch_started task=aabbccdd1122 "
+            f"{_ts(10)} dispatch.received task=aabbccdd1122 "
             f"channel=pipeline-issue-1 issue=1",
-            f"{_ts(3)} dispatch_completed task=aabbccdd1122 ok=True",
+            f"{_ts(3)} dispatch.completed task=aabbccdd1122 ok=True",
         ])
         state = prov._parse("w-1", text)
         assert state.last_completed is not None

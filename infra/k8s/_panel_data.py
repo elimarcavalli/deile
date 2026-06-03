@@ -1325,7 +1325,7 @@ class CurrentTask:
     """Snapshot da task em execução em um pod worker.
 
     Populada pelo :class:`WorkerProvider` quando ele encontra uma linha
-    ``dispatch_started`` no log do worker sem um ``dispatch_completed``
+    ``dispatch.received`` no log do worker sem um ``dispatch.completed``
     correspondente — i.e., a última dispatch ainda está rodando. Surface
     primária: cabeçalho do :class:`PodWatchView` no painel TUI (issue
     #309 fase 2 follow-up), que mostra ao operador "o que esse worker
@@ -1397,7 +1397,7 @@ class LastCompletedTask:
     """Snapshot da última task finalizada num pod worker (issue #396).
 
     Populada pelo :class:`WorkerProvider` quando ele vê um
-    ``dispatch_completed`` para o qual existe um ``dispatch_started``
+    ``dispatch.completed`` para o qual existe um ``dispatch.received``
     pareado em ``live_tasks``. Contém duração (calculada de
     ``started_ts → finished_ts``), outcome normalizado e custo USD
     (resolvido contra :class:`CostsProvider` por ``session_id``, ou
@@ -1427,12 +1427,11 @@ class WorkerState:
     last_health_ts: Optional[datetime] = None
     last_substantive_body: str = ""
     # Task em execução agora (issue #309 fase 2 follow-up). ``None`` quando
-    # o pod está idle ou quando o log não tem nenhum ``dispatch_started``
-    # ativo (ainda não cobre todos os workers em deploy, então ``None`` é
-    # o caminho silencioso de compatibilidade).
+    # o pod está idle ou quando o log não tem nenhum ``dispatch.received``
+    # ativo.
     current_task: Optional[CurrentTask] = None
     # Última task finalizada (issue #396). ``None`` quando o log de até
-    # TAIL_LINES não contém nenhum ``dispatch_completed`` pareado.
+    # TAIL_LINES não contém nenhum ``dispatch.completed`` pareado.
     last_completed: Optional[LastCompletedTask] = None
 
     @property
@@ -1454,16 +1453,11 @@ _WORKER_BUSY_WINDOW_S = 90  # se houve POST /v1/dispatch nos últimos 90s, está
 # worker doing right now" header in :class:`PodWatchView`. Format must
 # stay in sync with the ``logger.info`` calls there; key order is
 # flexible (we extract by regex), but key NAMES are the wire contract.
-# Accepts both the legacy ``dispatch_started`` (snake) and the new
-# ``dispatch.received`` (dot) formats for 1-release overlap (#435).
-# Removal of the legacy compat branch is tracked in issue #444.
 _DISPATCH_STARTED_RE = re.compile(
-    r"dispatch[._](received|started)\s+(?P<kv>.+)$", re.IGNORECASE,
+    r"dispatch\.received\s+(?P<kv>.+)$", re.IGNORECASE,
 )
-# Same dual-format compat for the terminal marker: ``dispatch.completed``
-# (new) and ``dispatch_completed`` (legacy).  Removal → #444.
 _DISPATCH_COMPLETED_RE = re.compile(
-    r"dispatch[._](completed)\s+task=(?P<task_id>[a-f0-9]+)(?P<rest>[^\n]*)$",
+    r"dispatch\.completed\s+task=(?P<task_id>[a-f0-9]+)(?P<rest>[^\n]*)$",
     re.IGNORECASE,
 )
 # ``dispatch.failed`` is a new terminal event (#435) signalling task failure
@@ -1544,12 +1538,12 @@ class WorkerProvider(_KubectlProviderMixin):
         if len(text) > MAX_LOG_BYTES:
             text = text[-MAX_LOG_BYTES:]
         # Tracking de "task em execução agora" via pareamento de
-        # ``dispatch_started`` ↔ ``dispatch_completed`` (issue #309 fase 2
+        # ``dispatch.received`` ↔ ``dispatch.completed`` (issue #309 fase 2
         # follow-up). Mantemos um dict ``task_id -> CurrentTask`` enquanto
         # parseia o log; o ``current_task`` final é o último started ainda
         # vivo (mais recente). Logs antigos rotacionam o suficiente pra
         # que o dict não cresça indefinidamente — TAIL_LINES=200 limita.
-        # Defensive: se um ``dispatch_started`` aparece sem o ``completed``
+        # Defensive: se um ``dispatch.received`` aparece sem o ``completed``
         # correspondente (worker reiniciado mid-task, log truncado, etc.),
         # o pareamento naturalmente reflete a realidade: a task "ficou
         # presa" como current_task até que o log rotacione, o que casa
@@ -1569,7 +1563,7 @@ class WorkerProvider(_KubectlProviderMixin):
             ll = _parse_log_line(raw)
             if ll is None:
                 continue
-            # Pareamento started/completed|failed — feito ANTES do dispatch-RE
+            # Pareamento received/completed|failed — feito ANTES do dispatch-RE
             # genérico porque ambos casam com "dispatch" no body.
             # ``dispatch.failed`` (#435) é tratado como terminal igual a completed.
             m_done = _DISPATCH_COMPLETED_RE.search(ll.body) or _DISPATCH_FAILED_RE.search(ll.body)
@@ -1607,7 +1601,7 @@ class WorkerProvider(_KubectlProviderMixin):
                         issue_number=started_task.issue_number,
                     )
                 # Não é uma "atividade nova" — apenas o término de uma
-                # task já contabilizada via ``dispatch_started``; pular o
+                # task já contabilizada via ``dispatch.received``; pular o
                 # restante do bookkeeping evita inflar last_substantive_ts
                 # com o ack final.
                 continue
@@ -1630,7 +1624,7 @@ class WorkerProvider(_KubectlProviderMixin):
                         branch=kv.get("branch"),
                         model=kv.get("model"),
                     )
-                # ``dispatch_started`` é atividade substantiva — atualiza
+                # ``dispatch.received`` é atividade substantiva — atualiza
                 # last_substantive_ts/body também, para o cálculo de
                 # "última atividade" não regredir.
                 state.last_substantive_ts = ll.ts
