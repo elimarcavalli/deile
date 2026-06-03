@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import PrRef
-from deile.orchestration.pipeline.implementer import WorkOutcome
-from deile.orchestration.pipeline.labels import REVIEW_PENDING
+from deile.orchestration.pipeline.labels import (REVIEW_IN_PROGRESS,
+                                                 REVIEW_PENDING)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 from deile.orchestration.pipeline.post_merge_callback import \
@@ -137,17 +137,13 @@ def _make_monitor_with_cb(
         cmd=("claude", "-p", "x"),
     ))
 
-    # Issue #309 fase 2: build_implementer sempre retorna WorkerImplementer.
-    # Stub que respeita claude_rc/claude_stdout para manter semântica do teste.
-    outcome_for_test = WorkOutcome(
-        ok=(claude_rc == 0),
-        text=claude_stdout,
-        error="" if claude_rc == 0 else "boom",
+    # Issue #309 fase 2 + #373: pr_review fresh é fire-and-forget — reusa o fake
+    # do test_monitor (grava task_id no ledger + simula resume-info concluído).
+    from deile.tests.orchestration.pipeline.test_monitor import \
+        _FakeFireAndForgetImplementer
+    implementer_stub = _FakeFireAndForgetImplementer(
+        claude_stdout=claude_stdout, claude_rc=claude_rc,
     )
-    implementer_stub = MagicMock()
-    implementer_stub.implement = AsyncMock(return_value=outcome_for_test)
-    implementer_stub.review = AsyncMock(return_value=outcome_for_test)
-    implementer_stub.mention = AsyncMock(return_value=outcome_for_test)
 
     monitor = PipelineMonitor(
         cfg,
@@ -163,6 +159,18 @@ def _make_monitor_with_cb(
     return monitor, notifier
 
 
+async def _tick_then_merge_reconcile(monitor) -> None:
+    """Dispatch fresh (tick 1) + reconcile-merge por ground-truth (tick 2)."""
+    await monitor.tick()
+    in_progress = PrRef(
+        number=77, title="feat: something", url="https://github.com/o/r/pull/77",
+        labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-5",
+    )
+    monitor.github.list_open_prs = AsyncMock(return_value=[in_progress])
+    monitor.github.get_pr = AsyncMock(return_value=None)  # merged → não-aberta
+    await monitor.tick()
+
+
 class TestMonitorCallsPostMergeCallback:
     async def test_callback_called_after_merge(self):
         called_with: list = []
@@ -171,7 +179,7 @@ class TestMonitorCallsPostMergeCallback:
             called_with.append((pr_number, pr_title, pr_url))
 
         monitor, _ = _make_monitor_with_cb(claude_stdout="merged.", post_merge_callback=_cb)
-        await monitor.tick()
+        await _tick_then_merge_reconcile(monitor)
         assert len(called_with) == 1
         assert called_with[0][0] == 77
         assert called_with[0][1] == "feat: something"
@@ -192,5 +200,5 @@ class TestMonitorCallsPostMergeCallback:
 
         monitor, _ = _make_monitor_with_cb(claude_stdout="merged.", post_merge_callback=_cb)
         # Must not raise
-        await monitor.tick()
+        await _tick_then_merge_reconcile(monitor)
         assert monitor.stats.prs_reviewed == 1

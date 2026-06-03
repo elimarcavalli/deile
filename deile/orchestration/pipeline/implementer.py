@@ -1056,6 +1056,19 @@ class WorkerImplementer(PipelineImplementer):
                 "worker fire-and-forget accepted: task_id=%s stage=%s",
                 task_id, stage,
             )
+            # Grava no ledger também no caminho nowait — critique/refine/review
+            # fresh passam ledger_key e precisam de rastreabilidade igual ao
+            # implement. Sem isso o task_id se perde antes do reconcile poder
+            # fazer resume na próxima janela.
+            if ledger_key and task_id:
+                worker_kind = "claude" if "claude-worker" in url else "deile"
+                self._ledger.record(
+                    ledger_key,
+                    task_id=task_id,
+                    session_id="",  # Desconhecido até o worker terminar
+                    stage=stage, branch=branch,
+                    worker_kind=worker_kind,
+                )
             return WorkOutcome(
                 ok=True, text="", task_id=task_id,
                 ended="",  # Not yet known — reconcile via ground truth
@@ -1299,9 +1312,11 @@ class WorkerImplementer(PipelineImplementer):
             issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
             forge=monitor.forge.config,
         )
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
             persona=persona_for_type(issue_type), stage="refine",
+            ledger_key=DispatchLedger.key_for_issue(issue.number), nowait=True,
         )
 
     async def refine(
@@ -1313,9 +1328,11 @@ class WorkerImplementer(PipelineImplementer):
             issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
             forge=monitor.forge.config,
         )
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
             persona=persona_for_type(issue_type), stage="refine",
+            ledger_key=DispatchLedger.key_for_issue(issue.number), nowait=True,
         )
 
     async def decompose(
@@ -1353,11 +1370,16 @@ class WorkerImplementer(PipelineImplementer):
         # so the worker evaluates SOLID/SRP/DRY/KISS/security/idempotency, not
         # just whether the suite is green. implement/mention keep ``developer``.
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        # Issue #373 (espelhando implement): dispatch fresh fire-and-forget para
+        # não bloquear o tick. Resume permanece bloqueante — o stage handler de
+        # pr_review precisa do resultado estruturado (ended, fingerprint,
+        # tentativa) para decidir concluido/incompleto/bloqueado.
         return await self._dispatch(
             brief, channel_id=f"pipeline-pr-{pr.number}",
             persona="reviewer", resume_block=resume_block, stage="pr_review",
             branch=pr.head_ref or f"pr/{pr.number}",
             ledger_key=DispatchLedger.key_for_pr(pr.number), resume=resume,
+            nowait=not resume,
         )
 
     async def mention(

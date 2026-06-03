@@ -829,11 +829,17 @@ class PipelineMonitor:
                 logger.debug("%s not in schedule; running legacy fallback", key)
             await handler()
 
+        # Issue #373: a crítica é fire-and-forget — reconcilia o veredito das
+        # críticas em voo ANTES de despachar novas (libera capacidade no mesmo
+        # tick, espelha o reconcile do implement).
+        if cfg.enable_refinement_gate:
+            await self._reconcile_critique_issues()
         await _scheduled(cfg.enable_classify, "classify", self._classify_new_issues)
         await _scheduled(cfg.enable_review, "review", self._review_one_new_issue)
-        # Refinement loop (issue #257): per-tick sweep, not a cron action —
-        # runs after critique so a POOR issue is refined on the NEXT tick.
+        # Refinement loop (issue #257/#373): reconcilia o veredito dos refinos em
+        # voo ANTES de despachar novos; o dispatch é fire-and-forget.
         if cfg.enable_refinement_gate:
+            await self._reconcile_refine_issues()
             await self._refine_one_issue()
         # Resume parked, continuable work BEFORE claiming new issues
         # (issue #254) so a freshly-claimed issue is not re-dispatched in
@@ -871,6 +877,10 @@ class PipelineMonitor:
         # Decompose CLEAR intents into derived issues (issue #257).
         if cfg.enable_refinement_gate:
             await self._decompose_one_reviewed_intent(reviewed_post)
+        # Issue #373: review fresh é fire-and-forget — reconcilia o veredito das
+        # reviews em voo (por ground-truth: PR merged?) ANTES de despachar novas.
+        if cfg.enable_pr_review and "pr_review" not in skip:
+            await self._reconcile_review_prs()
         await _scheduled(cfg.enable_pr_review, "pr_review", self._review_one_open_pr)
         if cfg.enable_pr_triage:
             await self._classify_new_prs()
@@ -913,6 +923,18 @@ class PipelineMonitor:
     async def _reconcile_implementing_issues(self) -> None:
         """Check ground truth for fire-and-forget implementing issues (issue #373)."""
         return await stages.reconcile_implementing_issues(self)
+
+    async def _reconcile_critique_issues(self) -> None:
+        """Process the verdict of fire-and-forget critiques (issue #373)."""
+        return await stages.reconcile_critique_issues(self)
+
+    async def _reconcile_refine_issues(self) -> None:
+        """Process the verdict of fire-and-forget refines (issue #373)."""
+        return await stages.reconcile_refine_issues(self)
+
+    async def _reconcile_review_prs(self) -> None:
+        """Process the verdict of fire-and-forget PR reviews (issue #373)."""
+        return await stages.reconcile_review_prs(self)
 
     async def _review_one_open_pr(self) -> None:
         return await stages.review_one_open_pr(self)

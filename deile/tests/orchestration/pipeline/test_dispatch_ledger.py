@@ -163,3 +163,52 @@ def test_invalidate_cache_re_reads_disk(tmp_path):
     assert ledger.get("pr:1")["task_id"] == "t"
     ledger.invalidate_cache()
     assert ledger.get("pr:1")["task_id"] == "modified-externally"
+
+
+# ------------------------------------------------------------------ #
+# extra field — campo livre para metadados (ex.: guard de convergência)
+# ------------------------------------------------------------------ #
+
+def test_record_with_extra_roundtrip(tmp_path):
+    """record com extra → get devolve entry com extra preservado."""
+    ledger = DispatchLedger(path=tmp_path / "l.json")
+    ledger.record(
+        "issue:7",
+        task_id="t7", session_id="s7",
+        stage="refine",
+        extra={"before_body": "corpo antes do refino", "round": 1},
+    )
+    r = ledger.get("issue:7")
+    assert r is not None
+    assert r["extra"] == {"before_body": "corpo antes do refino", "round": 1}
+
+
+def test_record_without_extra_retrocompat(tmp_path):
+    """record sem extra → entry sem campo extra (retrocompat total)."""
+    ledger = DispatchLedger(path=tmp_path / "l.json")
+    ledger.record("pr:1", task_id="t1", session_id="s1", stage="pr_review")
+    r = ledger.get("pr:1")
+    assert r is not None
+    assert "extra" not in r
+    # Campos obrigatórios continuam presentes.
+    assert r["task_id"] == "t1"
+    assert r["attempt"] == 1
+
+
+def test_record_extra_persists_disk_roundtrip(tmp_path):
+    """extra sobrevive a flush + reload (save/load do JSON)."""
+    path = tmp_path / "l.json"
+    ledger1 = DispatchLedger(path=path)
+    ledger1.record(
+        "issue:42",
+        task_id="t42", session_id="s42",
+        extra={"before_body": "x", "score": 0.9},
+    )
+    # Nova instância — sem cache compartilhado.
+    ledger2 = DispatchLedger(path=path)
+    r = ledger2.get("issue:42")
+    assert r is not None
+    assert r["extra"] == {"before_body": "x", "score": 0.9}
+    # Verifica também no JSON bruto.
+    raw = json.loads(path.read_text())
+    assert raw["dispatches"]["issue:42"]["extra"] == {"before_body": "x", "score": 0.9}

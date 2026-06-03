@@ -244,14 +244,21 @@ class TestWorkerImplementer:
         assert "WORKER_TIMEOUT" in out.error
 
     async def test_review_uses_pr_channel_and_merged_marker(self):
-        client = _FakeClient({"ok": True, "summary": "https://github.com/owner/name/pull/7 MERGED"})
+        # Issue #373: review fresh agora é fire-and-forget (nowait=True), espelhando
+        # o implement. O worker retorna 202 + task_id imediatamente; o pipeline
+        # reconcilia via ground truth no próximo tick (com resume=True bloqueante).
+        client = _FakeClient({"task_id": "rev-abc", "status": "running"})
         out = await WorkerImplementer(client=client).review(_make_monitor(), _pr(number=7))
         assert out.ok is True
-        assert "merged" in out.text.lower()
+        assert out.task_id == "rev-abc"
+        # Fire-and-forget: sem summary no response imediato.
+        assert out.text == ""
         assert client.last_payload["channel_id"] == "pipeline-pr-7"
         # The review/merge stage is the final quality gate: it runs under the
         # dedicated ``reviewer`` persona, not ``developer``.
         assert client.last_payload["persona"] == "reviewer"
+        # Transport-level wait=False confirma fire-and-forget.
+        assert client.last_wait is False
         # Após o refactor "PR é o quadro" o brief unificado substitui o brief
         # de QUALITY GATE. Asserts agora cobrem o princípio do brief: descoberta
         # de estado real + checkpoint obrigatório de comentário visível.
@@ -325,9 +332,10 @@ class TestTickWatchdog:
         client = _HangingClient()
         impl = WorkerImplementer(client=client)
 
-        # ``review`` despacha com wait=True (caminho bloqueante do tick).
+        # review(resume=True) despacha com wait=True (caminho bloqueante).
+        # review(resume=False) agora é nowait — não trava o tick por design.
         out = await asyncio.wait_for(
-            impl.review(_make_monitor(), _pr(number=7)), timeout=5.0,
+            impl.review(_make_monitor(), _pr(number=7), resume=True), timeout=5.0,
         )
 
         assert client.started.is_set()
@@ -363,3 +371,141 @@ class TestWorkOutcome:
     def test_defaults(self):
         o = WorkOutcome(ok=True, text="x")
         assert o.error == ""
+
+
+# ---------------------------------------------------------------------------
+# Testes de nowait para critique / refine / review (issue #373 extensão)
+# ---------------------------------------------------------------------------
+
+def _make_monitor_with_forge():
+    """Mesmo que _make_monitor(), mas com forge.config real (necessário para critique/refine)."""
+    monitor = _make_monitor()
+    from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+    monitor.forge = SimpleNamespace(
+        config=ForgeConfig(
+            kind=ForgeKind.GITHUB,
+            host="github.com",
+            project_path="owner/name",
+            cli_path="/usr/bin/gh",
+        ),
+    )
+    return monitor
+
+
+def _issue_with_labels(number=10, labels=("intent",)):
+    return SimpleNamespace(number=number, title="Issue teste", body="corpo da issue", labels=labels)
+
+
+class TestCritiqueRefineNowait:
+    """critique() e refine() devem ser fire-and-forget (nowait=True) com ledger_key."""
+
+    async def test_critique_is_nowait_and_returns_task_id(self):
+        client = _FakeClient({"task_id": "crit-t1", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        out = await impl.critique(_make_monitor_with_forge(), _issue_with_labels(number=10))
+        # Fire-and-forget: retorna task_id sem bloquear.
+        assert out.ok is True
+        assert out.task_id == "crit-t1"
+        assert out.text == ""
+        # Transport-level wait=False confirma nowait.
+        assert client.last_wait is False
+
+    async def test_critique_payload_has_wait_for_result_false(self):
+        client = _FakeClient({"task_id": "crit-t2", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        await impl.critique(_make_monitor_with_forge(), _issue_with_labels(number=10))
+        assert client.last_payload["wait_for_result"] is False
+
+    async def test_critique_gravar_ledger_com_task_id(self):
+        """critique() com nowait=True deve gravar task_id no DispatchLedger."""
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        client = _FakeClient({"task_id": "crit-t3", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        out = await impl.critique(_make_monitor_with_forge(), _issue_with_labels(number=42))
+        assert out.task_id == "crit-t3"
+        # Ledger deve ter a entry para a issue.
+        record = impl._ledger.get(DispatchLedger.key_for_issue(42))
+        assert record is not None
+        assert record["task_id"] == "crit-t3"
+
+    async def test_refine_is_nowait_and_returns_task_id(self):
+        client = _FakeClient({"task_id": "ref-t1", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        out = await impl.refine(_make_monitor_with_forge(), _issue_with_labels(number=11))
+        assert out.ok is True
+        assert out.task_id == "ref-t1"
+        assert out.text == ""
+        assert client.last_wait is False
+
+    async def test_refine_payload_has_wait_for_result_false(self):
+        client = _FakeClient({"task_id": "ref-t2", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        await impl.refine(_make_monitor_with_forge(), _issue_with_labels(number=11))
+        assert client.last_payload["wait_for_result"] is False
+
+    async def test_refine_grava_ledger_com_task_id(self):
+        """refine() com nowait=True deve gravar task_id no DispatchLedger."""
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        client = _FakeClient({"task_id": "ref-t3", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        out = await impl.refine(_make_monitor_with_forge(), _issue_with_labels(number=55))
+        assert out.task_id == "ref-t3"
+        record = impl._ledger.get(DispatchLedger.key_for_issue(55))
+        assert record is not None
+        assert record["task_id"] == "ref-t3"
+
+    async def test_critique_stage_e_persona_preservados(self):
+        """critique() deve continuar usando stage='refine' e persona da issue."""
+        client = _FakeClient({"task_id": "crit-t4", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        await impl.critique(_make_monitor_with_forge(), _issue_with_labels(number=10, labels=("intent",)))
+        assert client.last_payload["stage"] == "refine"
+        # 'intent' → persona 'analyst'
+        assert client.last_payload["persona"] == "analyst"
+
+    async def test_refine_stage_e_persona_preservados(self):
+        """refine() deve continuar usando stage='refine' e persona da issue."""
+        client = _FakeClient({"task_id": "ref-t4", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        await impl.refine(_make_monitor_with_forge(), _issue_with_labels(number=10, labels=("feature",)))
+        assert client.last_payload["stage"] == "refine"
+        # 'feature' → persona 'architect'
+        assert client.last_payload["persona"] == "architect"
+
+    async def test_review_fresh_e_nowait(self):
+        """review(resume=False) deve ser nowait=True (fire-and-forget)."""
+        client = _FakeClient({"task_id": "rev-t1", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        out = await impl.review(_make_monitor(), _pr(number=5))
+        assert out.ok is True
+        assert out.task_id == "rev-t1"
+        assert out.text == ""
+        assert client.last_wait is False
+
+    async def test_review_resume_permanece_bloqueante(self):
+        """review(resume=True) deve continuar bloqueante (wait=True)."""
+        client = _FakeClient({"ok": True, "summary": "https://github.com/owner/name/pull/5 MERGED"})
+        impl = WorkerImplementer(client=client)
+        out = await impl.review(_make_monitor(), _pr(number=5), resume=True)
+        assert out.ok is True
+        assert client.last_wait is True
+
+    async def test_review_fresh_grava_ledger(self):
+        """review fresh deve gravar task_id no DispatchLedger (caminho nowait)."""
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        client = _FakeClient({"task_id": "rev-t2", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        out = await impl.review(_make_monitor(), _pr(number=77))
+        assert out.task_id == "rev-t2"
+        record = impl._ledger.get(DispatchLedger.key_for_pr(77))
+        assert record is not None
+        assert record["task_id"] == "rev-t2"
+
+    async def test_review_resume_preservado_sem_nowait(self):
+        """review(resume=True) NÃO deve passar nowait — caminho bloqueante intacto."""
+        client = _FakeClient({"ok": True, "summary": ""})
+        impl = WorkerImplementer(client=client)
+        out = await impl.review(_make_monitor(), _pr(number=88), resume=True)
+        # Caminho wait=True: retorna summary do response, não task_id nowait.
+        assert out.ok is True
+        assert client.last_wait is True

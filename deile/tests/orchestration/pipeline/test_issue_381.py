@@ -93,10 +93,13 @@ class TestBugAWaitForResult:
         )
 
     async def test_review_payload_has_wait_for_result_true(self):
-        """Review dispatch is synchronous (``nowait=False`` default).
+        """Review resume dispatch é síncrono (wait_for_result=True).
 
-        ``wait_for_result`` must be ``True`` so the worker blocks and returns
-        the structured result the stage handler needs.
+        O dispatch fresh (resume=False) agora é fire-and-forget (nowait=True),
+        espelhando o implement. Apenas o resume (resume=True) permanece
+        bloqueante para que o stage handler possa processar o resultado
+        estruturado (ended, fingerprint, tentativa) e decidir
+        concluido/incompleto/bloqueado.
         """
         from deile.orchestration.pipeline.implementer import WorkerImplementer
 
@@ -104,14 +107,35 @@ class TestBugAWaitForResult:
             {"ok": True, "summary": "https://github.com/owner/name/pull/7 MERGED"}
         )
         impl = WorkerImplementer(client=client)
-        out = await impl.review(_make_monitor(), _pr())
+        # resume=True → caminho bloqueante preservado.
+        out = await impl.review(_make_monitor(), _pr(), resume=True)
 
         assert out.ok is True
         assert client.last_payload is not None
         assert client.last_payload["wait_for_result"] is True, (
-            "Review dispatch must be synchronous (wait_for_result=True)"
+            "Review resume dispatch deve ser síncrono (wait_for_result=True)"
         )
         assert client.last_wait is True
+
+    async def test_review_fresh_payload_has_wait_for_result_false(self):
+        """Review fresh dispatch é fire-and-forget (nowait=True).
+
+        Espelha o implement: o worker retorna 202 + task_id imediatamente;
+        o pipeline reconcilia ground truth no próximo tick.
+        """
+        from deile.orchestration.pipeline.implementer import WorkerImplementer
+
+        client = _RecordingClient({"task_id": "rev-xyz", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        out = await impl.review(_make_monitor(), _pr())
+
+        assert out.ok is True
+        assert out.task_id == "rev-xyz"
+        assert client.last_payload is not None
+        assert client.last_payload["wait_for_result"] is False, (
+            "Review fresh dispatch deve ser fire-and-forget (wait_for_result=False)"
+        )
+        assert client.last_wait is False
 
 
 # ─── Bug B: status server startup order ─────────────────────────────────────

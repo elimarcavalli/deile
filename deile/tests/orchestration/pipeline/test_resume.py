@@ -540,16 +540,41 @@ class TestBlockFlowSideEffects:
 # ===========================================================================
 
 class TestReviewResume:
-    async def test_fresh_review_merges_to_concluded(self):
-        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
-                   labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
-        monitor, notifier, _ = _make_monitor(
-            prs=[pr],
-            worker_responses=[_worker_response(
-                ended="concluido", pr_url="https://x/pull/10",
-                summary="https://x/pull/10 MERGED", fingerprint="f", tentativa=1,
-            )],
+    async def test_fresh_review_is_nowait_then_resume_concludes(self):
+        # Issue #373: review fresh agora é fire-and-forget (espelha implement).
+        # Tick 1: PR em REVIEW_PENDING → fresh dispatch nowait → PR fica em
+        #         em_andamento; pr_reviewed NÃO chamada ainda.
+        # Tick 2: PR em REVIEW_IN_PROGRESS → resume bloqueante → pr_reviewed.
+        pr_pending = PrRef(number=10, title="prt", url="https://x/pull/10",
+                           labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
+        pr_in_progress = PrRef(number=10, title="prt", url="https://x/pull/10",
+                               labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-2")
+
+        monitor, notifier, client = _make_monitor(
+            prs=[pr_pending],
+            worker_responses=[
+                # Tick 1 (nowait): worker aceita e retorna 202 + task_id imediato.
+                {"task_id": "rev-t1", "status": "running"},
+                # Tick 2 (resume bloqueante): worker termina e retorna resultado.
+                _worker_response(
+                    ended="concluido", pr_url="https://x/pull/10",
+                    summary="https://x/pull/10 MERGED", fingerprint="f", tentativa=2,
+                ),
+            ],
         )
+
+        # Tick 1: fresh dispatch → fire-and-forget. pr_reviewed NÃO chamada.
+        await monitor.tick()
+        notifier.pr_reviewed.assert_not_called()
+        assert monitor.stats.prs_reviewed == 0
+        # O dispatch fire-and-forget foi feito (payload enfileirado no fake).
+        assert len(client.payloads) == 1
+        assert client.payloads[0]["resume"]["mode"] == "fresh"
+
+        # Reconfigura a lista de PRs para o segundo tick (PR agora em_andamento).
+        monitor.github.list_open_prs = AsyncMock(return_value=[pr_in_progress])
+
+        # Tick 2: resume bloqueante → concluido → pr_reviewed chamada.
         await monitor.tick()
         notifier.pr_reviewed.assert_called_once()
         _, kwargs = notifier.pr_reviewed.call_args

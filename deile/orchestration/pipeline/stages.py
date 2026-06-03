@@ -859,17 +859,33 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
         )
         return
     # Shard filter: only consider issues whose hash falls in our shard.
-    # Sort by priority so the most urgent issue is reviewed first.
-    target = next(
-        (i for i in sort_by_priority(issues) if i.batch_id is None and monitor.identity.owns(i.title)),
-        None,
-    )
-    if target is None:
+    # Sort by priority so the most urgent issue is critiqued first.
+    candidates = [
+        i for i in sort_by_priority(issues)
+        if i.batch_id is None and monitor.identity.owns(i.title)
+    ]
+    if not candidates:
         return
 
     if monitor.config.enable_refinement_gate:
-        await _critique_one_issue(monitor, target)
+        # Concorrência (issue #373): a crítica é fire-and-forget, então o tick
+        # pode despachar até ``available`` issues de uma vez — distribuindo o
+        # paralelismo pelos workers em vez de uma issue por tick. ``available``
+        # = max_parallel menos o total já em voo (crítica/refino/implement/PR).
+        in_flight = await _count_total_in_flight(monitor)
+        available = max(0, max(1, monitor.config.max_parallel) - in_flight)
+        if available <= 0:
+            logger.debug(
+                "critique: todos os %d slots ocupados (%d em voo); skip novos claims",
+                monitor.config.max_parallel, in_flight,
+            )
+            return
+        for target in candidates[:available]:
+            await _critique_one_issue(monitor, target)
         return
+
+    # Legacy path (gate OFF): mantém uma issue por tick.
+    target = candidates[0]
 
     # ---- Legacy path (Claude/no-gate): no-op transition through review --------
     batch = await monitor.forge.claim_with_batch("issue", target.number)
@@ -946,7 +962,14 @@ async def _persist_refine_attempt(monitor: "PipelineMonitor", number: int) -> No
 
 
 async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
-    """Critique gate (issue #257): judge scope, route to revisada or refinement."""
+    """Critique gate (issue #257/#373): CLAIM ``nova→em_revisao`` + DISPATCH
+    fire-and-forget. NÃO espera o veredito — :func:`reconcile_critique_issues`
+    processa CLARO/VAGO no tick seguinte, lendo o resultado do worker via
+    resume-info (a issue fica travada em ``em_revisao`` = lock durável).
+
+    Em caso de falha de dispatch (``outcome.ok`` False), reverte
+    ``em_revisao→nova`` para um tick posterior re-tentar.
+    """
     number = target.number
     # Single-monitor production needs no batch lock (the nova→em_revisao flip is
     # the lock, and a lingering ~batch: would break the re-critique loop); a
@@ -966,6 +989,8 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
         await _record_forge_error(monitor, f"could not claim issue #{number} for critique", exc)
         return
 
+    # Fire-and-forget: o implementer grava o task_id no DispatchLedger e devolve
+    # imediatamente (não bloqueia o tick).
     outcome = await monitor.implementer.critique(monitor, target)
     if multi:
         await monitor.forge.clear_batch_label("issue", number)
@@ -979,8 +1004,21 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
             logger.warning("could not revert #%d to nova after critique failure", number)
         logger.warning("critique #%d failed: %s", number, (outcome.error or "")[:200])
         return
+    logger.info(
+        "critique #%d dispatched fire-and-forget (task_id=%s) — reconcile no "
+        "próximo tick", number, getattr(outcome, "task_id", "") or "",
+    )
 
-    is_clear, reason = parse_critique_verdict(outcome.text)
+
+async def _apply_critique_verdict(
+    monitor: "PipelineMonitor", target, verdict_text: str
+) -> None:
+    """Aplica o veredito CLARO/VAGO de uma crítica concluída (migrado do
+    dispatch-side por #373). ``target`` é o snapshot fresco da issue em
+    ``em_revisao``; ``verdict_text`` é o ``last_result_full`` do worker.
+    """
+    number = target.number
+    is_clear, reason = parse_critique_verdict(verdict_text)
     issue_type = issue_type_from_labels(target.labels)
     if is_clear:
         await monitor.forge.transition_issue(
@@ -1019,8 +1057,75 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
     logger.info("critique #%d VAGO → %s (%s)", number, refine_state, reason[:120])
 
 
+async def reconcile_critique_issues(monitor: "PipelineMonitor") -> None:
+    """Processa o veredito das críticas fire-and-forget (issue #373).
+
+    Espelha :func:`reconcile_implementing_issues`: lista issues em
+    ``~workflow:em_revisao`` deste monitor e, pra cada uma com entry no
+    ``DispatchLedger``, consulta o worker via resume-info:
+
+    - **rodando** → continue (mantém o lock; próximo tick re-checa).
+    - **sumida** (404/erro/workdir perdido) → limpa o ledger e continue. NÃO
+      mexe no label — o reaper libera por idade.
+    - **concluída** → ``parse_critique_verdict(last_result_full)`` e aplica a
+      transição CLARO/VAGO (via :func:`_apply_critique_verdict`), depois limpa
+      o ledger.
+
+    Issues sem entry no ledger são deixadas pro reaper (lock órfão por restart
+    entre claim e dispatch).
+    """
+    if not monitor.config.enable_refinement_gate:
+        return
+    try:
+        issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWING, limit=50)
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, "could not list em_revisao issues for reconcile", exc,
+        )
+        return
+    ledger = getattr(monitor.implementer, "_ledger", None)
+    if ledger is None:
+        return
+    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+    own = monitor.identity.ownership_label()
+    for issue in sort_by_priority(issues):
+        if WORKFLOW_BLOCKED in issue.labels:
+            continue
+        if not (monitor._this_monitor_owns(issue) or own in issue.labels):
+            continue
+        key = DispatchLedger.key_for_issue(issue.number)
+        entry = ledger.get(key)
+        if entry is None:
+            continue  # reaper cuida do lock órfão
+        task_id = entry.get("task_id") or ""
+        if not task_id:
+            ledger.clear(key)
+            continue
+        state, info = await _fetch_reconcile_state(monitor, task_id, "refine")
+        if state == _RECON_RUNNING:
+            continue
+        if state == _RECON_GONE:
+            ledger.clear(key)
+            continue
+        # Concluída — relê o snapshot fresco da issue (labels podem ter mudado)
+        # e aplica o veredito a partir do resultado completo do worker.
+        try:
+            fresh = await monitor.forge.get_issue(issue.number)
+        except Exception as exc:  # noqa: BLE001 — sem snapshot fresco usa o atual
+            logger.warning(
+                "reconcile critique #%d: get_issue falhou (%s); usando snapshot do tick",
+                issue.number, exc,
+            )
+            fresh = issue
+        verdict_text = info.get("last_result_full") or ""
+        await _apply_critique_verdict(monitor, fresh, verdict_text)
+        ledger.clear(key)
+
+
 async def refine_one_issue(monitor: "PipelineMonitor") -> None:
-    """Stage 1b (issue #257): refine ONE issue em estado de refinamento.
+    """Stage 1b (issue #257/#373): DISPATCH fire-and-forget das issues em estado
+    de refinamento. NÃO espera o veredito — :func:`reconcile_refine_issues`
+    processa OK/AGUARDA_STAKEHOLDER + o guard de convergência no tick seguinte.
 
     Candidatas são issues que este monitor possui e que NÃO estão pausadas,
     bloqueadas ou além do refinamento. A seleção une três fontes:
@@ -1030,16 +1135,11 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     3. issues com ``~workflow:em_arquitetura`` (estado por tipo code)
 
     A união permite recuperar issues que perderam o label ``refinar`` por
-    crash, edição manual ou race — se a issue está num refine state, ela É
-    candidata independentemente do label. Dedup por ``number``.
+    crash, edição manual ou race. Dedup por ``number``.
 
-    Uma issue não ainda em refine state (humano aplicou ``refinar`` na mão)
-    é rehydrated para o estado correto do seu tipo. Caso a issue esteja num
-    refine state mas sem ``refinar``, re-adicionamos o label (idempotente,
-    best-effort) antes de refinar, para manter consistência.
-
-    Resultado do dispatch: ``REFINO: OK`` → volta a ``nova`` para re-crítica
-    (conta para o teto); ``AGUARDA_STAKEHOLDER`` → pausa via overlay.
+    Concorrência (issue #373): despacha até ``available`` issues por tick.
+    Anti-double-dispatch: pula candidata que JÁ tem entry no ``DispatchLedger``
+    (refino em voo aguardando reconcile).
     """
     if not monitor.config.enable_refinement_gate:
         return
@@ -1063,14 +1163,43 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
 
     _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
                  WORKFLOW_PR, WORKFLOW_DECOMPOSED)
-    target = next(
-        (i for i in sort_by_priority(issues)
-         if not any(lb in i.labels for lb in _excluded)
-         and monitor.identity.owns(i.title)),
-        None,
-    )
-    if target is None:
+    candidates = [
+        i for i in sort_by_priority(issues)
+        if not any(lb in i.labels for lb in _excluded)
+        and monitor.identity.owns(i.title)
+    ]
+    if not candidates:
         return
+
+    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+    ledger = getattr(monitor.implementer, "_ledger", None)
+    in_flight = await _count_total_in_flight(monitor)
+    available = max(0, max(1, monitor.config.max_parallel) - in_flight)
+    if available <= 0:
+        logger.debug(
+            "refine: todos os %d slots ocupados (%d em voo); skip novos dispatches",
+            monitor.config.max_parallel, in_flight,
+        )
+        return
+    dispatched = 0
+    for target in candidates:
+        if dispatched >= available:
+            break
+        # Anti-double-dispatch: refino já em voo (ledger entry) aguarda reconcile.
+        if ledger is not None and ledger.get(DispatchLedger.key_for_issue(target.number)):
+            continue
+        if await _refine_one_issue_dispatch(monitor, target):
+            dispatched += 1
+
+
+async def _refine_one_issue_dispatch(monitor: "PipelineMonitor", target) -> bool:
+    """Rehydrate + ceiling-check + DISPATCH fire-and-forget de UMA issue.
+
+    Retorna ``True`` quando consumiu um slot (dispatch despachado). Retorna
+    ``False`` em rehydrate-only, ceiling-block ou falha de dispatch (não conta
+    pro paralelismo). Captura ``before_body`` ANTES do dispatch e o grava no
+    ``extra`` do ledger pro guard de convergência reconciliar mais tarde.
+    """
     number = target.number
     issue_type = issue_type_from_labels(target.labels)
 
@@ -1088,7 +1217,7 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
                 await monitor.forge.add_labels("issue", number, [refine_state])
         except GhCommandError as exc:
             await _record_forge_error(monitor, f"could not rehydrate #{number} into {refine_state}", exc)
-        return  # refined on the next tick
+        return False  # refined on the next tick
 
     # Garante consistência: se a issue chegou pelo estado (em_refinamento /
     # em_arquitetura) mas sem o label ``refinar`` (crash, race, edição manual),
@@ -1107,7 +1236,11 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     # Ceiling guard (belt-and-suspenders with the critique-side check).
     if monitor._resume_tracker.refine_attempt(number) >= monitor.config.refine_max_attempts:
         await _block_refinement(monitor, target, "teto de refinamentos atingido")
-        return
+        return False
+
+    # Captura o body ANTES do dispatch — o guard de convergência do reconcile
+    # compara com o body resultante (depois que o worker terminar de reescrever).
+    before_body = (target.body or "").strip()
 
     outcome = await monitor.implementer.refine(monitor, target)
     if not outcome.ok:
@@ -1119,31 +1252,138 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
             "refine #%d failed (passe %d): %s", number,
             monitor._resume_tracker.refine_attempt(number), (outcome.error or "")[:200],
         )
+        return False
+
+    # Re-grava o record com o ``before_body`` no ``extra`` (o implementer já
+    # gravou o task_id; re-record sobrescreve mantendo a chave). O reconcile lê
+    # ``entry["extra"]["before_body"]`` para o guard de convergência.
+    ledger = getattr(monitor.implementer, "_ledger", None)
+    task_id = getattr(outcome, "task_id", "") or ""
+    if ledger is not None and task_id:
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        ledger.record(
+            DispatchLedger.key_for_issue(number),
+            task_id=task_id, session_id="", stage="refine",
+            extra={"before_body": before_body},
+        )
+    logger.info(
+        "refine #%d dispatched fire-and-forget (task_id=%s) — reconcile no "
+        "próximo tick", number, task_id,
+    )
+    return True
+
+
+async def reconcile_refine_issues(monitor: "PipelineMonitor") -> None:
+    """Processa o veredito dos refinos fire-and-forget (issue #373).
+
+    Lista issues em ``~workflow:em_refinamento`` ∪ ``~workflow:em_arquitetura``
+    deste monitor e, pra cada uma com entry no ledger, consulta o worker:
+
+    - **rodando** → continue.
+    - **sumida** → limpa ledger (reaper cuida do lock por idade).
+    - **falha** (``last_is_error``) → ``bump_refine`` + persiste, deixa pro
+      próximo tick (não limpa o ledger? limpa — o reaper/teto cobre; ver nota).
+    - **concluída** → ``parse_refine_verdict``:
+        - ``waiting`` → add ``~workflow:aguardando_stakeholder``.
+        - ``ok``/``unknown`` → **guard de convergência**: relê o body atual;
+          se igual ao ``before_body`` do ledger → promove a ``revisada``;
+          se diferente → ``bump_refine`` + persiste + ``refine_state→nova``.
+      Em todos os ramos concluídos, limpa o ledger no fim.
+    """
+    if not monitor.config.enable_refinement_gate:
+        return
+    try:
+        by_refining = await monitor.forge.list_issues_with_label(WORKFLOW_REFINING, limit=50)
+        by_arch = await monitor.forge.list_issues_with_label(WORKFLOW_ARCHITECTURE, limit=50)
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, "could not list refine issues for reconcile", exc,
+        )
+        return
+    ledger = getattr(monitor.implementer, "_ledger", None)
+    if ledger is None:
+        return
+    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+    own = monitor.identity.ownership_label()
+    _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
+                 WORKFLOW_PR, WORKFLOW_DECOMPOSED)
+    seen: dict = {}
+    for issue in (*by_refining, *by_arch):
+        if issue.number not in seen:
+            seen[issue.number] = issue
+    for issue in sort_by_priority(list(seen.values())):
+        if any(lb in issue.labels for lb in _excluded):
+            continue
+        if not (monitor._this_monitor_owns(issue) or own in issue.labels):
+            continue
+        key = DispatchLedger.key_for_issue(issue.number)
+        entry = ledger.get(key)
+        if entry is None:
+            continue
+        task_id = entry.get("task_id") or ""
+        if not task_id:
+            ledger.clear(key)
+            continue
+        state, info = await _fetch_reconcile_state(monitor, task_id, "refine")
+        if state == _RECON_RUNNING:
+            continue
+        if state == _RECON_GONE:
+            ledger.clear(key)
+            continue
+        before_body = (entry.get("extra") or {}).get("before_body")
+        await _apply_refine_verdict(monitor, issue, info, before_body)
+        ledger.clear(key)
+
+
+async def _apply_refine_verdict(
+    monitor: "PipelineMonitor", target, info: dict, before_body
+) -> None:
+    """Aplica o veredito de um refino concluído (migrado do dispatch-side por
+    #373). Preserva o guard de convergência: o ``before_body`` vem do ledger
+    (capturado no dispatch); o ``after_body`` é relido aqui.
+    """
+    number = target.number
+    issue_type = issue_type_from_labels(target.labels)
+    last_is_error = bool(info.get("last_is_error"))
+    verdict_text = info.get("last_result_full") or ""
+
+    if last_is_error:
+        # Falha determinística do worker: conta a tentativa pro teto bloquear.
+        monitor._resume_tracker.set_refine_attempt(
+            number, current_refine_attempt_from_labels(target.labels)
+        )
+        monitor._resume_tracker.bump_refine(number)
+        await _persist_refine_attempt(monitor, number)
+        logger.warning(
+            "refine #%d concluiu com erro (passe %d) — deixa pro próximo tick",
+            number, monitor._resume_tracker.refine_attempt(number),
+        )
         return
 
-    verdict = parse_refine_verdict(outcome.text)
+    verdict = parse_refine_verdict(verdict_text)
     if verdict == "waiting":
         # The worker posted 2-3 suggestions and assigned the author; pause refino.
         await monitor.forge.add_labels("issue", number, [WORKFLOW_WAITING])
         logger.info("refine #%d → aguardando stakeholder", number)
         return
-    # OK / unknown. Antes de re-circular, detecta CONVERGÊNCIA: se ESTE passe de
-    # refino NÃO alterou o body, o refinador não consegue/precisa melhorar mais
-    # — promove a ``revisada`` em vez de devolver pra ``nova`` e re-circular pra
-    # sempre. Esse é o loop do #438 (o refino dizia "não reescrevi, está pronto"
-    # mas a issue voltava ao gate indefinidamente). O teto durável ~refine:N (R1)
-    # segue como backstop caso o body mude marginalmente a cada passe.
+
+    # OK / unknown. GUARD DE CONVERGÊNCIA (preservado de #438): se ESTE passe de
+    # refino NÃO alterou o body, promove a ``revisada`` em vez de re-circular pra
+    # sempre. O ``before_body`` vem do ledger (capturado no dispatch); o
+    # ``after_body`` é o body atual.
     refine_state = next(
         (s for s in REFINE_WORKFLOW_STATES if s in target.labels),
         refine_workflow_state(issue_type),
     )
-    before_body = (target.body or "").strip()
+    monitor._resume_tracker.set_refine_attempt(
+        number, current_refine_attempt_from_labels(target.labels)
+    )
     try:
         refreshed = await monitor.forge.get_issue(number)
         after_body = (refreshed.body or "").strip()
     except Exception:  # noqa: BLE001 — na dúvida, segue o fluxo normal de re-crítica
         after_body = None
-    if after_body is not None and after_body == before_body:
+    if before_body is not None and after_body is not None and after_body == before_body:
         cleanup = [REFINAR, *REFINE_WORKFLOW_STATES] + [
             lb for lb in target.labels if is_refine_attempt_label(lb)
         ]
@@ -1403,6 +1643,112 @@ async def decompose_one_reviewed_intent(
 
 
 # ----- stage 2: implement ------------------------------------------------
+
+
+# --------------------------------------------------------------------------- #
+# Fire-and-forget reconcile (issue #373 — critique/refine/pr_review)
+# --------------------------------------------------------------------------- #
+
+# Resultado normalizado da consulta resume-info de um task_id no worker.
+# - "running":   o worker ainda processa (last_completed_at None ou claude_alive).
+# - "done":      concluiu — ``info`` carrega last_result_full/last_is_error.
+# - "gone":      task sumiu (404 / workdir_exists False / erro de transporte).
+_RECON_RUNNING = "running"
+_RECON_DONE = "done"
+_RECON_GONE = "gone"
+
+
+async def _fetch_reconcile_state(
+    monitor: "PipelineMonitor", task_id: str, stage: str
+) -> Tuple[str, dict]:
+    """Consulta ``/v1/dispatches/{task_id}/resume-info`` e normaliza o estado.
+
+    Reusa o cliente + a resolução de endpoint per-stage do implementer (não
+    re-implementa transporte). Mapeia a resposta crua em
+    ``(_RECON_RUNNING|_RECON_DONE|_RECON_GONE, info_dict)``:
+
+    - ``_RECON_GONE``: 404 / qualquer erro de transporte / ``workdir_exists``
+      False / payload não-dict. O reconcile NÃO mexe no label (o reaper libera
+      por idade) — apenas limpa o ledger.
+    - ``_RECON_RUNNING``: ``last_completed_at is None`` OU ``claude_alive``
+      True — o worker ainda está processando.
+    - ``_RECON_DONE``: concluiu; ``info`` traz ``last_result_full`` /
+      ``last_result_summary`` / ``last_is_error`` pro parser de veredito.
+    """
+    implementer = monitor.implementer
+    client = getattr(implementer, "_client", None)
+    if client is None or not task_id:
+        return _RECON_GONE, {}
+    try:
+        url = implementer._resolve_endpoint(stage)
+    except Exception:  # noqa: BLE001 — stage inválido é programming bug; trate como gone
+        url = None
+    try:
+        info = await client.get_resume_info(task_id, endpoint_url=url)
+    except Exception as exc:  # noqa: BLE001 — 404/transporte → gone (reaper cuida)
+        logger.info(
+            "reconcile: resume-info lookup falhou pra task_id=%s stage=%s: %s "
+            "— tratando como sumida",
+            task_id, stage, exc,
+        )
+        return _RECON_GONE, {}
+    if not isinstance(info, dict):
+        return _RECON_GONE, {}
+    if not info.get("workdir_exists", True):
+        return _RECON_GONE, info
+    still_running = info.get("last_completed_at") is None or info.get("claude_alive")
+    if still_running:
+        return _RECON_RUNNING, info
+    return _RECON_DONE, info
+
+
+async def _count_total_in_flight(monitor: "PipelineMonitor") -> int:
+    """Conta TODO o trabalho em voo deste monitor (issues + PRs) — soma os
+    estados-lock de crítica, refino, implement e review.
+
+    Cada despachador (crítica / refino) subtrai esse total de ``max_parallel``
+    pra decidir quantos candidatos novos pode claimar no tick, distribuindo o
+    paralelismo pelos três workers (issue #373). Estados bloqueada/em_pr não
+    contam (não consomem slot de worker).
+    """
+    own = monitor.identity.ownership_label()
+
+    def _mine(ref) -> bool:
+        return monitor._this_monitor_owns(ref) or own in ref.labels
+
+    total = 0
+    # Issues nos três estados-lock de issue (em_revisao, em_refinamento,
+    # em_arquitetura, em_implementacao).
+    seen_issue: set[int] = set()
+    for label in (WORKFLOW_REVIEWING, WORKFLOW_REFINING,
+                  WORKFLOW_ARCHITECTURE, WORKFLOW_IMPLEMENTING):
+        try:
+            issues = await monitor.forge.list_issues_with_label(label, limit=50)
+        except GhCommandError as exc:
+            await _record_forge_error(
+                monitor, f"in-flight count: list {label} failed", exc,
+            )
+            continue
+        for i in issues:
+            if i.number in seen_issue:
+                continue
+            if WORKFLOW_BLOCKED in i.labels or WORKFLOW_PR in i.labels:
+                continue
+            if _mine(i):
+                seen_issue.add(i.number)
+                total += 1
+    # PRs em review (em_andamento).
+    try:
+        prs = await monitor.forge.list_open_prs(limit=50)
+    except GhCommandError as exc:
+        await _record_forge_error(monitor, "in-flight count: list_open_prs failed", exc)
+        prs = []
+    for pr in prs:
+        if REVIEW_IN_PROGRESS not in pr.labels or WORKFLOW_BLOCKED in pr.labels:
+            continue
+        if monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number) or own in pr.labels:
+            total += 1
+    return total
 
 
 async def _count_in_flight_issues(monitor: "PipelineMonitor") -> int:
@@ -2183,6 +2529,128 @@ async def _handle_review_concluded_invalidation(
         logger.warning("invalidation #%d: comment failed: %s", pr.number, exc)
 
 
+async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
+    """Processa o veredito das reviews fresh fire-and-forget por GROUND-TRUTH
+    (issue #373 — Saída B, espelha :func:`reconcile_implementing_issues`).
+
+    Lista PRs em ``~review:em_andamento`` deste monitor com entry no ledger
+    (fresh dispatches). Pra cada uma, consulta resume-info:
+
+    - **rodando** → continue.
+    - **sumida** → limpa ledger (reaper retoma por idade).
+    - **concluída** → decide por GROUND-TRUTH (do mais seguro pro mais frouxo):
+        - PR **merged/closed** (``forge.get_pr(n) is None``) → ``em_andamento→
+          concluida`` + clear tracker/ledger + stats + notify + follow-ups.
+        - veredito **BLOQUEADO** no ``last_result_full`` (ou ``last_is_error``)
+          → ``_block_pr`` + clear ledger.
+        - concluiu **sem merge nem block** (review postado, sem mergear) →
+          ``em_andamento→concluida``. **Decisão:** o trabalho de review foi
+          ENTREGUE (não há mais dispatch pendente pra essa task); marcar
+          concluida evita loop infinito de re-review. O backstop contra
+          "review-theatre" continua sendo o invalidate-on-new-commit (#351),
+          que reabre a PR se houver commit novo.
+
+    Resume (em_andamento SEM ledger entry) é território do caminho bloqueante
+    de :func:`review_one_open_pr` — NÃO mexemos aqui.
+    """
+    try:
+        prs = await monitor.forge.list_open_prs(limit=50)
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, "could not list PRs for review reconcile", exc,
+        )
+        return
+    ledger = getattr(monitor.implementer, "_ledger", None)
+    if ledger is None:
+        return
+    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+    own = monitor.identity.ownership_label()
+    for pr in sort_by_priority(prs):
+        if REVIEW_IN_PROGRESS not in pr.labels or WORKFLOW_BLOCKED in pr.labels:
+            continue
+        if not (monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number) or own in pr.labels):
+            continue
+        key = DispatchLedger.key_for_pr(pr.number)
+        entry = ledger.get(key)
+        if entry is None:
+            continue  # resume/reaper território
+        task_id = entry.get("task_id") or ""
+        if not task_id:
+            ledger.clear(key)
+            continue
+        state, info = await _fetch_reconcile_state(monitor, task_id, "pr_review")
+        if state == _RECON_RUNNING:
+            continue
+        if state == _RECON_GONE:
+            ledger.clear(key)
+            continue
+        # Concluída — decide por ground-truth.
+        try:
+            still_open = await monitor.forge.get_pr(pr.number)
+        except Exception as exc:  # noqa: BLE001 — na dúvida, trata como aberta
+            logger.warning(
+                "reconcile review #%d: get_pr falhou (%s); assume aberta",
+                pr.number, exc,
+            )
+            still_open = pr
+        if still_open is None:
+            # MERGED/closed — sucesso. Espelha o ramo ``merged`` do handler.
+            try:
+                await monitor.forge.transition_pr(
+                    pr.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
+                )
+            except GhCommandError as exc:
+                await _record_forge_error(
+                    monitor, f"could not transition merged PR #{pr.number} to concluida", exc,
+                )
+            await monitor.forge.clear_batch_label("pr", pr.number)
+            monitor._resume_tracker.clear(pr.number)
+            reset_auth_failures(monitor, "pr", pr.number)
+            ledger.clear(key)
+            monitor._stats.prs_reviewed += 1
+            await monitor.notifier.pr_reviewed(pr.number, pr.title, pr.url, merged=True)
+            await _post_merge_follow_ups(monitor, pr)
+            continue
+        last_full = info.get("last_result_full") or ""
+        if info.get("last_is_error") or _review_was_blocked_marker(last_full):
+            await _block_pr(
+                monitor, pr.number, pr.title, pr.url,
+                "review/merge concluiu com erro ou marcador BLOQUEADO",
+            )
+            ledger.clear(key)
+            continue
+        # Concluiu sem merge nem block — review entregue. Marca concluida.
+        try:
+            await monitor.forge.transition_pr(
+                pr.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
+            )
+        except GhCommandError as exc:
+            await _record_forge_error(
+                monitor, f"could not transition reviewed PR #{pr.number} to concluida", exc,
+            )
+        await monitor.forge.clear_batch_label("pr", pr.number)
+        ledger.clear(key)
+        monitor._stats.prs_reviewed += 1
+        await monitor.notifier.pr_reviewed(pr.number, pr.title, pr.url, merged=False)
+
+
+def _review_was_blocked_marker(text: str) -> bool:
+    """True se o resultado da review carrega o marcador estruturado BLOQUEADO.
+
+    Reusa a constante ``_ENDED_BLOQUEADO`` e procura tokens canônicos que o
+    brief unificado emite quando o agente declara bloqueio (BLOQUEADO /
+    REQUEST_CHANGES). Conservador: só bloqueia com sinal explícito.
+    """
+    if not text:
+        return False
+    low = text.lower()
+    return (
+        _ENDED_BLOQUEADO in low
+        or "bloqueado" in low
+        or "request_changes" in low
+    )
+
+
 async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     try:
         prs = await monitor.forge.list_open_prs(limit=50)
@@ -2304,6 +2772,30 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             # ~review:pendente may not be set; that's ok.
             await monitor.forge.add_labels("pr", target.number, [REVIEW_IN_PROGRESS])
     monitor._resume_tracker.record_dispatch(target.number, now)
+
+    # FRESH (issue #373): dispatch fire-and-forget. ``em_andamento`` é o lock
+    # durável; o ``~batch:`` é transitório (libera já). O veredito é processado
+    # por :func:`reconcile_review_prs` no tick seguinte via ground-truth (PR
+    # merged?) + resume-info. NÃO bloqueia o tick.
+    if not is_resume:
+        outcome = await monitor.implementer.review(monitor, target, resume=False)
+        await monitor.forge.clear_batch_label("pr", target.number)
+        if not outcome.ok:
+            logger.warning(
+                "pr_review #%d: fresh dispatch falhou (%s) — em_andamento; "
+                "reaper/reconcile retomam", target.number,
+                (outcome.error or "")[:160],
+            )
+            return
+        logger.info(
+            "pr_review #%d dispatched fire-and-forget (task_id=%s) — reconcile "
+            "no próximo tick", target.number, getattr(outcome, "task_id", "") or "",
+        )
+        return
+
+    # RESUME (issue #254): caminho BLOQUEANTE preservado — o stage handler
+    # precisa do resultado estruturado (ended, fingerprint, tentativa) pra
+    # decidir concluido/incompleto/bloqueado inline.
     # Delegate the review/merge work to the configured strategy. The Claude
     # strategy checks out the branch in a worktree; the worker strategy clones
     # and runs ``gh pr checkout`` inside its own sandbox.
@@ -2664,10 +3156,12 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
     Não toca em PRs/issues sem dispatch do nosso monitor (ownership label) —
     apenas escopa às próprias.
 
-    NOTA: ``em_arquitetura`` e ``em_refinamento`` são estados de DESCANSO
-    entre passes de refine (a issue aguarda o próximo tick para ser
-    processada) — o reaper NÃO os cobre para evitar regressão. Apenas
-    ``em_revisao`` é um lock transitório que nenhum stage reseleciona.
+    NOTA: ``em_arquitetura`` e ``em_refinamento`` são AMBÍGUOS — podem ser
+    estado de DESCANSO entre passes (a issue aguarda o próximo tick, SEM
+    dispatch em voo) OU lock de um refino fire-and-forget travado (issue #373,
+    COM ledger entry + task_id). O reaper só os reapa quando há **ledger
+    entry com task_id** (dispatch em voo travado), distinguindo do descanso.
+    ``em_revisao`` (crítica fire-and-forget) é sempre lock transitório.
     """
     threshold = monitor.config.reaper_stale_seconds
     max_attempts = monitor.config.reaper_max_attempts
@@ -2759,6 +3253,46 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             max_attempts=max_attempts, age_seconds=age,
             description=f"issue #{issue.number} em_revisao stuck há {age // 60}min",
         )
+
+    # Issues com ~workflow:em_refinamento / ~workflow:em_arquitetura travadas por
+    # um refino fire-and-forget (issue #373). AMBÍGUOS: só reapa quando há ledger
+    # entry com task_id (= dispatch em voo travado), distinguindo do descanso
+    # entre passes (sem entry → o refino o reseleciona no próximo tick).
+    ledger = getattr(monitor.implementer, "_ledger", None)
+    if ledger is not None:
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        for refine_state in (WORKFLOW_REFINING, WORKFLOW_ARCHITECTURE):
+            try:
+                refine_issues = await monitor.forge.list_issues_with_label(refine_state)
+            except GhCommandError as exc:
+                await _record_forge_error(
+                    monitor, f"reaper: list_issues_with_label({refine_state}) failed", exc,
+                )
+                continue
+            for issue in sort_by_priority(refine_issues):
+                if own_label not in issue.labels:
+                    continue
+                # Só lock de dispatch em voo (ledger entry com task_id).
+                entry = ledger.get(DispatchLedger.key_for_issue(issue.number))
+                if not entry or not entry.get("task_id"):
+                    continue
+                applied_at = await monitor.forge.label_applied_at(
+                    "issue", issue.number, refine_state,
+                )
+                if applied_at is None:
+                    continue
+                age = now_ts - applied_at
+                if age < threshold:
+                    continue
+                await _reap_one(
+                    monitor, kind="issue", number=issue.number, labels=issue.labels,
+                    from_label=refine_state, to_label=WORKFLOW_NEW,
+                    max_attempts=max_attempts, age_seconds=age,
+                    description=f"issue #{issue.number} {refine_state} stuck há {age // 60}min",
+                )
+                # Lock liberado → o dispatch em voo morreu; limpa o ledger pra
+                # não consultar resume-info de uma task abandonada.
+                ledger.clear(DispatchLedger.key_for_issue(issue.number))
 
 
 async def _reap_one(

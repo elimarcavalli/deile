@@ -31,7 +31,6 @@ from deile.orchestration.pipeline.labels import (REFINAR,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING,
                                                  WORKFLOW_WAITING,
-                                                 is_refine_attempt_label,
                                                  make_refine_attempt_label)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
@@ -46,17 +45,83 @@ _NOTIFIER_METHODS = (
 
 
 class _SeqWorkerClient:
-    """Returns canned worker responses (one per dispatch); records payloads."""
+    """Worker client fake compatível com o modelo fire-and-forget (issue #373).
+
+    - ``dispatch(payload, wait=False)`` (crítica/refino nowait): consome a
+      próxima resposta enfileirada, gera um ``task_id`` e MEMORIZA o veredito
+      (``summary`` + flag ``ok``) associado a esse task_id. Devolve
+      ``{"task_id": ..., "status": "running"}`` imediatamente.
+    - ``dispatch(payload, wait=True)`` (decompose, resume bloqueante): devolve a
+      resposta enfileirada direto (caminho legacy).
+    - ``get_resume_info(task_id)`` (reconcile): devolve o resultado "concluído"
+      do task — ``last_result_full`` carrega o veredito que o reconcile parseia.
+
+    ``self.dispatched_tasks`` lista os task_ids despachados em ordem, pra os
+    testes invocarem o reconcile e simularem o tick seguinte.
+    """
 
     def __init__(self, responses: List[dict]):
         self._responses = list(responses)
         self.payloads: List[dict] = []
+        self.dispatched_tasks: List[str] = []
+        # task_id → {"ok", "summary", "is_error"} guardado no nowait.
+        self._task_results: Dict[str, dict] = {}
+        self._seq = 0
+        # task_ids cuja sessão deve ser reportada como "ainda rodando".
+        self.running_tasks: set = set()
 
-    async def dispatch(self, payload, *, wait):
-        self.payloads.append(payload)
+    def _next_response(self) -> dict:
         if self._responses:
             return self._responses.pop(0)
         return {"ok": True, "summary": ""}
+
+    async def dispatch(self, payload, *, wait):
+        self.payloads.append(payload)
+        resp = self._next_response()
+        if wait:
+            return resp
+        # nowait: o worker recusa o dispatch com erro tipado quando a resposta
+        # enfileirada marca ``ok=False`` (espelha o worker devolvendo não-202).
+        if not resp.get("ok", True):
+            from deile.infrastructure.deile_worker_client import \
+                WorkerDispatchError
+            raise WorkerDispatchError(
+                resp.get("error", "dispatch rejected"),
+                error_code="WORKER_REJECTED",
+            )
+        # nowait: gera task_id, memoriza o veredito, devolve 202.
+        self._seq += 1
+        task_id = f"task-{self._seq:04d}"
+        self.dispatched_tasks.append(task_id)
+        self._task_results[task_id] = {
+            "ok": bool(resp.get("ok", True)),
+            "summary": resp.get("summary", ""),
+        }
+        return {"task_id": task_id, "status": "running"}
+
+    async def get_resume_info(self, task_id, *, endpoint_url=None):
+        result = self._task_results.get(task_id)
+        if result is None:
+            from deile.infrastructure.deile_worker_client import \
+                WorkerDispatchError
+            raise WorkerDispatchError("task not found", error_code="NOT_FOUND")
+        if task_id in self.running_tasks:
+            return {
+                "last_completed_at": None,
+                "last_is_error": None,
+                "last_result_full": "",
+                "last_result_summary": "",
+                "claude_alive": True,
+                "workdir_exists": True,
+            }
+        return {
+            "last_completed_at": 1_700_000_000,
+            "last_is_error": not result["ok"],
+            "last_result_full": result["summary"],
+            "last_result_summary": result["summary"][:200],
+            "claude_alive": False,
+            "workdir_exists": True,
+        }
 
 
 def _resp(summary: str, *, ok: bool = True) -> dict:
@@ -84,6 +149,12 @@ def _make_monitor(
         enable_mention_handling=False,
     )
     lm = dict(label_map or {})
+    # Registry número→IssueRef (preserva o type label) — usado pelo reconcile
+    # quando relê o snapshot fresco via ``get_issue`` (issue #373).
+    registry: Dict[int, IssueRef] = {}
+    for _issues in lm.values():
+        for _i in _issues:
+            registry.setdefault(_i.number, _i)
     github = MagicMock()
     github.ensure_pipeline_labels = AsyncMock()
     github.list_issues_with_label = AsyncMock(
@@ -96,14 +167,17 @@ def _make_monitor(
     github.transition_issue = AsyncMock()
     github.add_labels = AsyncMock()
     github.remove_labels = AsyncMock()
-    # get_issue é chamado por _persist_refine_attempt (lê labels) e pelo guard de
-    # convergência do refino (compara o body antes/depois). Por padrão devolve um
-    # body DIFERENTE do candidato (que usa "corpo") → simula "o refino mudou o
-    # body" = caminho normal (volta pra nova). Testes de convergência sobrescrevem
-    # get_issue para devolver o MESMO body do candidato (= passe sem mudança).
-    github.get_issue = AsyncMock(
-        side_effect=lambda number: _issue(number, body="corpo refinado")
-    )
+    # get_issue é chamado por _persist_refine_attempt (lê labels), pelo guard de
+    # convergência do refino e pelo reconcile de crítica (relê snapshot fresco).
+    # Preserva os labels (type) do registry; body DIFERENTE do candidato (que usa
+    # "corpo") por padrão = "o refino mudou o body" (caminho normal: volta pra
+    # nova). Testes de convergência sobrescrevem get_issue p/ MESMO body.
+    def _get_issue(number):
+        base = registry.get(number)
+        labels = base.labels if base is not None else ("feature",)
+        author = base.author if base is not None else "alice"
+        return _issue(number, *labels, author=author, body="corpo refinado")
+    github.get_issue = AsyncMock(side_effect=_get_issue)
     github.assign_issue = AsyncMock()
     github.comment_on_issue = AsyncMock()
     github.comment_on_pr = AsyncMock()
@@ -115,10 +189,28 @@ def _make_monitor(
         setattr(notifier, attr, AsyncMock())
 
     client = _SeqWorkerClient(worker_responses or [])
+    # Ledger isolado por monitor (issue #373): a crítica/refino fire-and-forget
+    # grava task_id aqui e o reconcile lê. Sem path de tempfile o default
+    # (~/.deile/pipeline/dispatches.json) vazaria entre testes.
+    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+    ledger = DispatchLedger(path=_new_ledger_path())
     monitor = PipelineMonitor(
-        cfg, github=github, notifier=notifier, implementer=WorkerImplementer(client=client),
+        cfg, github=github, notifier=notifier,
+        implementer=WorkerImplementer(client=client, ledger=ledger),
     )
+    # Exposto pros helpers de reconcile (seeding por refine state).
+    monitor._test_issue_registry = registry
     return monitor, notifier, client
+
+
+_LEDGER_SEQ = [0]
+
+
+def _new_ledger_path() -> Path:
+    import tempfile
+    _LEDGER_SEQ[0] += 1
+    d = tempfile.mkdtemp(prefix=".test_ledger_")
+    return Path(d) / "dispatches.json"
 
 
 def _issue(number: int, *labels: str, title: str = "t", body: str = "corpo", author: str = "alice") -> IssueRef:
@@ -126,6 +218,81 @@ def _issue(number: int, *labels: str, title: str = "t", body: str = "corpo", aut
         number=number, title=title, url=f"https://github.com/owner/name/issues/{number}",
         labels=tuple(labels), body=body, state="open", author=author,
     )
+
+
+async def _critique_then_reconcile(monitor) -> None:
+    """Despacha a crítica (fire-and-forget) e roda o reconcile no mesmo ato,
+    simulando o tick-seguinte que processa o veredito (issue #373).
+
+    Pra refletir o tick seguinte, a issue precisa estar listada em ``em_revisao``
+    no reconcile. Reconfigura ``list_issues_with_label`` para devolver as issues
+    travadas pelo dispatch quando o reconcile consultar ``~workflow:em_revisao``.
+    """
+    await monitor._review_one_new_issue()
+    _seed_reviewing_from_transitions(monitor)
+    await monitor._reconcile_critique_issues()
+
+
+async def _refine_then_reconcile(monitor, *, registry=None) -> None:
+    """Despacha o refino (fire-and-forget) e roda o reconcile (tick seguinte).
+
+    Pro reconcile encontrar a issue, ela precisa estar listada no seu refine
+    state (``em_refinamento``/``em_arquitetura``). Lê o ledger pra descobrir
+    quais issues foram despachadas e as semeia no refine state correto.
+    """
+    await monitor._refine_one_issue()
+    reg = registry if registry is not None else getattr(monitor, "_test_issue_registry", {})
+    _seed_refine_states_from_ledger(monitor, reg)
+    await monitor._reconcile_refine_issues()
+
+
+def _seed_refine_states_from_ledger(monitor, registry: dict) -> None:
+    """Semeia as listas ``em_refinamento``/``em_arquitetura`` com as issues que
+    têm ledger entry (foram despachadas pelo refino)."""
+    ledger = monitor.implementer._ledger
+    refining, arch = [], []
+    for key in ledger.list_all():
+        if not key.startswith("issue:"):
+            continue
+        number = int(key.split(":", 1)[1])
+        base = registry.get(number)
+        labels = list(base.labels) if base is not None else []
+        own = monitor.identity.ownership_label()
+        if WORKFLOW_REFINING in labels:
+            refining.append(_issue(number, *labels, REFINAR, own))
+        else:
+            arch.append(_issue(number, *labels, REFINAR, own))
+    _override_label(monitor, WORKFLOW_REFINING, refining)
+    _override_label(monitor, WORKFLOW_ARCHITECTURE, arch)
+
+
+def _seed_reviewing_from_transitions(monitor) -> None:
+    """Faz o forge fake listar em ``~workflow:em_revisao`` as issues que o
+    dispatch acabou de travar (transição ``nova→em_revisao``), pro reconcile
+    encontrá-las. Preserva o side_effect original pras demais labels."""
+    reviewing = [
+        n for (n, frm, to) in _transitions(monitor.github)
+        if to == WORKFLOW_REVIEWING
+    ]
+    own = monitor.identity.ownership_label()
+    issues = [_issue(n, WORKFLOW_REVIEWING, own) for n in reviewing]
+    _override_label(monitor, WORKFLOW_REVIEWING, issues)
+
+
+def _override_label(monitor, label: str, issues) -> None:
+    """Sobrescreve o que ``list_issues_with_label`` devolve pra UMA label,
+    mantendo o comportamento das demais."""
+    prev = monitor.github.list_issues_with_label.side_effect
+
+    async def _side(lbl, **kw):
+        if lbl == label:
+            return list(issues)
+        res = prev(lbl, **kw)
+        if hasattr(res, "__await__"):
+            return await res
+        return res
+
+    monitor.github.list_issues_with_label = AsyncMock(side_effect=_side)
 
 
 def _transitions(github: MagicMock) -> List[Tuple[int, str, str]]:
@@ -151,11 +318,13 @@ def _added(github: MagicMock, number: int) -> set:
 
 class TestCritique:
     async def test_clear_goes_to_revisada_and_clears_refinar(self):
+        # Fire-and-forget (issue #373): o dispatch só CLAIMA nova→em_revisao; o
+        # veredito CLARO é aplicado no reconcile do tick seguinte.
         monitor, _, _ = _make_monitor(
             label_map={WORKFLOW_NEW: [_issue(1, "feature")]},
             worker_responses=[_resp("Analisei.\nVEREDITO: CLARO")],
         )
-        await monitor._review_one_new_issue()
+        await _critique_then_reconcile(monitor)
         t = _transitions(monitor.github)
         assert (1, WORKFLOW_NEW, WORKFLOW_REVIEWING) in t
         assert (1, WORKFLOW_REVIEWING, WORKFLOW_REVIEWED) in t
@@ -168,7 +337,7 @@ class TestCritique:
             label_map={WORKFLOW_NEW: [_issue(2, "feature")]},
             worker_responses=[_resp("VEREDITO: VAGO: falta contrato")],
         )
-        await monitor._review_one_new_issue()
+        await _critique_then_reconcile(monitor)
         assert (2, WORKFLOW_REVIEWING, WORKFLOW_ARCHITECTURE) in _transitions(monitor.github)
         assert REFINAR in _added(monitor.github, 2)
 
@@ -177,7 +346,7 @@ class TestCritique:
             label_map={WORKFLOW_NEW: [_issue(3, "intent")]},
             worker_responses=[_resp("VEREDITO: VAGO: template vazio")],
         )
-        await monitor._review_one_new_issue()
+        await _critique_then_reconcile(monitor)
         assert (3, WORKFLOW_REVIEWING, WORKFLOW_REFINING) in _transitions(monitor.github)
 
     async def test_poor_at_ceiling_blocks_and_assigns_author(self):
@@ -187,14 +356,17 @@ class TestCritique:
             refine_max_attempts=5,
         )
         monitor._resume_tracker.get(4).refine_attempt = 5  # ceiling already hit
-        await monitor._review_one_new_issue()
+        await _critique_then_reconcile(monitor)
         assert WORKFLOW_BLOCKED in _added(monitor.github, 4)
         monitor.github.assign_issue.assert_any_await(4, "bob")
 
     async def test_dispatch_failure_reverts_to_nova(self):
+        # Falha de dispatch é detectada INLINE (o implementer devolve ok=False
+        # imediatamente quando o worker recusa) — reverte em_revisao→nova no
+        # próprio tick, sem precisar de reconcile.
         monitor, _, _ = _make_monitor(
             label_map={WORKFLOW_NEW: [_issue(5, "feature")]},
-            worker_responses=[_resp("", ok=False)],
+            worker_responses=[{"ok": False, "error": "boom"}],
         )
         await monitor._review_one_new_issue()
         assert (5, WORKFLOW_REVIEWING, WORKFLOW_NEW) in _transitions(monitor.github)
@@ -206,11 +378,13 @@ class TestCritique:
 
 class TestRefine:
     async def test_ok_bumps_count_and_returns_to_nova(self):
+        # Fire-and-forget (issue #373): o dispatch despacha; o veredito OK +
+        # transição refine_state→nova são aplicados no reconcile (tick seguinte).
         monitor, _, _ = _make_monitor(
             label_map={REFINAR: [_issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE)]},
             worker_responses=[_resp("Reescrevi.\nREFINO: OK")],
         )
-        await monitor._refine_one_issue()
+        await _refine_then_reconcile(monitor)
         assert (6, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) in _transitions(monitor.github)
         assert monitor._resume_tracker.refine_attempt(6) == 1
 
@@ -219,7 +393,7 @@ class TestRefine:
             label_map={REFINAR: [_issue(7, "intent", REFINAR, WORKFLOW_REFINING)]},
             worker_responses=[_resp("Postei sugestões.\nREFINO: AGUARDA_STAKEHOLDER")],
         )
-        await monitor._refine_one_issue()
+        await _refine_then_reconcile(monitor)
         assert WORKFLOW_WAITING in _added(monitor.github, 7)
         # NOT returned to nova (paused).
         assert (7, WORKFLOW_REFINING, WORKFLOW_NEW) not in _transitions(monitor.github)
@@ -441,10 +615,10 @@ class TestRefineByState:
             },
             worker_responses=[_resp("Refinei.\nREFINO: OK")],
         )
-        await monitor._refine_one_issue()
+        await _refine_then_reconcile(monitor)
         # Deve ter refinado (dispatch aconteceu).
         assert len(client.payloads) == 1
-        # Volta para nova após OK.
+        # Volta para nova após OK (transição aplicada no reconcile).
         assert (200, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) in _transitions(monitor.github)
         # Re-adicionou label refinar antes de refinar (passo idempotente).
         added = _added(monitor.github, 200)
@@ -462,7 +636,7 @@ class TestRefineByState:
             },
             worker_responses=[_resp("Refinei.\nREFINO: OK")],
         )
-        await monitor._refine_one_issue()
+        await _refine_then_reconcile(monitor)
         assert len(client.payloads) == 1
         assert (201, WORKFLOW_REFINING, WORKFLOW_NEW) in _transitions(monitor.github)
         assert REFINAR in _added(monitor.github, 201)
@@ -526,8 +700,8 @@ class TestRefineAttemptDurable:
             label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
             worker_responses=[_resp("REFINO: OK")],
         )
-        await monitor._refine_one_issue()
-        # Verifica que add_labels foi chamado com ~refine:1
+        await _refine_then_reconcile(monitor)
+        # Verifica que add_labels foi chamado com ~refine:1 (no reconcile).
         added_all = [
             lb
             for call in monitor.github.add_labels.await_args_list
@@ -586,9 +760,9 @@ class TestRefineAttemptDurable:
         )
         # In-memory já está em 3 (maior que a label 2).
         monitor._resume_tracker.get(303).refine_attempt = 3
-        await monitor._refine_one_issue()
+        await _refine_then_reconcile(monitor)
         # Reconciliação com label=2 NÃO deve encolher o contador para 2.
-        # Após bump(+1), deve ser 4 (não 3).
+        # Após bump(+1) no reconcile, deve ser 4 (não 3).
         assert monitor._resume_tracker.refine_attempt(303) == 4
 
     async def test_claro_remove_label_refine_na_critica(self):
@@ -598,8 +772,8 @@ class TestRefineAttemptDurable:
             label_map={WORKFLOW_NEW: [issue]},
             worker_responses=[_resp("VEREDITO: CLARO")],
         )
-        await monitor._review_one_new_issue()
-        # Verifica que remove_labels foi chamado incluindo ~refine:3
+        await _critique_then_reconcile(monitor)
+        # Verifica que remove_labels foi chamado incluindo ~refine:3 (no reconcile)
         removed_all = [
             lb
             for call in monitor.github.remove_labels.await_args_list
@@ -643,8 +817,8 @@ class TestRefineAttemptDurable:
         )
         # Simula get_issue falhando (rede down, etc.).
         monitor.github.get_issue = AsyncMock(side_effect=Exception("network error"))
-        # Não deve levantar — stage continua normalmente.
-        await monitor._refine_one_issue()
+        # Não deve levantar — stage continua normalmente (transição no reconcile).
+        await _refine_then_reconcile(monitor, registry={306: issue})
         # Issue deve ter voltado a nova apesar do erro de persistência.
         assert (306, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) in _transitions(monitor.github)
 
@@ -665,7 +839,7 @@ class TestRefineConvergence:
                 number, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="spec estável"
             )
         )
-        await monitor._refine_one_issue()
+        await _refine_then_reconcile(monitor, registry={700: issue})
         t = _transitions(monitor.github)
         # Convergiu → revisada (NÃO volta pra nova).
         assert (700, WORKFLOW_ARCHITECTURE, WORKFLOW_REVIEWED) in t
@@ -691,7 +865,7 @@ class TestRefineConvergence:
                 number, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="spec v2 reescrito"
             )
         )
-        await monitor._refine_one_issue()
+        await _refine_then_reconcile(monitor, registry={701: issue})
         t = _transitions(monitor.github)
         assert (701, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) in t
         assert (701, WORKFLOW_ARCHITECTURE, WORKFLOW_REVIEWED) not in t
