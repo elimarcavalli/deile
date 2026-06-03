@@ -69,6 +69,9 @@ class DispatchLedger:
     def __init__(self, path: Optional[Path] = None) -> None:
         self._path = path or _default_ledger_path()
         self._cache: Optional[Dict[str, Any]] = None
+        #: ``(st_mtime_ns, st_size)`` of the file when cache was last loaded.
+        #: ``None`` means cache is invalid (not yet loaded, or invalidated).
+        self._file_sig: Optional[tuple] = None
 
     @staticmethod
     def key_for_pr(number: int) -> str:
@@ -83,14 +86,57 @@ class DispatchLedger:
     # ----------------------------------------------------------------- #
 
     def _load(self) -> Dict[str, Any]:
-        """Lê o ledger do disco. None → empty (file ausente/malformed)."""
+        """Lê o ledger do disco. None → empty (file ausente/malformed).
+
+        Stat-based cache invalidation (issue #507 #11b): when a cached copy
+        exists, we do a cheap ``os.stat`` to check whether the file's
+        ``(st_mtime_ns, st_size)`` changed before trusting the in-memory
+        copy.  This lets a second long-lived process (e.g. a separate reader
+        instance) detect writes made by the single writer without having to
+        call ``invalidate_cache()`` explicitly.
+
+        Signature uses **both** mtime_ns **and** size so that two successive
+        writes that happen within the same nanosecond (possible on FAT /
+        second-granularity mtime filesystems) but produce different sizes are
+        still detected correctly.
+
+        When the cache is empty (first call or after ``invalidate_cache()``)
+        we skip the stat and fall straight through to the read path — there
+        is nothing to validate.
+        """
         if self._cache is not None:
-            return self._cache
+            # --- stat-based cache validation ---
+            if not self._path.exists():
+                # File disappeared: treat as empty cache.
+                self._cache = {"version": LEDGER_SCHEMA_VERSION, "dispatches": {}}
+                self._file_sig = None
+                return self._cache
+            try:
+                st = os.stat(self._path)
+                current_sig = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                # Cannot stat; preserve the cached copy (best-effort).
+                return self._cache
+            if current_sig == self._file_sig:
+                # Signature unchanged — trust cached copy.
+                return self._cache
+            # Signature changed — invalidate and fall through to reload.
+            self._cache = None
+            self._file_sig = None
+
         if not self._path.exists():
             self._cache = {"version": LEDGER_SCHEMA_VERSION, "dispatches": {}}
             return self._cache
         try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = self._path.read_text(encoding="utf-8")
+            # Record signature AFTER a successful read so we capture the
+            # on-disk state that corresponds to the content we just loaded.
+            try:
+                st = os.stat(self._path)
+                self._file_sig = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                self._file_sig = None
+            data = json.loads(raw)
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("ledger %s corrupted/unreadable, starting empty: %s",
                            self._path, exc)
@@ -179,3 +225,4 @@ class DispatchLedger:
     def invalidate_cache(self) -> None:
         """Força reload do disco no próximo acesso. Útil em testes."""
         self._cache = None
+        self._file_sig = None

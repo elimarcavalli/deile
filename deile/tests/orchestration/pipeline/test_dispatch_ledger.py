@@ -150,16 +150,28 @@ def test_default_path_when_env_unset(monkeypatch, tmp_path):
 
 
 def test_invalidate_cache_re_reads_disk(tmp_path):
-    """invalidate_cache força reload do disco."""
+    """invalidate_cache (e stat-based reload) forces a reload from disk.
+
+    Since #11b, DispatchLedger._load() uses (st_mtime_ns, st_size) to detect
+    external writes automatically.  Both paths are tested here:
+    1. A size-changing write is detected without calling invalidate_cache().
+    2. invalidate_cache() + same-size write also forces a reload.
+    """
     path = tmp_path / "l.json"
     ledger = DispatchLedger(path=path)
     ledger.record("pr:1", task_id="t", session_id="s")
-    # Modifica direto no disco (simulating other writer — não acontece na
-    # prática, single-writer, mas testa o mecanismo).
+
+    # --- path 1: external write that changes file size ---
+    # The new content is longer, so st_size differs → auto-detected.
     data = json.loads(path.read_text())
     data["dispatches"]["pr:1"]["task_id"] = "modified-externally"
     path.write_text(json.dumps(data))
-    # Sem invalidate, ledger ainda usa cache.
-    assert ledger.get("pr:1")["task_id"] == "t"
-    ledger.invalidate_cache()
+    # Stat-based cache invalidation detects the changed size automatically.
     assert ledger.get("pr:1")["task_id"] == "modified-externally"
+
+    # --- path 2: invalidate_cache() clears the signature ---
+    data2 = json.loads(path.read_text())
+    data2["dispatches"]["pr:1"]["task_id"] = "after-explicit-invalidate"
+    path.write_text(json.dumps(data2))
+    ledger.invalidate_cache()
+    assert ledger.get("pr:1")["task_id"] == "after-explicit-invalidate"
