@@ -2112,6 +2112,21 @@ async def _finalize_implement_outcome(
     pr_url = outcome.pr_url or _extract_pr_url(outcome.text)
     ended = outcome.ended  # "" on the Claude path; ground-truth on the worker path
 
+    # Skip-because-still-running is NOT a real attempt — the previous dispatch
+    # is still alive in the worker, so no new work happened this tick. Return
+    # BEFORE ``_absorb_progress`` (which bumps the attempt counter +1 per call
+    # AND would record a failure streak below): a long resume spanning more
+    # ticks than max_retries would otherwise burn its whole budget on no-op
+    # skips and block while healthy (same root cause as the pr_review #509
+    # regression). The durable ``em_implementacao`` label keeps the lock; the
+    # reaper retoma no próximo tick.
+    if not outcome.ok and "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
+        logger.info(
+            "implement #%d: dispatch skipped (claude ainda alive) — manter %s "
+            "(sem consumir tentativa)", number, WORKFLOW_IMPLEMENTING,
+        )
+        return
+
     zero_progress = _absorb_progress(monitor, number, outcome)
 
     # 1. BLOQUEADO — the agent declared a hard impediment.
@@ -2817,6 +2832,21 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     # strategy checks out the branch in a worktree; the worker strategy clones
     # and runs ``gh pr checkout`` inside its own sandbox.
     outcome = await monitor.implementer.review(monitor, target, resume=is_resume)
+    # Skip-because-still-running is NOT a real attempt: the previous review is
+    # still alive in the worker, so no new review/merge work happened this tick.
+    # Returning BEFORE ``_absorb_progress`` is load-bearing — that helper calls
+    # ``update_from_worker`` which unconditionally bumps the attempt counter
+    # (+1 per call). A review that legitimately spans more ticks than the
+    # ``pr_review`` max_retries would otherwise burn its whole budget on these
+    # no-op skips and get blocked while perfectly healthy (#509: 4 skips →
+    # "teto 4/4 sem mergear" on a CLEAN+MERGEABLE PR).
+    if not outcome.ok and "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
+        logger.info(
+            "pr_review #%d: dispatch skipped (claude ainda alive) — manter "
+            "em_andamento (sem consumir tentativa)", target.number,
+        )
+        await monitor.forge.clear_batch_label("pr", target.number)
+        return
     zero_progress = _absorb_progress(monitor, target.number, outcome)
     # Ground-truth merge detection: the worker's structured ``ended`` is
     # authoritative; fall back to scanning the text for the MERGED marker.
@@ -2854,14 +2884,8 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         # ~review:concluida sem proof-of-work — vide R2/PR #344, 5s).
         # Libera o batch; reaper retoma no próximo tick (resume real
         # se sessão claude sobreviveu, fresh dispatch caso contrário).
-        # Skip dispatch-skipped-still-running (já intencional do resumer).
-        if "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
-            logger.info(
-                "pr_review #%d: dispatch skipped (claude ainda alive) — "
-                "manter em_andamento", target.number,
-            )
-            await monitor.forge.clear_batch_label("pr", target.number)
-            return
+        # (DISPATCH_SKIPPED_STILL_RUNNING já tratado antes do _absorb_progress
+        # acima — não consome tentativa e não chega aqui.)
         logger.warning(
             "pr_review #%d: worker error não-auth (%s); liberando batch pra reaper "
             "retomar (não marca concluida sem proof-of-work — Bug A fix)",

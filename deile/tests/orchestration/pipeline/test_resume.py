@@ -677,3 +677,69 @@ class TestOutcomePreservesErrorCode:
         outcome = _outcome_from_worker_response(response)
         assert outcome.ok is True
         assert outcome.error == ""
+
+
+# ===========================================================================
+# Regressão #509: skip-because-still-running NÃO consome tentativa
+# ===========================================================================
+
+class TestSkipStillRunningDoesNotBurnAttempt:
+    """Um dispatch pulado porque o anterior AINDA roda no worker não é uma
+    tentativa real — nenhum trabalho novo de review/merge aconteceu no tick.
+    Antes do fix, ``_absorb_progress`` (chamado incondicionalmente) bumpava o
+    contador +1 a cada skip; uma review saudável que durasse mais ticks que o
+    teto (``resolve_stage_max_retries`` = 3) queimava todo o orçamento em
+    skips e era bloqueada (#509: PR CLEAN+MERGEABLE → "teto 4/4 sem mergear").
+    """
+
+    @staticmethod
+    def _skip_outcome():
+        from deile.orchestration.pipeline.implementer import WorkOutcome
+        return WorkOutcome(
+            ok=False, text="",
+            error=("DISPATCH_SKIPPED_STILL_RUNNING: claude-worker ainda "
+                   "rodando o task anterior; skip nesse tick"),
+        )
+
+    async def test_pr_review_skip_does_not_increment_attempt_nor_block(self):
+        from deile.orchestration.pipeline import stages
+        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
+                   labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-2")
+        monitor, notifier, _ = _make_monitor(prs=[pr])
+        monitor.github.branch_exists = AsyncMock(return_value=True)
+        # Implementer devolve skip (review anterior ainda viva).
+        monitor.implementer = MagicMock()
+        monitor.implementer.review = AsyncMock(return_value=self._skip_outcome())
+        # 1 tentativa já registrada (bem abaixo do teto de 3).
+        monitor._resume_tracker.update_from_worker(
+            10, fingerprint="f", attempt=1, budget_s=0.0
+        )
+        before = monitor._resume_tracker.get(10).attempt
+
+        await stages.review_one_open_pr(monitor)
+
+        after = monitor._resume_tracker.get(10).attempt
+        assert after == before == 1, "skip-still-running NÃO pode bumpar attempt"
+        # NÃO bloqueou.
+        notifier.implementation_blocked.assert_not_called()
+        for call in monitor.github.add_labels.call_args_list:
+            labels_arg = call.args[2] if len(call.args) > 2 else []
+            assert WORKFLOW_BLOCKED not in labels_arg
+        # batch transitório liberado (em_andamento permanece como lock durável).
+        monitor.github.clear_batch_label.assert_awaited()
+
+    async def test_implement_resume_skip_does_not_increment_attempt_nor_block(self):
+        from deile.orchestration.pipeline import stages
+        monitor, notifier, _ = _make_monitor(issues_in_progress=[_in_progress()])
+        monitor._resume_tracker.update_from_worker(
+            2, fingerprint="f", attempt=1, budget_s=0.0
+        )
+        before = monitor._resume_tracker.get(2).attempt
+
+        await stages._finalize_implement_outcome(
+            monitor, 2, self._skip_outcome(), resume=True,
+        )
+
+        after = monitor._resume_tracker.get(2).attempt
+        assert after == before == 1, "skip-still-running NÃO pode bumpar attempt"
+        notifier.implementation_blocked.assert_not_called()
