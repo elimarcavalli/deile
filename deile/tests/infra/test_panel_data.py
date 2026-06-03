@@ -548,10 +548,12 @@ class TestPipelineStateDropCounters:
         assert state.canonical_dropped["line_has_forbidden_char"] == 1
 
     def test_carriage_return_in_canonical_line_increments_counter(self):
-        # \r is treated as a line separator by splitlines(), so it cannot
-        # appear in ll.body. Use \t which IS preserved through splitlines().
-        text = self._raw("refinement.critique issue=1\tpersona=architect verdict=claro")
-        state = self._provider()._parse(text)
+        # \r is consumed by splitlines() so it never reaches ll.body via the
+        # normal text path.  Inject a LogLine with \r in the body directly.
+        fake_ll = pd.LogLine(ts=datetime(2026, 5, 31, 10, 0, 0, tzinfo=timezone.utc),
+                             body="refinement.critique issue=1\rpersona=architect verdict=claro")
+        with patch("_panel_data._parse_log_line", return_value=fake_ll):
+            state = pd.PipelineProvider.__new__(pd.PipelineProvider)._parse("dummy")
         assert state.canonical_dropped["line_has_forbidden_char"] == 1
 
     # ── AC11: events capped at 60 ─────────────────────────────────────────
