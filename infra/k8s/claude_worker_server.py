@@ -2552,9 +2552,18 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             "claude CLI reportou token OAuth expirado/inválido. "
             "Rode `deploy.py k8s claude-renew` no host pra renovar."
         )
-    elif not ok and claude_result["is_error"] and claude_result["result"]:
-        # Falha não-auth reportada pelo claude — propaga o erro pra pipeline.
-        response["error"] = claude_result["result"][:500]
+    elif not ok:
+        # Falha não-auth: constrói motivo útil a partir de returncode/stderr/
+        # stdout quando o JSON estruturado do claude não veio (timeout, crash,
+        # saída vazia). Antes ficava sem ``response["error"]`` nesses casos,
+        # deixando o pipeline com ``reason=unknown`` (gap F1 desta sessão).
+        failure_reason = _build_failure_reason(
+            result.returncode,
+            result.stderr,
+            result.stdout,
+            claude_result["result"],
+        )
+        response["error"] = failure_reason[:500]
 
     # Terminal marker for the panel — pairs with dispatch.received (#435).
     if ok:
@@ -2567,9 +2576,15 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         )
     else:
         _err_code = error_code or ("AUTH_EXPIRED" if auth_expired else None)
+        failure_reason = _build_failure_reason(
+            result.returncode,
+            result.stderr,
+            result.stdout,
+            claude_result.get("result", ""),
+        )
         dlog.dispatch_failed(
             task=task_id,
-            reason=claude_result.get("result", "")[:120] or "unknown",
+            reason=failure_reason[:120],
             turns=claude_result.get("num_turns"),
             duration_s=result.duration_seconds,
             error_code=_err_code,
@@ -2605,6 +2620,62 @@ def _detect_auth_expired(stdout: str, stderr: str) -> bool:
     """
     combined = (stdout + "\n" + stderr).lower()
     return any(sig in combined for sig in _AUTH_EXPIRED_SIGNATURES)
+
+
+#: Tamanho máximo (bytes) da cauda de stderr/stdout capturada no motivo de
+#: falha. Escolhido para caber num log de pipeline sem explosão de payload;
+#: suficiente para ~20 linhas típicas de erro do ``claude`` CLI.
+_FAILURE_TAIL_BYTES = 2000
+
+
+def _build_failure_reason(
+    returncode: int,
+    stderr: str,
+    stdout: str,
+    claude_result_text: str,
+    *,
+    max_bytes: int = _FAILURE_TAIL_BYTES,
+) -> str:
+    """Constrói um motivo de falha legível para ``dlog.dispatch_failed`` e
+    ``response["error"]``.
+
+    Prioridade de fonte (da mais para a menos confiável):
+    1. ``claude_result_text`` — campo ``result`` do JSON estruturado do CLI.
+       Já parsado; contém mensagem do agente ou do runtime do claude.
+    2. Cauda do ``stderr`` — saída de erro do subprocess; geralmente inclui
+       stacktrace/mensagem de erro do CLI.
+    3. Cauda do ``stdout`` — fallback quando stderr está vazio (alguns erros
+       do claude CLI saem no stdout, inclusive o JSON de erro parcial).
+    4. Motivo genérico derivado do ``returncode`` (ex: timeout rc=124).
+
+    A cauda é limitada a ``max_bytes`` para evitar payloads gigantes.
+    Os logs completos ficam no PVC (``/v1/progress/{task_id}``).
+
+    .. note::
+        Não aplicamos redação de segredos aqui além do truncamento — a cauda
+        pode conter env vars printadas pelo claude CLI em modo debug. O operador
+        deve inspecionar via ``kubectl logs`` / ``/v1/progress`` para o stderr
+        completo. TODO: aplicar ``_redact_env`` linha-a-linha quando/se o
+        ``SecretsScanner.redact_text`` for exposto para texto livre.
+    """
+    # Fonte 1: JSON estruturado do claude — mais confiável, já limpo.
+    if claude_result_text and claude_result_text.strip():
+        return claude_result_text[:max_bytes]
+
+    # Fonte 2: cauda do stderr — preferida sobre stdout (é o canal de erro).
+    if stderr and stderr.strip():
+        tail = stderr[-max_bytes:] if len(stderr) > max_bytes else stderr
+        return f"rc={returncode} stderr: {tail.strip()}"
+
+    # Fonte 3: cauda do stdout como fallback (stderr pode estar vazio).
+    if stdout and stdout.strip():
+        tail = stdout[-max_bytes:] if len(stdout) > max_bytes else stdout
+        return f"rc={returncode} stdout: {tail.strip()}"
+
+    # Fonte 4: motivo genérico derivado apenas do returncode.
+    if returncode == 124:
+        return "claude -p timed out (rc=124)"
+    return f"subprocess exited with rc={returncode} (sem saída capturada)"
 
 
 async def progress_handler(request: web.Request) -> web.Response:

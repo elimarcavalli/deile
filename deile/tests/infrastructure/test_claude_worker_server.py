@@ -2167,3 +2167,281 @@ def test_find_live_task_for_channel_dead_only_returns_none(
     )
     monkeypatch.setattr(cws, "_is_claude_process_alive", lambda sid: False)
     assert cws._find_live_task_for_channel(tmp_path, "pipeline-issue-433") is None
+
+
+# --------------------------------------------------------------------------- #
+# F1a — captura de stderr/motivo na resposta de falha (issue #445)
+# --------------------------------------------------------------------------- #
+
+
+# --- Testes unitários de _build_failure_reason ---
+
+
+def test_build_failure_reason_prefere_claude_result_text(claude_worker_module):
+    """Quando ``claude_result_text`` não está vazio, é retornado como motivo
+    (fonte mais confiável: JSON estruturado do claude CLI)."""
+    fn = claude_worker_module._build_failure_reason
+    reason = fn(
+        returncode=1,
+        stderr="Erro de disco",
+        stdout="saída qualquer",
+        claude_result_text="Task failed: no tests pass",
+    )
+    assert reason == "Task failed: no tests pass"
+    # stderr e stdout não aparecem quando há claude_result_text.
+    assert "disco" not in reason
+
+
+def test_build_failure_reason_usa_stderr_quando_result_vazio(claude_worker_module):
+    """Sem ``claude_result_text``, a cauda do stderr é priorizada."""
+    fn = claude_worker_module._build_failure_reason
+    reason = fn(
+        returncode=2,
+        stderr="fatal: repository not found\npermission denied",
+        stdout="",
+        claude_result_text="",
+    )
+    assert "rc=2" in reason
+    assert "permission denied" in reason
+    # Prefixo deve mencionar stderr.
+    assert "stderr" in reason
+
+
+def test_build_failure_reason_fallback_stdout_quando_sem_stderr(claude_worker_module):
+    """Quando stderr está vazio, usa cauda do stdout como fallback."""
+    fn = claude_worker_module._build_failure_reason
+    reason = fn(
+        returncode=1,
+        stderr="",
+        stdout="Algo importante aconteceu no stdout\nfim",
+        claude_result_text="",
+    )
+    assert "rc=1" in reason
+    assert "stdout" in reason
+    assert "fim" in reason
+
+
+def test_build_failure_reason_timeout_sem_output(claude_worker_module):
+    """rc=124 sem nenhuma saída produz motivo legível mencionando timeout."""
+    fn = claude_worker_module._build_failure_reason
+    reason = fn(returncode=124, stderr="", stdout="", claude_result_text="")
+    assert "124" in reason or "timeout" in reason.lower()
+
+
+def test_build_failure_reason_rc_generico_sem_output(claude_worker_module):
+    """rc diferente de 0 e 124 sem saída produz motivo mencionando o rc."""
+    fn = claude_worker_module._build_failure_reason
+    reason = fn(returncode=137, stderr="", stdout="", claude_result_text="")
+    assert "137" in reason
+
+
+def test_build_failure_reason_trunca_stderr_longo(claude_worker_module):
+    """stderr muito longo é truncado na cauda (últimos max_bytes chars)."""
+    fn = claude_worker_module._build_failure_reason
+    stderr_long = "A" * 5000
+    reason = fn(
+        returncode=1,
+        stderr=stderr_long,
+        stdout="",
+        claude_result_text="",
+        max_bytes=2000,
+    )
+    # O motivo não deve ultrapassar max_bytes + overhead do prefixo.
+    assert len(reason) <= 2000 + len("rc=1 stderr: ")
+    # A cauda deve conter os últimos caracteres.
+    assert reason.endswith("A" * 10)
+
+
+def test_build_failure_reason_trunca_stdout_longo(claude_worker_module):
+    """stdout muito longo (com stderr vazio) é truncado na cauda."""
+    fn = claude_worker_module._build_failure_reason
+    stdout_long = "B" * 5000
+    reason = fn(
+        returncode=1,
+        stderr="",
+        stdout=stdout_long,
+        claude_result_text="",
+        max_bytes=2000,
+    )
+    assert len(reason) <= 2000 + len("rc=1 stdout: ")
+    assert reason.endswith("B" * 10)
+
+
+# --- Testes de integração via dispatch_handler ---
+
+
+@pytest.mark.asyncio
+async def test_dispatch_error_contém_stderr_quando_subprocess_falha(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """F1a: quando subprocess falha (rc != 0) com stderr não-vazio, a resposta
+    JSON deve incluir ``error`` com a cauda do stderr — e NÃO deve ser
+    ``"unknown"`` nem vazio.
+
+    Simula o cenário real observado: review de PR com 557s que terminou com
+    ``dispatch.failed reason=unknown turns=0`` porque o motivo não era capturado.
+    """
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+
+    stderr_msg = (
+        "Error: API timeout after 557s\n"
+        "fatal: could not resolve host: api.anthropic.com\n"
+        "claude -p exited with code 1"
+    )
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        # Subprocess falha com rc=1 e stderr não-vazio; stdout sem JSON válido.
+        return claude_worker_module.SubprocessResult(
+            returncode=1, stdout="", stderr=stderr_msg, duration_seconds=557.0,
+        )
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "review PR #42", "stage": "pr_review"},
+        )
+        body = await resp.json()
+
+    assert body["ok"] is False
+    error = body.get("error", "")
+    # O motivo não deve ser "unknown" nem vazio.
+    assert error, "response deve ter campo 'error' preenchido"
+    assert error.lower() != "unknown", f"error não deve ser 'unknown', got: {error!r}"
+    # Deve conter informação do stderr real.
+    assert "api.anthropic.com" in error or "timeout" in error or "rc=1" in error, (
+        f"error deve referenciar o stderr, got: {error!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_error_contém_stderr_truncado_quando_gigante(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """F1a: stderr gigante (> 2000 bytes) resulta num campo ``error`` truncado.
+
+    Verifica duas propriedades:
+    1. O campo ``error`` é preenchido (não vazio/unknown) mesmo com stderr enorme.
+    2. O tamanho do campo ``error`` é limitado (não vaza o stderr inteiro).
+
+    Nota: a cauda de 2000 bytes capturada por ``_build_failure_reason`` e
+    depois truncada em 500 pelo handler significa que o ``error`` final contém
+    apenas o início da cauda do stderr. Testes unitários de ``_build_failure_reason``
+    (``test_build_failure_reason_trunca_stderr_longo``) verificam o comportamento
+    completo de truncagem — aqui validamos apenas que a integração não quebra.
+    """
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+
+    # stderr de 10 KB — grande o suficiente para forçar truncagem em ambas as camadas.
+    stderr_gigante = "Z" * 10_000
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        return claude_worker_module.SubprocessResult(
+            returncode=2, stdout="", stderr=stderr_gigante, duration_seconds=10.0,
+        )
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "implement #1", "stage": "implement"},
+        )
+        body = await resp.json()
+
+    assert body["ok"] is False
+    error = body.get("error", "")
+    # O campo error deve ser preenchido (não vazio/unknown).
+    assert error, "campo 'error' deve ser preenchido quando subprocess falha"
+    assert error.lower() != "unknown", f"error não deve ser 'unknown', got: {error!r}"
+    # Deve mencionar que é stderr (prefixo da _build_failure_reason).
+    assert "stderr" in error or "rc=2" in error, (
+        f"error deve indicar a origem do erro, got: {error!r}"
+    )
+    # O campo error deve ser limitado pelo handler (≤500 chars do motivo + prefixo).
+    assert len(error) <= 550, (
+        f"error deve ser truncado, got len={len(error)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_timeout_error_contém_motivo_legível(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """F1a: timeout (rc=124) sem saída resulta em error descritivo mencionando
+    timeout — nunca ``'unknown'``."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        # Simula o que run_subprocess_with_progress devolve em timeout real.
+        return claude_worker_module.SubprocessResult(
+            returncode=124,
+            stdout="",
+            stderr=f"claude -p timed out after {timeout}s",
+            duration_seconds=float(timeout),
+        )
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "implement #99", "stage": "implement", "timeout_s": 30},
+        )
+        body = await resp.json()
+
+    assert body["ok"] is False
+    error = body.get("error", "")
+    assert error, "deve ter campo 'error'"
+    assert error.lower() != "unknown"
+    # Deve mencionar timeout ou rc=124.
+    assert "timeout" in error.lower() or "124" in error, (
+        f"error de timeout deve mencionar timeout ou rc=124, got: {error!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ok_nao_preenche_error(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Sanidade: dispatch bem-sucedido NÃO deve ter campo ``error`` na resposta
+    (não-regressão — a nova lógica de falha só dispara quando ok=False)."""
+    import json as _json
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        out = _json.dumps({
+            "is_error": False, "result": "STATUS: SUCCESS",
+            "session_id": "s1", "total_cost_usd": 0.02,
+            "duration_ms": 5000, "num_turns": 3,
+        })
+        return claude_worker_module.SubprocessResult(
+            returncode=0, stdout=out, stderr="", duration_seconds=5.0,
+        )
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "implement #7", "stage": "implement"},
+        )
+        body = await resp.json()
+
+    assert body["ok"] is True
+    assert "error" not in body, (
+        f"dispatch bem-sucedido não deve ter 'error', got: {body.get('error')}"
+    )
