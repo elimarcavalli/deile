@@ -217,10 +217,14 @@ def resolve_stage_timeout_s(stage: str) -> int:
         try:
             v = int(raw_env.strip())
             if v <= 0:
-                raise ValueError(f"timeout must be > 0, got {v}")
+                raise ValueError(
+                    f"DEILE_PIPELINE_TIMEOUT_S_{stage.upper()} must be > 0, got {v!r}"
+                )
             return v
-        except ValueError:
-            raise
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid DEILE_PIPELINE_TIMEOUT_S_{stage.upper()}={raw_env!r}: {exc}"
+            ) from exc
 
     # 2. Per-stage settings (graceful)
     from deile.config.settings import get_settings  # lazy: avoids import cycle
@@ -268,10 +272,14 @@ def resolve_stage_max_retries(stage: str) -> int:
         try:
             v = int(raw_env.strip())
             if v < 0:
-                raise ValueError(f"retries must be >= 0, got {v}")
+                raise ValueError(
+                    f"DEILE_PIPELINE_RETRIES_{stage.upper()} must be >= 0, got {v!r}"
+                )
             return v
-        except ValueError:
-            raise
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid DEILE_PIPELINE_RETRIES_{stage.upper()}={raw_env!r}: {exc}"
+            ) from exc
 
     # 2. Per-stage settings (graceful)
     from deile.config.settings import get_settings  # lazy: avoids import cycle

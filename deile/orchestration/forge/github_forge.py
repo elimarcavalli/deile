@@ -859,6 +859,14 @@ class GitHubForge(ForgeClient):
     async def _has_bot_activity_impl(
         self, kind: str, number: int, bot_login: str, since_ts: int,
     ) -> bool:
+        # Defense-in-depth: validate before interpolating into the jq filter,
+        # matching the invariant held by every other login surface in the forge.
+        if not _GH_LOGIN_RE.fullmatch(bot_login or ""):
+            logger.warning(
+                "_has_bot_activity_impl #%d: bot_login %r rejected by _GH_LOGIN_RE",
+                number, bot_login,
+            )
+            return False
         # Comments — issues + PRs compartilham endpoint.
         rc_c, out_c, _ = await self._run(
             "api", "--paginate",
