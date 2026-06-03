@@ -116,7 +116,10 @@ def _read_auth_token() -> str:
 # é None) preservando todas as tasks em execução.
 _TASKS: Dict[str, Dict[str, Any]] = {}
 _TASKS_MAX: int = int(os.environ.get("DEILE_WORKER_MAX_INMEM_TASKS", "500"))
-_TASK_LOCK = asyncio.Lock()  # MVP: serialize CWD-coupled work
+# MVP: serialize CWD-coupled work within a single replica.
+# Real parallelism (max_parallel>1 in the pipeline) requires multiple
+# deile-worker replicas — one task runs at a time per replica.
+_TASK_LOCK = asyncio.Lock()
 _AGENT = None
 _AGENT_LOCK = asyncio.Lock()
 

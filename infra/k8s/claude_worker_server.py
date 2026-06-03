@@ -3022,10 +3022,14 @@ async def sessions_command_handler(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"task_id {task_id} not found"}, status=404,
         )
+    from deile.security.secrets_scanner import SecretsScanner  # lazy: heavy import
+    _scanner = SecretsScanner()
+    raw_prompt = meta.get("full_prompt") or ""
+    redacted_prompt, _ = _scanner.redact_text(raw_prompt)
     return web.json_response({
         "task_id": task_id,
         "cmd": meta.get("command") or [],
-        "full_prompt": meta.get("full_prompt") or "",
+        "full_prompt": redacted_prompt,
         "stage": meta.get("stage"),
         "branch": meta.get("branch"),
         "model": meta.get("model"),

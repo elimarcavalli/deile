@@ -83,7 +83,15 @@ class DispatchLedger:
     # ----------------------------------------------------------------- #
 
     def _load(self) -> Dict[str, Any]:
-        """Lê o ledger do disco. None → empty (file ausente/malformed)."""
+        """Lê o ledger do disco. None → empty (file ausente/malformed).
+
+        **Single-instance invariant**: ``_cache`` is populated once on the
+        first access and only invalidated explicitly via ``invalidate_cache()``.
+        Multi-instance usage (e.g. a second ``DispatchLedger()`` pointing to the
+        same path) sees a stale snapshot for the lifetime of the second instance.
+        All production code uses the singleton on ``PipelineMonitor``; never
+        instantiate a second ``DispatchLedger`` for the same path.
+        """
         if self._cache is not None:
             return self._cache
         if not self._path.exists():

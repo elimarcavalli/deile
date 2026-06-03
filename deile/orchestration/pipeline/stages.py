@@ -873,7 +873,7 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
         # paralelismo pelos workers em vez de uma issue por tick. ``available``
         # = max_parallel menos o total já em voo (crítica/refino/implement/PR).
         in_flight = await _count_total_in_flight(monitor)
-        available = max(0, max(1, monitor.config.max_parallel) - in_flight)
+        available = max(0, monitor.config.max_parallel - in_flight)
         if available <= 0:
             logger.debug(
                 "critique: todos os %d slots ocupados (%d em voo); skip novos claims",
@@ -979,7 +979,15 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
         if await monitor.forge.claim_with_batch("issue", number) is None:
             return
     # Ownership tag lets the implement stage accept this issue without a batch.
-    await monitor.forge.add_labels("issue", number, [monitor.identity.ownership_label()])
+    try:
+        await monitor.forge.add_labels("issue", number, [monitor.identity.ownership_label()])
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, f"could not add ownership label to #{number} for critique", exc,
+        )
+        if multi:
+            await monitor.forge.clear_batch_label("issue", number)
+        return
     await monitor.notifier.issue_picked_up(number, target.title, target.url)
     try:
         await monitor.forge.transition_issue(
@@ -1174,7 +1182,7 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     ledger = getattr(monitor.implementer, "_ledger", None)
     in_flight = await _count_total_in_flight(monitor)
-    available = max(0, max(1, monitor.config.max_parallel) - in_flight)
+    available = max(0, monitor.config.max_parallel - in_flight)
     if available <= 0:
         logger.debug(
             "refine: todos os %d slots ocupados (%d em voo); skip novos dispatches",
@@ -1775,7 +1783,14 @@ async def _count_in_flight_issues(monitor: "PipelineMonitor") -> int:
     for i in issues:
         if WORKFLOW_BLOCKED in i.labels or WORKFLOW_PR in i.labels:
             continue
-        if monitor._this_monitor_owns(i) or ownership_label in i.labels:
+        # Mirror the same predicate used by implement_one_reviewed_issue so
+        # in-flight count and dispatch eligibility are always consistent.
+        # Using OR here would count issues this monitor can never pick up
+        # (e.g. orphaned ~by:B labels after a shard migration), inflating
+        # in_flight and starving available_slots.
+        if monitor._this_monitor_owns(i) and (
+            i.batch_id is not None or ownership_label in i.labels
+        ):
             count += 1
     return count
 
@@ -1876,7 +1891,7 @@ async def implement_one_reviewed_issue(
     # that this monitor owns and that are not blocked / already with a PR.
     # These represent workers currently busy — subtract from max_parallel.
     in_flight = await _count_in_flight_issues(monitor)
-    available_slots = max(0, max(1, monitor.config.max_parallel) - in_flight)
+    available_slots = max(0, monitor.config.max_parallel - in_flight)
     if available_slots <= 0:
         logger.debug(
             "implement: all %d slots busy (%d in-flight); skipping new claims",
@@ -2674,7 +2689,9 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
 
     # --- Pre-processing: invalidate ~review:concluida on PRs with new commits
     #     (issue #351 — invalidate-on-new-commit). Runs BEFORE candidate
-    #     selection so a freshly invalidated PR can be picked up this tick.
+    #     selection; the freshly invalidated PR will be picked up on the NEXT
+    #     tick because _candidate() checks pr.labels on the same in-memory
+    #     snapshot (which still carries REVIEW_CONCLUDED until the next fetch).
     for pr in prs:
         if (
             REVIEW_CONCLUDED in pr.labels
@@ -3364,10 +3381,17 @@ async def _reap_one(
         return
 
     # Libera: remove labels stale, adiciona ~attempt:(N+1) + label de retorno.
+    # If remove fails, skip add: applying to_label while from_label persists
+    # would leave the issue wearing two ~workflow: state labels simultaneously,
+    # violating the single-state invariant. Let the reaper retry next tick.
     try:
         await monitor.forge.remove_labels(kind, number, to_remove)
     except GhCommandError as exc:
-        logger.warning("reaper #%d: remove_labels failed: %s", number, exc)
+        logger.warning(
+            "reaper #%d: remove_labels failed: %s — skipping add_labels to preserve "
+            "label-state invariant; will retry next tick", number, exc,
+        )
+        return
     try:
         await monitor.forge.add_labels(
             kind, number, [to_label, make_attempt_label(next_attempt)],
