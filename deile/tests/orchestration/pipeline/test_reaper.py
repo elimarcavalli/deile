@@ -296,3 +296,118 @@ async def test_reaper_called_in_tick():
 
     # Reaper consultou list_open_prs.
     github.list_open_prs.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# G1 — reaper cobre em_revisao
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reaper_releases_stuck_em_revisao():
+    """Issue com ~workflow:em_revisao + ownership label há > threshold é
+    liberada para ~workflow:nova (from_label removido, nova adicionado,
+    attempt incrementado)."""
+    from deile.orchestration.pipeline.labels import WORKFLOW_NEW, WORKFLOW_REVIEWING
+    monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(901, labels=[WORKFLOW_REVIEWING, own])
+    # Dois grupos de chamadas: WORKFLOW_IMPLEMENTING (retorna []) e WORKFLOW_REVIEWING.
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_REVIEWING else [],
+    )
+    # Aplicada há 200s (acima do threshold de 60s).
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    await reap_orphan_claims(monitor)
+
+    add_calls = github.add_labels.await_args_list
+    assert len(add_calls) >= 1
+    added = list(add_calls[0].args[2])
+    assert WORKFLOW_NEW in added
+    assert "~attempt:1" in added
+
+    remove_calls = github.remove_labels.await_args_list
+    assert len(remove_calls) >= 1
+    removed = list(remove_calls[0].args[2])
+    assert WORKFLOW_REVIEWING in removed
+    assert own in removed
+
+
+@pytest.mark.asyncio
+async def test_reaper_skips_fresh_em_revisao():
+    """Issue em ~workflow:em_revisao com idade < threshold NÃO é tocada."""
+    from deile.orchestration.pipeline.labels import WORKFLOW_REVIEWING
+    monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=2700)
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(902, labels=[WORKFLOW_REVIEWING, own])
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_REVIEWING else [],
+    )
+    # Aplicada há 60s (abaixo do threshold de 2700s).
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 60)
+
+    await reap_orphan_claims(monitor)
+
+    github.remove_labels.assert_not_awaited()
+    github.add_labels.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reaper_does_not_touch_em_arquitetura():
+    """REGRESSÃO-GUARD: issue em ~workflow:em_arquitetura (refine state de
+    descanso) com idade > threshold NÃO é tocada pelo reaper.
+
+    Em_arquitetura é um estado de descanso entre passes de refine — a issue
+    aguarda o próximo tick de refine_one_issue — e NÃO é um lock transitório.
+    Reapeá-la seria regressão: a issue perderia o contexto de refinamento.
+    """
+    from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE, WORKFLOW_REVIEWING
+    monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(903, labels=[WORKFLOW_ARCHITECTURE, own, "refinar"])
+    # list_issues_with_label retorna a issue para WORKFLOW_REVIEWING somente
+    # se erroneamente invocado para esse estado — não deveria.
+    # Para WORKFLOW_IMPLEMENTING retorna [] (nenhuma stuck implement).
+    # Para WORKFLOW_REVIEWING retorna [] (em_arquitetura não está nesse bucket).
+    github.list_issues_with_label = AsyncMock(return_value=[])
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 9999)
+
+    await reap_orphan_claims(monitor)
+
+    github.remove_labels.assert_not_awaited()
+    github.add_labels.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reaper_does_not_touch_em_refinamento():
+    """REGRESSÃO-GUARD: issue em ~workflow:em_refinamento (refine state de
+    descanso para intents) com idade > threshold NÃO é tocada pelo reaper."""
+    from deile.orchestration.pipeline.labels import WORKFLOW_REFINING, WORKFLOW_REVIEWING
+    monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(904, labels=[WORKFLOW_REFINING, own, "refinar"])
+    github.list_issues_with_label = AsyncMock(return_value=[])
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 9999)
+
+    await reap_orphan_claims(monitor)
+
+    github.remove_labels.assert_not_awaited()
+    github.add_labels.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reaper_em_revisao_without_ownership_skipped():
+    """Issue em ~workflow:em_revisao sem ownership label deste monitor NÃO
+    é tocada."""
+    from deile.orchestration.pipeline.labels import WORKFLOW_REVIEWING
+    monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
+    issue = _make_issue(905, labels=[WORKFLOW_REVIEWING, "~by:outro-monitor"])
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_REVIEWING else [],
+    )
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 9999)
+
+    await reap_orphan_claims(monitor)
+
+    github.remove_labels.assert_not_awaited()
+    github.add_labels.assert_not_awaited()

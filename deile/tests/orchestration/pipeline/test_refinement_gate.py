@@ -407,3 +407,95 @@ class TestSharedReviewedSnapshot:
             fetch_reviewed_and_ensure_ownership
         pre, post = await fetch_reviewed_and_ensure_ownership(monitor)
         assert pre is None and post is None
+
+
+# ===========================================================================
+# G2 — refine_one_issue seleciona por ESTADO (em_arquitetura / em_refinamento)
+#      além de só pela label ``refinar``
+# ===========================================================================
+
+class TestRefineByState:
+    """G2: seleção de candidatas une REFINAR + WORKFLOW_REFINING + WORKFLOW_ARCHITECTURE."""
+
+    async def test_em_arquitetura_sem_refinar_selecionada_e_refinada(self):
+        """Issue em ~workflow:em_arquitetura SEM o label ``refinar`` é
+        selecionada por refine_one_issue e refinada (prova que a seleção por
+        estado funciona — não depende do label ``refinar``)."""
+        # A issue está em_arquitetura mas NÃO tem o label refinar.
+        issue = _issue(200, "feature", WORKFLOW_ARCHITECTURE)
+        monitor, _, client = _make_monitor(
+            label_map={
+                REFINAR: [],
+                WORKFLOW_REFINING: [],
+                WORKFLOW_ARCHITECTURE: [issue],
+            },
+            worker_responses=[_resp("Refinei.\nREFINO: OK")],
+        )
+        await monitor._refine_one_issue()
+        # Deve ter refinado (dispatch aconteceu).
+        assert len(client.payloads) == 1
+        # Volta para nova após OK.
+        assert (200, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) in _transitions(monitor.github)
+        # Re-adicionou label refinar antes de refinar (passo idempotente).
+        added = _added(monitor.github, 200)
+        assert REFINAR in added
+
+    async def test_em_refinamento_sem_refinar_selecionada_e_refinada(self):
+        """Issue em ~workflow:em_refinamento (intent) SEM o label ``refinar``
+        é selecionada e refinada."""
+        issue = _issue(201, "intent", WORKFLOW_REFINING)
+        monitor, _, client = _make_monitor(
+            label_map={
+                REFINAR: [],
+                WORKFLOW_REFINING: [issue],
+                WORKFLOW_ARCHITECTURE: [],
+            },
+            worker_responses=[_resp("Refinei.\nREFINO: OK")],
+        )
+        await monitor._refine_one_issue()
+        assert len(client.payloads) == 1
+        assert (201, WORKFLOW_REFINING, WORKFLOW_NEW) in _transitions(monitor.github)
+        assert REFINAR in _added(monitor.github, 201)
+
+    async def test_refinar_sem_refine_state_ainda_funciona(self):
+        """Issue com só ``refinar`` (sem refine state — humano aplicou à mão)
+        continua funcionando: é rehydrated para o estado correto."""
+        issue = _issue(202, "feature", REFINAR, WORKFLOW_REVIEWED)
+        monitor, _, client = _make_monitor(
+            label_map={
+                REFINAR: [issue],
+                WORKFLOW_REFINING: [],
+                WORKFLOW_ARCHITECTURE: [],
+            },
+        )
+        await monitor._refine_one_issue()
+        # Rehydrate: move para em_arquitetura (feature), sem dispatch este tick.
+        assert (202, WORKFLOW_REVIEWED, WORKFLOW_ARCHITECTURE) in _transitions(monitor.github)
+        assert client.payloads == []
+
+    async def test_dedup_issue_aparece_em_duas_listas_processada_uma_vez(self):
+        """Se a mesma issue aparece em REFINAR e em WORKFLOW_ARCHITECTURE,
+        é processada apenas uma vez."""
+        issue = _issue(203, "feature", REFINAR, WORKFLOW_ARCHITECTURE)
+        monitor, _, client = _make_monitor(
+            label_map={
+                REFINAR: [issue],
+                WORKFLOW_REFINING: [],
+                WORKFLOW_ARCHITECTURE: [issue],  # mesmo objeto, duplicado
+            },
+            worker_responses=[_resp("REFINO: OK")],
+        )
+        await monitor._refine_one_issue()
+        # Apenas um dispatch, não dois.
+        assert len(client.payloads) == 1
+
+    async def test_forge_error_em_qualquer_lista_aborta_sem_crash(self):
+        """Falha em qualquer das três chamadas list_issues_with_label aborta
+        o stage com log, sem levantar exceção."""
+        monitor, _, client = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=GhCommandError(("gh", "issue", "list"), 1, "", "boom")
+        )
+        # Não levanta — apenas retorna sem dispatch.
+        await monitor._refine_one_issue()
+        assert client.payloads == []

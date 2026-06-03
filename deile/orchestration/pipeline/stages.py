@@ -44,10 +44,12 @@ from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
                                                  REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING, TYPE_INTENT,
                                                  GATE_REDISPATCHES_COMMENT,
+                                                 WORKFLOW_ARCHITECTURE,
                                                  WORKFLOW_BLOCKED,
                                                  WORKFLOW_DECOMPOSED,
                                                  WORKFLOW_IMPLEMENTING,
                                                  WORKFLOW_NEW, WORKFLOW_PR,
+                                                 WORKFLOW_REFINING,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING,
                                                  WORKFLOW_WAITING,
@@ -986,25 +988,47 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
 
 
 async def refine_one_issue(monitor: "PipelineMonitor") -> None:
-    """Stage 1b (issue #257): refine ONE issue carrying ``refinar``.
+    """Stage 1b (issue #257): refine ONE issue em estado de refinamento.
 
-    Candidate = any open issue with ``refinar`` that this monitor owns and is NOT
-    paused (``aguardando_stakeholder``), blocked, or already past refinement. An
-    issue not yet in a refine state (a human applied ``refinar`` by hand) is
-    rehydrated into its type's refine state. Otherwise the type's persona rewrites
-    the body: ``REFINO: OK`` → back to ``nova`` for re-critique (counts toward the
-    ceiling); ``AGUARDA_STAKEHOLDER`` → pause via the waiting overlay.
+    Candidatas são issues que este monitor possui e que NÃO estão pausadas,
+    bloqueadas ou além do refinamento. A seleção une três fontes:
+
+    1. issues com ``refinar`` (label explícito — critério original)
+    2. issues com ``~workflow:em_refinamento`` (estado por tipo intent)
+    3. issues com ``~workflow:em_arquitetura`` (estado por tipo code)
+
+    A união permite recuperar issues que perderam o label ``refinar`` por
+    crash, edição manual ou race — se a issue está num refine state, ela É
+    candidata independentemente do label. Dedup por ``number``.
+
+    Uma issue não ainda em refine state (humano aplicou ``refinar`` na mão)
+    é rehydrated para o estado correto do seu tipo. Caso a issue esteja num
+    refine state mas sem ``refinar``, re-adicionamos o label (idempotente,
+    best-effort) antes de refinar, para manter consistência.
+
+    Resultado do dispatch: ``REFINO: OK`` → volta a ``nova`` para re-crítica
+    (conta para o teto); ``AGUARDA_STAKEHOLDER`` → pausa via overlay.
     """
     if not monitor.config.enable_refinement_gate:
         return
+    # Coleta candidatas das três fontes e deduplicamos por number.
     try:
-        issues = await monitor.forge.list_issues_with_label(REFINAR, limit=50)
+        by_refinar = await monitor.forge.list_issues_with_label(REFINAR, limit=50)
+        by_refining = await monitor.forge.list_issues_with_label(WORKFLOW_REFINING, limit=50)
+        by_arch = await monitor.forge.list_issues_with_label(WORKFLOW_ARCHITECTURE, limit=50)
     except GhCommandError as exc:
         await _record_forge_error(
             monitor, "could not list issues to refine (forge error)", exc,
             notifier_label="refine/list",
         )
         return
+    # Dedup preservando primeira ocorrência (by_refinar tem precedência).
+    seen: dict = {}
+    for issue in (*by_refinar, *by_refining, *by_arch):
+        if issue.number not in seen:
+            seen[issue.number] = issue
+    issues = list(seen.values())
+
     _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
                  WORKFLOW_PR, WORKFLOW_DECOMPOSED)
     target = next(
@@ -1033,6 +1057,15 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
         except GhCommandError as exc:
             await _record_forge_error(monitor, f"could not rehydrate #{number} into {refine_state}", exc)
         return  # refined on the next tick
+
+    # Garante consistência: se a issue chegou pelo estado (em_refinamento /
+    # em_arquitetura) mas sem o label ``refinar`` (crash, race, edição manual),
+    # re-adiciona o label antes de refinar — idempotente, best-effort.
+    if REFINAR not in target.labels:
+        try:
+            await monitor.forge.add_labels("issue", number, [REFINAR])
+        except GhCommandError as exc:
+            logger.warning("refine #%d: could not re-add 'refinar' label: %s", number, exc)
 
     # Ceiling guard (belt-and-suspenders with the critique-side check).
     if monitor._resume_tracker.refine_attempt(number) >= monitor.config.refine_max_attempts:
@@ -2533,9 +2566,10 @@ def _render_follow_up_report(
 
 
 async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
-    """Scan ~review:em_andamento e ~workflow:em_implementacao com idade >
-    ``config.reaper_stale_seconds`` sem progresso e libera (próximo tick
-    re-claim via resume). Best-effort: catch + log nas operações de label.
+    """Scan ~review:em_andamento, ~workflow:em_implementacao e
+    ~workflow:em_revisao com idade > ``config.reaper_stale_seconds`` sem
+    progresso e libera (próximo tick re-claim via resume). Best-effort: catch
+    + log nas operações de label.
 
     Mecânica:
     1. Lista PRs abertas e issues abertas com label terminal-stale.
@@ -2544,12 +2578,18 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
        - Lê ``current_attempt`` das labels ~attempt:N (default 0).
        - Se ``attempt + 1 >= reaper_max_attempts``: marca ~workflow:bloqueada
          + ~retry:exhausted (não retorna pra fila — humano decide).
-       - Senão: remove ~review:em_andamento (ou ~workflow:em_implementacao),
-         remove batch_label e ownership, adiciona ~attempt:(N+1), recoloca
-         label inicial (~review:pendente ou ~workflow:nova).
+       - Senão: remove ~review:em_andamento (ou ~workflow:em_implementacao
+         ou ~workflow:em_revisao), remove batch_label e ownership, adiciona
+         ~attempt:(N+1), recoloca label inicial (~review:pendente,
+         ~workflow:nova ou ~workflow:revisada).
 
-    Não toca em PRs sem dispatch do nosso monitor (ownership label) —
+    Não toca em PRs/issues sem dispatch do nosso monitor (ownership label) —
     apenas escopa às próprias.
+
+    NOTA: ``em_arquitetura`` e ``em_refinamento`` são estados de DESCANSO
+    entre passes de refine (a issue aguarda o próximo tick para ser
+    processada) — o reaper NÃO os cobre para evitar regressão. Apenas
+    ``em_revisao`` é um lock transitório que nenhum stage reseleciona.
     """
     threshold = monitor.config.reaper_stale_seconds
     max_attempts = monitor.config.reaper_max_attempts
@@ -2611,6 +2651,35 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_REVIEWED,
             max_attempts=max_attempts, age_seconds=age,
             description=f"issue #{issue.number} implement stuck há {age // 60}min",
+        )
+
+    # Issues com ~workflow:em_revisao (crítica de escopo interrompida por restart
+    # de pod — lock transitório que nenhum stage reseleciona).
+    try:
+        reviewing_issues = await monitor.forge.list_issues_with_label(
+            WORKFLOW_REVIEWING,
+        )
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, "reaper: list_issues_with_label(em_revisao) failed", exc,
+        )
+        return
+    for issue in sort_by_priority(reviewing_issues):
+        if own_label not in issue.labels:
+            continue
+        applied_at = await monitor.forge.label_applied_at(
+            "issue", issue.number, WORKFLOW_REVIEWING,
+        )
+        if applied_at is None:
+            continue
+        age = now_ts - applied_at
+        if age < threshold:
+            continue
+        await _reap_one(
+            monitor, kind="issue", number=issue.number, labels=issue.labels,
+            from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_NEW,
+            max_attempts=max_attempts, age_seconds=age,
+            description=f"issue #{issue.number} em_revisao stuck há {age // 60}min",
         )
 
 
