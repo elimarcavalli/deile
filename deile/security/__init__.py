@@ -2,6 +2,7 @@
 
 from .audit_logger import (AuditEvent, AuditEventType, AuditLogger,
                            SeverityLevel, get_audit_logger, log_approval_event,
+                           log_cron_fire, log_cron_skipped,
                            log_permission_check, log_plan_execution,
                            log_secret_detection, log_tool_execution)
 from .permissions import (PermissionLevel, PermissionManager, PermissionRule,
@@ -19,6 +20,8 @@ __all__ = [
     "AuditEventType",
     "SeverityLevel",
     "get_audit_logger",
+    "log_cron_fire",
+    "log_cron_skipped",
     "log_permission_check",
     "log_secret_detection",
     "log_tool_execution",

@@ -35,6 +35,9 @@ class AuditEventType(Enum):
     PERSONA_RECOVERY_SUCCESS = "persona_recovery_success"
     PERSONA_RECOVERY_FAILURE = "persona_recovery_failure"
 
+    CRON_FIRE = "cron_fire"
+    CRON_SKIPPED = "cron_skipped"
+
 
 class SeverityLevel(Enum):
     """Security event severity levels"""
@@ -352,7 +355,47 @@ class AuditLogger:
             tool_name=tool_name
         )
     
-    def get_recent_events(self, 
+    def log_cron_fire(
+        self,
+        entry_id: str,
+        name: Optional[str],
+        schedule: Optional[str],
+        payload_hash: Optional[str],
+    ) -> None:
+        self.log_event(
+            event_type=AuditEventType.CRON_FIRE,
+            severity=SeverityLevel.INFO,
+            actor="cron_runner",
+            resource=f"cron:{entry_id}",
+            action="fire",
+            result="started",
+            details={
+                "name": name,
+                "schedule": schedule,
+                "payload_hash": payload_hash,
+            },
+        )
+
+    def log_cron_skipped(
+        self,
+        entry_id: str,
+        name: Optional[str],
+        reason: str,
+    ) -> None:
+        self.log_event(
+            event_type=AuditEventType.CRON_SKIPPED,
+            severity=SeverityLevel.WARNING,
+            actor="cron_runner",
+            resource=f"cron:{entry_id}",
+            action="skip",
+            result="skipped",
+            details={
+                "name": name,
+                "reason": reason,
+            },
+        )
+
+    def get_recent_events(self,
                         limit: int = 100,
                         event_type: Optional[AuditEventType] = None,
                         severity: Optional[SeverityLevel] = None,
@@ -524,3 +567,11 @@ def log_plan_execution(plan_id: str, action: str, result: str, step_count: int =
 def log_approval_event(plan_id: str, step_id: str, approval_action: str, tool_name: str, risk_level: str, **kwargs) -> None:
     """Convenience function for logging approval events"""
     get_audit_logger().log_approval_event(plan_id, step_id, approval_action, tool_name, risk_level)
+
+
+def log_cron_fire(entry_id: str, name: Optional[str], schedule: Optional[str], payload_hash: Optional[str]) -> None:
+    get_audit_logger().log_cron_fire(entry_id, name, schedule, payload_hash)
+
+
+def log_cron_skipped(entry_id: str, name: Optional[str], reason: str) -> None:
+    get_audit_logger().log_cron_skipped(entry_id, name, reason)

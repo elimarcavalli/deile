@@ -29,8 +29,15 @@ from deile.cron.constants import (CRON_DM_PROMPT_MAX_CHARS,
                                   CRON_RESULT_MAX_CHARS,
                                   CRON_STOP_TIMEOUT_SECONDS)
 from deile.cron.store import CronEntry, CronStore
+from deile.security.audit_logger import get_audit_logger
 
 logger = logging.getLogger(__name__)
+
+
+def _payload_hash(prompt: str) -> str:
+    import hashlib
+    digest = hashlib.sha256(prompt.encode(), usedforsecurity=False).hexdigest()[:16]
+    return f"sha256:{digest}"
 
 
 FireCallback = Callable[[CronEntry], Awaitable[str]]
@@ -108,7 +115,24 @@ class CronRunner:
         if cb is None:
             logger.warning("CronRunner has no fire_callback wired; skipping %s", entry.id)
             self.store.mark_fired(entry.id, result="skipped: no callback")
+            try:
+                get_audit_logger().log_cron_skipped(
+                    entry_id=entry.id,
+                    name=entry.id,
+                    reason="no callback",
+                )
+            except Exception:
+                pass
             return
+        try:
+            get_audit_logger().log_cron_fire(
+                entry_id=entry.id,
+                name=entry.id,
+                schedule=getattr(entry, "cron", None),
+                payload_hash=_payload_hash(entry.prompt),
+            )
+        except Exception:
+            pass
         result_summary = await cb(entry)
         self.store.mark_fired(entry.id, result=str(result_summary)[:CRON_RESULT_MAX_CHARS])
         if self.notify_dm and entry.notify_user_id and result_summary:
