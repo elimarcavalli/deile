@@ -373,6 +373,63 @@ def resolve_stage_cost_cap_usd(stage: str) -> Optional[Decimal]:
     return None
 
 
+#: Opinionated reasoning_effort defaults per pipeline stage (issue #450).
+#: Activated when both per-stage and global settings/env are unset.
+#: Rationale: classify/refine/follow_ups are lightweight routing decisions
+#: (low); implement benefits from extended chain-of-thought (medium);
+#: pr_review demands high-quality analysis before proposing changes (high).
+_STAGE_DEFAULT_REASONING_EFFORT: dict[str, str] = {
+    "classify": "low",
+    "refine": "low",
+    "implement": "medium",
+    "pr_review": "high",
+    "follow_ups": "low",
+}
+
+
+def resolve_stage_reasoning_effort(stage: str) -> Optional[str]:
+    """Retorna o esforço de raciocínio efetivo para *stage*, com defaults opinados.
+
+    Cadeia de fallback (alta → baixa precedência):
+
+    1. ``pipeline.reasoning.<stage>`` / ``DEILE_PIPELINE_REASONING_<STAGE>`` —
+       override por etapa via settings ou env var.
+    2. ``model.reasoning_effort`` / ``DEILE_REASONING_EFFORT`` — global.
+    3. :data:`_STAGE_DEFAULT_REASONING_EFFORT[stage]` — default opinado por
+       stage (issue #450): classify/refine/follow_ups → ``"low"``,
+       implement → ``"medium"``, pr_review → ``"high"``.
+    4. ``None`` — fallback de segurança; não deve ser atingido em uso normal
+       pois todo stage tem um default no mapeamento.
+
+    Difere de :func:`~deile.orchestration.pipeline.reasoning_resolver.resolve_stage_reasoning`
+    por inserir o nível 3 com defaults opinados — operadores podem sobrescrever
+    via ``settings.json`` (níveis 1–2) sem desabilitar os defaults.
+
+    Raises:
+        ValueError: stage não está em :data:`PIPELINE_STAGES`.
+    """
+    if stage not in PIPELINE_STAGES:
+        raise ValueError(
+            f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
+        )
+
+    from deile.config.settings import get_settings  # lazy: avoids import cycle
+    settings = get_settings()
+
+    # 1. Per-stage override (settings or env var via settings object)
+    per_stage = getattr(settings, f"pipeline_reasoning_{stage}", None)
+    if isinstance(per_stage, str) and per_stage.strip():
+        return per_stage.strip()
+
+    # 2. Global override
+    glob = getattr(settings, "reasoning_effort", None)
+    if isinstance(glob, str) and glob.strip():
+        return glob.strip()
+
+    # 3. Opinionated stage default
+    return _STAGE_DEFAULT_REASONING_EFFORT.get(stage)
+
+
 def get_endpoint_for(dispatcher: str) -> str:
     """Resolve a URL HTTP do worker pod *dispatcher*.
 
