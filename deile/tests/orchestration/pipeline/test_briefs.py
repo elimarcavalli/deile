@@ -245,6 +245,66 @@ class TestRenderTriggerDetails:
         assert "```" not in prose
 
 
+class TestBriefInvariants:
+    """Regression guard: verifica que as substrings críticas do módulo briefs.py
+    continuam presentes após qualquer refactor.
+
+    O módulo contém um aviso ⚠ CRITICAL que lista estas strings como invariantes.
+    Este teste implementa o item (a) da Decisão #47 / issue #479: falha se qualquer
+    substring crítica desaparecer do arquivo.
+    """
+
+    # Substrings que devem sempre existir em briefs.py (ver docstring do módulo).
+    _CRITICAL_SUBSTRINGS = [
+        "CHECKPOINT OBRIGATÓRIO",
+        "SUÍTE COMPLETA",
+        "anti-eco",
+        ".deile-progress.md",
+        "DECISÃO É DECISÃO",
+        "execute o pedido SEMPRE",
+        "REGRA ANTI-FLOOD",
+    ]
+
+    def _load_briefs_source(self) -> str:
+        import pathlib
+        briefs_path = (
+            pathlib.Path(__file__).parent.parent.parent.parent
+            / "orchestration" / "pipeline" / "briefs.py"
+        )
+        return briefs_path.read_text(encoding="utf-8")
+
+    def test_critical_substrings_present_in_module(self):
+        """Falha se qualquer substring crítica sumir de briefs.py.
+
+        Garante que futuras refatorações não removam silenciosamente guardrails
+        operacionais (REGRA ANTI-FLOOD, CHECKPOINT OBRIGATÓRIO, etc.).
+        """
+        source = self._load_briefs_source()
+        missing = [s for s in self._CRITICAL_SUBSTRINGS if s not in source]
+        assert missing == [], (
+            f"briefs.py está faltando substrings críticas: {missing!r}. "
+            "Qualquer mudança que remove estes invariantes exige (a) evidência "
+            "empírica de custo equivalente, (b) atualização deste teste."
+        )
+
+    def test_anti_flood_cap_in_refine_brief(self):
+        """REGRA ANTI-FLOOD deve estar no brief de refinamento com o cap explícito."""
+        source = self._load_briefs_source()
+        # O cap "MÁXIMO UMA" deve aparecer junto com REGRA ANTI-FLOOD no _WORKER_REFINE_BRIEF.
+        assert "MÁXIMO UMA sub-issue" in source, (
+            "_WORKER_REFINE_BRIEF perdeu o cap explícito de sub-issues por issue-mãe "
+            "(REGRA ANTI-FLOOD: MÁXIMO UMA sub-issue agregada)."
+        )
+
+    def test_module_docstring_warning_present(self):
+        """O aviso CRITICAL no docstring do módulo deve permanecer."""
+        source = self._load_briefs_source()
+        assert "CRITICAL: QUALQUER mudança nestes briefs exige" in source, (
+            "O aviso ⚠ CRITICAL no docstring de briefs.py foi removido. "
+            "Restaure-o para sinalizar a futuros editores as exigências de teste A/B."
+        )
+
+
 class TestMentionRenderers:
     def test_worker_mention_brief_is_markdown(self):
         t = MentionTrigger(trigger_type="reviewer", pr=_pr(9))
