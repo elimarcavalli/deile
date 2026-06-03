@@ -56,10 +56,20 @@ from rich.text import Text
 import _panel_data as pd_mod
 
 # Regex para extrair marcadores de vigia do audit log.
-# Formato esperado pela persona: "<ts> ACTION/SKIP/NOTIFY <fingerprint> <detalhe>"
-# e presença de "V1"..."V7" no body da linha.
+# Formato novo (schema estruturado, downstream de #439):
+#   "<ts> monitor.<familia>[.<subtipo>] k=v..."
+# Formato antigo (fallback para pods pré-rollout):
+#   "<ts> ACTION/SKIP/NOTIFY <fingerprint> <detalhe>" com token V1..V7
 _VIGIA_RE = re.compile(r"\bV([1-7])\b")
 _AUDIT_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\s]*)\s+(.*)$")
+_MONITOR_FAMILY_RE = re.compile(r"^monitor\.(\S+)")
+_MONITOR_KV_RE = re.compile(r"(\w+)=([^\s]+)")
+
+# Mapeamento kind= → vigia (schema novo: monitor.action kind=<valor>)
+_KIND_TO_VIGIA: Dict[str, int] = {
+    "oauth_renew": 1,
+    "delete_pod": 2,
+}
 
 _VIGIA_NAMES = {
     1: "OAuth expirado",
@@ -376,7 +386,6 @@ class MonitorDataProvider(pd_mod._KubectlProviderMixin):
         V<n> de forma garantida (gap documentado — ver relatório final).
         Procuramos "V1" ... "V7" no texto da linha e classificamos.
         """
-        # Status inicial: todas desconhecidas (sem dado no log).
         vigias: Dict[int, VigiaStatus] = {
             n: VigiaStatus(number=n, name=_VIGIA_NAMES[n])
             for n in range(1, 8)
@@ -388,18 +397,45 @@ class MonitorDataProvider(pd_mod._KubectlProviderMixin):
             ts: Optional[datetime] = None
             if ts_str:
                 ts = pd_mod._parse_k8s_ts(ts_str)
-            for vm in _VIGIA_RE.finditer(body):
-                vn = int(vm.group(1))
-                if vn not in vigias:
-                    continue
-                v = vigias[vn]
-                # Atualiza com linha mais recente (audit está em ordem cronológica).
-                if ts is not None:
-                    v.last_seen_ts = ts
-                v.last_line = body[:80]
+
+            fm = _MONITOR_FAMILY_RE.match(body)
+            if fm:
+                # --- Schema novo: monitor.<familia>[.<subtipo>] k=v... ---
+                family = fm.group(1)
+                kv = dict(_MONITOR_KV_RE.findall(body))
+                has_action = family.startswith("action")
+                has_warn = kv.get("ok", "true").lower() == "false" or family.startswith("vigia.skip")
+
+                # Prioridade 1: token V<n> explícito no body
+                vn_hits = [int(vm.group(1)) for vm in _VIGIA_RE.finditer(body) if int(vm.group(1)) in vigias]
+                # Prioridade 2: kind= mapeado para vigia conhecida
+                if not vn_hits:
+                    kind_vn = _KIND_TO_VIGIA.get(kv.get("kind", ""))
+                    if kind_vn:
+                        vn_hits = [kind_vn]
+
+                for vn in vn_hits:
+                    v = vigias[vn]
+                    if ts is not None:
+                        v.last_seen_ts = ts
+                    v.last_line = body[:80]
+                    if has_warn:
+                        v.has_warn = True
+                    if has_action:
+                        v.has_action = True
+            else:
+                # --- Fallback: schema antigo (pods pré-rollout) ---
                 upper = body.upper()
-                v.has_warn = any(kw in upper for kw in ("FAIL", "ERROR", "⚠", "URGENTE"))
-                v.has_action = "ACTION" in upper
+                for vm in _VIGIA_RE.finditer(body):
+                    vn = int(vm.group(1))
+                    if vn not in vigias:
+                        continue
+                    v = vigias[vn]
+                    if ts is not None:
+                        v.last_seen_ts = ts
+                    v.last_line = body[:80]
+                    v.has_warn = any(kw in upper for kw in ("FAIL", "ERROR", "⚠", "URGENTE"))
+                    v.has_action = "ACTION" in upper
         return list(vigias.values())
 
 
@@ -858,7 +894,26 @@ class MonitorView:
 
     def _render_log_tail(self) -> RenderableType:
         lines = list(self._log_tail_lines[-40:])
-        body = Text("\n".join(lines) if lines else "· aguardando log...", style="dim")
+        if not lines:
+            body: RenderableType = Text("· aguardando log...", style="dim")
+        else:
+            text = Text()
+            for i, line in enumerate(lines):
+                if i:
+                    text.append("\n")
+                stripped = line.lstrip()
+                if stripped.startswith("monitor.action"):
+                    text.append(line, style="bold green")
+                elif stripped.startswith("monitor."):
+                    text.append(line, style="cyan")
+                else:
+                    # Schema antigo: highlight palavras-chave em CAIXA ALTA
+                    upper = line.upper()
+                    if "ACTION" in upper or "URGENTE" in upper:
+                        text.append(line, style="bold yellow")
+                    else:
+                        text.append(line, style="dim")
+            body = text
         return Panel(
             body,
             title="[bold]AUDIT LOG — tail (live)[/bold]",
