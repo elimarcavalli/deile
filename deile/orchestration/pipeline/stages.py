@@ -663,24 +663,18 @@ async def _dispatch_mention_group(
             logger.info("mention #%d ignorada p/ roteamento: já está no gate ativo (%s)", number, active)
             return
         if active == WORKFLOW_BLOCKED:
-            # Blocked is human-gated. Per operator policy (issue #442 alignment)
-            # the comment is NOT dropped silently: surface the blocked status AND
-            # attend the request one-shot below. A human removing the label
-            # resumes the normal flow.
-            try:
-                await monitor.forge.comment_on_issue(
-                    number,
-                    f"⏸️ Esta issue está em `{WORKFLOW_BLOCKED}` — vou atender seu "
-                    f"comentário agora, mas o fluxo automático só retoma quando "
-                    f"você remover `{WORKFLOW_BLOCKED}`.",
-                )
-            except Exception as exc:  # noqa: BLE001 — status note is best-effort
-                logger.warning("mention #%d: blocked-status note failed: %s", number, exc)
+            # Blocked is human-gated → DEFER silently (drop). Do NOT one-shot (a
+            # blocked issue must not be worked) and do NOT post a status comment:
+            # postar a cada tick criou um LOOP INFINITO — a menção re-dispara a
+            # cada tick → status + one-shot → novo claude worker (incidente #446).
+            # O humano vê o próprio comentário; remover ~workflow:bloqueada retoma.
+            logger.info("mention #%d ignorada p/ roteamento: %s (human-gated, sem one-shot nem status)", number, WORKFLOW_BLOCKED)
+            return
         # Fall through to mode="comment" (one-shot) for: a TERMINAL state
-        # (em_pr / decomposta / bloqueada), a CLOSED issue in any state, or no
-        # ~workflow:* label. None of these has a future gate dispatch that would
-        # read the comment, so the one-shot handler is the ONLY way it is acted
-        # upon — and because it IS handled, the mention cursor may advance past it
+        # (em_pr / decomposta), a CLOSED issue in any state, or no ~workflow:*
+        # label. None of these has a future gate dispatch that would read the
+        # comment, so the one-shot handler is the ONLY way it is acted upon —
+        # and because it IS handled, the mention cursor may advance past it
         # safely (the #442 limbo came from advancing past a DROPPED comment).
 
     # Decide the dispatch mode from the role.
@@ -714,22 +708,12 @@ async def _dispatch_mention_group(
                 )
                 return
             if WORKFLOW_BLOCKED in pr_labels:
-                # Consistency with pr_review (which EXCLUDES blocked PRs from its
-                # candidate set, stages.py:2080) and with the blocked-issue policy
-                # above: a blocked PR is human-gated, so a mention must NOT auto-
-                # dispatch pr_unified (which could merge a PR the human blocked —
-                # the silent re-dispatch was a real hole, issue #442 audit). Surface
-                # the status and stop; a human removing ~workflow:bloqueada resumes.
-                try:
-                    await monitor.forge.comment_on_pr(
-                        number,
-                        f"⏸️ Esta PR está em `{WORKFLOW_BLOCKED}` — o fluxo "
-                        f"automático só retoma quando você remover "
-                        f"`{WORKFLOW_BLOCKED}`.",
-                    )
-                except Exception as exc:  # noqa: BLE001 — status note is best-effort
-                    logger.warning("mention %s: blocked-PR status note failed: %s", dedup_key, exc)
-                logger.info("mention %s ignorada p/ roteamento: PR em %s (human-gated)", dedup_key, WORKFLOW_BLOCKED)
+                # Blocked PR is human-gated → DEFER silently (drop). pr_review já
+                # EXCLUI PRs bloqueadas (stages.py:2080); a menção não pode auto-
+                # despachar pr_unified (poderia mergear uma PR que o humano
+                # bloqueou). NÃO postar status — postar por tick loopa (a menção
+                # re-dispara a cada tick). O humano remove a label para retomar.
+                logger.info("mention %s ignorada p/ roteamento: PR em %s (human-gated, sem dispatch nem status)", dedup_key, WORKFLOW_BLOCKED)
                 return
         mode = "pr_unified"
     else:

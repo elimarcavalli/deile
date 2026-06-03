@@ -633,7 +633,11 @@ class TestCommentMentionTerminalStates:
         monitor.implementer.mention.assert_not_called()
         assert monitor.stats.mentions_processed == 0
 
-    async def test_comment_on_blocked_issue_posts_status_and_one_shot(self):
+    async def test_comment_on_blocked_issue_defers_silently(self):
+        # Blocked is human-gated → DEFER (drop): NO one-shot AND NO status
+        # comment. Posting a status per tick + one-shotting created an infinite
+        # loop (incident #446 — the mention re-fires each tick). The human sees
+        # their own comment; removing ~workflow:bloqueada resumes the flow.
         comment = _comment(1, "@deile-one aqui está a info que faltava")
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
         github.comment_on_issue = AsyncMock()
@@ -642,9 +646,9 @@ class TestCommentMentionTerminalStates:
             labels=(WORKFLOW_BLOCKED,), state="open",
         ))
         await monitor._process_mentions()
-        github.comment_on_issue.assert_awaited()  # blocked-status note posted
-        assert monitor.implementer.mention.call_args.kwargs["mode"] == "comment"
-        assert monitor.stats.mentions_processed == 1
+        monitor.implementer.mention.assert_not_called()   # no one-shot
+        github.comment_on_issue.assert_not_called()        # no status spam
+        assert monitor.stats.mentions_processed == 0
 
 
 class TestPrBlockedMentionGuard:
@@ -666,6 +670,6 @@ class TestPrBlockedMentionGuard:
         github.comment_on_pr = AsyncMock()
         github.get_pr = AsyncMock(return_value=_pr_ref(1, labels=(WORKFLOW_BLOCKED,)))
         await monitor._process_mentions()
-        monitor.implementer.mention.assert_not_called()
-        github.comment_on_pr.assert_awaited()
+        monitor.implementer.mention.assert_not_called()   # no dispatch
+        github.comment_on_pr.assert_not_called()           # no status spam (anti-loop)
         assert monitor.stats.mentions_processed == 0
