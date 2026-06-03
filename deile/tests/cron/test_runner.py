@@ -78,6 +78,28 @@ class TestTick:
         assert dm_calls[0][0] == "42"
         assert "result-text" in dm_calls[0][1]
 
+    async def test_tick_emits_cron_fire_event(self, store):
+        from unittest.mock import patch, MagicMock
+        store.add(CronEntry(id="o1", prompt="hi",
+                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+        mock_logger = MagicMock()
+        with patch("deile.cron.runner.get_audit_logger", return_value=mock_logger):
+            runner = CronRunner(store, fire_callback=AsyncMock(return_value="ok"))
+            await runner.tick()
+        mock_logger.log_cron_fire.assert_called_once()
+        call_kwargs = mock_logger.log_cron_fire.call_args
+        assert call_kwargs[1]["entry_id"] == "o1" or call_kwargs[0][0] == "o1"
+
+    async def test_tick_no_callback_emits_cron_skipped(self, store):
+        from unittest.mock import patch, MagicMock
+        store.add(CronEntry(id="o1", prompt="hi",
+                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+        mock_logger = MagicMock()
+        with patch("deile.cron.runner.get_audit_logger", return_value=mock_logger):
+            runner = CronRunner(store)
+            await runner.tick()
+        mock_logger.log_cron_skipped.assert_called_once()
+
 
 class TestLifecycle:
     async def test_start_then_stop(self, store):
