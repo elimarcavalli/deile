@@ -1210,10 +1210,163 @@ def _install_monitor_negative_whitelist() -> None:
         agent_mod.DeileAgent.initialize = _harden
 
 
+# Shell commands a monitor-qa turn is allowed to run are READ-ONLY. This regex
+# matches anything that mutates state — kubectl/git/gh/glab/helm write verbs,
+# destructive coreutils, sudo, and output redirection. It is the second layer
+# (the persona instructions are the first); a match is hard-refused regardless
+# of the bash risk classifier, so prompt-injection of a write cannot land.
+_QA_MUTATING_RE = re.compile(
+    r"(?:^|[\s;&|(`])(?:rm|mv|cp|dd|tee|truncate|chmod|chown|chgrp|kill|pkill|killall|ln|shred|mkfs|mount)\b"
+    r"|\bkubectl\b[^|;&]*\b(?:delete|patch|apply|edit|scale|cordon|drain|uncordon|replace|annotate|label|create|expose|rollout|set|exec|cp|attach|taint|port-forward)\b"
+    r"|\bgit\b[^|;&]*\b(?:push|commit|reset|merge|rebase|checkout|switch|clean|tag|am|cherry-pick|revert|stash|fetch|pull)\b"
+    r"|\b(?:gh|glab)\b[^|;&]*\b(?:create|edit|close|reopen|merge|delete|comment|review|develop|ready|lock|unlock|pin|transfer|sync)\b"
+    r"|\bhelm\b[^|;&]*\b(?:install|upgrade|uninstall|delete|rollback)\b"
+    r"|(?<![0-9])>>?"          # output redirection (write); 2>&1 style is excluded
+    r"|\bsudo\b",
+    re.IGNORECASE,
+)
+
+
+def _wrap_bash_readonly(bash_tool: object) -> None:
+    """Wrap the bash tool so a non-SAFE/mutating command is hard-refused.
+
+    Enforcement, not instruction: even if the persona is steered into asking
+    for a mutation, the command never reaches the shell. Allows MODERATE
+    commands (``kubectl get``/``gh list``/``curl`` are classified MODERATE)
+    so legitimate read inspection still works; refuses DANGEROUS or any
+    mutating verb in :data:`_QA_MUTATING_RE`.
+    """
+    from deile.tools._shell_security import assess_risk
+    from deile.tools.base import SecurityLevel, ToolResult
+
+    original_execute_sync = bash_tool.execute_sync  # type: ignore[attr-defined]
+
+    def _guarded(context):
+        cmd = ((getattr(context, "parsed_args", None) or {}).get("command") or "")
+        level, _warnings = assess_risk(cmd)
+        if level == SecurityLevel.DANGEROUS.value or _QA_MUTATING_RE.search(cmd):
+            return ToolResult.error_result(
+                message=(
+                    "monitor-qa: comando recusado — modo somente-leitura "
+                    "(mutações e redirecionamentos são bloqueados)."
+                ),
+            )
+        return original_execute_sync(context)
+
+    bash_tool.execute_sync = _guarded  # type: ignore[attr-defined]
+
+
+def _install_monitor_qa_readonly_guard() -> None:
+    """Harden the agent for read-only Q&A: drop mutating tools + guard bash.
+
+    Mirrors :func:`_install_monitor_negative_whitelist` but is far stricter:
+    it removes every tool that can change state (file writes, package install,
+    code/test execution, dispatch, messaging) and wraps ``bash_execute`` with
+    :func:`_wrap_bash_readonly`. Only read tools survive: ``bash_execute``
+    (guarded), ``read_file``, ``list_files``, ``find_in_files``,
+    ``vision_describe_image``.
+    """
+    import asyncio as _asyncio
+
+    import deile.core.agent as agent_mod
+
+    DROP = {
+        "dispatch_deile_task", "dispatch_parallel_subagents",
+        "write_file", "edit_file", "delete_file",
+        "python_execute", "pip_install", "run_tests",
+        "worktree", "pipeline", "pipeline_schedule",
+        "cron_create", "cron_delete",
+        "discord_send_message", "discord_send_dm", "discord_edit_message",
+        "discord_react", "discord_start_thread", "discord_pin_message",
+        "discord_mention_role", "discord_get_user_profile",
+        "whatsapp_send_template",
+    }
+    original_init = agent_mod.DeileAgent.initialize
+
+    async def _harden(self, *args, **kwargs):
+        result = await original_init(self, *args, **kwargs)
+        try:
+            registry = self.tool_registry
+            tools = registry.list_all()
+        except Exception:  # noqa: BLE001 — never block startup over introspection
+            return result
+        dropped = []
+        for tool in tools:
+            if tool.name in DROP and registry.disable_tool(tool.name):
+                dropped.append(tool.name)
+        bash = registry.get("bash_execute")
+        if bash is not None and hasattr(bash, "execute_sync"):
+            _wrap_bash_readonly(bash)
+            guarded = "bash_execute"
+        else:
+            guarded = "none"
+        print(
+            f"wrapper(monitor-qa): read-only guard active — "
+            f"dropped={sorted(dropped)} guarded={guarded}",
+            file=sys.stderr,
+        )
+        return result
+
+    if _asyncio.iscoroutinefunction(original_init):
+        agent_mod.DeileAgent.initialize = _harden
+
+
+def _run_monitor_qa(passthrough: List[str]) -> int:
+    """deile-monitor-qa mode: one-shot READ-ONLY cluster/pipeline/forge Q&A.
+
+    Invoked on demand by ``monitor_command_server`` (``POST /v1/ask``) as a
+    subprocess inside the deile-monitor Pod — the only Pod with kubectl +
+    forge + ``/state`` visibility. Mirrors :func:`_run_monitor` bootstrap but
+    pins the read-only ``monitor_qa`` persona and installs
+    :func:`_install_monitor_qa_readonly_guard`. The one-shot CLI prints the
+    agent's final ``response.content`` to stdout — that is the answer the
+    server returns.
+    """
+    _harden_runtime_dirs()
+    loaded = _load_secret_files(Path("/run/secrets/deile"))
+    if not _has_llm_key(loaded):
+        print(
+            "wrapper(monitor-qa): no *_API_KEY found under /run/secrets/deile — "
+            "cannot bootstrap any LLM provider.",
+            file=sys.stderr,
+        )
+        return 78  # EX_CONFIG
+
+    # Forge token is OPTIONAL for Q&A: pure-k8s questions only need kubectl.
+    # When present, wire git/gh/glab credentials so forge questions work too.
+    has_forge = any(
+        (name in loaded) or bool(os.environ.get(name))
+        for name in ("GITHUB_TOKEN", "GITLAB_TOKEN", "GL_TOKEN")
+    )
+    if has_forge:
+        _setup_forge_credentials()
+    else:
+        print(
+            "wrapper(monitor-qa): no forge token under /run/secrets/deile — "
+            "forge-scoped questions will be limited to kubectl/state.",
+            file=sys.stderr,
+        )
+
+    _patch_deile_bootstrap()
+
+    try:
+        _install_monitor_qa_readonly_guard()
+    except Exception as exc:  # noqa: BLE001 — refuse to start unsafe
+        print(f"wrapper(monitor-qa): read-only guard install failed: {exc}", file=sys.stderr)
+        return 78
+
+    # FORCE (not setdefault): the Deployment env sets DEILE_DEFAULT_PERSONA=monitor
+    # for the tick; Q&A must override it to the read-only persona.
+    os.environ["DEILE_DEFAULT_PERSONA"] = "monitor_qa"
+    sys.argv = ["deile", *passthrough]
+    from deile.cli import main as deile_main
+    return deile_main() or 0
+
+
 def main(argv: List[str]) -> int:
     if len(argv) < 2:
         print(
-            "usage: wrapper.py {deile|bot|worker|claude-worker|pipeline|monitor} <args ...>",
+            "usage: wrapper.py {deile|bot|worker|claude-worker|pipeline|monitor|monitor-qa} <args ...>",
             file=sys.stderr,
         )
         return 64  # EX_USAGE
@@ -1230,9 +1383,12 @@ def main(argv: List[str]) -> int:
         return _run_pipeline(rest)
     if role == "monitor":
         return _run_monitor(rest)
+    if role == "monitor-qa":
+        return _run_monitor_qa(rest)
     print(
         f"wrapper: unknown role {role!r} "
-        "(expected 'deile' | 'bot' | 'worker' | 'claude-worker' | 'pipeline' | 'monitor')",
+        "(expected 'deile' | 'bot' | 'worker' | 'claude-worker' | 'pipeline' | "
+        "'monitor' | 'monitor-qa')",
         file=sys.stderr,
     )
     return 64
