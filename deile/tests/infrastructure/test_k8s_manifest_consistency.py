@@ -278,6 +278,84 @@ def test_apiserver_egress_selector_matches_runtime() -> None:
     )
 
 
+def _get_pipeline_container_env(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the env list of the first container in the deile-pipeline Deployment."""
+    for d in docs:
+        if d.get("kind") == "Deployment":
+            labels = (
+                (d.get("spec", {}) or {})
+                .get("template", {})
+                .get("metadata", {})
+                .get("labels", {})
+            ) or {}
+            if labels.get("app") == "deile-pipeline":
+                containers = (
+                    (d.get("spec", {}) or {})
+                    .get("template", {})
+                    .get("spec", {})
+                    .get("containers", [])
+                ) or []
+                if containers:
+                    return containers[0].get("env") or []
+    return []
+
+
+# Canonical values for the 5 per-stage timeout vars (issue #530).
+_EXPECTED_TIMEOUTS: dict[str, str] = {
+    "DEILE_PIPELINE_TIMEOUT_S_CLASSIFY": "600",
+    "DEILE_PIPELINE_TIMEOUT_S_REFINE": "1800",
+    "DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT": "2700",
+    "DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW": "3600",
+    "DEILE_PIPELINE_TIMEOUT_S_FOLLOW_UPS": "2700",
+}
+
+
+def test_pipeline_timeout_vars_present_with_exact_values(
+    docs: list[dict[str, Any]],
+) -> None:
+    """Issue #530 — 5 TIMEOUT_S_* vars must exist with canonical values.
+
+    Fails if any key is absent, has the wrong value, or is duplicated.
+    When a manifest re-apply drops these env vars the pipeline falls back to
+    the global pipeline_claude_timeout (1800 s) and silently kills
+    IMPLEMENT/PR_REVIEW/FOLLOW_UPS early.
+    """
+    env = _get_pipeline_container_env(docs)
+    assert env, (
+        "Nenhuma variável de ambiente encontrada no container 'deile-pipeline'. "
+        "Verificar que o Deployment 46-deile-pipeline-deployment.yaml carrega o env:."
+    )
+
+    # (a) + (b) presence and exact value
+    env_map: dict[str, str] = {e["name"]: e.get("value", "") for e in env if "name" in e}
+    errors: list[str] = []
+    for key, expected in _EXPECTED_TIMEOUTS.items():
+        if key not in env_map:
+            errors.append(f"  AUSENTE: {key} (esperado value={expected!r})")
+        elif env_map[key] != expected:
+            errors.append(
+                f"  VALOR ERRADO: {key}={env_map[key]!r} (esperado {expected!r})"
+            )
+    assert not errors, (
+        "Timeouts per-stage do manifest 46 divergem dos valores canônicos (issue #530):\n"
+        + "\n".join(errors)
+        + "\nNão altere o teste para passar — corrija o manifest."
+    )
+
+    # (c) no duplicate name in the full env list
+    names = [e["name"] for e in env if "name" in e]
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for name in names:
+        if name in seen:
+            dupes.append(name)
+        seen.add(name)
+    assert not dupes, (
+        f"Entradas env: duplicadas no container deile-pipeline: {dupes}. "
+        "Kubernetes usa last-wins para duplicatas — remova as redundantes."
+    )
+
+
 def test_apiserver_egress_fallback_is_private() -> None:
     """Regra 5 — todo ipBlock do fallback estático está em range privado.
 
