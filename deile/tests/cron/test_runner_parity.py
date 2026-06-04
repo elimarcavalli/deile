@@ -39,16 +39,17 @@ def _due_entry(entry_id: str = "job-1", prompt: str = "run backup", cron: str = 
 
 
 class TestCronFireFieldParity:
-    """CronRunner._fire must emit CRON_FIRE with entry_id, name, schedule, payload_hash."""
+    """CronRunner._fire must emit CRON_FIRE with entry_id encoded in resource,
+    plus name, schedule, payload_hash in details."""
 
-    async def test_entry_id_field(self, store, audit_logger) -> None:
+    async def test_entry_id_in_resource(self, store, audit_logger) -> None:
         store.add(_due_entry("my-job"))
         with patch("deile.cron.runner.get_audit_logger", return_value=audit_logger):
             runner = CronRunner(store, fire_callback=AsyncMock(return_value="ok"))
             await runner.tick()
         events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_FIRE)
         assert events, "expected CRON_FIRE event"
-        assert events[0].details["entry_id"] == "my-job"
+        assert events[0].resource == "cron:my-job"
 
     async def test_name_field_equals_entry_id(self, store, audit_logger) -> None:
         store.add(_due_entry("daily-renew"))
@@ -85,22 +86,24 @@ class TestCronFireFieldParity:
             await runner.tick()
         events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_FIRE)
         assert events, "no CRON_FIRE event emitted"
-        details = events[0].details
-        for field in ("entry_id", "name", "schedule", "payload_hash"):
-            assert field in details, f"missing field {field!r} in CRON_FIRE details"
+        ev = events[0]
+        assert ev.resource == "cron:full-job"
+        for field in ("name", "schedule", "payload_hash"):
+            assert field in ev.details, f"missing field {field!r} in CRON_FIRE details"
 
 
 class TestCronSkippedFieldParity:
-    """CronRunner._fire must emit CRON_SKIPPED with entry_id, name, reason when no callback."""
+    """CronRunner._fire must emit CRON_SKIPPED with entry_id in resource,
+    plus name and reason in details."""
 
-    async def test_entry_id_field(self, store, audit_logger) -> None:
+    async def test_entry_id_in_resource(self, store, audit_logger) -> None:
         store.add(_due_entry("skip-job"))
         with patch("deile.cron.runner.get_audit_logger", return_value=audit_logger):
             runner = CronRunner(store)  # no callback
             await runner.tick()
         events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_SKIPPED)
         assert events, "expected CRON_SKIPPED event"
-        assert events[0].details["entry_id"] == "skip-job"
+        assert events[0].resource == "cron:skip-job"
 
     async def test_name_field(self, store, audit_logger) -> None:
         store.add(_due_entry("named-skip"))
@@ -125,6 +128,7 @@ class TestCronSkippedFieldParity:
             await runner.tick()
         events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_SKIPPED)
         assert events, "no CRON_SKIPPED event emitted"
-        details = events[0].details
-        for field in ("entry_id", "name", "reason"):
-            assert field in details, f"missing field {field!r} in CRON_SKIPPED details"
+        ev = events[0]
+        assert ev.resource == "cron:allfields-skip"
+        for field in ("name", "reason"):
+            assert field in ev.details, f"missing field {field!r} in CRON_SKIPPED details"
