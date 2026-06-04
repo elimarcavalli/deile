@@ -30,7 +30,7 @@ import shlex
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from rich.console import Console, Group
+from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -73,7 +73,10 @@ _V1_VERBS = [
     ("list", "namespaces DEILE detectados no cluster"),
 ]
 
-_V2_VERBS = ["start", "stop", "restart", "status", "logs"]
+_V2_VERBS = [
+    "up", "build", "down", "scale", "start", "stop", "setup",
+    "create-namespace", "claude-login", "claude-renew", "test", "clone", "panel",
+]
 
 # ---------------------------------------------------------------------------
 # Namespace auto-detection
@@ -228,53 +231,47 @@ async def _cmd_discovery(namespace: str) -> CommandResult:
 
 async def _cmd_restart(namespace: str, deployment: str) -> CommandResult:
     """Restart one or all deployments."""
-    console = Console(no_color=False)
-
     if deployment.lower() == "all":
-        targets = K8S_DEPLOYMENTS
+        targets = list(K8S_DEPLOYMENTS)
     else:
         targets = [deployment]
 
-    results = []
+    lines = []
+    all_ok = True
+
     for dep in targets:
-        console.print(f"[cyan]Restarting deployment/{dep}...[/cyan]")
-        ok, stdout, stderr = await _run_kubectl(
+        ok, _, stderr = await _run_kubectl(
             ["-n", namespace, "rollout", "restart", f"deployment/{dep}"]
         )
         if not ok:
-            results.append((dep, False, stderr.strip()))
-            console.print(f"[red]restart deployment/{dep} failed: {stderr.strip()}[/red]")
+            lines.append(Text(f"[✗] rollout restart {dep}: {stderr.strip()[:200]}", style="red"))
+            all_ok = False
             continue
 
-        # Wait for rollout status
-        console.print(f"[cyan]Waiting for rollout status of {dep}...[/cyan]")
-        ok2, stdout2, stderr2 = await _run_kubectl(
+        lines.append(Text(f"[~] kubectl -n {namespace} rollout restart deployment/{dep}", style="dim"))
+
+        ok2, out2, err2 = await _run_kubectl(
             ["-n", namespace, "rollout", "status", f"deployment/{dep}", "--timeout=180s"],
             timeout=200.0,
         )
         if ok2:
-            results.append((dep, True, stdout2.strip()))
-            console.print(f"[green]deployment/{dep}: {stdout2.strip() or 'success'}[/green]")
+            lines.append(Text(f"[OK] deployment \"{dep}\" rollout concluído", style="green"))
         else:
-            results.append((dep, False, stderr2.strip() or stdout2.strip()))
-            console.print(f"[red]deployment/{dep} rollout failed: {stderr2.strip()}[/red]")
+            msg = (err2 or out2).strip()[:200]
+            lines.append(Text(f"[✗] rollout status {dep} falhou: {msg}", style="red"))
+            all_ok = False
 
-    all_ok = all(ok for _, ok, _ in results)
-    lines = [
-        ("[green]OK[/green]" if ok else "[red]FAIL[/red]") + f"  {dep}: {msg}"
-        for dep, ok, msg in results
-    ]
-    summary = "\n".join(lines)
-
+    lines.append(Text(""))
+    n = len(targets)
     if all_ok:
-        return CommandResult.success_result(
-            f"Restart completed.\n{summary}",
-            "text",
-        )
+        lines.append(Text(f"[OK] {n}/{n} deployments concluíram rollout", style="green"))
+    else:
+        lines.append(Text("Alguns rollouts falharam (ver detalhes acima)", style="red"))
+
     return CommandResult(
-        success=False,
-        content=f"One or more restarts failed.\n{summary}",
-        content_type="text",
+        success=all_ok,
+        content=Group(*lines),
+        content_type="rich",
     )
 
 
@@ -391,7 +388,7 @@ class K8sCommand(DirectCommand):
             f"Unknown subcommand '{sub}'. Valid: {valid}. Run /k8s for help."
         )
 
-    async def get_help(self) -> str:
+    def get_help(self) -> str:
         return """/k8s -- kubectl operations for DEILE cluster
 
 Usage:

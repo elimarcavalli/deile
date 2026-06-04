@@ -593,8 +593,8 @@ class TestK8sCommandMetadata:
     def test_category_is_infrastructure(self):
         assert _cmd().category == "infrastructure"
 
-    async def test_get_help_contains_usage(self):
-        help_text = await _cmd().get_help()
+    def test_get_help_contains_usage(self):
+        help_text = _cmd().get_help()
         assert "k8s" in help_text.lower()
         assert "restart" in help_text.lower()
         assert "logs" in help_text.lower()
