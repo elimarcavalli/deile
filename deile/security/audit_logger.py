@@ -544,34 +544,3 @@ def get_audit_logger() -> AuditLogger:
     return _audit_logger
 
 
-def log_permission_check(tool_name: str, resource: str, action: str, allowed: bool, **kwargs) -> None:
-    """Convenience function for logging permission checks"""
-    get_audit_logger().log_permission_check(tool_name, resource, action, allowed, **kwargs)
-
-
-def log_secret_detection(file_path: str, secret_type: str, line_number: int, confidence: float, redacted: bool = True) -> None:
-    """Convenience function for logging secret detections"""
-    get_audit_logger().log_secret_detection(file_path, secret_type, line_number, confidence, redacted)
-
-
-def log_tool_execution(tool_name: str, resource: str, success: bool, **kwargs) -> None:
-    """Convenience function for logging tool executions"""
-    get_audit_logger().log_tool_execution(tool_name, resource, success, **kwargs)
-
-
-def log_plan_execution(plan_id: str, action: str, result: str, step_count: int = 0, duration_ms: int = 0, **kwargs) -> None:
-    """Convenience function for logging plan execution"""
-    get_audit_logger().log_plan_execution(plan_id, action, result, step_count, duration_ms)
-
-
-def log_approval_event(plan_id: str, step_id: str, approval_action: str, tool_name: str, risk_level: str, **kwargs) -> None:
-    """Convenience function for logging approval events"""
-    get_audit_logger().log_approval_event(plan_id, step_id, approval_action, tool_name, risk_level)
-
-
-def log_cron_fire(entry_id: str, name: Optional[str], schedule: Optional[str], payload_hash: Optional[str]) -> None:
-    get_audit_logger().log_cron_fire(entry_id, name, schedule, payload_hash)
-
-
-def log_cron_skipped(entry_id: str, name: Optional[str], reason: str) -> None:
-    get_audit_logger().log_cron_skipped(entry_id, name, reason)
