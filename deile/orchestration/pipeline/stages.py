@@ -3212,6 +3212,7 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_PENDING,
             max_attempts=max_attempts, age_seconds=age,
             description=f"PR #{pr.number} review stuck há {age // 60}min",
+            url=pr.url,
         )
 
     # Issues com ~workflow:em_implementacao (stuck no implement).
@@ -3240,6 +3241,7 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_REVIEWED,
             max_attempts=max_attempts, age_seconds=age,
             description=f"issue #{issue.number} implement stuck há {age // 60}min",
+            url=issue.url,
         )
 
     # Issues com ~workflow:em_revisao (crítica de escopo interrompida por restart
@@ -3269,6 +3271,7 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_NEW,
             max_attempts=max_attempts, age_seconds=age,
             description=f"issue #{issue.number} em_revisao stuck há {age // 60}min",
+            url=issue.url,
         )
 
     # Issues com ~workflow:em_refinamento / ~workflow:em_arquitetura travadas por
@@ -3306,6 +3309,7 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
                     from_label=refine_state, to_label=WORKFLOW_NEW,
                     max_attempts=max_attempts, age_seconds=age,
                     description=f"issue #{issue.number} {refine_state} stuck há {age // 60}min",
+                    url=issue.url,
                 )
                 # Lock liberado → o dispatch em voo morreu; limpa o ledger pra
                 # não consultar resume-info de uma task abandonada.
@@ -3323,6 +3327,7 @@ async def _reap_one(
     max_attempts: int,
     age_seconds: int,
     description: str,
+    url: str,
 ) -> None:
     """Reaper helper — libera UM claim órfão.
 
@@ -3378,6 +3383,16 @@ async def _reap_one(
             "reaper BLOCKED %s #%d after %d attempts (age=%ds)",
             kind, number, next_attempt, age_seconds,
         )
+        try:
+            await monitor.notifier.reaper_blocked(
+                number, url,
+                kind=kind,
+                attempt=next_attempt,
+                max_attempts=max_attempts,
+                age_seconds=age_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort DM
+            logger.warning("reaper #%d: discord notify failed: %s", number, exc)
         return
 
     # Libera: remove labels stale, adiciona ~attempt:(N+1) + label de retorno.
