@@ -2046,6 +2046,7 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
             i for i in sort_by_priority(issues)
             if WORKFLOW_BLOCKED not in i.labels
             and WORKFLOW_PR not in i.labels
+            and i.number not in monitor._resume_in_flight
             and monitor._this_monitor_owns(i)
             and monitor._resume_tracker.cadence_ok(
                 i.number, now, monitor.config.resume_interval
@@ -2079,8 +2080,33 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     await monitor.notifier.implementation_resumed(target.number, state.attempt + 1)
     monitor._resume_tracker.record_dispatch(target.number, now)
     monitor._stats.resume_dispatches += 1
-    outcome = await monitor.implementer.implement(monitor, target, resume=True)
-    await _finalize_implement_outcome(monitor, target.number, outcome, resume=True)
+
+    # RESUME (issue #445): o dispatch bloqueante (``implement(resume=True)`` com
+    # wait=True) + o processamento inline do outcome rodam em BACKGROUND para não
+    # congelar o loop do monitor (visto tick de 604s). Espelha o caminho de review
+    # (``_resume_review_one_pr``). O gate de cadência (record_dispatch acima) +
+    # ``_resume_in_flight`` impedem re-dispatch concorrente da mesma issue; o
+    # ground-truth de :func:`reconcile_implementing_issues` cobre a conclusão por
+    # PR no tick seguinte. 1 alvo por tick.
+    monitor._resume_in_flight.add(target.number)
+    monitor.spawn_background(_resume_implement_one_issue(monitor, target))
+
+
+async def _resume_implement_one_issue(
+    monitor: "PipelineMonitor", target: "IssueRef"
+) -> None:
+    """Processamento BLOQUEANTE do resume de uma issue (implement), extraído de
+    ``resume_in_progress_issues`` para rodar em background task — NÃO congela o
+    loop do monitor. A lógica (dispatch resume + teto/block/_absorb_progress via
+    ``_finalize_implement_outcome``) é IDÊNTICA à anterior; só deixou de bloquear
+    o tick. O caller já fez seleção/teto-pré-dispatch/record_dispatch e marcou
+    ``_resume_in_flight``.
+    """
+    try:
+        outcome = await monitor.implementer.implement(monitor, target, resume=True)
+        await _finalize_implement_outcome(monitor, target.number, outcome, resume=True)
+    finally:
+        monitor._resume_in_flight.discard(target.number)
 
 
 def _absorb_progress(

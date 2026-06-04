@@ -370,6 +370,7 @@ class TestResumeSweep:
             )],
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_resumed.assert_called_once()
         assert monitor.stats.resume_dispatches == 1
         # The dispatch carried resume mode.
@@ -384,6 +385,7 @@ class TestResumeSweep:
             )],
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_finished.assert_called_once()
         assert monitor.stats.issues_implemented == 1
         monitor.github.transition_issue.assert_any_call(
@@ -422,6 +424,7 @@ class TestResumeSweep:
             2, fingerprint="SAME", attempt=1, budget_s=0.0
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_blocked.assert_called_once()
         monitor.github.add_labels.assert_any_call("issue", 2, [WORKFLOW_BLOCKED])
         assert monitor.stats.issues_blocked == 1
@@ -437,6 +440,7 @@ class TestResumeSweep:
             2, fingerprint="OLD", attempt=1, budget_s=0.0
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_blocked.assert_not_called()
         assert monitor._resume_tracker.get(2).last_fingerprint == "NEW"
 
@@ -482,10 +486,40 @@ class TestResumeSweep:
             ],
         )
         await monitor.tick()  # absorbs budget=900 from the worker result
+        await _drain_bg(monitor)
         assert monitor._resume_tracker.get(2).budget_s == 900.0
         notifier.implementation_blocked.assert_not_called()
         await monitor.tick()  # now the budget ceiling fires
         notifier.implementation_blocked.assert_called_once()
+
+    async def test_resume_implement_nao_bloqueia_o_tick(self):
+        # Issue #445: o resume de implement roda detached via spawn_background —
+        # resume_in_progress_issues retorna ANTES de o dispatch (lento) terminar.
+        import asyncio
+
+        from deile.orchestration.pipeline import stages
+
+        monitor, notifier, _ = _make_monitor(issues_in_progress=[_in_progress()])
+        gate = asyncio.Event()
+
+        async def _slow_implement(_monitor, _issue, *, resume):
+            await gate.wait()
+            return _outcome_from_worker_response(
+                _worker_response(ended="incompleto", fingerprint="f2", tentativa=2)
+            )
+
+        monitor.implementer = MagicMock()
+        monitor.implementer.implement = AsyncMock(side_effect=_slow_implement)
+
+        # O stage retorna imediatamente (dispatch ainda travado no gate).
+        await stages.resume_in_progress_issues(monitor)
+        assert len(monitor._bg_tasks) == 1
+        assert 2 in monitor._resume_in_flight
+
+        # Libera o dispatch e drena — o in-flight é limpo no finally.
+        gate.set()
+        await _drain_bg(monitor)
+        assert 2 not in monitor._resume_in_flight
 
     async def test_cadence_skips_when_too_soon(self):
         monitor, notifier, client = _make_monitor(
