@@ -529,3 +529,65 @@ class TestReaperRefineExtended:
             if c.args[1] == 51 for lb in c.args[2]
         ]
         assert WORKFLOW_NEW not in added
+
+
+# === Anti-loop same-tick (issue #418) =======================================
+class TestRefineAntiLoopSameTick:
+    """Regressão da causa-raiz do loop de #418. reconcile_refine_issues roda
+    ANTES de refine_one_issue no mesmo tick; ao convergir, promove a issue a
+    revisada e a marca em ``_refine_promoted_this_tick``. O índice de labels do
+    GitHub tem eventual consistency, então a issue ainda reaparece sob
+    ``refinar``/``em_arquitetura`` na listagem de refine_one_issue — sem o guard
+    same-tick o rehydrate a rebaixaria de volta (revisada→em_arquitetura) → loop.
+    """
+
+    async def test_refine_skips_issue_promoted_this_tick(self):
+        client = _Client(verdict="REFINO: OK")
+        # Snapshot STALE: índice ainda lista #6 sob em_arquitetura + refinar.
+        stale = _issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="b")
+        monitor, github, ledger = _make(
+            client,
+            label_map={REFINAR: [stale], WORKFLOW_REFINING: [],
+                       WORKFLOW_ARCHITECTURE: [stale]},
+        )
+        # Simula: reconcile já promoveu #6 a revisada NESTE tick.
+        monitor._refine_promoted_this_tick.add(6)
+        github.transition_issue.reset_mock()
+
+        await monitor._refine_one_issue()
+
+        # NÃO rebaixou (nenhuma transition) e NÃO re-dispatchou refino.
+        assert _transitions(github) == []
+        assert ledger.get(DispatchLedger.key_for_issue(6)) is None
+
+    async def test_refine_proceeds_when_not_promoted(self):
+        """Contraprova: set vazio → refino segue normal (fluxo não regrediu)."""
+        client = _Client(verdict="REFINO: OK")
+        stale = _issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="b")
+        monitor, github, ledger = _make(
+            client,
+            label_map={REFINAR: [stale], WORKFLOW_REFINING: [],
+                       WORKFLOW_ARCHITECTURE: [stale]},
+        )
+        assert 6 not in monitor._refine_promoted_this_tick
+        await monitor._refine_one_issue()
+        assert ledger.get(DispatchLedger.key_for_issue(6)) is not None
+
+    async def test_convergence_marks_promoted_set(self):
+        """A convergência (promoção a revisada) registra a issue no set same-tick."""
+        client = _Client(verdict="Pronto.\nREFINO: OK")
+        issue = _issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="estavel")
+        monitor, github, _ = _make(
+            client,
+            label_map={REFINAR: [issue], WORKFLOW_REFINING: [],
+                       WORKFLOW_ARCHITECTURE: [issue]},
+            get_issue_body="estavel",
+        )
+        await monitor._refine_one_issue()
+        own = monitor.identity.ownership_label()
+        seeded = _issue(6, "feature", WORKFLOW_ARCHITECTURE, REFINAR, own)
+        github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: ([seeded] if label == WORKFLOW_ARCHITECTURE else [])
+        )
+        await monitor._reconcile_refine_issues()
+        assert 6 in monitor._refine_promoted_this_tick
