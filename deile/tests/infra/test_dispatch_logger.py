@@ -220,6 +220,26 @@ class TestDispatchProgressEmitters:
         assert records[0].getMessage().startswith("dispatch.model_resolved ")
         assert "model=anthropic:claude-opus-4-8" in records[0].getMessage()
 
+    def test_dispatch_model_resolved_with_reasoning(self):
+        """reasoning=<effort> is emitted when the knob is set (issue #441)."""
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_model_resolved(
+                task="t2", model="anthropic:claude-opus-4-8",
+                source="context_data", reasoning="high",
+            )
+        msg = records[0].getMessage()
+        assert "reasoning=high" in msg
+        assert "source=context_data" in msg
+
+    def test_dispatch_model_resolved_omits_reasoning_when_none(self):
+        """reasoning key is absent (not reasoning=None) when effort is not set."""
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_model_resolved(
+                task="t3", model="anthropic:claude-sonnet-4-6", source="settings",
+            )
+        msg = records[0].getMessage()
+        assert "reasoning=" not in msg
+
     def test_dispatch_progress(self):
         with _capture_records("deile.dispatch") as records:
             dlog.dispatch_progress(task="t1", elapsed_s=60.0, turn=3, tool_last="Bash")
