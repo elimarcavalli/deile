@@ -650,7 +650,14 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 execution_time=time.time() - start_time,
                 metadata={"model_used": session.context_data.get("_last_model_used")},
             )
-            
+
+            # AC2: populate usage metadata for in-process bridge (cross-repo contract)
+            try:
+                from deile.core.usage_envelope import build_usage_envelope
+                response.metadata["usage"] = build_usage_envelope(session_id)
+            except Exception:
+                pass
+
             # Adiciona resposta ao histórico
             _history_meta: Dict[str, Any] = {
                 "tool_results": len(all_tool_results),
