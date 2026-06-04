@@ -148,6 +148,7 @@ The cluster has three traps that make a remote operator misread state:
 | `claude-worker` | `:8767` | runs `claude -p` subprocess in isolated worktrees; OAuth credentials live in PVC `claude-worker-home` |
 | `deile-pipeline-status` | `:8768` | status server (in-process aiohttp inside `deile-pipeline`); read-only telemetry for the panel |
 | `deile-pipeline` | — | the forge monitor — no Service for inbound, only "calls out" (dispatches to workers, talks to forge) |
+| `deile-monitor` | `:8769` | deterministic cluster supervisor (Phase-A tick scheduled as a subprocess). Its main process is `monitor_command_server.py`, exposing a Bearer-gated command/status/ask control plane on `:8769` (no-LLM status, `pause`/`resume`/`ack`/`force-tick`, read-only Q&A via the `monitor_qa` persona) consumed by `deilebot` |
 | `deile-shell` | — | `kubectl exec`-only sandbox; full toolset; prompt comes from the human via `kubectl exec` |
 
 **Only `deile-pipeline` runs the autonomous monitor**; the others never autostart it.
