@@ -1591,8 +1591,8 @@ def test_cleanup_scan_detects_dead_lease(claude_worker_module, tmp_path):
     root = tmp_path / "work"
     workdir = root / "ccdd0022ccdd0022"
     workdir.mkdir(parents=True)
-    import time
     import json
+    import time
     lease = {
         "pod": "p1", "pid": 999999999,  # non-existent PID
         "started_at": time.time() - 3600,
@@ -1968,8 +1968,8 @@ async def test_auth_start_captures_oauth_url_from_claude_output(
     claude_worker_module, monkeypatch,
 ):
     """/v1/auth/start captura URL OAuth impressa pelo claude auth login."""
-    import io                   # noqa: PLC0415
-    import subprocess as _sp    # noqa: PLC0415
+    import io  # noqa: PLC0415
+    import subprocess as _sp  # noqa: PLC0415
 
     fake_url = (
         "https://claude.ai/auth/login?state=abc&code_challenge=xyz"
@@ -2006,8 +2006,8 @@ async def test_auth_start_captures_callback_port_from_percent_encoded_url(
     claude_worker_module, monkeypatch,
 ):
     """/v1/auth/start extrai callback_port mesmo com redirect_uri percent-encoded."""
-    import io                   # noqa: PLC0415
-    import subprocess as _sp    # noqa: PLC0415
+    import io  # noqa: PLC0415
+    import subprocess as _sp  # noqa: PLC0415
 
     # redirect_uri é percent-encoded como o claude CLI produz em produção
     fake_url = (

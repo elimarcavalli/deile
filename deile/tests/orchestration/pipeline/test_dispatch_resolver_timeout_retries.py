@@ -3,13 +3,8 @@
 import pytest
 
 from deile.orchestration.pipeline.dispatch_resolver import (
-    BUILT_IN_MAX_RETRIES,
-    BUILT_IN_TIMEOUT_S_CLAUDE,
-    BUILT_IN_TIMEOUT_S_DEILE,
-    PIPELINE_STAGES,
-    resolve_stage_max_retries,
-    resolve_stage_timeout_s,
-)
+    BUILT_IN_MAX_RETRIES, BUILT_IN_TIMEOUT_S_CLAUDE, BUILT_IN_TIMEOUT_S_DEILE,
+    PIPELINE_STAGES, resolve_stage_max_retries, resolve_stage_timeout_s)
 
 
 def _clear_timeout_env(monkeypatch):
@@ -221,8 +216,9 @@ def test_timeout_settings_per_stage_fallback(monkeypatch):
 def test_retries_settings_per_stage_fallback(monkeypatch):
     """pipeline_retries_implement from settings wins over built-in."""
     _clear_retries_env(monkeypatch)
-    from deile.config import settings as _settings_mod
     import types
+
+    from deile.config import settings as _settings_mod
     mock_s = types.SimpleNamespace(
         pipeline_retries_implement=7,
         pipeline_retries_classify=None,
@@ -252,8 +248,9 @@ def test_retries_settings_per_stage_fallback(monkeypatch):
 def test_retries_global_default_fallback(monkeypatch):
     """pipeline_default_max_retries from settings used when no per-stage."""
     _clear_retries_env(monkeypatch)
-    from deile.config import settings as _settings_mod
     import types
+
+    from deile.config import settings as _settings_mod
     mock_s = types.SimpleNamespace(
         pipeline_retries_implement=None,
         pipeline_retries_classify=None,

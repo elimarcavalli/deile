@@ -22,10 +22,11 @@ import pytest
 from rich.console import Console
 
 from deile.commands.base import CommandContext, CommandStatus
-from deile.commands.builtin._backlog_collectors import (ISSUE_BUCKETS,
-                                                        PR_BUCKETS, BacklogData,
-                                                        _SEM_REVIEW,
+from deile.commands.builtin._backlog_collectors import (_SEM_REVIEW,
                                                         _SEM_WORKFLOW,
+                                                        ISSUE_BUCKETS,
+                                                        PR_BUCKETS,
+                                                        BacklogData,
                                                         _bucket_issue,
                                                         _bucket_pr,
                                                         bucketize_issues,
@@ -590,6 +591,7 @@ def test_command_module_has_no_subprocess_import():
     do source code do módulo do command falha se ``import subprocess``
     reaparecer."""
     import inspect
+
     from deile.commands.builtin import backlog_command
     src = inspect.getsource(backlog_command)
     assert "import subprocess" not in src, (
@@ -607,6 +609,7 @@ def test_collectors_module_has_no_subprocess_call():
     """Coletores também não falam ``gh``/``glab`` diretamente — só via
     :func:`get_forge_router`."""
     import inspect
+
     from deile.commands.builtin import _backlog_collectors
     src = inspect.getsource(_backlog_collectors)
     assert "subprocess.run" not in src
@@ -653,6 +656,7 @@ def test_no_workflow_label_literals_in_command_runtime():
     estado) são permitidas; o que o critério proíbe é hard-code de um
     nome de estado específico em runtime — esse deve vir de ``labels.py``."""
     import re
+
     from deile.commands.builtin import backlog_command
     runtime_strings = _runtime_string_constants(backlog_command)
     state_pattern = re.compile(r"~(?:workflow|review):[a-z_]+")

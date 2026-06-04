@@ -294,7 +294,8 @@ class TestKillSwitch:
     def test_logs_disabled_no_log_records(self, in_memory_log_exporter, monkeypatch):
         """DEILE_OTLP_LOGS_DISABLED=true → nenhum LogRecord emitido."""
         monkeypatch.setenv("DEILE_OTLP_LOGS_DISABLED", "true")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
@@ -339,25 +340,27 @@ class TestResourceAttributes:
         monkeypatch.setenv("DEILE_OTLP_SERVICE_NAME", "deile-test")
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
         import deile.observability.dispatch_log_export as dle
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
 
         reset_observability_config()
         reset_dispatch_log_export()
         # Garantir que não há provider injetado por fixture — deixar _build_log_provider rodar
         monkeypatch.setattr(dle, "_log_provider", None)
 
-        from opentelemetry.sdk._logs.export import (
-            InMemoryLogExporter, SimpleLogRecordProcessor)
+        from opentelemetry.sdk._logs.export import (InMemoryLogExporter,
+                                                    SimpleLogRecordProcessor)
 
         # Substituir _build_log_provider para capturar o resource sem OTLP real
-        real_build = dle._build_log_provider
         built_providers = []
 
         def fake_build(config):
             from opentelemetry.sdk._logs import LoggerProvider
             from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+
             from deile.observability.dispatch_schema import (
-                ATTR_POD, ATTR_ROLE, ATTR_SCHEMA_VERSION, SCHEMA_VERSION, get_pod_metadata)
+                ATTR_POD, ATTR_ROLE, ATTR_SCHEMA_VERSION, SCHEMA_VERSION,
+                get_pod_metadata)
             pod = get_pod_metadata()
             resource = Resource.create({
                 SERVICE_NAME: config.service_name,
@@ -387,11 +390,13 @@ class TestSdkAbsent:
     def test_no_op_when_sdk_absent(self, monkeypatch, caplog):
         """Quando SDK ausente, emit_log_record é no-op e emite INFO na primeira chamada."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
         import deile.observability.dispatch_log_export as dle
+
         # Patch otel_logs_available to return False
         monkeypatch.setattr(dle, "otel_logs_available", lambda: False)
 
@@ -405,7 +410,8 @@ class TestSdkAbsent:
     def test_sdk_absent_warning_emitted_once(self, monkeypatch, caplog):
         """Linha INFO emitida apenas na primeira chamada, não nas subsequentes."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
@@ -427,7 +433,8 @@ class TestSdkAbsent:
 
 class TestGetDispatchLogExport:
     def test_returns_same_instance(self):
-        from deile.observability.dispatch_log_export import get_dispatch_log_export
+        from deile.observability.dispatch_log_export import \
+            get_dispatch_log_export
 
         e1 = get_dispatch_log_export()
         e2 = get_dispatch_log_export()
@@ -459,7 +466,8 @@ class TestDropCounter:
     def test_drop_counter_throttled(self, monkeypatch, caplog):
         """Exporter raise → drop counter + log ≤1×/60s."""
         import deile.observability.dispatch_log_export as dle
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
 
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
         reset_observability_config()

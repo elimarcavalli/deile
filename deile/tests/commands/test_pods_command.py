@@ -11,14 +11,10 @@ import pytest
 from rich.console import Console
 
 from deile.commands.base import CommandContext
-from deile.commands.builtin.pods_command import (
-    PodsCommand,
-    _build_pods_table,
-    _format_age,
-    _parse_k8s_ts,
-    _resolve_namespace,
-)
-
+from deile.commands.builtin.pods_command import (PodsCommand,
+                                                 _build_pods_table,
+                                                 _format_age, _parse_k8s_ts,
+                                                 _resolve_namespace)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -327,8 +323,6 @@ class TestFetchPods:
             ),
         ):
             # Patch wait_for to just await the coroutine
-
-            original_wait_for = asyncio.wait_for
 
             async def _passthrough(coro, timeout=None):
                 return await coro

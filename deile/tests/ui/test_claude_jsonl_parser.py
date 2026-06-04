@@ -16,14 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from deile.ui.panel.observability.jsonl_parser import (
-    AssistantTurn,
-    ClaudeJsonlParser,
-    ToolResultTurn,
-    ToolUseTurn,
-    UnknownTurn,
-    UserTurn,
-)
+from deile.ui.panel.observability.jsonl_parser import (AssistantTurn,
+                                                       ClaudeJsonlParser,
+                                                       ToolResultTurn,
+                                                       ToolUseTurn,
+                                                       UnknownTurn, UserTurn)
 
 
 def _write_jsonl(path: Path, rows) -> Path:

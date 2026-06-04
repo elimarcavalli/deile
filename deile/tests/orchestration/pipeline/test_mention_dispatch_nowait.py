@@ -16,15 +16,13 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
 from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
                                                         PrRef)
-from deile.orchestration.pipeline.implementer import (WorkOutcome,
-                                                      WorkerImplementer)
+from deile.orchestration.pipeline.implementer import (WorkerImplementer,
+                                                      WorkOutcome)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -197,7 +195,8 @@ class TestMentionPrConcurrencyGuardPreserved:
 
     async def test_concurrent_dispatch_blocked_returns_not_ok(self):
         """409 CONCURRENT_DISPATCH_BLOCKED deve retornar outcome com ok=False."""
-        from deile.infrastructure.deile_worker_client import WorkerDispatchError
+        from deile.infrastructure.deile_worker_client import \
+            WorkerDispatchError
 
         async def _dispatch_409(payload, *, wait, endpoint_url=None):
             raise WorkerDispatchError("blocked", error_code="CONCURRENT_DISPATCH_BLOCKED")

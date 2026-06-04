@@ -12,15 +12,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
+                                                 REVIEW_PENDING)
 from deile.orchestration.pipeline.stages import (
-    CLASS_CODE,
-    CLASS_COSMETIC,
-    CLASS_DOCS_ONLY,
-    _classify_new_commits,
-    _handle_review_concluded_invalidation,
-)
-from deile.orchestration.pipeline.labels import REVIEW_CONCLUDED, REVIEW_PENDING
-
+    CLASS_CODE, CLASS_COSMETIC, CLASS_DOCS_ONLY, _classify_new_commits,
+    _handle_review_concluded_invalidation)
 
 # ---------------------------------------------------------------------------
 # _classify_new_commits
@@ -307,6 +303,7 @@ async def test_invalidation_add_pending_fails__re_adds_concluded():
     ])
     forge.remove_labels = AsyncMock()  # succeeds
     from deile.orchestration.forge.github_forge import GhCommandError
+
     # First call (add REVIEW_PENDING) fails; second call (re-add CONCLUDED) succeeds.
     forge.add_labels = AsyncMock(side_effect=[
         GhCommandError(("gh", "api"), 1, "", "GH API down"),
@@ -341,9 +338,9 @@ async def test_invalidation_add_pending_fails__re_adds_concluded():
 async def test_review_one_open_pr_skips_concluded_pr_without_new_commits():
     """PR with ~review:concluida and NO new commits → still excluded."""
     from pathlib import Path
-    from deile.orchestration.pipeline.monitor import (
-        PipelineConfig, PipelineMonitor,
-    )
+
+    from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                      PipelineMonitor)
 
     cfg = PipelineConfig(
         repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
@@ -387,9 +384,9 @@ async def test_review_one_open_pr_skips_concluded_pr_without_new_commits():
 async def test_review_one_open_pr_invalidates_concluded_with_new_code_commits():
     """PR with ~review:concluida and new CODE commits → invalidated."""
     from pathlib import Path
-    from deile.orchestration.pipeline.monitor import (
-        PipelineConfig, PipelineMonitor,
-    )
+
+    from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                      PipelineMonitor)
 
     cfg = PipelineConfig(
         repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",

@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 _INFRA_K8S = Path(__file__).resolve().parents[3] / "infra" / "k8s"
 if str(_INFRA_K8S) not in sys.path:
     sys.path.insert(0, str(_INFRA_K8S))
@@ -283,7 +282,7 @@ class TestDispatchMatrixViewCostCapCol:
 
         with patch("_panel.pd_reset_stage_cost_cap_usd",
                    return_value=(True, "ok")) as mock_reset:
-            result = view.handle_key("r", app)
+            view.handle_key("r", app)
 
         mock_reset.assert_called_once_with("implement", namespace="deile")
 

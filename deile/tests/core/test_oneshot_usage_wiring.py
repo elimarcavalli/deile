@@ -11,9 +11,7 @@ inside _run_oneshot to execute with real logic from deile.core.usage_envelope.
 from __future__ import annotations
 
 import json
-import os
 from types import SimpleNamespace
-from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -252,8 +250,8 @@ async def test_sidecar_written_with_correct_session_id(tmp_path, monkeypatch):
 async def test_no_duplicate_sidecar_write(tmp_path, monkeypatch):
     """Only the single consolidated write path (core.usage_envelope) writes the sidecar.
 
-    After removing the duplicate _write_usage_sidecar(session.session_id) call,
-    collect_and_write_sidecar from observability.usage_sidecar should NOT be called.
+    The legacy observability.usage_sidecar module and the cli._write_usage_sidecar
+    helper have been removed — this test guards against either being reintroduced.
     """
     sidecar_path = tmp_path / "usage.json"
     monkeypatch.setenv("DEILE_USAGE_SIDECAR", str(sidecar_path))
@@ -268,16 +266,7 @@ async def test_no_duplicate_sidecar_write(tmp_path, monkeypatch):
 
     collect_calls: list = []
 
-    # Patch collect_and_write_sidecar to detect if it's still being called
-    def fake_collect_and_write(session_id: str) -> None:
-        collect_calls.append(session_id)
-
-    monkeypatch.setattr(
-        "deile.observability.usage_sidecar.collect_and_write_sidecar",
-        fake_collect_and_write,
-        raising=False,
-    )
-    # Also patch the _write_usage_sidecar helper in cli module if it still exists
+    # Guard against reintroduction of cli._write_usage_sidecar.
     try:
         monkeypatch.setattr(
             "deile.cli._write_usage_sidecar",
@@ -285,7 +274,7 @@ async def test_no_duplicate_sidecar_write(tmp_path, monkeypatch):
             raising=True,
         )
     except AttributeError:
-        pass  # already removed from cli.py
+        pass  # already removed from cli.py (expected)
 
     with (
         patch("deile.cli._bootstrap_provider_router_or_print_error",
@@ -318,7 +307,7 @@ async def test_no_duplicate_sidecar_write(tmp_path, monkeypatch):
             await _run_oneshot("test no duplicate")
 
     assert collect_calls == [], (
-        "collect_and_write_sidecar / _write_usage_sidecar was called after the "
-        "duplicate sidecar write was supposed to be removed. "
+        "cli._write_usage_sidecar was reintroduced — the duplicate sidecar "
+        "write path was removed and must stay removed. "
         f"Calls: {collect_calls}"
     )

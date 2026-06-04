@@ -135,19 +135,6 @@ def _render_brief(template: str, *, params: dict[str, Any]) -> str:
     return template.format(**params)
 
 
-def _inject_view_issue_template(params: dict[str, Any], number: int) -> None:
-    """Add ``view_issue_cmd_template`` (the cmd with ``<N>`` placeholder).
-
-    The review briefs reference ``gh issue view <N> --comments`` where ``<N>``
-    is the issue closed by the PR — unknown at brief-render time. Replace the
-    concrete number in ``view_issue_cmd`` with the ``<N>`` literal so the
-    worker fills it in after parsing the closing reference.
-    """
-    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
-        f" {number} ", " <N> ", 1,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Implement / review briefs
 # ---------------------------------------------------------------------------
@@ -428,22 +415,26 @@ _MENTION_ACTION_TEMPLATES: dict[str, tuple[str | None, str]] = {
 }
 
 
-def _format_mention_action_rich(action: str, n: int, pr_noun: str = "PR") -> str:
-    """Render a mention action with markdown bold label (worker brief style)."""
+def _format_mention_action(action: str, n: int, pr_noun: str = "PR", *, rich: bool) -> str:
+    """Render a mention action label + body. ``rich=True`` wraps the label in
+    markdown bold (worker brief style); ``rich=False`` emits plain prose
+    (Claude prompt style)."""
     label, body = _MENTION_ACTION_TEMPLATES[action]
     body = body.format(n=n, pr_noun=pr_noun, label_pr=pr_noun)
     if label is None:
         return body
-    return f"**{label.format(label_pr=pr_noun)}**: {body}"
+    rendered_label = label.format(label_pr=pr_noun)
+    return f"**{rendered_label}**: {body}" if rich else f"{rendered_label}: {body}"
+
+
+def _format_mention_action_rich(action: str, n: int, pr_noun: str = "PR") -> str:
+    """Render a mention action with markdown bold label (worker brief style)."""
+    return _format_mention_action(action, n, pr_noun, rich=True)
 
 
 def _format_mention_action_plain(action: str, n: int, pr_noun: str = "PR") -> str:
     """Render a mention action with plain prose label (Claude prompt style)."""
-    label, body = _MENTION_ACTION_TEMPLATES[action]
-    body = body.format(n=n, pr_noun=pr_noun, label_pr=pr_noun)
-    if label is None:
-        return body
-    return f"{label.format(label_pr=pr_noun)}: {body}"
+    return _format_mention_action(action, n, pr_noun, rich=False)
 
 
 # Context-aware worker mention brief builder (issue #253)
@@ -674,6 +665,21 @@ def _refine_body(body: str) -> str:
     return (body or "").strip()[:ISSUE_BODY_MAX_CHARS] or "(sem corpo — avalie a partir do título)"
 
 
+def _view_issue_author_cmd(cfg: ForgeConfig, repo: str, number: int) -> str:
+    """Per-forge command to fetch the author handle of an issue.
+
+    ``render_brief_cmds`` exposes ``view_pr_author_cmd`` (assumes a PR target);
+    the refine brief needs the same query against an issue, with the GitLab
+    branch using the same project-id resolution the other ``glab`` snippets do.
+    """
+    if cfg.kind is ForgeKind.GITHUB:
+        return f"gh issue view {number} --repo {repo} --json author -q .author.login"
+    return (
+        f"glab api projects/{cfg.project_id or cfg.encoded_project_path}"
+        f"/issues/{number} | jq -r .author.username"
+    )
+
+
 def _render_worker_critique_brief(
     repo: str,
     number: int,
@@ -684,21 +690,16 @@ def _render_worker_critique_brief(
     template: str,
     forge: Optional[ForgeConfig] = None,
 ) -> str:
-    cfg = forge or _default_forge_config(repo)
-    cmds = render_brief_cmds(
-        cfg, number=number, branch=f"refine-{number}", main="main",
-        issue_template=template,
+    params = _build_brief_params(
+        repo=repo, main="main", branch=f"refine-{number}", number=number,
+        forge=forge, issue_template=template,
+        extras={
+            "title": title,
+            "body": _refine_body(body),
+            "type": issue_type,
+        },
     )
-    return _WORKER_CRITIQUE_BRIEF.format(
-        repo=repo,
-        number=number,
-        title=title,
-        body=_refine_body(body),
-        type=issue_type,
-        fetch_template_cmd=cmds["fetch_template_cmd"],
-        view_issue_cmd=cmds["view_issue_cmd"],
-        clone_cmd=cmds["clone_cmd"],
-    )
+    return _render_brief(_WORKER_CRITIQUE_BRIEF, params=params)
 
 
 def _render_worker_refine_brief(
@@ -711,39 +712,23 @@ def _render_worker_refine_brief(
     template: str,
     forge: Optional[ForgeConfig] = None,
 ) -> str:
-    cfg = forge or _default_forge_config(repo)
-    cmds = render_brief_cmds(
-        cfg, number=number, branch=f"refine-{number}", main="main",
-        issue_template=template,
+    # _build_brief_params already resolves the default; we only need the
+    # concrete ForgeConfig for the per-forge author-lookup snippet below.
+    cfg_for_author = forge or _default_forge_config(repo)
+    params = _build_brief_params(
+        repo=repo, main="main", branch=f"refine-{number}", number=number,
+        forge=forge, issue_template=template,
+        extras={
+            "title": title,
+            "body": _refine_body(body),
+            "type": issue_type,
+            "title_prefix": title_prefix_for_type(issue_type) or "[FEATURE]",
+            "view_pr_author_cmd_for_issue": _view_issue_author_cmd(
+                cfg_for_author, repo, number,
+            ),
+        },
     )
-    # The "view PR author" command in the renderer assumes a PR; for an
-    # issue we adapt it to the proper per-forge issue-author lookup.
-    if cfg.kind is ForgeKind.GITHUB:
-        view_author_cmd_for_issue = (
-            f"gh issue view {number} --repo {repo} --json author -q .author.login"
-        )
-    else:
-        view_author_cmd_for_issue = (
-            f"glab api projects/{cfg.project_id or cfg.encoded_project_path}"
-            f"/issues/{number} | jq -r .author.username"
-        )
-    return _WORKER_REFINE_BRIEF.format(
-        repo=repo,
-        number=number,
-        title=title,
-        body=_refine_body(body),
-        type=issue_type,
-        fetch_template_cmd=cmds["fetch_template_cmd"],
-        view_issue_cmd=cmds["view_issue_cmd"],
-        clone_cmd=cmds["clone_cmd"],
-        title_prefix=title_prefix_for_type(issue_type) or "[FEATURE]",
-        edit_issue_title_cmd=cmds["edit_issue_title_cmd"],
-        edit_issue_body_cmd=cmds["edit_issue_body_cmd"],
-        comment_issue_cmd=cmds["comment_issue_cmd"],
-        create_issue_cmd=cmds["create_issue_cmd"],
-        view_pr_author_cmd_for_issue=view_author_cmd_for_issue,
-        assign_user_cmd=cmds["assign_user_cmd"],
-    )
+    return _render_brief(_WORKER_REFINE_BRIEF, params=params)
 
 
 def _render_worker_decompose_brief(
@@ -754,20 +739,15 @@ def _render_worker_decompose_brief(
     *,
     forge: Optional[ForgeConfig] = None,
 ) -> str:
-    cfg = forge or _default_forge_config(repo)
-    cmds = render_brief_cmds(
-        cfg, number=number, branch=f"decompose-{number}", main="main",
+    params = _build_brief_params(
+        repo=repo, main="main", branch=f"decompose-{number}", number=number,
+        forge=forge,
+        extras={
+            "title": title,
+            "body": _refine_body(body),
+        },
     )
-    return _WORKER_DECOMPOSE_BRIEF.format(
-        repo=repo,
-        number=number,
-        title=title,
-        body=_refine_body(body),
-        clone_cmd=cmds["clone_cmd"],
-        view_issue_cmd=cmds["view_issue_cmd"],
-        create_issue_cmd=cmds["create_issue_cmd"],
-        comment_issue_cmd=cmds["comment_issue_cmd"],
-    )
+    return _render_brief(_WORKER_DECOMPOSE_BRIEF, params=params)
 
 
 # ---------------------------------------------------------------------------

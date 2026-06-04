@@ -34,7 +34,7 @@ from deile.orchestration.pipeline._time_utils import now_utc, parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
-    pipeline_poll_interval_seconds, PIPELINE_STOP_TIMEOUT_SECONDS)
+    PIPELINE_STOP_TIMEOUT_SECONDS, pipeline_poll_interval_seconds)
 # Import path preserved for callers that still type-hint ``GitHubClient`` —
 # resolved through the shim so legacy attribute usage stays compatible.
 from deile.orchestration.pipeline.github_client import \
@@ -43,15 +43,15 @@ from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.implementer import (PipelineImplementer,
                                                       build_implementer,
                                                       is_claude_mode)
+from deile.orchestration.pipeline.labels import (WORKFLOW_IMPLEMENTING,
+                                                 WORKFLOW_NEW,
+                                                 WORKFLOW_REVIEWED)
 from deile.orchestration.pipeline.lockfile import LockHeldError
 from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
 from deile.orchestration.pipeline.lockfile import release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
 from deile.orchestration.pipeline.resume_state import ResumeTracker
 from deile.orchestration.pipeline.scheduler import PendingRun, ScheduleStore
-from deile.orchestration.pipeline.labels import (WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW,
-                                                 WORKFLOW_REVIEWED)
 from deile.orchestration.pipeline.stages import (_extract_pr_url,
                                                  _render_follow_up_report)
 from deile.orchestration.pipeline.worktree_manager import WorktreeManager

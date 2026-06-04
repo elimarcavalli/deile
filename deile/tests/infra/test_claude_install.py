@@ -632,7 +632,10 @@ def test_renew_propagates_apply_secret_failure(claude_install_module,
 
     def fake_run_rollout(cmd, *args, **kwargs):
         rollout_called.append(cmd)
-        ret = MagicMock(); ret.returncode = 0; ret.stdout = ""; ret.stderr = ""
+        ret = MagicMock()
+        ret.returncode = 0
+        ret.stdout = ""
+        ret.stderr = ""
         return ret
 
     with patch.object(claude_install_module, "_kubectl_apply_secret",
@@ -663,7 +666,10 @@ def test_renew_uses_env_var_credentials_when_present(claude_install_module,
         return True
 
     def fake_run(cmd, *args, **kwargs):
-        ret = MagicMock(); ret.returncode = 0; ret.stdout = ""; ret.stderr = ""
+        ret = MagicMock()
+        ret.returncode = 0
+        ret.stdout = ""
+        ret.stderr = ""
         return ret
 
     with patch.object(claude_install_module, "_kubectl_apply_secret",

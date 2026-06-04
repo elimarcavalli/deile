@@ -26,7 +26,6 @@ from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 from deile.orchestration.pipeline.stages import reap_orphan_claims
 
-
 # ---------------------------------------------------------------------------
 # Attempt label helpers
 # ---------------------------------------------------------------------------
@@ -310,7 +309,8 @@ async def test_reaper_releases_stuck_em_revisao():
     """Issue com ~workflow:em_revisao + ownership label há > threshold é
     liberada para ~workflow:nova (from_label removido, nova adicionado,
     attempt incrementado)."""
-    from deile.orchestration.pipeline.labels import WORKFLOW_NEW, WORKFLOW_REVIEWING
+    from deile.orchestration.pipeline.labels import (WORKFLOW_NEW,
+                                                     WORKFLOW_REVIEWING)
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
     issue = _make_issue(901, labels=[WORKFLOW_REVIEWING, own])
@@ -367,7 +367,7 @@ async def test_reaper_does_not_touch_em_arquitetura():
     from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
-    issue = _make_issue(903, labels=[WORKFLOW_ARCHITECTURE, own, "refinar"])
+    _make_issue(903, labels=[WORKFLOW_ARCHITECTURE, own, "refinar"])
     # list_issues_with_label retorna a issue para WORKFLOW_REVIEWING somente
     # se erroneamente invocado para esse estado — não deveria.
     # Para WORKFLOW_IMPLEMENTING retorna [] (nenhuma stuck implement).
@@ -388,7 +388,7 @@ async def test_reaper_does_not_touch_em_refinamento():
     from deile.orchestration.pipeline.labels import WORKFLOW_REFINING
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
-    issue = _make_issue(904, labels=[WORKFLOW_REFINING, own, "refinar"])
+    _make_issue(904, labels=[WORKFLOW_REFINING, own, "refinar"])
     github.list_issues_with_label = AsyncMock(return_value=[])
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 9999)
 

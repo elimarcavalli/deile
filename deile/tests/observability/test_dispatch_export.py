@@ -19,25 +19,20 @@ from typing import List
 
 import pytest
 
-from deile.observability.dispatch_export import (
-    emit_dispatch_completed,
-    emit_dispatch_failed,
-    emit_dispatch_model_resolved,
-    emit_dispatch_progress,
-    emit_dispatch_received,
-    emit_dispatch_tool_burst,
-    emit_forge_pr_open,
-    emit_forge_pr_review,
-    emit_git_commit,
-    emit_git_push,
-    reset_dispatch_export,
-)
-from deile.observability.dispatch_schema import (
-    ATTR_POD,
-    ATTR_ROLE,
-    ATTR_SCHEMA_VERSION,
-    SCHEMA_VERSION,
-)
+from deile.observability.dispatch_export import (emit_dispatch_completed,
+                                                 emit_dispatch_failed,
+                                                 emit_dispatch_model_resolved,
+                                                 emit_dispatch_progress,
+                                                 emit_dispatch_received,
+                                                 emit_dispatch_tool_burst,
+                                                 emit_forge_pr_open,
+                                                 emit_forge_pr_review,
+                                                 emit_git_commit,
+                                                 emit_git_push,
+                                                 reset_dispatch_export)
+from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
+                                                 ATTR_SCHEMA_VERSION,
+                                                 SCHEMA_VERSION)
 
 pytestmark = pytest.mark.unit
 
@@ -111,7 +106,6 @@ def test_failed_lifecycle_produces_root_span_with_error_events(in_memory_exporte
     emit_dispatch_received(tid, session_id="s1")
     emit_dispatch_failed(tid, reason="auth_expired", elapsed_s=5.0)
 
-    spans = in_memory_exporter.get_finished_spans()
     root = _root_span(in_memory_exporter)
     evts = _event_names(root)
     assert "dispatch.received" in evts

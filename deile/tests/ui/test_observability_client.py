@@ -8,13 +8,10 @@ when ``aiohttp`` errors are raised by stubbed handlers.
 
 from __future__ import annotations
 
-
-from deile.ui.panel.observability.client import (
-    ApiError,
-    ClaudeWorkerSessionsClient,
-    ClusterObservabilityClient,
-    PipelineStatusClient,
-)
+from deile.ui.panel.observability.client import (ApiError,
+                                                 ClaudeWorkerSessionsClient,
+                                                 ClusterObservabilityClient,
+                                                 PipelineStatusClient)
 
 
 def test_pipeline_status_client_strips_trailing_slash():

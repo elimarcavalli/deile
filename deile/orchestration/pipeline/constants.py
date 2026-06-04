@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from deile.config.settings import get_settings
 
+
 # ── ClaudeDispatcher ──────────────────────────────────────────────────────
 #: Maximum seconds a ``claude -p`` subprocess may run before it is killed.
 def claude_timeout_seconds() -> int:

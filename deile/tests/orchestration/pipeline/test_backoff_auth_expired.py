@@ -13,11 +13,8 @@ from __future__ import annotations
 import time
 
 from deile.orchestration.pipeline.stages import (
-    _AUTH_BACKOFF_THRESHOLD,
-    is_target_auth_paused,
-    record_auth_failure_and_maybe_pause,
-    reset_auth_failures,
-)
+    _AUTH_BACKOFF_THRESHOLD, is_target_auth_paused,
+    record_auth_failure_and_maybe_pause, reset_auth_failures)
 
 
 class _FakeMonitor:

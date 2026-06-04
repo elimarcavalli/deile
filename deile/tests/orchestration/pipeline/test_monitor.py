@@ -113,9 +113,10 @@ class _FakeFireAndForgetImplementer:
     """
 
     def __init__(self, *, claude_stdout: str, claude_rc: int):
-        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         import tempfile
         from pathlib import Path as _P
+
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         self._stdout = claude_stdout
         self._rc = claude_rc
         self._ledger = DispatchLedger(

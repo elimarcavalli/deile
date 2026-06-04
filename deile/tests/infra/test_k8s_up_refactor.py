@@ -28,7 +28,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import deploy  # noqa: E402
 
-
 # ============================================================================
 # DeploymentProfile
 # ============================================================================
@@ -549,8 +548,8 @@ class TestAssertBearerSync:
         deploy._assert_bearer_sync("/fake/kubectl", "deile")
 
     def test_noop_when_tokens_match(self, monkeypatch):
-        import subprocess as _sp
         import base64
+        import subprocess as _sp
         tok = base64.b64encode(b"same-token").decode()
 
         def fake_run(cmd, **kw):
@@ -562,8 +561,8 @@ class TestAssertBearerSync:
         deploy._assert_bearer_sync("/fake/kubectl", "deile")
 
     def test_raises_when_tokens_diverge(self, monkeypatch):
-        import subprocess as _sp
         import base64
+        import subprocess as _sp
 
         def fake_run(cmd, **kw):
             # cmd = [kubectl, "-n", ns, "get", "secret", secret_name, "-o", ...]
@@ -603,7 +602,6 @@ class TestK8sUpForgeKindWarning:
         monkeypatch.delenv("DEILE_FORGE_KIND", raising=False)
 
         warnings = []
-        original_warn = deploy.ui.warn
         monkeypatch.setattr(deploy.ui, "warn", lambda msg: warnings.append(msg))
 
         deploy.k8s_up({

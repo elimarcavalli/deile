@@ -75,11 +75,11 @@ def test_run_subprocess_source_uses_to_thread_for_write_text():
     )
     lines = src.splitlines()
     direct_write = [
-        l.strip() for l in lines
-        if "write_text(" in l
-        and "asyncio.to_thread" not in l
-        and "tmp.write_text" not in l  # writes inside sync nested funcs são OK
-        and not l.strip().startswith("#")
+        line.strip() for line in lines
+        if "write_text(" in line
+        and "asyncio.to_thread" not in line
+        and "tmp.write_text" not in line  # writes inside sync nested funcs são OK
+        and not line.strip().startswith("#")
     ]
     assert not direct_write, (
         "write_text chamado diretamente (sem to_thread) em run_subprocess_with_progress:\n"

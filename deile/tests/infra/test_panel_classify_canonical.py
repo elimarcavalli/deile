@@ -24,13 +24,9 @@ _INFRA_K8S = Path(__file__).resolve().parents[3] / "infra" / "k8s"
 if str(_INFRA_K8S) not in sys.path:
     sys.path.insert(0, str(_INFRA_K8S))
 
-from _panel_data import (  # noqa: E402
-    LogLine,
-    PipelineProvider,
-    _classify_pipeline_line,
-    _parse_canonical_kv,
-    _redact_canonical_detail,
-)
+from _panel_data import (LogLine, PipelineProvider,  # noqa: E402
+                         _classify_pipeline_line, _parse_canonical_kv,
+                         _redact_canonical_detail)
 
 _UTC = timezone.utc
 _TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=_UTC)

@@ -30,24 +30,20 @@ import time
 from typing import Any, Dict, Optional
 
 from deile.observability.config import get_observability_config
-from deile.observability.dispatch_schema import (
-    ATTR_POD,
-    ATTR_ROLE,
-    ATTR_SCHEMA_VERSION,
-    SCHEMA_VERSION,
-    DispatchCompletedAttrs,
-    DispatchFailedAttrs,
-    DispatchModelResolvedAttrs,
-    DispatchProgressAttrs,
-    DispatchReceivedAttrs,
-    DispatchToolBurstAttrs,
-    ForgePrOpenAttrs,
-    ForgePrReviewAttrs,
-    GitCommitAttrs,
-    GitPushAttrs,
-    get_pod_metadata,
-)
 from deile.observability.dispatch_log_export import emit_log_record
+from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
+                                                 ATTR_SCHEMA_VERSION,
+                                                 SCHEMA_VERSION,
+                                                 DispatchCompletedAttrs,
+                                                 DispatchFailedAttrs,
+                                                 DispatchModelResolvedAttrs,
+                                                 DispatchProgressAttrs,
+                                                 DispatchReceivedAttrs,
+                                                 DispatchToolBurstAttrs,
+                                                 ForgePrOpenAttrs,
+                                                 ForgePrReviewAttrs,
+                                                 GitCommitAttrs, GitPushAttrs,
+                                                 get_pod_metadata)
 from deile.observability.tracer import OtlpTracer, get_tracer, otel_available
 
 __all__ = [
@@ -278,7 +274,8 @@ def emit_dispatch_completed(
             span = _active_spans.pop(task_id, None)
         if span is None:
             return
-        from opentelemetry.trace import StatusCode  # pylint: disable=import-outside-toplevel
+        from opentelemetry.trace import \
+            StatusCode  # pylint: disable=import-outside-toplevel
         span_ctx = span.get_span_context()
         span.add_event(DispatchCompletedAttrs.EVENT_NAME, attributes=_safe_attrs(schema.to_event_attrs()))
         span.set_status(StatusCode.OK)
@@ -301,7 +298,8 @@ def emit_dispatch_failed(
             span = _active_spans.pop(task_id, None)
         if span is None:
             return
-        from opentelemetry.trace import StatusCode  # pylint: disable=import-outside-toplevel
+        from opentelemetry.trace import \
+            StatusCode  # pylint: disable=import-outside-toplevel
         span_ctx = span.get_span_context()
         span.add_event(DispatchFailedAttrs.EVENT_NAME, attributes=_safe_attrs(schema.to_event_attrs()))
         span.set_status(StatusCode.ERROR, description=_safe_str(reason))
@@ -320,7 +318,8 @@ def _emit_child_span(task_id: str, name: str, attrs: Dict[str, Any]) -> None:
         parent = _active_spans.get(task_id)
     if parent is None:
         return
-    from opentelemetry.trace import set_span_in_context  # pylint: disable=import-outside-toplevel
+    from opentelemetry.trace import \
+        set_span_in_context  # pylint: disable=import-outside-toplevel
     ctx = set_span_in_context(parent)
     all_attrs = {**attrs, **_common_attrs()}
     child = raw.start_span(name, context=ctx, attributes=all_attrs)

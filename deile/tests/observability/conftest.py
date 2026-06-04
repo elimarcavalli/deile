@@ -108,10 +108,8 @@ def in_memory_log_exporter(monkeypatch):
 
     try:
         from opentelemetry.sdk._logs import LoggerProvider
-        from opentelemetry.sdk._logs.export import (
-            InMemoryLogExporter,
-            SimpleLogRecordProcessor,
-        )
+        from opentelemetry.sdk._logs.export import (InMemoryLogExporter,
+                                                    SimpleLogRecordProcessor)
     except ImportError:
         pytest.skip("opentelemetry SDK logs não disponível")
 
@@ -125,7 +123,8 @@ def in_memory_log_exporter(monkeypatch):
     # Ligar OTLP via env para get_log_provider() não retornar None.
     monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
 
-    from deile.observability import reset_dispatch_log_export, reset_observability_config
+    from deile.observability import (reset_dispatch_log_export,
+                                     reset_observability_config)
     reset_observability_config()
     reset_dispatch_log_export()
 

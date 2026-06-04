@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from deile.orchestration.pipeline.stages import (_assert_review_proof_of_work,
-                                                  _resolve_bot_login)
+                                                 _resolve_bot_login)
 
 
 @pytest.mark.asyncio
@@ -81,9 +81,10 @@ async def test_outcome_error_non_auth_does_not_fast_finish():
     """
     # Setup mínimo do monitor pra rodar review_one_open_pr.
     from pathlib import Path
-    from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                       PipelineMonitor)
+
     from deile.orchestration.pipeline.implementer import WorkOutcome
+    from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                      PipelineMonitor)
 
     cfg = PipelineConfig(
         repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
@@ -91,7 +92,6 @@ async def test_outcome_error_non_auth_does_not_fast_finish():
         enable_resume=False,  # garante caminho legacy
     )
     github = MagicMock()
-    own = "~by:default"
     pr = MagicMock()
     pr.number = 999
     pr.head_ref = "auto/issue-999"
@@ -121,7 +121,7 @@ async def test_outcome_error_non_auth_does_not_fast_finish():
         cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier,
     )
     # Forge expõe own_label via identity — vamos forçar batch
-    own = monitor.identity.ownership_label()
+    monitor.identity.ownership_label()
     pr.labels = ["~review:pendente"]
 
     # Implementer retorna erro NÃO-auth (não merged, não blocked).
@@ -147,9 +147,10 @@ async def test_proof_of_work_blocks_legacy_finish_without_evidence():
     """Bug B regression: ok=True + not merged + not blocked + sem proof-
     of-work NÃO deve marcar CONCLUDED."""
     from pathlib import Path
-    from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                       PipelineMonitor)
+
     from deile.orchestration.pipeline.implementer import WorkOutcome
+    from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                      PipelineMonitor)
 
     cfg = PipelineConfig(
         repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",

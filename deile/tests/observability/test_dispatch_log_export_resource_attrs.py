@@ -25,12 +25,13 @@ class TestResourceAttributes:
         """service.name resource attr configurável via DEILE_OTLP_SERVICE_NAME."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
         monkeypatch.setenv("DEILE_OTLP_SERVICE_NAME", "deile-custom")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
-        from deile.observability.dispatch_log_export import _build_log_provider
         from deile.observability.config import get_observability_config
+        from deile.observability.dispatch_log_export import _build_log_provider
 
         config = get_observability_config()
         provider = _build_log_provider(config)
@@ -44,12 +45,13 @@ class TestResourceAttributes:
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
         monkeypatch.setenv("DEILE_ROLE", "dispatch-worker")
         monkeypatch.setenv("HOSTNAME", "pod-xyz999")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
-        from deile.observability.dispatch_log_export import _build_log_provider
         from deile.observability.config import get_observability_config
+        from deile.observability.dispatch_log_export import _build_log_provider
 
         config = get_observability_config()
         provider = _build_log_provider(config)
@@ -62,12 +64,13 @@ class TestResourceAttributes:
     def test_schema_version_in_resource(self, monkeypatch):
         """deile.dispatch.schema_version deve ser SCHEMA_VERSION="1.0.0"."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
-        from deile.observability.dispatch_log_export import _build_log_provider
         from deile.observability.config import get_observability_config
+        from deile.observability.dispatch_log_export import _build_log_provider
         from deile.observability.dispatch_schema import SCHEMA_VERSION
 
         config = get_observability_config()
@@ -84,14 +87,16 @@ class TestResourceAttributes:
         monkeypatch.setenv("DEILE_OTLP_SERVICE_NAME", "deile-parity")
         monkeypatch.setenv("DEILE_ROLE", "worker")
         monkeypatch.setenv("HOSTNAME", "pod-parity")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
-        from deile.observability.dispatch_log_export import _build_log_provider
         from deile.observability.config import get_observability_config
-        from deile.observability.dispatch_schema import (
-            ATTR_POD, ATTR_ROLE, ATTR_SCHEMA_VERSION, SCHEMA_VERSION)
+        from deile.observability.dispatch_log_export import _build_log_provider
+        from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
+                                                         ATTR_SCHEMA_VERSION,
+                                                         SCHEMA_VERSION)
 
         config = get_observability_config()
         provider = _build_log_provider(config)

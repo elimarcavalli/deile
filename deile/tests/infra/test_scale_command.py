@@ -24,7 +24,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import deploy  # noqa: E402
 
-
 # ===== ScaleConfig defaults =================================================
 
 def test_scale_config_defaults():

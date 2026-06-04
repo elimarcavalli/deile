@@ -17,8 +17,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
-
 # ─── shared test helpers ─────────────────────────────────────────────────────
 
 def _make_monitor():

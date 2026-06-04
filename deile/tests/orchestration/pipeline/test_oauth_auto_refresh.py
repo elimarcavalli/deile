@@ -19,10 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from deile.orchestration.pipeline import _claude_creds_refresh as crf
-from deile.orchestration.pipeline.implementer import (WorkerImplementer,
-                                                       WorkOutcome,
-                                                       _outcome_from_worker_response)
-
+from deile.orchestration.pipeline.implementer import (
+    WorkerImplementer, WorkOutcome, _outcome_from_worker_response)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -266,6 +264,7 @@ class TestTryRefreshClaudeCredentials:
         expirou; propaga erro acionável."""
         monkeypatch.setattr(crf, "_REFRESH_LOCK_PATH", str(tmp_path / "lock"))
         import time as _time
+
         # Token expirou 1h atrás.
         expired_ms = int((_time.time() - 3600) * 1000)
         expired_creds = json.dumps({

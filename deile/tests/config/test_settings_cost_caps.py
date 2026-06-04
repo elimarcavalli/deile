@@ -12,11 +12,8 @@ from decimal import Decimal
 
 import pytest
 
-from deile.config.settings import (
-    Settings,
-    _to_optional_positive_decimal,
-    reset_settings,
-)
+from deile.config.settings import (Settings, _to_optional_positive_decimal,
+                                   reset_settings)
 
 
 @pytest.fixture(autouse=True)

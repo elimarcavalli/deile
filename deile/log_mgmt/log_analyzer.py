@@ -23,12 +23,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from deile.log_mgmt.log_patterns import (
-    AUTH_EXPIRED_PATTERNS,
-    Severity,
-    match_line,
-    PIPELINE_PATTERNS,
-)
+from deile.log_mgmt.log_patterns import (AUTH_EXPIRED_PATTERNS,
+                                         PIPELINE_PATTERNS, Severity,
+                                         match_line)
 
 logger = logging.getLogger("deile.log_analyzer")
 
@@ -186,7 +183,7 @@ def _detect_auth_expiry(
     if auth_lines:
         # Agrupa por pattern
         for pat in AUTH_EXPIRED_PATTERNS:
-            matching = [l for l in auth_lines if pat.pattern.search(l)]
+            matching = [line for line in auth_lines if pat.pattern.search(line)]
             if matching:
                 anomalies.append(
                     Anomaly(

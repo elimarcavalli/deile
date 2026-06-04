@@ -13,8 +13,7 @@ Isto substitui o ``logging.basicConfig(...)`` padrão por um
 from __future__ import annotations
 
 import logging
-import sys
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from deile.log_mgmt.log_rotator import create_log_handler, get_pod_name
 

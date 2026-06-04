@@ -27,7 +27,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 import _panel as pnl  # noqa: E402
 import _panel_data as pd  # noqa: E402
 
-
 # Saída sintética do probe in-pod (formato CPID|pid|cmdline + LEASE|json).
 _CLAUDE_CMDLINE = (
     "/usr/bin/claude -p --permission-mode bypassPermissions "

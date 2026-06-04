@@ -44,15 +44,19 @@
 >
 > Sem essa regra, `set_setting`, `set_preference`, `add_skills_path` e `remove_skills_path` retornam `False`, emitem `AuditEvent(result="denied")` e não tocam o disco.
 
-### Helpers de conveniência
+### Métodos tipados em `AuditLogger`
 
-| Helper | Quando usar |
+Sempre chame via instância (`get_audit_logger().log_*(...)`) — não há atalho module-level.
+
+| Método | Quando usar |
 |---|---|
-| `log_permission_check(tool_name, resource, action, allowed, **kwargs)` | Decisões de permissão |
-| `log_secret_detection(file_path, secret_type, line_number, confidence, redacted=True)` | Detecção de segredo |
-| `log_tool_execution(tool_name, resource, success, **kwargs)` | Execução de tool |
-| `log_plan_execution(plan_id, action, result, step_count=0, duration_ms=0, **kwargs)` | Execução de plano |
-| `log_approval_event(plan_id, step_id, approval_action, tool_name, risk_level, **kwargs)` | Decisão de aprovação |
+| `AuditLogger.log_permission_check(tool_name, resource, action, allowed, **kwargs)` | Decisões de permissão |
+| `AuditLogger.log_secret_detection(file_path, secret_type, line_number, confidence, redacted=True)` | Detecção de segredo |
+| `AuditLogger.log_tool_execution(tool_name, resource, success, **kwargs)` | Execução de tool |
+| `AuditLogger.log_plan_execution(plan_id, action, result, step_count=0, duration_ms=0, **kwargs)` | Execução de plano |
+| `AuditLogger.log_approval_event(plan_id, step_id, approval_action, tool_name, risk_level, **kwargs)` | Decisão de aprovação |
+| `AuditLogger.log_cron_fire(entry_id, name, schedule, payload_hash)` | Disparo bem-sucedido de cron |
+| `AuditLogger.log_cron_skipped(entry_id, name, reason)` | Cron pulado (sem callback, etc.) |
 
 ## Scanner de segredos (em `deile/security/secrets_scanner.py`)
 

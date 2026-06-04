@@ -5,18 +5,11 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-
-from deile.log_mgmt.log_analyzer import (
-    Anomaly,
-    _detect_auth_expiry,
-    _detect_error_spike,
-    _detect_flooding,
-    _detect_silent_pipeline,
-    _get_config,
-    _scan_files,
-    scan_crash_loops,
-    scan_logs,
-)
+from deile.log_mgmt.log_analyzer import (Anomaly, _detect_auth_expiry,
+                                         _detect_error_spike, _detect_flooding,
+                                         _detect_silent_pipeline, _get_config,
+                                         _scan_files, scan_crash_loops,
+                                         scan_logs)
 from deile.log_mgmt.log_patterns import Severity
 
 

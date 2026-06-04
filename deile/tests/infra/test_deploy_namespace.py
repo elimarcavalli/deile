@@ -39,10 +39,10 @@ def test_k8s_up_source_no_shell_pipe_list():
     src = inspect.getsource(deploy.k8s_up)
     # O bug era: _run([..., "|", kubectl, "apply", ...], shell=True)
     # Detectamos indiretamente: se houver 'shell=True' junto com '"|"' em linha de código
-    code_lines = [l for l in src.splitlines()
-                  if not l.strip().startswith("#")]
-    pipe_shell_lines = [l for l in code_lines
-                        if '"|"' in l and "shell=True" in l]
+    code_lines = [line for line in src.splitlines()
+                  if not line.strip().startswith("#")]
+    pipe_shell_lines = [line for line in code_lines
+                        if '"|"' in line and "shell=True" in line]
     assert not pipe_shell_lines, (
         "Bug original ainda presente (pipe literal + shell=True):\n"
         + "\n".join(pipe_shell_lines)

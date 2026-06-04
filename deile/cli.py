@@ -32,18 +32,15 @@ from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
 # the public surface used by tests and external callers stays stable:
 # `from deile.cli import _user_scripts_dir`, `patch("deile.cli._run_self_install")`,
 # etc. The actual logic now lives in cli_install.py.
-from .cli_install import \
-    _create_venv_with_deile  # noqa: F401,E402  (re-export)
-from .cli_install import \
-    _ensure_scripts_dir_on_path  # noqa: F401,E402  (re-export)
-from .cli_install import _link_global_command  # noqa: F401,E402  (re-export)
-from .cli_install import _pip_run  # noqa: F401,E402  (re-export)
-from .cli_install import _prompt_install_mode  # noqa: F401,E402  (re-export)
-from .cli_install import _run_self_install  # noqa: F401,E402  (re-export)
-from .cli_install import \
-    _run_self_install_async  # noqa: F401,E402  (re-export)
-from .cli_install import _user_scripts_dir  # noqa: F401,E402  (re-export)
-from .cli_install import _wrapper_target_dir  # noqa: F401,E402  (re-export)
+from .cli_install import _create_venv_with_deile  # noqa: F401  (re-export)
+from .cli_install import _ensure_scripts_dir_on_path  # noqa: F401  (re-export)
+from .cli_install import _link_global_command  # noqa: F401  (re-export)
+from .cli_install import _pip_run  # noqa: F401  (re-export)
+from .cli_install import _prompt_install_mode  # noqa: F401  (re-export)
+from .cli_install import _run_self_install  # noqa: F401  (re-export)
+from .cli_install import _run_self_install_async  # noqa: F401  (re-export)
+from .cli_install import _user_scripts_dir  # noqa: F401  (re-export)
+from .cli_install import _wrapper_target_dir  # noqa: F401  (re-export)
 
 # ── package root (where deile/ lives) ───────────────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
@@ -831,15 +828,6 @@ def _print_oneshot_content(content) -> None:
         console.print(item)
 
 
-def _write_usage_sidecar(session_id: str) -> None:
-    """Best-effort: write DEILE_USAGE_SIDECAR after a oneshot run."""
-    try:
-        from deile.observability.usage_sidecar import collect_and_write_sidecar
-        collect_and_write_sidecar(session_id)
-    except Exception:
-        pass
-
-
 async def _run_oneshot(
     message: str,
     forced_model: Optional[str] = None,
@@ -895,7 +883,8 @@ async def _run_oneshot(
 
     # AC2: populate usage metadata + write sidecar for cross-repo contract
     try:
-        from deile.core.usage_envelope import build_usage_envelope, write_usage_sidecar
+        from deile.core.usage_envelope import (build_usage_envelope,
+                                               write_usage_sidecar)
         _usage_env = build_usage_envelope(session.session_id)
         if response.metadata is None:
             response.metadata = {}

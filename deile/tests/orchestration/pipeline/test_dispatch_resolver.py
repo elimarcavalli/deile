@@ -12,7 +12,8 @@ import pytest
 
 from deile.orchestration.pipeline.dispatch_resolver import (
     PIPELINE_STAGES, VALID_DISPATCHERS, get_endpoint_for, is_valid_dispatcher,
-    resolve_stage_dispatcher, resolve_stage_max_retries, resolve_stage_timeout_s)
+    resolve_stage_dispatcher, resolve_stage_max_retries,
+    resolve_stage_timeout_s)
 
 
 def _clear_env(monkeypatch):

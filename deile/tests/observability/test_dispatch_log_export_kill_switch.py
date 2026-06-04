@@ -18,12 +18,13 @@ class TestKillSwitch:
     def test_logs_disabled_no_log_records_emitted(self, in_memory_log_exporter, monkeypatch):
         """DEILE_OTLP_LOGS_DISABLED=true → zero LogRecords."""
         monkeypatch.setenv("DEILE_OTLP_LOGS_DISABLED", "true")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
-        from deile.observability.dispatch_log_export import (
-            emit_log_record, get_log_provider)
+        from deile.observability.dispatch_log_export import (emit_log_record,
+                                                             get_log_provider)
 
         assert get_log_provider() is None, "provider deve ser None com kill-switch"
         emit_log_record("dispatch.received", 1, 1, 1, {})
@@ -52,7 +53,8 @@ class TestKillSwitch:
         """DEILE_OBSERVABILITY_DISABLED=true → get_log_provider() retorna None."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
         monkeypatch.setenv("DEILE_OBSERVABILITY_DISABLED", "true")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
@@ -62,7 +64,8 @@ class TestKillSwitch:
 
     def test_empty_endpoint_no_logs(self, monkeypatch):
         """Endpoint vazio → get_log_provider() retorna None."""
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 

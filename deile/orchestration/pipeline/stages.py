@@ -21,7 +21,6 @@ import asyncio
 import logging
 import re
 import time
-import warnings
 from dataclasses import replace
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -30,40 +29,25 @@ from deile.orchestration.forge import (CommentRef, GhCommandError, IssueRef,
                                        find_last_pr_url)
 from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
+from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+from deile.orchestration.pipeline.dispatch_resolver import \
+    resolve_stage_max_retries
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
-from deile.orchestration.pipeline.dispatch_resolver import resolve_stage_max_retries
 from deile.orchestration.pipeline.implementer import (_review_was_blocked,
                                                       parse_critique_verdict,
                                                       parse_decompose_result,
                                                       parse_refine_verdict)
-from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
-                                                 MENTION_DONE, PRIORITY_0,
-                                                 PRIORITY_1, PRIORITY_2,
-                                                 PRIORITY_3, REFINAR,
-                                                 REFINE_WORKFLOW_STATES,
-                                                 REVIEW_CONCLUDED,
-                                                 REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING, TYPE_INTENT,
-                                                 GATE_REDISPATCHES_COMMENT,
-                                                 WORKFLOW_ARCHITECTURE,
-                                                 WORKFLOW_BLOCKED,
-                                                 WORKFLOW_DECOMPOSED,
-                                                 WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW, WORKFLOW_PR,
-                                                 WORKFLOW_REFINING,
-                                                 WORKFLOW_REVIEWED,
-                                                 WORKFLOW_REVIEWING,
-                                                 WORKFLOW_WAITING,
-                                                 current_attempt_from_labels,
-                                                 current_refine_attempt_from_labels,
-                                                 is_attempt_label,
-                                                 is_batch_label,
-                                                 is_refine_attempt_label,
-                                                 issue_type_from_labels,
-                                                 make_attempt_label,
-                                                 make_refine_attempt_label,
-                                                 parse_priority_from_labels,
-                                                 refine_workflow_state)
+from deile.orchestration.pipeline.labels import (
+    FOLLOW_UPS_PROCESSED, GATE_REDISPATCHES_COMMENT, MENTION_DONE, PRIORITY_0,
+    PRIORITY_1, PRIORITY_2, PRIORITY_3, REFINAR, REFINE_WORKFLOW_STATES,
+    REVIEW_CONCLUDED, REVIEW_IN_PROGRESS, REVIEW_PENDING, TYPE_INTENT,
+    WORKFLOW_ARCHITECTURE, WORKFLOW_BLOCKED, WORKFLOW_DECOMPOSED,
+    WORKFLOW_IMPLEMENTING, WORKFLOW_NEW, WORKFLOW_PR, WORKFLOW_REFINING,
+    WORKFLOW_REVIEWED, WORKFLOW_REVIEWING, WORKFLOW_WAITING,
+    current_attempt_from_labels, current_refine_attempt_from_labels,
+    is_attempt_label, is_batch_label, is_refine_attempt_label,
+    issue_type_from_labels, make_attempt_label, make_refine_attempt_label,
+    parse_priority_from_labels, refine_workflow_state)
 
 # Mention triggers that describe a STICKY state (they re-appear on every poll
 # until the underlying GitHub state changes), as opposed to "comment", which is
@@ -171,11 +155,10 @@ def _classify_new_commits(commits: list[dict]) -> str:
     # Check if all files are docs.
     def _is_docs(f: str) -> bool:
         f_lower = f.lower()
-        if any(f_lower.endswith(ext) for ext in _DOCS_EXTENSIONS):
-            return True
-        if any(f_lower.startswith(pfx) for pfx in _DOCS_PREFIXES):
-            return True
-        return False
+        return (
+            any(f_lower.endswith(ext) for ext in _DOCS_EXTENSIONS)
+            or any(f_lower.startswith(pfx) for pfx in _DOCS_PREFIXES)
+        )
 
     if all(_is_docs(f) for f in all_files):
         return CLASS_DOCS_ONLY
@@ -230,29 +213,6 @@ async def _record_forge_error(
         await monitor.notifier.error(notifier_label, str(exc))
 
 
-async def _record_gh_error(
-    monitor: "PipelineMonitor",
-    description: str,
-    exc: Exception,
-    *,
-    notifier_label: Optional[str] = None,
-) -> None:
-    """Deprecated alias for :func:`_record_forge_error`.
-
-    .. deprecated::
-        Use ``_record_forge_error`` directly. This shim will be removed in the
-        next major release.
-    """
-    warnings.warn(
-        "_record_gh_error is deprecated; use _record_forge_error instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    await _record_forge_error(
-        monitor, description, exc, notifier_label=notifier_label,
-    )
-
-
 async def _claim_for_classify(
     monitor: "PipelineMonitor",
     kind: str,
@@ -271,8 +231,8 @@ async def _claim_for_classify(
     Returns ``True`` when the caller may proceed to label the item, ``False``
     when it must skip it (already claimed by another monitor, or a gh error was
     recorded). On ``GhCommandError`` the error is recorded via
-    :func:`_record_gh_error` (using ``error_context`` as the log prefix and the
-    optional ``notifier_label`` for the Discord notification).
+    :func:`_record_forge_error` (using ``error_context`` as the log prefix and
+    the optional ``notifier_label`` for the Discord notification).
     """
     if monitor.identity.shard_count <= 1:
         return True
@@ -1106,7 +1066,6 @@ async def reconcile_critique_issues(monitor: "PipelineMonitor") -> None:
     ledger = getattr(monitor.implementer, "_ledger", None)
     if ledger is None:
         return
-    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     own = monitor.identity.ownership_label()
     for issue in sort_by_priority(issues):
         if WORKFLOW_BLOCKED in issue.labels:
@@ -1191,7 +1150,6 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     if not candidates:
         return
 
-    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     ledger = getattr(monitor.implementer, "_ledger", None)
     in_flight = await _count_total_in_flight(monitor)
     available = max(0, monitor.config.max_parallel - in_flight)
@@ -1280,7 +1238,6 @@ async def _refine_one_issue_dispatch(monitor: "PipelineMonitor", target) -> bool
     ledger = getattr(monitor.implementer, "_ledger", None)
     task_id = getattr(outcome, "task_id", "") or ""
     if ledger is not None and task_id:
-        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         ledger.record(
             DispatchLedger.key_for_issue(number),
             task_id=task_id, session_id="", stage="refine",
@@ -1323,7 +1280,6 @@ async def reconcile_refine_issues(monitor: "PipelineMonitor") -> None:
     ledger = getattr(monitor.implementer, "_ledger", None)
     if ledger is None:
         return
-    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     own = monitor.identity.ownership_label()
     _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
                  WORKFLOW_PR, WORKFLOW_DECOMPOSED)
@@ -2647,7 +2603,6 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
     ledger = getattr(monitor.implementer, "_ledger", None)
     if ledger is None:
         return
-    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     own = monitor.identity.ownership_label()
     for pr in sort_by_priority(prs):
         if REVIEW_IN_PROGRESS not in pr.labels or WORKFLOW_BLOCKED in pr.labels:
@@ -3460,7 +3415,6 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
     # entre passes (sem entry → o refino o reseleciona no próximo tick).
     ledger = getattr(monitor.implementer, "_ledger", None)
     if ledger is not None:
-        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         for refine_state in (WORKFLOW_REFINING, WORKFLOW_ARCHITECTURE):
             try:
                 refine_issues = await monitor.forge.list_issues_with_label(refine_state)

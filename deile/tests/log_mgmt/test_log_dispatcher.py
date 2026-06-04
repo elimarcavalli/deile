@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-
-from deile.log_mgmt.log_dispatcher import (
-    _build_investigation_brief,
-    _get_worker_bearer,
-    dispatch_anomalies,
-    is_auto_dispatch_enabled,
-)
 from deile.log_mgmt.log_analyzer import Anomaly
+from deile.log_mgmt.log_dispatcher import (_build_investigation_brief,
+                                           _get_worker_bearer,
+                                           dispatch_anomalies,
+                                           is_auto_dispatch_enabled)
 from deile.log_mgmt.log_patterns import Severity
 
 

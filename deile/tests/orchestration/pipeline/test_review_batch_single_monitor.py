@@ -19,8 +19,9 @@ from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
 from deile.orchestration.pipeline.github_client import PrRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.implementer import WorkerImplementer
-from deile.orchestration.pipeline.labels import (REVIEW_PENDING)
-from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
+from deile.orchestration.pipeline.labels import REVIEW_PENDING
+from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                  PipelineMonitor)
 
 _NOTIFIER_METHODS = (
     "issue_picked_up", "issue_reviewed", "implementation_started",

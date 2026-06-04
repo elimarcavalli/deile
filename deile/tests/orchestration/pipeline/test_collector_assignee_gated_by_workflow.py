@@ -15,10 +15,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-
 from deile.orchestration.pipeline.github_client import IssueRef
 from deile.orchestration.pipeline.labels import MENTION_DONE
-from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
+from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                  PipelineMonitor)
 from deile.orchestration.pipeline.stages import _collect_mention_triggers
 
 

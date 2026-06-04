@@ -14,13 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-from deile.config.settings import (
-    Settings,
-    _apply_env_overrides,
-    _apply_nested_dict,
-    _to_optional_nonneg_int,
-    _to_optional_positive_int,
-)
+from deile.config.settings import (Settings, _apply_env_overrides,
+                                   _apply_nested_dict, _to_optional_nonneg_int,
+                                   _to_optional_positive_int)
 
 
 class TestOptionalPositiveIntValidator:
