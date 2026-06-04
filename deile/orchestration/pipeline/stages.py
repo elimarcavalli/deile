@@ -2816,9 +2816,15 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             monitor._stats.errors += 1
             return
     is_resume = REVIEW_IN_PROGRESS in target.labels
-    batch = await monitor.forge.claim_with_batch("pr", target.number)
-    if batch is None:
-        return
+    # FIX #6 (Decisão #33): monitor único (shard_count==1) NÃO deve claimar
+    # ~batch: — gera add/remove do label a cada tick sem necessidade, pois
+    # ~review:em_andamento já é o lock durável. Espelha _critique_one_issue
+    # (stages.py ~linha 977) que já aplicava este guard.
+    multi = monitor.identity.shard_count > 1
+    if multi:
+        batch = await monitor.forge.claim_with_batch("pr", target.number)
+        if batch is None:
+            return
     # Tag ownership so other monitors can identify who claimed this PR —
     # mirrors the identical pattern in stage 1 for issues.
     await monitor.forge.add_labels("pr", target.number, [monitor.identity.ownership_label()])
