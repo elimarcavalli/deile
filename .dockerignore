@@ -95,3 +95,4 @@ infra/
 !infra/k8s/monitor_core.py
 !infra/k8s/monitor_vigias.py
 !infra/k8s/monitor_tick.py
+!infra/k8s/monitor_command_server.py

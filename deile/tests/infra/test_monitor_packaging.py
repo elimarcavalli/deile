@@ -47,6 +47,22 @@ def test_dockerignore_excepts_module(dockerignore, mod):
     )
 
 
+def test_dockerfile_copies_command_server_to_app(dockerfile):
+    # monitor_command_server.py is the deile-monitor pod's main process
+    # (spec 2026-06-04): it must be baked into /app or the pod cannot start.
+    assert (
+        "COPY --chown=deile:deile infra/k8s/monitor_command_server.py "
+        "/app/monitor_command_server.py" in dockerfile
+    ), "monitor_command_server.py must be COPY'd to /app or the pod cannot start"
+
+
+def test_dockerignore_excepts_command_server(dockerignore):
+    assert "!infra/k8s/monitor_command_server.py" in dockerignore, (
+        "monitor_command_server.py must have a `!infra/k8s/monitor_command_server.py` "
+        "exception in .dockerignore or the COPY fails"
+    )
+
+
 def test_manifest_runs_flattened_monitor_tick(manifest):
     assert "python3 /app/monitor_tick.py" in manifest, (
         "manifest 55 must run the flattened /app/monitor_tick.py (Phase A) each tick"

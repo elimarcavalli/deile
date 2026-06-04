@@ -363,3 +363,46 @@ spec:
 #   - egress 443 (LLM + gh) via deile-egress-https-llm
 # The only additional rule needed is egress to kube-apiserver (above, shared
 # via matchExpressions) for kubectl exec (OAuth renewal + pod delete).
+#
+# Spec 2026-06-04 §3.6 makes the monitor a dispatch target: it now serves an
+# HTTP control plane on :8769 and the deilebot proxies ad-hoc Q&A/status/
+# commands to it. The two rules below mirror worker-ingress-from-bot (rule 4)
+# + bot-egress-to-worker (rule 5) byte-for-byte, just on :8769.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitor-ingress-from-bot
+spec:
+  podSelector:
+    matchLabels:
+      app: deile-monitor
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: deilebot
+      ports:
+        - protocol: TCP
+          port: 8769
+---
+# ---- bot egress to deile-monitor:8769 -------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bot-egress-to-monitor
+spec:
+  podSelector:
+    matchLabels:
+      app: deilebot
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: deile-monitor
+      ports:
+        - protocol: TCP
+          port: 8769
