@@ -192,30 +192,36 @@ class TestEnsurePersistedToken:
 class TestK8sUpResolveProfile:
     def test_cli_flag_takes_precedence(self):
         env = {"DEILE_K8S_DEPLOY_PROFILE": "full"}
-        p = deploy._k8s_up_resolve_profile(["--profile", "pipeline-only"], env)
+        p, explicit = deploy._k8s_up_resolve_profile(["--profile", "pipeline-only"], env)
         assert p.name == "pipeline-only"
+        assert explicit is True
 
     def test_env_dict_used_when_no_flag(self):
-        p = deploy._k8s_up_resolve_profile([], {"DEILE_K8S_DEPLOY_PROFILE": "claude-only"})
+        p, explicit = deploy._k8s_up_resolve_profile([], {"DEILE_K8S_DEPLOY_PROFILE": "claude-only"})
         assert p.name == "claude-only"
+        assert explicit is True
 
     def test_os_environ_fallback(self, monkeypatch):
         monkeypatch.setenv("DEILE_K8S_DEPLOY_PROFILE", "pipeline-only")
-        p = deploy._k8s_up_resolve_profile([], {})
+        p, explicit = deploy._k8s_up_resolve_profile([], {})
         assert p.name == "pipeline-only"
+        assert explicit is True
 
     def test_default_is_full(self, monkeypatch):
         monkeypatch.delenv("DEILE_K8S_DEPLOY_PROFILE", raising=False)
-        p = deploy._k8s_up_resolve_profile([], {})
+        p, explicit = deploy._k8s_up_resolve_profile([], {})
         assert p.name == "full"
+        assert explicit is False
 
     def test_invalid_cli_flag_falls_back_to_full(self, capsys):
-        p = deploy._k8s_up_resolve_profile(["--profile", "bogus"], {})
+        p, explicit = deploy._k8s_up_resolve_profile(["--profile", "bogus"], {})
         assert p.name == "full"
+        assert explicit is True  # operator typed something — intent was explicit
 
     def test_invalid_env_falls_back_to_full(self, capsys):
-        p = deploy._k8s_up_resolve_profile([], {"DEILE_K8S_DEPLOY_PROFILE": "bogus"})
+        p, explicit = deploy._k8s_up_resolve_profile([], {"DEILE_K8S_DEPLOY_PROFILE": "bogus"})
         assert p.name == "full"
+        assert explicit is True  # env var was set — intent was explicit
 
 
 # ============================================================================
