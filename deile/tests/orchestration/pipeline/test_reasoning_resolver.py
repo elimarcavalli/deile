@@ -1,11 +1,14 @@
 """Tests for `resolve_stage_reasoning` (per-stage reasoning effort).
 
 Mirrors `test_model_resolver` but the resolver also folds in the GLOBAL
-``reasoning_effort`` (like ``resolve_stage_timeout_s``), so:
+``reasoning_effort`` (like ``resolve_stage_timeout_s``) and the opinionated
+stage defaults (issue #450), so:
 
 - per-stage override wins;
 - else the global ``reasoning_effort`` applies;
-- else ``None`` (provider default).
+- else the opinionated stage default (classify/refine/follow_ups→low,
+  implement→medium, pr_review→high);
+- else ``None`` (provider default — unreachable for known stages).
 """
 
 from __future__ import annotations
@@ -29,8 +32,11 @@ def _isolate_settings(monkeypatch):
 
 
 @pytest.mark.unit
-def test_unset_returns_none():
-    assert resolve_stage_reasoning("implement") is None
+def test_unset_returns_stage_default():
+    # With no override, each stage returns its opinionated default (issue #450)
+    assert resolve_stage_reasoning("implement") == "medium"
+    assert resolve_stage_reasoning("pr_review") == "high"
+    assert resolve_stage_reasoning("classify") == "low"
 
 
 @pytest.mark.unit
@@ -38,8 +44,8 @@ def test_per_stage_override(monkeypatch):
     monkeypatch.setenv("DEILE_PIPELINE_REASONING_IMPLEMENT", "xhigh")
     reset_settings()
     assert resolve_stage_reasoning("implement") == "xhigh"
-    # other stages still None (no leak)
-    assert resolve_stage_reasoning("classify") is None
+    # other stages still return their own defaults (no leak from this override)
+    assert resolve_stage_reasoning("classify") == "low"
 
 
 @pytest.mark.unit
@@ -68,7 +74,8 @@ def test_unknown_stage_raises():
 
 @pytest.mark.unit
 def test_invalid_env_value_is_dropped(monkeypatch):
-    # The strict converter rejects unknown tokens → attribute stays None.
+    # The strict converter rejects unknown tokens → attribute stays None,
+    # so the resolver falls through to the opinionated stage default.
     monkeypatch.setenv("DEILE_PIPELINE_REASONING_IMPLEMENT", "bogus-level")
     reset_settings()
-    assert resolve_stage_reasoning("implement") is None
+    assert resolve_stage_reasoning("implement") == "medium"

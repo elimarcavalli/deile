@@ -154,6 +154,36 @@ Cada provider implementa o protocolo de function calling com declarações gerad
 | `budget` | Mensagem estruturada de orçamento |
 | `forced_model_not_registered` | Mensagem estruturada de modelo forçado inexistente |
 
+## Reasoning effort — defaults opinados por stage (issue #450)
+
+`dispatch_resolver.resolve_stage_reasoning_effort(stage)` introduz um **4º nível de fallback** entre o global settings e `None`, ativado quando operador e usuário não configuraram `reasoning_effort` explicitamente.
+
+### Mapeamento `_STAGE_DEFAULT_REASONING_EFFORT`
+
+| Stage | Default | Justificativa |
+|---|---|---|
+| `classify` | `low` | Decisão de roteamento leve; custo supera benefício de raciocínio estendido |
+| `refine` | `low` | Refinamento de escopo — requer precisão, não profundidade especulativa |
+| `implement` | `medium` | Geração de código se beneficia de chain-of-thought moderado |
+| `pr_review` | `high` | Análise de qualidade antes de propor mudanças exige avaliação aprofundada |
+| `follow_ups` | `low` | Ações pós-merge geralmente são tarefas delimitadas e diretas |
+
+### Cadeia de fallback completa
+
+```
+DEILE_PIPELINE_REASONING_<STAGE> / pipeline.reasoning.<stage>   ← nível 1 (per-stage)
+         ↓ (se ausente)
+DEILE_REASONING_EFFORT / model.reasoning_effort                  ← nível 2 (global)
+         ↓ (se ausente)
+_STAGE_DEFAULT_REASONING_EFFORT[stage]                           ← nível 3 (default opinado)
+         ↓ (fallback de segurança — não atingido em uso normal)
+None
+```
+
+O operador pode sobrescrever qualquer stage via `settings.json` (chave `pipeline.reasoning.<stage>`) ou env var (`DEILE_PIPELINE_REASONING_<STAGE>`) sem desabilitar os defaults dos demais stages.
+
+Diferença de `reasoning_resolver.resolve_stage_reasoning`: aquela função tem apenas 3 níveis (sem defaults opinados) e é usada no caminho CLI interativo; esta função (`dispatch_resolver.resolve_stage_reasoning_effort`) é usada no pipeline autônomo.
+
 ## Forçar um modelo específico
 
 | Aspecto | Detalhe |

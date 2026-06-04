@@ -4,8 +4,8 @@ Cada etapa (``classify``/``refine``/``implement``/``pr_review``/``follow_ups``)
 pode fixar um esforço de raciocínio via ``pipeline.reasoning.<stage>`` no
 ``~/.deile/settings.json`` ou ``DEILE_PIPELINE_REASONING_<STAGE>`` no cluster.
 Sem override por etapa, cai no esforço global (``reasoning_effort`` /
-``DEILE_REASONING_EFFORT``); sem isso, ``None`` (o worker/provider usa o
-default dele).
+``DEILE_REASONING_EFFORT``); sem isso, usa o default opinado por etapa (issue
+#450); sem isso, ``None`` (o worker/provider usa o default dele).
 
 Difere de :func:`deile.orchestration.pipeline.model_resolver.resolve_stage_model`
 num ponto: o esforço **global** é dobrado aqui (igual a
@@ -30,6 +30,19 @@ from typing import Optional
 from deile.config.settings import get_settings
 from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES
 
+#: Opinionated reasoning_effort defaults per pipeline stage (issue #450).
+#: Activated when both per-stage and global settings/env are unset.
+#: Rationale: classify/refine/follow_ups are lightweight routing decisions
+#: (low); implement benefits from extended chain-of-thought (medium);
+#: pr_review demands high-quality analysis before proposing changes (high).
+_STAGE_DEFAULT_REASONING_EFFORT: dict[str, str] = {
+    "classify": "low",
+    "refine": "low",
+    "implement": "medium",
+    "pr_review": "high",
+    "follow_ups": "low",
+}
+
 
 def resolve_stage_reasoning(stage: str) -> Optional[str]:
     """Retorna o esforço de raciocínio efetivo para *stage*, ou ``None``.
@@ -38,7 +51,10 @@ def resolve_stage_reasoning(stage: str) -> Optional[str]:
 
     1. ``settings.pipeline_reasoning_<stage>`` (override por etapa).
     2. ``settings.reasoning_effort`` (global).
-    3. ``None`` (sem override; default do worker/provider).
+    3. :data:`_STAGE_DEFAULT_REASONING_EFFORT[stage]` — default opinado por
+       stage (issue #450): classify/refine/follow_ups → ``"low"``,
+       implement → ``"medium"``, pr_review → ``"high"``.
+    4. ``None`` (sem override; default do worker/provider).
 
     Raises:
         ValueError: se *stage* não está em :data:`PIPELINE_STAGES` (bug de
@@ -56,4 +72,4 @@ def resolve_stage_reasoning(stage: str) -> Optional[str]:
     glob = getattr(settings, "reasoning_effort", None)
     if isinstance(glob, str) and glob.strip():
         return glob.strip()
-    return None
+    return _STAGE_DEFAULT_REASONING_EFFORT.get(stage)
