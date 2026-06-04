@@ -738,3 +738,230 @@ class TestRefineDivergenceEarlyStop:
         )
         # Não deve bloquear (guard requer prev_len >= 0).
         assert WORKFLOW_BLOCKED not in _added_labels(github, "issue", 1)
+
+
+# ===========================================================================
+# Fix #8 (issue #521) — ResumeTracker: address_attempt counters (unit)
+# ===========================================================================
+
+class TestResumeTrackerAddressAttempt:
+    """Unit tests dos novos contadores de address-feedback (Fix #8)."""
+
+    def test_address_attempt_zero_por_padrao(self):
+        t = ResumeTracker()
+        assert t.address_attempt(99) == 0
+
+    def test_bump_address_attempt_incrementa(self):
+        t = ResumeTracker()
+        assert t.bump_address_attempt(10) == 1
+        assert t.bump_address_attempt(10) == 2
+        assert t.address_attempt(10) == 2
+
+    def test_reset_address_attempt_zera(self):
+        t = ResumeTracker()
+        t.bump_address_attempt(10)
+        t.bump_address_attempt(10)
+        t.reset_address_attempt(10)
+        assert t.address_attempt(10) == 0
+
+    def test_reset_address_attempt_noop_se_ausente(self):
+        t = ResumeTracker()
+        t.reset_address_attempt(77)  # não cria estado
+        assert t.peek(77) is None
+
+    def test_address_attempt_isolado_por_pr(self):
+        t = ResumeTracker()
+        t.bump_address_attempt(1)
+        t.bump_address_attempt(2)
+        t.bump_address_attempt(2)
+        assert t.address_attempt(1) == 1
+        assert t.address_attempt(2) == 2
+
+    def test_clear_apaga_address_attempt(self):
+        t = ResumeTracker()
+        t.bump_address_attempt(5)
+        t.clear(5)
+        assert t.address_attempt(5) == 0
+
+
+# ===========================================================================
+# Fix #8 (issue #521) — review_one_open_pr: auto-fix da PRÓPRIA PR (integração)
+# ===========================================================================
+
+# Resposta de review da PRÓPRIA PR que conclui REQUEST_CHANGES sem mergear.
+# ``summary`` carrega o veredict que ``_review_was_blocked`` detecta; ``ended``
+# fica "incompleto" (não-merged) para cair no caminho resume não-merged.
+def _request_changes_response(*, fingerprint: str, tentativa: int) -> dict:
+    return _worker_response(
+        ok=True,
+        summary="Revisei. AC2 não atendido.\nSTATUS: REQUEST_CHANGES",
+        ended="incompleto",
+        fingerprint=fingerprint,
+        tentativa=tentativa,
+    )
+
+
+def _payload_stages(client: _FakeWorkerClient) -> List[str]:
+    return [p.get("stage", "") for p in client.payloads]
+
+
+class TestSelfPrAutoFix:
+    """Fix #8: review da PRÓPRIA PR pede mudança + HEAD inalterado →
+    despacha ADDRESS (implement + push) em vez de bloquear direto; só bloqueia
+    após esgotar ``MAX_ADDRESS_ATTEMPTS`` sem o HEAD mudar.
+
+    Sem o fix: o SHA-guard (Fix A) bloqueava determinísticamente no 2º resume
+    do mesmo HEAD — a PR ficava parada esperando o humano e NUNCA se
+    auto-corrigia.
+    """
+
+    async def test_request_changes_head_inalterado_despacha_address(self):
+        """1ª vez (attempt < cap): despacha address (implement, nowait), NÃO
+        bloqueia, incrementa o contador."""
+        SHA = "headsha000000001"
+
+        # Tick 1 (resume): review pede mudança, grava SHA, não bloqueia.
+        pr_1 = _pr(10, REVIEW_IN_PROGRESS, head_sha=SHA, head_ref="auto/issue-10")
+        monitor, _, client = _make_monitor_for_review(
+            prs=[pr_1],
+            worker_responses=[_request_changes_response(fingerprint="fp1", tentativa=1)],
+        )
+        await monitor._review_one_open_pr()
+        assert monitor._resume_tracker.reviewed_sha(10) == SHA
+        assert monitor._resume_tracker.address_attempt(10) == 0
+
+        # Tick 2 (resume): MESMO SHA → SHA-guard dispara. Com REQUEST_CHANGES +
+        # PR própria + attempt(0) < cap(1) → despacha address, NÃO bloqueia.
+        pr_2 = _pr(10, REVIEW_IN_PROGRESS, head_sha=SHA, head_ref="auto/issue-10")
+        monitor.github.list_open_prs = AsyncMock(return_value=[pr_2])
+        # 1ª resposta: a review (wait); 2ª: o address dispatch (nowait).
+        client._responses = [
+            _request_changes_response(fingerprint="fp2", tentativa=2),
+            _worker_response(ok=True, summary="address aceito"),
+        ]
+        monitor.github.add_labels.reset_mock()
+        await monitor._review_one_open_pr()
+
+        # NÃO bloqueou.
+        added = _added_labels(monitor.github, "pr", 10)
+        assert WORKFLOW_BLOCKED not in added, (
+            f"Não deve bloquear na 1ª tentativa de auto-fix; add_labels={added}"
+        )
+        # Contador de address incrementado.
+        assert monitor._resume_tracker.address_attempt(10) == 1
+        # Despachou um IMPLEMENT (address) além do pr_review.
+        assert "implement" in _payload_stages(client), (
+            f"Esperava dispatch de address (stage=implement); "
+            f"stages={_payload_stages(client)}"
+        )
+        # NÃO regravou reviewed_sha (deve seguir SHA para detectar mudança no
+        # próximo tick).
+        assert monitor._resume_tracker.reviewed_sha(10) == SHA
+
+    async def test_address_nao_mudou_head_bloqueia_apos_cap(self):
+        """2ª vez (address não mudou o HEAD): attempt >= cap → BLOQUEIA com a
+        mensagem nova de auto-correção esgotada."""
+        SHA = "headsha000000002"
+
+        # Pré-seta: SHA já gravado e cap já atingido (1 address feito).
+        pr = _pr(10, REVIEW_IN_PROGRESS, head_sha=SHA, head_ref="auto/issue-10")
+        monitor, _, client = _make_monitor_for_review(
+            prs=[pr],
+            worker_responses=[_request_changes_response(fingerprint="fpz", tentativa=3)],
+        )
+        monitor._resume_tracker.set_reviewed_sha(10, SHA)
+        monitor._resume_tracker.bump_address_attempt(10)  # já fez 1 (= cap)
+
+        monitor.github.add_labels.reset_mock()
+        monitor.github.comment_on_pr.reset_mock()
+        await monitor._review_one_open_pr()
+
+        # Com address esgotado e HEAD inalterado → BLOQUEIA.
+        added = _added_labels(monitor.github, "pr", 10)
+        assert WORKFLOW_BLOCKED in added, (
+            f"Esperava ~workflow:bloqueada após esgotar auto-fix; add_labels={added}"
+        )
+        # NÃO despachou novo address (só o pr_review).
+        assert "implement" not in _payload_stages(client), (
+            f"Não deve despachar address após o cap; stages={_payload_stages(client)}"
+        )
+        # Mensagem de bloqueio cita a auto-correção esgotada. ``comment_on_pr``
+        # é chamado posicionalmente (number, comment).
+        block_comments = [
+            c.args[1] if len(c.args) > 1 else c.kwargs.get("comment", "")
+            for c in monitor.github.comment_on_pr.await_args_list
+        ]
+        joined = "\n".join(str(x) for x in block_comments)
+        assert "auto-correção" in joined, (
+            f"Mensagem de bloqueio deve citar auto-correção esgotada; got: {joined!r}"
+        )
+
+    async def test_head_mudou_nao_conta_address_reseta_e_segue(self):
+        """O HEAD MUDOU entre reviews (worker pushou o fix) → NÃO bloqueia, NÃO
+        despacha address, RESETA o contador e segue a review normal."""
+        SHA_1 = "headsha-before-01"
+        SHA_2 = "headsha-after-fix"
+
+        # Tick 1: review pede mudança no SHA_1, despacha 1 address.
+        pr_1 = _pr(10, REVIEW_IN_PROGRESS, head_sha=SHA_1, head_ref="auto/issue-10")
+        monitor, _, client = _make_monitor_for_review(
+            prs=[pr_1],
+            worker_responses=[_request_changes_response(fingerprint="f1", tentativa=1)],
+        )
+        # Pré-condição: já gravou SHA_1 e já está com SHA-guard armado + 0 address.
+        monitor._resume_tracker.set_reviewed_sha(10, SHA_1)
+        await monitor._review_one_open_pr()
+        # Disparou address no SHA inalterado.
+        assert monitor._resume_tracker.address_attempt(10) == 1
+
+        # Tick 2: o worker pushou o fix → HEAD agora é SHA_2 (diferente).
+        pr_2 = _pr(10, REVIEW_IN_PROGRESS, head_sha=SHA_2, head_ref="auto/issue-10")
+        monitor.github.list_open_prs = AsyncMock(return_value=[pr_2])
+        client._responses = [
+            # Review ainda incompleta (mais trabalho), mas SHA mudou → não guard.
+            _worker_response(ended="incompleto", fingerprint="f2", tentativa=2),
+        ]
+        monitor.github.add_labels.reset_mock()
+        client.payloads.clear()  # isola os dispatches do tick 2
+        await monitor._review_one_open_pr()
+
+        added = _added_labels(monitor.github, "pr", 10)
+        assert WORKFLOW_BLOCKED not in added, (
+            f"HEAD mudou → não deve bloquear; add_labels={added}"
+        )
+        # Contador resetado.
+        assert monitor._resume_tracker.address_attempt(10) == 0
+        # Novo SHA gravado para o próximo ciclo.
+        assert monitor._resume_tracker.reviewed_sha(10) == SHA_2
+        # NÃO despachou address neste tick (só a review).
+        assert _payload_stages(client).count("implement") == 0
+
+    async def test_address_dispatch_e_nowait(self):
+        """O address dispatch é fire-and-forget (wait=False) — não bloqueia o
+        tick esperando o worker terminar a correção."""
+        SHA = "headsha000000003"
+        pr = _pr(10, REVIEW_IN_PROGRESS, head_sha=SHA, head_ref="auto/issue-10")
+        monitor, _, client = _make_monitor_for_review(
+            prs=[pr],
+            worker_responses=[
+                _request_changes_response(fingerprint="fp", tentativa=1),
+                _worker_response(ok=True, summary="address aceito"),
+            ],
+        )
+        monitor._resume_tracker.set_reviewed_sha(10, SHA)
+
+        # Instrumenta o client para capturar o flag wait de cada dispatch.
+        waits: List[bool] = []
+        orig_dispatch = client.dispatch
+
+        async def _spy(payload, *, wait):
+            waits.append(wait)
+            return await orig_dispatch(payload, wait=wait)
+
+        client.dispatch = _spy
+        await monitor._review_one_open_pr()
+
+        # Houve 2 dispatches: review (wait=True) e address (wait=False).
+        assert waits == [True, False], (
+            f"Esperava review wait=True e address wait=False; got {waits}"
+        )

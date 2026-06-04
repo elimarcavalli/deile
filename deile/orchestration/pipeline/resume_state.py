@@ -65,6 +65,14 @@ class IssueResumeState:
     #: scope is diverging (each pass only adds gaps) — block early instead of
     #: burning all 5 passes. -1 means "no previous pass recorded yet".
     prev_refine_body_len: int = -1
+    #: Count of address-review-feedback dispatches already issued for THIS PR
+    #: while the HEAD stayed unchanged (Fix #8 — issue #521). A review of our OWN
+    #: PR that ends in REQUEST_CHANGES with an unchanged HEAD triggers an ADDRESS
+    #: dispatch (implement code + push) instead of blocking outright. This counter
+    #: caps how many auto-fix attempts run before the SHA-guard finally blocks for
+    #: the human — without a cap, address↔review would alternate forever. Reset to
+    #: 0 when the HEAD finally moves (the worker applied the fix → success).
+    address_attempt_count: int = 0
 
 
 @dataclass
@@ -226,6 +234,37 @@ class ResumeTracker:
         """Retorna o HEAD SHA da última review incompleta para *number* (ou "")."""
         state = self.peek(number)
         return state.last_reviewed_sha if state is not None else ""
+
+    def address_attempt(self, number: int) -> int:
+        """Retorna quantos dispatches de address-feedback já rodaram para *number*.
+
+        Espelha :meth:`refine_attempt` — leitura barata, 0 quando ausente. Usado
+        pelo guard de auto-fix (Fix #8) para decidir entre despachar mais um
+        address ou bloquear de vez para o humano.
+        """
+        state = self.peek(number)
+        return state.address_attempt_count if state is not None else 0
+
+    def bump_address_attempt(self, number: int) -> int:
+        """Incrementa e retorna o contador de address-feedback de *number*.
+
+        Espelha :meth:`bump_refine`. Cada dispatch de address conta UMA tentativa;
+        o cap em ``stages.py`` é o que impede o loop infinito address↔review.
+        """
+        state = self.get(number)
+        state.address_attempt_count += 1
+        return state.address_attempt_count
+
+    def reset_address_attempt(self, number: int) -> None:
+        """Zera o contador de address-feedback de *number* (HEAD mudou = sucesso).
+
+        Chamado quando o worker conseguiu aplicar o fix (o HEAD SHA mudou desde
+        a última review), liberando a janela de tentativas de auto-fix para um
+        eventual ciclo futuro.
+        """
+        state = self.peek(number)
+        if state is not None:
+            state.address_attempt_count = 0
 
     def is_zero_progress(self, number: int, new_fingerprint: str) -> bool:
         """True if *new_fingerprint* equals the last one tracked (progress guard).

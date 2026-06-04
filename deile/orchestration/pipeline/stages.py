@@ -32,7 +32,8 @@ from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
 from deile.orchestration.pipeline.dispatch_resolver import resolve_stage_max_retries
-from deile.orchestration.pipeline.implementer import (parse_critique_verdict,
+from deile.orchestration.pipeline.implementer import (_review_was_blocked,
+                                                      parse_critique_verdict,
                                                       parse_decompose_result,
                                                       parse_refine_verdict)
 from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
@@ -80,6 +81,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _ENDED_CONCLUIDO = "concluido"
 _ENDED_INCOMPLETO = "incompleto"
 _ENDED_BLOQUEADO = "bloqueado"
+
+#: Fix #8 (issue #521) — teto de dispatches de auto-correção da PRÓPRIA PR.
+#: Quando a review da nossa PR conclui REQUEST_CHANGES e o HEAD não muda, em
+#: vez de bloquear direto (Fix A), o pipeline despacha UMA task de address
+#: (implement + push) para o worker aplicar o fix. O HEAD muda → próxima review
+#: valida e segue pro merge. Se após N tentativas o HEAD AINDA não mudou, o
+#: worker não conseguiu → bloqueia para o humano. Começa em 1: uma chance de
+#: auto-fix é o equilíbrio entre autonomia e queima de tokens — o worker recebe
+#: o feedback exato do reviewer no brief, então uma passada deveria bastar; se
+#: falhar, escalar para o humano é mais barato que rodar address↔review em loop.
+MAX_ADDRESS_ATTEMPTS = 1
 
 logger = logging.getLogger(__name__)
 
@@ -2994,12 +3006,51 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             # ou do fingerprint-guard clássico.
             _current_sha_now = getattr(target, "head_sha", "") or ""
             _last_sha_now = monitor._resume_tracker.reviewed_sha(target.number)
-            if _current_sha_now and _last_sha_now and _current_sha_now == _last_sha_now:
+            _sha_guard_fired = bool(
+                _current_sha_now and _last_sha_now and _current_sha_now == _last_sha_now
+            )
+            # Fix #8 (issue #521) — auto-correção da PRÓPRIA PR. Quando o
+            # SHA-guard disparou (HEAD inalterado) E a review pediu mudança
+            # (REQUEST_CHANGES) numa PR nossa, NÃO bloqueia direto: despacha um
+            # ADDRESS (implement + push) para o worker aplicar o fix. Só depois
+            # de esgotar o teto de tentativas (HEAD ainda não mudou → worker não
+            # conseguiu) é que cai no block do Fix A. O cap é o que impede o loop
+            # infinito address↔review.
+            if (
+                _sha_guard_fired
+                and _review_was_blocked(outcome.text)
+                and monitor._owns_pr_branch(target.head_ref, pr_number=target.number)
+                and monitor._resume_tracker.address_attempt(target.number)
+                < MAX_ADDRESS_ATTEMPTS
+            ):
+                _k = monitor._resume_tracker.bump_address_attempt(target.number)
+                logger.info(
+                    "pr_review #%d: review pediu mudança + HEAD %s inalterado — "
+                    "despachando address (implement + push) tentativa %d/%d em "
+                    "vez de bloquear (Fix #8)",
+                    target.number, _current_sha_now[:8], _k, MAX_ADDRESS_ATTEMPTS,
+                )
+                # NÃO regrava reviewed_sha: queremos detectar no próximo tick se
+                # o address mudou o HEAD. Mantém ~review:em_andamento; libera o
+                # batch para o próximo tick re-claimar.
+                _addr_outcome = await monitor.implementer.address_review(
+                    monitor, target,
+                )
+                if not _addr_outcome.ok:
+                    logger.warning(
+                        "pr_review #%d: address dispatch falhou (%s) — "
+                        "em_andamento; reaper/reconcile retomam", target.number,
+                        (_addr_outcome.error or "")[:160],
+                    )
+                await monitor.forge.clear_batch_label("pr", target.number)
+                return
+            if _sha_guard_fired:
                 _block_reason = (
                     f"review pediu mudança mas o HEAD (`{_current_sha_now[:8]}`) "
-                    "não mudou desde a última review — nenhum fix foi aplicado "
-                    "(re-review do mesmo HEAD é loop); "
-                    "humano: aplique o fix ou remova ~workflow:bloqueada"
+                    f"não mudou após {MAX_ADDRESS_ATTEMPTS} tentativa(s) de "
+                    "auto-correção — o worker não conseguiu aplicar o fix; "
+                    "humano: corrija manualmente ou faça checkout da PR (#520), "
+                    "depois remova ~workflow:bloqueada"
                 )
             else:
                 _block_reason = "duas tentativas de review/merge sem progresso (diff idêntico)"
@@ -3009,8 +3060,11 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
                 _block_reason,
             )
             return
-        # Fix A: grava o SHA atual para o próximo tick comparar.
-        # Se o worker fizer push de um fix, o HEAD muda e o guard não dispara.
+        # HEAD mudou (ou primeira review): o worker pushou um fix com sucesso —
+        # reseta a janela de auto-correção (Fix #8) e grava o SHA atual para o
+        # próximo tick comparar (Fix A). Se o worker fizer push de um fix, o
+        # HEAD muda e o SHA-guard não dispara.
+        monitor._resume_tracker.reset_address_attempt(target.number)
         _sha_to_record = getattr(target, "head_sha", "") or ""
         if _sha_to_record:
             monitor._resume_tracker.set_reviewed_sha(target.number, _sha_to_record)
