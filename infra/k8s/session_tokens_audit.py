@@ -24,6 +24,7 @@ Uso
     python3 infra/k8s/session_tokens_audit.py --export ./out  # grava JSON + CSV
     python3 infra/k8s/session_tokens_audit.py -n deile-gl     # outro namespace
     python3 infra/k8s/session_tokens_audit.py --pod claude-worker-xxxx
+    python3 infra/k8s/session_tokens_audit.py --model opus-4-8
 
 No modo interativo: digite o NÚMERO de uma linha para ver os detalhes completos
 daquela sessão; ``a`` = agregados, ``e`` = exportar, ``q`` = sair.
@@ -659,6 +660,31 @@ def _short_model_slug(full: str) -> str:
     if m.startswith("claude-"):
         m = m[len("claude-"):]
     return re.sub(r"-\d{6,}.*$", "", m)  # tira o sufixo de data
+
+
+def filter_sessions_by_model(sessions: list, slug: str | None) -> list:
+    """Filtra sessões pelo modelo (substring case-insensitive).
+
+    Mantém uma sessão se QUALQUER chave de ``s["per_model"]`` (exceto
+    ``<synthetic>``) contém *slug* como substring (case-insensitive).
+    Se *slug* for ``None`` ou string vazia retorna a lista intacta.
+
+    Exemplos::
+
+        filter_sessions_by_model(sessions, "opus")    # mantém só sessões com opus
+        filter_sessions_by_model(sessions, None)      # retorna sessions sem alteração
+    """
+    if not slug:
+        return sessions
+    needle = slug.lower()
+    return [
+        s for s in sessions
+        if any(
+            needle in model_id.lower()
+            for model_id in s.get("per_model", {})
+            if model_id != "<synthetic>"
+        )
+    ]
 
 
 # Assinatura do preâmbulo ultracode injetado pelo claude_worker_server (fallback
@@ -1601,6 +1627,10 @@ def main():
     ap.add_argument("--last", nargs="?", type=int, const=-1, default=None, metavar="N",
                     help="ordena por última atividade ↓ (em vez de custo); "
                          "com N, mostra só as N sessões mais recentes")
+    ap.add_argument("--model", default=None, metavar="SLUG",
+                    help="filtra sessões cujo per_model contém SLUG como substring "
+                         "(case-insensitive) em pelo menos um model id completo, "
+                         "ex.: --model opus-4-8")
     args = ap.parse_args()
 
     kubectl = find_kubectl()
@@ -1615,6 +1645,9 @@ def main():
     if not sessions:
         sys.exit("Nenhuma sessão com tokens encontrada no PVC.")
     sessions = enrich(sessions, pvc)
+    sessions = filter_sessions_by_model(sessions, args.model)
+    if args.model and not sessions:
+        sys.exit(f"Nenhuma sessão com modelo contendo '{args.model}'.")
     last_requested = args.last is not None
     last_n = args.last if (last_requested and args.last and args.last > 0) else 0
     if last_requested:
@@ -1646,6 +1679,9 @@ def main():
         try:
             p = resolve_pod(kubectl, ns, args.pod)
             data = enrich(fetch_sessions(kubectl, ns, p, args.no_git), pvc)
+            data = filter_sessions_by_model(data, args.model)
+            if args.model and not data:
+                return None
             if last_n:  # preserva o corte das N mais recentes no refresh
                 data.sort(key=lambda x: x.get("mtime") or 0, reverse=True)
                 data = data[:last_n]
