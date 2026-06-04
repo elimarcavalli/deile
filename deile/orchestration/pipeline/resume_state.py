@@ -54,6 +54,17 @@ class IssueResumeState:
     #: a tighter ceiling (``incomplete_no_pr_max``) makes sense than the generic
     #: ``resume_max_attempts`` used for transient timeouts.
     incomplete_no_pr_count: int = 0
+    #: HEAD SHA of the branch at the time of the last review that did NOT merge.
+    #: Used by the deterministic re-review flood guard (Fix A): if the HEAD SHA
+    #: has not changed since the last incomplete review, no fix was applied and
+    #: re-reviewing the same HEAD is a flood — the guard forces zero_progress.
+    #: Empty string when forge does not expose SHA (GitLab fallback → guard skips).
+    last_reviewed_sha: str = ""
+    #: Body length (chars) after the PREVIOUS refine pass. Used by the divergence
+    #: early-stop guard (Fix B): if the body keeps growing on the 3rd+ pass the
+    #: scope is diverging (each pass only adds gaps) — block early instead of
+    #: burning all 5 passes. -1 means "no previous pass recorded yet".
+    prev_refine_body_len: int = -1
 
 
 @dataclass
@@ -187,6 +198,34 @@ class ResumeTracker:
         state = self.get(number)
         state.incomplete_no_pr_count += 1
         return state.incomplete_no_pr_count
+
+    def record_refine_body_len(self, number: int, body_len: int) -> None:
+        """Grava o comprimento do body após o passe de refino corrente.
+
+        Chamado em :func:`_apply_refine_verdict` DEPOIS de confirmar que o body
+        mudou (passe não convergiu). O próximo passe vai comparar o seu
+        ``after_body`` com este valor para detectar divergência (Fix B).
+        """
+        self.get(number).prev_refine_body_len = body_len
+
+    def get_prev_refine_body_len(self, number: int) -> int:
+        """Retorna o comprimento do body do passe anterior de refino, ou -1."""
+        state = self.peek(number)
+        return state.prev_refine_body_len if state is not None else -1
+
+    def set_reviewed_sha(self, number: int, sha: str) -> None:
+        """Grava o HEAD SHA da última review incompleta para a PR *number*.
+
+        Chamado no caminho "não-merged, será retomada" de :func:`review_one_open_pr`
+        para que o próximo tick possa comparar o SHA atual com este e detectar
+        se nenhum fix foi aplicado (flood guard da Fix A).
+        """
+        self.get(number).last_reviewed_sha = sha
+
+    def reviewed_sha(self, number: int) -> str:
+        """Retorna o HEAD SHA da última review incompleta para *number* (ou "")."""
+        state = self.peek(number)
+        return state.last_reviewed_sha if state is not None else ""
 
     def is_zero_progress(self, number: int, new_fingerprint: str) -> bool:
         """True if *new_fingerprint* equals the last one tracked (progress guard).

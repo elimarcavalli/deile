@@ -129,6 +129,11 @@ class PrRef:
     base_ref: str = "main"
     state: str = "open"
     is_draft: bool = False
+    #: HEAD commit SHA (OID) for the source branch. Populated by forge adapters
+    #: when available (GitHub: ``headRefOid``; GitLab: ``sha``). Empty string
+    #: when the forge does not expose it — guards that rely on this field must
+    #: skip their logic when empty (retrocompat / GitLab fallback).
+    head_sha: str = ""
 
     @property
     def batch_id(self) -> Optional[str]:
@@ -145,6 +150,7 @@ class PrRef:
             base_ref=str(item.get("baseRefName") or "main"),
             state=str(item.get("state", default_state)),
             is_draft=bool(item.get("isDraft", False)),
+            head_sha=str(item.get("headRefOid") or ""),
         )
 
     @classmethod
@@ -166,6 +172,11 @@ class PrRef:
         is_draft = bool(item.get("draft") or item.get("work_in_progress"))
         if not is_draft and (title.lower().startswith("draft:") or title.lower().startswith("wip:")):
             is_draft = True
+        # GitLab REST API exposes the HEAD SHA in ``sha`` (the tip of the source
+        # branch at the time of the last fetch). ``diff_refs.head_sha`` is the
+        # same value but nested; prefer the top-level ``sha`` for simplicity.
+        # Left empty when absent — guards that require head_sha skip their logic.
+        head_sha = str(item.get("sha") or (item.get("diff_refs") or {}).get("head_sha") or "")
         return cls(
             number=int(item.get("iid") or item.get("number") or 0),
             title=title,
@@ -175,6 +186,7 @@ class PrRef:
             base_ref=str(item.get("target_branch") or "main"),
             state=state,
             is_draft=is_draft,
+            head_sha=head_sha,
         )
 
 

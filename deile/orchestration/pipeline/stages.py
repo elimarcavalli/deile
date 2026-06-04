@@ -1415,6 +1415,38 @@ async def _apply_refine_verdict(
                 monitor, f"could not promote converged #{number} to revisada", exc
             )
         return
+    # Fix B — divergence early-stop: se o body CONTINUA CRESCENDO no 3º+
+    # passe, o escopo está divergindo (cada passe só acumula gaps). Bloqueamos
+    # 2 passes antes do teto de 5 para economizar tokens caros. Damos
+    # benefício da dúvida nos 2 primeiros passes (LLM pode ainda estar
+    # convergindo); se no 3º ainda cresce, é loop de divergência.
+    current_refine_attempt = monitor._resume_tracker.refine_attempt(number)
+    if (
+        after_body is not None
+        and before_body is not None
+        and current_refine_attempt >= 3
+    ):
+        after_len = len(after_body)
+        prev_len = monitor._resume_tracker.get_prev_refine_body_len(number)
+        if prev_len >= 0 and after_len > prev_len:
+            logger.warning(
+                "refine #%d: corpo ainda CRESCENDO no passe %d "
+                "(%d → %d chars) — escopo divergindo; bloqueando early",
+                number, current_refine_attempt, prev_len, after_len,
+            )
+            await _block_refinement(
+                monitor, target,
+                "refino divergindo: o escopo só cresce a cada passe "
+                "(intent amplo demais) — divida em sub-issues menores ou "
+                "escope manualmente, e remova ~workflow:bloqueada",
+            )
+            # _block_refinement → _block já chama monitor._resume_tracker.clear(number).
+            return
+
+    # Grava o comprimento do after_body para o próximo passe comparar.
+    if after_body is not None:
+        monitor._resume_tracker.record_refine_body_len(number, len(after_body))
+
     # Body mudou → conta o passe, persiste e devolve pra re-crítica.
     monitor._resume_tracker.bump_refine(number)
     await _persist_refine_attempt(monitor, number)
@@ -2858,6 +2890,23 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         await monitor.forge.clear_batch_label("pr", target.number)
         return
     zero_progress = _absorb_progress(monitor, target.number, outcome)
+
+    # Fix A — deterministic re-review flood guard: se o HEAD SHA da PR não
+    # mudou desde a última review incompleta, nenhum fix foi aplicado e
+    # re-revisar o mesmo HEAD é um flood. Forçamos zero_progress = True para
+    # que o block existente em ~linha 2936 dispare deterministicamente.
+    # Só ativo quando head_sha é não-vazio (GitLab sem SHA → comportamento legacy).
+    current_sha = getattr(target, "head_sha", "") or ""
+    last_sha = monitor._resume_tracker.reviewed_sha(target.number)
+    if current_sha and last_sha and current_sha == last_sha:
+        logger.warning(
+            "pr_review #%d: HEAD SHA %s não mudou desde a última review "
+            "incompleta — nenhum fix foi aplicado; forçando zero_progress "
+            "(re-review do mesmo HEAD é loop)",
+            target.number, current_sha[:8],
+        )
+        zero_progress = True
+
     # Ground-truth merge detection: the worker's structured ``ended`` is
     # authoritative; fall back to scanning the text for the MERGED marker.
     merged = outcome.ended == _ENDED_CONCLUIDO or (
@@ -2935,12 +2984,30 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     # resume, preserve the legacy behaviour: mark concluded so the PR drops out.
     if resume_enabled:
         if zero_progress:
+            # Mensagem contextual: indica se o block veio do SHA-guard (Fix A)
+            # ou do fingerprint-guard clássico.
+            _current_sha_now = getattr(target, "head_sha", "") or ""
+            _last_sha_now = monitor._resume_tracker.reviewed_sha(target.number)
+            if _current_sha_now and _last_sha_now and _current_sha_now == _last_sha_now:
+                _block_reason = (
+                    f"review pediu mudança mas o HEAD (`{_current_sha_now[:8]}`) "
+                    "não mudou desde a última review — nenhum fix foi aplicado "
+                    "(re-review do mesmo HEAD é loop); "
+                    "humano: aplique o fix ou remova ~workflow:bloqueada"
+                )
+            else:
+                _block_reason = "duas tentativas de review/merge sem progresso (diff idêntico)"
             await monitor.forge.clear_batch_label("pr", target.number)
             await _block_pr(
                 monitor, target.number, target.title, target.url,
-                "duas tentativas de review/merge sem progresso (diff idêntico)",
+                _block_reason,
             )
             return
+        # Fix A: grava o SHA atual para o próximo tick comparar.
+        # Se o worker fizer push de um fix, o HEAD muda e o guard não dispara.
+        _sha_to_record = getattr(target, "head_sha", "") or ""
+        if _sha_to_record:
+            monitor._resume_tracker.set_reviewed_sha(target.number, _sha_to_record)
         # Release the batch lock so the next tick can re-claim; keep em_andamento.
         await monitor.forge.clear_batch_label("pr", target.number)
         logger.info("pr_review #%d incompleto — em_andamento (será retomada)", target.number)
