@@ -31,8 +31,11 @@ class TestBriefResumesFromProgressMd:
     def test_step_3_instructs_to_write_progress_md_when_incomplete(self):
         out = _render()
         assert "PASSO 3" in out
-        # cláusula: "grave .deile-progress.md no seu diretório de trabalho"
-        assert "grave `.deile-progress.md`" in out
+        # cláusula: gravar/atualizar o journal .deile-progress.md
+        assert "grave/atualize `.deile-progress.md`" in out
+        # reforço B (issue #445 FU): checkpoint INCREMENTAL — o timeout mata
+        # o processo sem aviso (rc=124), então grava-se a cada milestone.
+        assert "CHECKPOINT INCREMENTAL" in out
         # NÃO dentro de ./repo, NÃO commite
         assert "NÃO commite" in out
 

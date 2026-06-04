@@ -2888,3 +2888,48 @@ async def test_dispatch_sem_wait_for_result_mantem_comportamento_bloqueante(
 
     assert resp.status == 200, f"default deve ser 200 bloqueante, got {resp.status}"
     assert body["ok"] is True
+
+
+# --- _estimate_context_tokens: pico de contexto, não soma (issue #445 FU) -----
+def test_estimate_context_tokens_uses_peak_not_sum(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Mede o CONTEXTO OCUPADO (pico de um round), não a soma dos rounds.
+
+    Regressão direta do bug que promovia toda review longa a fresh: somar
+    ``cache_read_input_tokens`` em 65 rounds gerava 11,5M tokens quando o
+    contexto real era ~70K. Aqui 5 rounds relendo 50K de cache cada têm soma
+    ~255K, mas o contexto real ocupado (pico de 1 round) é só 51K.
+    """
+    import json as _json
+    mod = claude_worker_module
+    jsonl = tmp_path / "sess.jsonl"
+    lines = []
+    for i in range(5):
+        lines.append(_json.dumps({
+            "type": "assistant",
+            "requestId": f"r{i}",
+            "message": {
+                "id": f"m{i}", "role": "assistant",
+                "usage": {
+                    "input_tokens": 1000,
+                    "cache_read_input_tokens": 50000,
+                    "cache_creation_input_tokens": 0,
+                    "output_tokens": 800,
+                },
+            },
+        }))
+    jsonl.write_text("\n".join(lines), encoding="utf-8")
+    monkeypatch.setattr(mod, "_resolve_jsonl_path", lambda s, w: jsonl)
+
+    got = mod._estimate_context_tokens("sess", tmp_path)
+    assert got == 51000  # pico (1000 + 50000) de um único round, não 5x
+
+
+def test_estimate_context_tokens_zero_when_missing(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """JSONL ausente → 0 (fallback conservador, não promove por falha de medir)."""
+    mod = claude_worker_module
+    monkeypatch.setattr(mod, "_resolve_jsonl_path", lambda s, w: None)
+    assert mod._estimate_context_tokens("sess", tmp_path) == 0

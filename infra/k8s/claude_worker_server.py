@@ -55,10 +55,12 @@ try:
     # ``summarize_jsonl`` é o extrator RICO (superset) que preserva tudo que a
     # tela de tokens mostra (título/brief/tools/PR/erros), não só os tokens.
     from jsonl_cost import aggregate_jsonl as _aggregate_jsonl
+    from jsonl_cost import context_window_of_model as _context_window_of_model
     from jsonl_cost import summarize_jsonl as _summarize_jsonl
 except Exception:  # pragma: no cover — sibling sempre presente in-pod
     _aggregate_jsonl = None
     _summarize_jsonl = None
+    _context_window_of_model = None
 
 logger = logging.getLogger("deile.claude_worker_server")
 
@@ -1294,16 +1296,24 @@ def _resolve_jsonl_path(session_id: str, workspace: Path) -> Optional[Path]:
     return None
 
 
-def _estimate_session_tokens(session_id: str, workspace: Path) -> int:
-    """Soma usage tokens do JSONL da sessão claude (input + output + cache).
+def _estimate_context_tokens(session_id: str, workspace: Path) -> int:
+    """Estima o CONTEXTO OCUPADO de uma sessão claude (pico de um round).
 
-    Retorna 0 quando JSONL ausente / unreadable — fallback conservador
-    (não bloqueia resume por incapacidade de medir).
+    Mede o tamanho da janela de contexto realmente ocupada: o MÁXIMO, entre
+    todas as respostas assistant do JSONL, de ``input_tokens +
+    cache_read_input_tokens + cache_creation_input_tokens`` — exatamente o
+    total de tokens enviados ao modelo naquele round (= tamanho do contexto).
+
+    NÃO soma os rounds. Cache-read é o MESMO contexto relido a cada turno;
+    somá-lo ao longo da sessão superestima o contexto em ordens de magnitude
+    (visto 11,5M tokens numa sessão cujo contexto real era ~70K, o que disparava
+    promoção-a-fresh espúria a cada review longa). Retorna 0 quando o JSONL está
+    ausente/ilegível — fallback conservador (não promove por falha de medição).
     """
     jsonl_path = _resolve_jsonl_path(session_id, workspace)
     if jsonl_path is None:
         return 0
-    total = 0
+    peak = 0
     try:
         with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -1320,15 +1330,18 @@ def _estimate_session_tokens(session_id: str, workspace: Path) -> int:
                     usage = d.get("usage") if isinstance(d, dict) else None
                 if not isinstance(usage, dict):
                     continue
-                for k in ("input_tokens", "output_tokens",
-                          "cache_read_input_tokens", "cache_creation_input_tokens"):
+                ctx = 0
+                for k in ("input_tokens", "cache_read_input_tokens",
+                          "cache_creation_input_tokens"):
                     v = usage.get(k)
                     if isinstance(v, (int, float)):
-                        total += int(v)
+                        ctx += int(v)
+                if ctx > peak:
+                    peak = ctx
     except OSError as exc:
-        logger.warning("session token count failed for %s: %s", session_id, exc)
+        logger.warning("context token estimate failed for %s: %s", session_id, exc)
         return 0
-    return total
+    return peak
 
 
 async def _git_fast_forward_workdir(workspace: Path, branch: Optional[str]) -> None:
@@ -2256,25 +2269,44 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 "session_id": session_id,
             }, status=409)
 
-        # Decisão #46 — Resume sob demanda: quando o resume é tentado e a
-        # sessão JSONL acumulada passou de 100K tokens, ABANDONAR o resume
-        # e PROMOVER fresh dispatch automaticamente. Antes rejeitávamos com
-        # 413 (RESUME_BUDGET_EXCEEDED), o que parava trabalho — agora apenas
-        # registramos a métrica e seguimos como fresh dispatch (novo task_id,
-        # novo session_id, workdir fresco). O brief unified já lê
-        # ``.deile-progress.md`` no PASSO 0, então o agente recupera o
-        # contexto natural sem dependência do JSONL gigante.
-        budget_limit = int(os.environ.get(
-            "DEILE_CLAUDE_RESUME_TOKEN_BUDGET", "100000",
-        ))
+        # Decisão #46 — Resume sob demanda: quando o resume é tentado e o
+        # CONTEXTO OCUPADO da sessão ultrapassa uma fração da janela real do
+        # modelo, ABANDONAR o resume e PROMOVER fresh dispatch automaticamente.
+        # O brief unified lê ``.deile-progress.md`` no PASSO 0, então o agente
+        # recupera o contexto natural sem arrastar um JSONL que não cabe mais.
+        #
+        # Threshold (issue #445 follow-up): 80% da janela do modelo
+        # (``context_window_of_model`` — Opus 4.8 = 1M → 800K), não um teto fixo
+        # de 100K. Mede-se o CONTEXTO OCUPADO (pico de um round via
+        # ``_estimate_context_tokens``), não a soma de cache-reads dos rounds
+        # (que inflava a métrica em ~150x e promovia toda review longa a fresh).
+        # Overrides (precedência): ``DEILE_CLAUDE_RESUME_TOKEN_BUDGET`` (teto
+        # absoluto em tokens, escape-hatch) > ``DEILE_CLAUDE_RESUME_CONTEXT_FRACTION``
+        # (fração, default 0.80) × janela do modelo.
+        _abs_override = os.environ.get("DEILE_CLAUDE_RESUME_TOKEN_BUDGET", "").strip()
+        if _abs_override and _abs_override not in ("0",):
+            try:
+                budget_limit = int(_abs_override)
+            except ValueError:
+                budget_limit = 0
+        else:
+            try:
+                _fraction = float(os.environ.get(
+                    "DEILE_CLAUDE_RESUME_CONTEXT_FRACTION", "0.80"))
+            except ValueError:
+                _fraction = 0.80
+            _window = (_context_window_of_model(claude_model)
+                       if _context_window_of_model else 200_000)
+            budget_limit = int(_window * _fraction)
         if budget_limit > 0:
-            jsonl_tokens = _estimate_session_tokens(session_id, workspace)
+            jsonl_tokens = _estimate_context_tokens(session_id, workspace)
             if jsonl_tokens > budget_limit:
                 logger.warning(
-                    "resume %s session JSONL acumulou %d tokens "
-                    "(>threshold=%d). Promovendo automaticamente para fresh "
-                    "dispatch (brief unified lê .deile-progress.md no PASSO 0).",
-                    session_id, jsonl_tokens, budget_limit,
+                    "resume %s contexto ocupado %d tokens (>threshold=%d "
+                    "= fração da janela do modelo %s). Promovendo automaticamente "
+                    "para fresh dispatch (brief unified lê .deile-progress.md no "
+                    "PASSO 0).",
+                    session_id, jsonl_tokens, budget_limit, claude_model,
                 )
                 # Promove para fresh: novo task_id, novo session_id, novo workdir.
                 # Mantém branch e demais campos do payload.

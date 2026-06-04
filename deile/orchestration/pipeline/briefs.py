@@ -145,7 +145,7 @@ Implemente a issue #{number} de {repo} e abra uma {pr_noun}. Execute de verdade 
 
 1. ./repo: se não existir → `{clone_cmd}`; se existir → `git fetch origin && git checkout {main} && git reset --hard origin/{main}`.
 2. Crie branch `{branch}` a partir de `{main}`.
-3. Leia comentários da issue (`{view_issue_cmd}`) — decisões do stakeholder FAZEM PARTE do escopo. Implemente o pedido + testes.
+3. Leia comentários da issue (`{view_issue_cmd}`) — decisões do stakeholder FAZEM PARTE do escopo. Implemente o pedido + testes. CHECKPOINT INCREMENTAL: grave `.deile-progress.md` (um nível acima de ./repo, NÃO commite, NÃO em ./repo) a cada milestone — o timeout mata o processo sem aviso (rc=124) e só o journal sobrevive pro próximo tick.
 4. {impact_test_strategy}
 5. Commit atômico + `git push -u origin {branch}`.
 6. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}`.
@@ -203,7 +203,7 @@ PASSO 2 — Executar a work-list:
 **PASSO 3 — DECISÃO É DECISÃO** (anti-loop, regra inegociável):
 - TEM conclusão → poste review formal e ENCERRE com veredito. NÃO escreva "incompleto" se chegou a decidir.
 - Work-list ESVAZIOU → pipeline marca `~mention:processado`.
-- Trabalho REAL pendente por estouro → grave `.deile-progress.md` (NÃO commite, NÃO dentro de ./repo) com: feito, falta, bloqueio, arquivo:linha.
+- CHECKPOINT INCREMENTAL: grave/atualize `.deile-progress.md` (um nível acima de ./repo, NÃO commite, NÃO dentro de ./repo) **a cada milestone concluído — não espere o fim**. O timeout do dispatch MATA o processo sem aviso (rc=124); só o que estiver no journal sobrevive pro próximo tick. Escreva-o como um PRE-COMPACT: feito, falta, decisões, bloqueio, arquivo:linha.
 
 PASSO 4 — ÚLTIMA LINHA:
 - `{pr_url_pattern} MERGED` — mergeado de fato (`{check_merged_cmd}`).
@@ -234,7 +234,7 @@ RETOMADA da issue #{number} de {repo}. Há trabalho parcial em ./repo — NÃO r
 4. {impact_test_strategy}
 5. Commit + `git push -u origin {branch}`.
 6. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}` (ou confirme existente: `{check_pr_cmd}`).
-7. ANTES de parar, atualize `.deile-progress.md` no diretório de trabalho (NÃO commite, NÃO em ./repo): feito, falta, decisões, bloqueios.
+7. CHECKPOINT INCREMENTAL: atualize `.deile-progress.md` no diretório de trabalho (NÃO commite, NÃO em ./repo) **a cada milestone E antes de parar** — o timeout mata o processo sem aviso (rc=124), só o journal sobrevive pro próximo tick: feito, falta, decisões, bloqueios.
 8. Impedimento real → linha `{blocked_contract}`. Última linha = URL da {pr_noun} (ex: {pr_url_pattern}) OU `{blocked_contract}`.
 
 === Issue #{number}: {title} ===

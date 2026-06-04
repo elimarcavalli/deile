@@ -429,9 +429,12 @@ def _estimate_session_tokens_from_jsonl(jsonl_text: str) -> int:
     """Soma usage tokens dos turns do JSONL claude. ``jsonl_text`` é o
     conteúdo bruto do arquivo. Tolerante a malformed lines.
 
-    Usado pelo budget check antes do resume: contexto grande > 500k justifica
-    compact ou fresh fallback (overhead de claude crescer linearmente com
-    o JSONL ressuscitado).
+    LEGADO / sem call-site de produção: a decisão real de promover resume a
+    fresh vive no worker (``claude_worker_server._estimate_context_tokens``),
+    que mede o CONTEXTO OCUPADO (pico de um round) — não a SOMA dos rounds.
+    Somar ``cache_read_input_tokens`` superestima em ordens de magnitude (o
+    mesmo contexto é relido a cada turno). NÃO reative esta função para gate
+    de resume sem antes trocar a soma pelo pico (ver issue #445 follow-up).
     """
     total = 0
     for line in (jsonl_text or "").splitlines():
