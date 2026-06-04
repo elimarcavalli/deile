@@ -330,7 +330,7 @@ Multi-forge in one **CLI** session works via the `ForgeRouter` singleton (both t
 - **Work on a brief / the quality gate** → briefs in `briefs.py`; remember implement=subset, PR=full suite, no cov gate; after editing run `pytest deile/tests/orchestration/pipeline/test_briefs* -v` (the brief invariants are test-guarded).
 - **Tune per-stage routing/model/reasoning** → panel `[d]` matrix, or env `DEILE_PIPELINE_{DISPATCH,MODEL,REASONING}_<STAGE>` (rollout `deile-pipeline`, no rebuild).
 - **Add a tool/command/parser/persona/skill/provider** → §3.5 map + templates in `12-PADROES-CODIGO.md`; then full suite (mind ordering pollution, §4).
-- **Commit & integrate** → commit **per phase**; **full green suite + self-review before every commit**; English title / PT-BR body; no `Co-Authored-By`. For a finished branch, reach for `superpowers:finishing-a-development-branch`.
+- **Commit & integrate** → commit **per phase**; **full green suite + self-review before every commit**; **review the staged diff against `README.md` and, in the same commit, rewrite/extend every section the change makes stale or contradicts** — code and the product reference must never disagree (same rule for the pillar docs the change touches); English title / PT-BR body; no `Co-Authored-By`. For a finished branch, reach for `superpowers:finishing-a-development-branch`.
 - **Restart the bot** → kill old instances/pods first; two live bots double-process events.
 - **Visual panel change** (`_panel*.py`) → after a visual change, **offer the Human a screenshot** (SVG via `Console.save_svg`) — don't auto-generate.
 
