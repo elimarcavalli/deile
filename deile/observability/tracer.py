@@ -18,6 +18,7 @@ opacos (UUIDs, model handles, tool names).
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
@@ -35,6 +36,7 @@ __all__ = [
     "get_tracer",
     "reset_tracer",
     "otel_available",
+    "activate_traceparent_from_env",
 ]
 
 
@@ -284,6 +286,33 @@ def _module_injected_provider() -> Any:
 # Marcador para monkeypatch em testes — fica ``None`` em produção, e a
 # leitura via :func:`_module_injected_provider` cuida do override.
 _provider: Any = None
+
+
+def activate_traceparent_from_env() -> Any:
+    """Extract W3C trace context from TRACEPARENT/TRACESTATE env vars and attach it.
+
+    Called once at subprocess startup so all subsequent spans are nested under
+    the parent span injected by OneshotSubprocessAgentBridge.
+
+    Returns the attached context token (for detach), or None if not applicable.
+    Best-effort: never raises.
+    """
+    traceparent = os.environ.get("TRACEPARENT") or os.environ.get("traceparent")
+    if not traceparent:
+        return None
+    try:
+        from opentelemetry.propagators.textmap import TraceContextTextMapPropagator  # pylint: disable=import-outside-toplevel
+        carrier = {"traceparent": traceparent}
+        tracestate = os.environ.get("TRACESTATE") or os.environ.get("tracestate")
+        if tracestate:
+            carrier["tracestate"] = tracestate
+        ctx = TraceContextTextMapPropagator().extract(carrier=carrier)
+        import opentelemetry.context as otel_context  # pylint: disable=import-outside-toplevel
+        token = otel_context.attach(ctx)
+        return token
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("activate_traceparent_from_env failed: %s", exc)
+        return None
 
 
 # ── singleton ────────────────────────────────────────────────────────────

@@ -837,6 +837,13 @@ async def _run_oneshot(
     reasoning: Optional[str] = None,
 ) -> int:
     """Single-turn non-interactive. stdout = response.content."""
+    # AC2: re-parent spans under the W3C trace context injected by the bridge.
+    try:
+        from deile.observability.tracer import activate_traceparent_from_env
+        activate_traceparent_from_env()
+    except Exception:
+        pass
+
     from deile.config.manager import ConfigManager
     from deile.config.settings import get_settings
 
@@ -874,6 +881,17 @@ async def _run_oneshot(
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+
+    # AC2: populate usage metadata + write sidecar for cross-repo contract
+    try:
+        from deile.core.usage_envelope import build_usage_envelope, write_usage_sidecar
+        _usage_env = build_usage_envelope("oneshot_cli_session")
+        if response.metadata is None:
+            response.metadata = {}
+        response.metadata["usage"] = _usage_env
+        write_usage_sidecar("oneshot_cli_session")
+    except Exception:
+        pass
 
     _print_oneshot_content(response.content)
     status = response.status.value if hasattr(response.status, "value") else str(response.status)
