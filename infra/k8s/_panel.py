@@ -493,6 +493,22 @@ def _activity_from_data(data: Optional[PanelData], limit: int = 8) -> List[Activ
     return rows
 
 
+def _raw_activity_events(data: Optional[PanelData], limit: int = 10) -> List[Any]:
+    """Return raw ActivityEvent objects (with source_pod/task_id) for drill-down.
+
+    Returns an empty list in demo mode (no real pods to drill into).
+    """
+    if data is None:
+        return []
+    if getattr(data, "activity", None) is not None:
+        return list(data.activity.get().top(limit))
+    pool = list(data.pipeline.get().events)
+    if data.local_logs is not None:
+        pool.extend(data.local_logs.get().events)
+    pool.sort(key=lambda ev: ev.ts, reverse=True)
+    return pool[:limit]
+
+
 def _last_activity_caption(data: Optional[PanelData]) -> Optional[str]:
     """Retorna string legível do evento mais recente, ex: '23s ago — #360 → em_pr'.
 
@@ -876,12 +892,21 @@ class DashboardView(View):
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
         self.sort_mode: str = "recent"
+        self._activity_focused: bool = False
+        self._activity_cursor: int = 0
+        self._last_activity_events: List[Any] = []
 
     @property
     def HOTKEYS(self) -> str:
+        if self._activity_focused:
+            return (
+                "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
+                "[t]okens  [M]onitor  [n]otifier  [a]ctivity:[↑↓/enter/esc]  "
+                f"[m]odel/runtime  [d]ispatch  [s]ort:{self.sort_mode}  [?]help  [q]uit"
+            )
         return (
             "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
-            "[t]okens  [M]onitor  [n]otifier  [a]ctions  [m]odel/runtime  "
+            "[t]okens  [M]onitor  [n]otifier  [a]ctivity  [m]odel/runtime  "
             f"[d]ispatch  [s]ort:{self.sort_mode}  [?]help  [q]uit"
         )
 
@@ -1081,6 +1106,13 @@ class DashboardView(View):
 
     def _activity_panel(self) -> Panel:
         rows = _activity_from_data(self.data, limit=10)
+        # Cache raw events for drill-down in handle_key.
+        # Use object.__setattr__ via normal assignment; guard against __new__
+        # instances used in tests that bypass __init__.
+        self._last_activity_events = _raw_activity_events(self.data, limit=10)
+        # Defensive defaults for instances created via __new__ (tests).
+        focused = getattr(self, "_activity_focused", False)
+        cursor = getattr(self, "_activity_cursor", 0)
         if not rows:
             body: RenderableType = Text(
                 "· sem atividade recente registrada", style="dim"
@@ -1094,7 +1126,7 @@ class DashboardView(View):
             tbl.add_column(max_width=20, min_width=8)       # action
             tbl.add_column(max_width=10, style="yellow")    # target
             tbl.add_column()                                 # detail
-            for r in rows:
+            for idx, r in enumerate(rows):
                 # Color by role: look up deploy→color, fall back to dim italic.
                 actor_color = _ACTIVITY_COLOR_MAP.get(r.actor, "dim italic")
                 # AC7: highlight error details in bold red.
@@ -1102,15 +1134,26 @@ class DashboardView(View):
                     "bold red" if _ACTIVITY_ERROR_RE.search(r.detail)
                     else "dim"
                 )
+                # Cursor highlight when activity panel is focused (issue #446).
+                row_style = (
+                    "reverse"
+                    if focused and idx == cursor
+                    else None
+                )
                 tbl.add_row(
                     r.hhmmss,
                     Text(r.actor, style=f"bold {actor_color}"),
                     Text(r.action, style=_action_row_style(r.action)),
                     r.target,
                     Text(r.detail, style=detail_style),
+                    style=row_style,
                 )
             body = tbl
-        return Panel(body, title="[bold]ACTIVITY[/bold] (últimos 10)",
+        if focused:
+            title = "[bold]ACTIVITY[/bold] (últimos 10) [↑↓]/[enter]/[esc]"
+        else:
+            title = "[bold]ACTIVITY[/bold] (últimos 10) [a] navegar"
+        return Panel(body, title=title,
                      title_align="left", border_style="green")
 
     def _alerts_panel(self) -> Panel:
@@ -1285,14 +1328,62 @@ class DashboardView(View):
 
     # --- key ---
 
+    def intercepts_key(self, key: str) -> bool:
+        """Intercept cursor/ESC keys when activity panel is focused (issue #446)."""
+        if self._activity_focused:
+            if key in ("\x1b", "\x1b[A", "\x1b[B", "j", "k", "\r", "\n"):
+                return True
+        return super().intercepts_key(key)
+
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # Activity cursor navigation (issue #446) — handled before global nav.
+        if self._activity_focused:
+            len_rows = max(1, len(self._last_activity_events))
+            if key in ("\x1b[A", "k"):
+                # UP
+                self._activity_cursor = (self._activity_cursor - 1) % len_rows
+                return ActionResult.refresh()
+            if key in ("\x1b[B", "j"):
+                # DOWN
+                self._activity_cursor = (self._activity_cursor + 1) % len_rows
+                return ActionResult.refresh()
+            if key in ("\r", "\n"):
+                # ENTER — drill down into selected event.
+                events = self._last_activity_events
+                if events and self._activity_cursor < len(events):
+                    ev = events[self._activity_cursor]
+                    task_id = getattr(ev, "task_id", None)
+                    source_pod = getattr(ev, "source_pod", "")
+                    actor = getattr(ev, "actor", "")
+                    if actor == "claude-worker" and task_id:
+                        return ActionResult.nav("live-session",
+                                                task_id=task_id,
+                                                pod_name=source_pod)
+                    if source_pod:
+                        return ActionResult.nav("pod-watch",
+                                                pod_name=source_pod,
+                                                pod_role=actor)
+                return ActionResult.refresh()
+            if key == "\x1b":
+                # ESC — exit cursor mode.
+                self._activity_focused = False
+                return ActionResult.refresh()
+            return ActionResult.refresh()
+
+        # When "a" is pressed, enter activity cursor mode instead of nav to
+        # "actions".  The old "actions" view is now reached via the [a]ctions
+        # entry in the nav dict below only when NOT in focused mode.
+        if key == "a":
+            self._activity_focused = True
+            self._activity_cursor = 0
+            return ActionResult.refresh()
+
         nav = {
             "1": "pod-picker",
             "2": "pipeline-timeline",
             "3": "issues-prs",
             "4": "logs-split",
             "n": "notifier-echo",
-            "a": "actions",
             "m": "model-switcher",
             # Pipeline Stage Configuration (issue #309 fase 2 — Task 21 cutover):
             # matriz unificada que substitui (a) o flip global de
@@ -1972,6 +2063,7 @@ class PodWatchView(View):
         "bot":          "deilebot",
         "shell":        "deile-shell",
         "claude-worker": "claude-worker",
+        "monitor":      "deile-monitor",
     }
 
     # Roles com Service associado (issue #394): usados para decidir se a
@@ -2495,6 +2587,166 @@ class PodWatchView(View):
             self._set_status(
                 "nenhum editor encontrado (cursor/code/notepad/open/xdg-open)"
             )
+
+
+class LiveSessionView(View):
+    """Live view for a claude-worker session identified by task_id (issue #446).
+
+    Polls ClaudeWorkerSessionsClient:
+      - list_sessions()  → filter client-side by task_id (no get_session endpoint)
+      - get_command(task_id)
+      - get_chat(task_id, tail=50)
+
+    Renders via LiveSessionScreen from deile.ui.panel.observability.screens.
+    Navigation: opened via ActionResult.nav("live-session", task_id=..., pod_name=...).
+    """
+
+    name = "live-session"
+    title = "Live Session"
+    refresh_s = 2.0
+
+    HOTKEYS = "[esc] volta   [r] força refresh   [q] sai"
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.task_id: str = ""
+        self.pod_name: str = ""
+        self._last_render: Optional[Any] = None
+        self._api_errors: List[str] = []
+
+    def on_mount(self, app: "PanelApp") -> None:
+        payload = getattr(app, "last_payload", {}) or {}
+        self.task_id = payload.get("task_id", "")
+        self.pod_name = payload.get("pod_name", "")
+        self._last_render = None
+        self._api_errors = []
+
+    def _fetch_data(self) -> Any:
+        """Synchronously fetch session data via asyncio (called from render thread)."""
+        import asyncio  # noqa: PLC0415
+        try:
+            from deile.ui.panel.observability.client import (  # noqa: PLC0415
+                ClaudeWorkerSessionsClient,
+            )
+            from deile.ui.panel.observability.screens import (  # noqa: PLC0415
+                LiveSessionData,
+            )
+        except ImportError as exc:
+            return None, [f"import error: {exc}"]
+
+        if not self.task_id:
+            return None, ["no task_id"]
+
+        # Resolve endpoint from context (same logic as ClusterObservabilityClient).
+        claude_worker_url = None
+        claude_worker_token = None
+        if self.data is not None and self.data.context is not None:
+            ctx = self.data.context
+            claude_worker_url = getattr(ctx, "claude_worker_url", None)
+            claude_worker_token = getattr(ctx, "claude_worker_token", None)
+
+        if not claude_worker_url:
+            # Fallback: build from namespace if available.
+            ns = (_NS_DEFAULT if self.data is None or self.data.context is None
+                  else getattr(self.data.context, "namespace", _NS_DEFAULT))
+            claude_worker_url = f"http://claude-worker.{ns}.svc.cluster.local:8767"
+
+        async def _gather() -> LiveSessionData:
+            client = ClaudeWorkerSessionsClient(
+                base_url=claude_worker_url,
+                bearer_token=claude_worker_token,
+            )
+            errors: List[str] = []
+            # list_sessions + get_command + get_chat concurrently.
+            # Reply = Union[dict/list, ApiError] — success is a dict/list,
+            # failure is an ApiError instance (no .ok attribute).
+            sessions_reply, cmd_reply, chat_reply = await asyncio.gather(
+                client.list_sessions(),
+                client.get_command(self.task_id),
+                client.get_chat(self.task_id, tail=50),
+                return_exceptions=False,
+            )
+            # Filter sessions client-side by task_id.
+            # ApiError is imported via the screens import; use isinstance check.
+            session_row = None
+            if isinstance(sessions_reply, list):
+                for s in sessions_reply:
+                    if isinstance(s, dict) and s.get("task_id") == self.task_id:
+                        session_row = s
+                        break
+            elif isinstance(sessions_reply, dict):
+                # Some endpoints wrap in {"sessions": [...]}
+                items = sessions_reply.get("sessions") or []
+                for s in items:
+                    if isinstance(s, dict) and s.get("task_id") == self.task_id:
+                        session_row = s
+                        break
+            else:
+                # ApiError
+                errors.append(f"sessions: {getattr(sessions_reply, 'message', str(sessions_reply))}")
+
+            command_data = cmd_reply if isinstance(cmd_reply, (dict, list)) else None
+            if not isinstance(cmd_reply, (dict, list)):
+                errors.append(f"command: {getattr(cmd_reply, 'message', str(cmd_reply))}")
+
+            chat_data = chat_reply if isinstance(chat_reply, (dict, list)) else None
+            if not isinstance(chat_reply, (dict, list)):
+                errors.append(f"chat: {getattr(chat_reply, 'message', str(chat_reply))}")
+
+            return LiveSessionData(
+                session=session_row,
+                command=command_data,
+                chat=chat_data,
+                api_errors=errors,
+            )
+
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(_gather()), []
+            finally:
+                loop.close()
+        except Exception as exc:  # noqa: BLE001
+            return None, [str(exc)]
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        try:
+            from deile.ui.panel.observability.screens import (  # noqa: PLC0415
+                LiveSessionScreen,
+                LiveSessionData,
+            )
+        except ImportError as exc:
+            return Panel(
+                Text(f"observability module unavailable: {exc}", style="red"),
+                title="LIVE SESSION",
+                border_style="red",
+            )
+
+        live_data, errors = self._fetch_data()
+        if live_data is None:
+            task_label = self.task_id[:16] if self.task_id else "?"
+            errmsg = "; ".join(errors) if errors else "fetching…"
+            return Panel(
+                Text(errmsg, style="dim yellow"),
+                title=f"LIVE SESSION {task_label}",
+                border_style="dim",
+            )
+
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(
+                f"LIVE SESSION {self.task_id[:16]}", app), name="head", size=4),
+            Layout(LiveSessionScreen().render(live_data), name="body"),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        return layout
+
+    def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        if key in ("\x1b", "q"):
+            return ActionResult.back()
+        if key == "r":
+            return ActionResult.refresh()
+        return ActionResult()
 
 
 class PipelineTimelineView(View):
@@ -7271,6 +7523,8 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         "help": HelpView(),
         "pod-picker": PodPickerView(data=data),
         "pod-watch": PodWatchView(data=data),
+        # Live session view for claude-worker tasks (issue #446).
+        "live-session": LiveSessionView(data=data),
         "pipeline-timeline": PipelineTimelineView(data=data),
         "issues-prs": IssuesPRsView(data=data),
         "logs-split": StubView(

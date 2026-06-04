@@ -854,6 +854,8 @@ class ActivityEvent:
     action: str         # 'dispatch' | 'mention' | 'http' | 'startup' | 'other'
     target: str         # '#296' | 'PR#291' | ''
     detail: str         # texto livre curto
+    source_pod: str = ""              # name of the originating pod
+    task_id: Optional[str] = None     # task_id if present (claude-worker only)
 
     @property
     def hhmmss(self) -> str:
