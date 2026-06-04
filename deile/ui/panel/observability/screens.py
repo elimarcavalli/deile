@@ -212,6 +212,7 @@ class LiveSessionData:
     command: Optional[Dict[str, Any]]
     chat: Optional[Dict[str, Any]]
     api_errors: List[str]
+    stdout: Optional[str] = None
 
 
 class LiveSessionScreen:
