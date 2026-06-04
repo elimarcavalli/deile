@@ -2035,7 +2035,7 @@ class PodWatchView(View):
 
     HOTKEYS = ("[f] follow on/off   [h] mostrar/esconder health   "
                "[c] clear log   [.] abrir log   [t] resize /tmp   "
-               "[esc] volta   [q] sai")
+               "[/] filtro grep   [esc] volta   [q] sai")
 
     # Quantas linhas do buffer dumpamos no tempfile quando o usuário pede
     # "abrir log" num pod k8s. Suficiente pra contexto, sem inflar o disco.
@@ -2088,6 +2088,11 @@ class PodWatchView(View):
         # Modo "aguardando preset de /tmp" — quando True, próxima tecla 1-5
         # aplica o preset correspondente; qualquer outra cancela.
         self._awaiting_tmp_preset: bool = False
+        # Filtro grep-like (issue #460).
+        self._filter_text: str = ""          # texto confirmado (exibido no rodapé)
+        self._filter_re: Optional[Any] = None  # padrão compilado (None = sem filtro)
+        self._prompt_open: bool = False      # prompt de entrada de filtro aberto
+        self._filter_buffer: str = ""        # caracteres digitados no prompt
 
     def on_mount(self, app: "PanelApp") -> None:
         # PodWatchView é singleton no registry — re-mount com pod diferente
@@ -2095,6 +2100,10 @@ class PodWatchView(View):
         # vazam entre pods, confundindo o operador.
         self.following = True
         self.hide_health = True
+        self._filter_text = ""
+        self._filter_re = None
+        self._prompt_open = False
+        self._filter_buffer = ""
         if self.streamer is not None:
             self.streamer.stop()
             self.streamer = None
@@ -2408,6 +2417,7 @@ class PodWatchView(View):
 
     def _log_panel(self) -> Panel:
         hidden = 0
+        grep_hidden = 0
         if self.streamer is None:
             body: RenderableType = Text("(streamer não iniciado)", style="dim")
         else:
@@ -2416,6 +2426,11 @@ class PodWatchView(View):
                 before = len(raw)
                 raw = [ln for ln in raw if not _HEALTH_LINE_RE.search(ln)]
                 hidden = before - len(raw)
+            # Grep filter — applied after health filter, before truncation (issue #460).
+            if self._filter_re is not None:
+                before = len(raw)
+                raw = [ln for ln in raw if self._filter_re.search(ln)]
+                grep_hidden = before - len(raw)
             raw = raw[-30:]
             if not raw:
                 body = Text(
@@ -2430,16 +2445,26 @@ class PodWatchView(View):
         health_label = ("health ESCONDIDOS" if self.hide_health
                         else "health VISÍVEIS")
         hidden_label = f"  ·  {hidden} health filtrados" if hidden else ""
+        grep_hidden_label = f"  ·  {grep_hidden} filtro grep" if grep_hidden else ""
         # Limpa status transitório expirado antes de compor o título.
         if self._status_msg is not None and time.time() >= self._status_until:
             self._status_msg = None
         status_label = (f"  ·  [yellow]{self._status_msg}[/yellow]"
                         if self._status_msg else "")
         title = (f"[bold]LIVE LOG[/bold]  ·  {follow_label}  ·  "
-                 f"{health_label}{hidden_label}  ·  "
+                 f"{health_label}{hidden_label}{grep_hidden_label}  ·  "
                  f"{self.pod_name}{status_label}")
         return Panel(body, title=title, title_align="left",
                      border_style="green" if self.following else "yellow")
+
+    def _footer_text(self) -> str:
+        """Dynamic footer: shows filter prompt, active filter indicator, or normal hotkeys."""
+        if self._prompt_open:
+            return (f"filtro: {self._filter_buffer}_"
+                    "   [enter] confirma   [esc] cancela   [backspace] apaga")
+        if self._filter_text:
+            return f'[filtro: "{self._filter_text}"]   ' + self.HOTKEYS
+        return self.HOTKEYS
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
@@ -2455,15 +2480,68 @@ class PodWatchView(View):
                          border_style="cyan"),
                    name="info", size=info_size),
             Layout(self._log_panel(), name="log"),
-            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+            Layout(_footer_panel(self._footer_text()), name="footer", size=3),
         )
         return layout
 
+    def intercepts_key(self, key: str) -> bool:
+        # ESC em 3 níveis (issue #460): nível 1 fecha prompt, nível 2 limpa
+        # filtro, nível 3 passa para o handler global (pop view).
+        if key == "ESC" and (self._prompt_open or bool(self._filter_text)):
+            return True
+        return super().intercepts_key(key)
+
+    def _handle_filter_prompt_key(self, key: str, app: "PanelApp") -> ActionResult:
+        """Processa teclas enquanto o prompt de filtro está aberto."""
+        if key in ("\r", "\n"):
+            self._prompt_open = False
+            text = self._filter_buffer[:200]  # AC2: limite de 200 chars
+            self._filter_text = text
+            if not text:
+                self._filter_re = None
+            elif text.startswith("r:"):
+                pattern = text[2:]
+                try:
+                    self._filter_re = re.compile(pattern, re.IGNORECASE)
+                except re.error:
+                    app.push_toast("⚠", "regex inválido — usando filtro literal")
+                    self._filter_re = re.compile(re.escape(pattern), re.IGNORECASE)
+                    self._filter_text = pattern
+            else:
+                self._filter_re = re.compile(re.escape(text), re.IGNORECASE)
+            return ActionResult.refresh()
+        if key == "ESC":
+            self._prompt_open = False
+            self._filter_buffer = ""
+            return ActionResult.refresh()
+        if key in ("\x7f", "\b", "backspace"):
+            if self._filter_buffer:
+                self._filter_buffer = self._filter_buffer[:-1]
+            return ActionResult.refresh()
+        if len(key) == 1 and key.isprintable():
+            self._filter_buffer += key
+            return ActionResult.refresh()
+        return ActionResult.refresh()
+
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # Modal: filtro grep — intercepts ALL keys including f/c/h/q (issue #460).
+        if self._prompt_open:
+            return self._handle_filter_prompt_key(key, app)
         # Resolve preset de /tmp PRIMEIRO — outras teclas ficam mortas até o
         # operador escolher ou cancelar (mesmo padrão do PodPickerView).
         if self._awaiting_tmp_preset:
             return self._handle_tmp_preset_key(key)
+        if key == "ESC":
+            # Nível 2: limpa filtro ativo (nível 3 = pop view via global handler).
+            if self._filter_text:
+                self._filter_text = ""
+                self._filter_re = None
+                return ActionResult.refresh()
+            return ActionResult()
+        if key == "/":
+            self._prompt_open = True
+            self._filter_buffer = ""
+            return ActionResult.refresh()
         if key == "f":
             self.following = not self.following
             if self.following and self.streamer is None:
@@ -2605,7 +2683,7 @@ class LiveSessionView(View):
     title = "Live Session"
     refresh_s = 2.0
 
-    HOTKEYS = "[esc] volta   [r] força refresh   [q] sai"
+    HOTKEYS = "[esc] volta   [r] força refresh   [/] filtro grep   [q] sai"
 
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
@@ -2613,6 +2691,11 @@ class LiveSessionView(View):
         self.pod_name: str = ""
         self._last_render: Optional[Any] = None
         self._api_errors: List[str] = []
+        # Filtro grep-like para as turns do chat (issue #460).
+        self._filter_text: str = ""
+        self._filter_re: Optional[Any] = None
+        self._prompt_open: bool = False
+        self._filter_buffer: str = ""
 
     def on_mount(self, app: "PanelApp") -> None:
         payload = getattr(app, "last_payload", {}) or {}
@@ -2620,6 +2703,10 @@ class LiveSessionView(View):
         self.pod_name = payload.get("pod_name", "")
         self._last_render = None
         self._api_errors = []
+        self._filter_text = ""
+        self._filter_re = None
+        self._prompt_open = False
+        self._filter_buffer = ""
 
     def _fetch_data(self) -> Any:
         """Synchronously fetch session data via asyncio (called from render thread)."""
@@ -2709,6 +2796,15 @@ class LiveSessionView(View):
         except Exception as exc:  # noqa: BLE001
             return None, [str(exc)]
 
+    def _live_session_footer_text(self) -> str:
+        """Dynamic footer for LiveSessionView."""
+        if self._prompt_open:
+            return (f"filtro: {self._filter_buffer}_"
+                    "   [enter] confirma   [esc] cancela   [backspace] apaga")
+        if self._filter_text:
+            return f'[filtro: "{self._filter_text}"]   ' + self.HOTKEYS
+        return self.HOTKEYS
+
     def render(self, app: "PanelApp") -> RenderableType:
         try:
             from deile.ui.panel.observability.screens import (  # noqa: PLC0415
@@ -2732,16 +2828,82 @@ class LiveSessionView(View):
                 border_style="dim",
             )
 
+        # Apply grep filter to chat turns (issue #460): build a new LiveSessionData
+        # with only matching turns; _render_chat's [-8:] then slices the filtered
+        # list.  Original data is not mutated.
+        if self._filter_re is not None and live_data.chat:
+            turns = live_data.chat.get("turns", [])
+            filtered_turns = [
+                t for t in turns
+                if self._filter_re.search(str(t.get("content", "") or ""))
+            ]
+            live_data = live_data.__class__(
+                session=live_data.session,
+                command=live_data.command,
+                chat={**live_data.chat, "turns": filtered_turns},
+                api_errors=live_data.api_errors,
+            )
+
         layout = Layout()
         layout.split_column(
             Layout(_head_panel(
                 f"LIVE SESSION {self.task_id[:16]}", app), name="head", size=4),
             Layout(LiveSessionScreen().render(live_data), name="body"),
-            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+            Layout(_footer_panel(self._live_session_footer_text()),
+                   name="footer", size=3),
         )
         return layout
 
+    def intercepts_key(self, key: str) -> bool:
+        if key == "ESC" and (self._prompt_open or bool(self._filter_text)):
+            return True
+        return super().intercepts_key(key)
+
+    def _handle_filter_prompt_key(self, key: str, app: "PanelApp") -> ActionResult:
+        """Processa teclas enquanto o prompt de filtro está aberto."""
+        if key in ("\r", "\n"):
+            self._prompt_open = False
+            text = self._filter_buffer[:200]
+            self._filter_text = text
+            if not text:
+                self._filter_re = None
+            elif text.startswith("r:"):
+                pattern = text[2:]
+                try:
+                    self._filter_re = re.compile(pattern, re.IGNORECASE)
+                except re.error:
+                    app.push_toast("⚠", "regex inválido — usando filtro literal")
+                    self._filter_re = re.compile(re.escape(pattern), re.IGNORECASE)
+                    self._filter_text = pattern
+            else:
+                self._filter_re = re.compile(re.escape(text), re.IGNORECASE)
+            return ActionResult.refresh()
+        if key == "ESC":
+            self._prompt_open = False
+            self._filter_buffer = ""
+            return ActionResult.refresh()
+        if key in ("\x7f", "\b", "backspace"):
+            if self._filter_buffer:
+                self._filter_buffer = self._filter_buffer[:-1]
+            return ActionResult.refresh()
+        if len(key) == 1 and key.isprintable():
+            self._filter_buffer += key
+            return ActionResult.refresh()
+        return ActionResult.refresh()
+
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        if self._prompt_open:
+            return self._handle_filter_prompt_key(key, app)
+        if key == "ESC":
+            if self._filter_text:
+                self._filter_text = ""
+                self._filter_re = None
+                return ActionResult.refresh()
+            return ActionResult.back()
+        if key == "/":
+            self._prompt_open = True
+            self._filter_buffer = ""
+            return ActionResult.refresh()
         if key in ("\x1b", "q"):
             return ActionResult.back()
         if key == "r":
