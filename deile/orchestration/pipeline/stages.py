@@ -21,7 +21,6 @@ import asyncio
 import logging
 import re
 import time
-import warnings
 from dataclasses import replace
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -230,29 +229,6 @@ async def _record_forge_error(
         await monitor.notifier.error(notifier_label, str(exc))
 
 
-async def _record_gh_error(
-    monitor: "PipelineMonitor",
-    description: str,
-    exc: Exception,
-    *,
-    notifier_label: Optional[str] = None,
-) -> None:
-    """Deprecated alias for :func:`_record_forge_error`.
-
-    .. deprecated::
-        Use ``_record_forge_error`` directly. This shim will be removed in the
-        next major release.
-    """
-    warnings.warn(
-        "_record_gh_error is deprecated; use _record_forge_error instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    await _record_forge_error(
-        monitor, description, exc, notifier_label=notifier_label,
-    )
-
-
 async def _claim_for_classify(
     monitor: "PipelineMonitor",
     kind: str,
@@ -271,8 +247,8 @@ async def _claim_for_classify(
     Returns ``True`` when the caller may proceed to label the item, ``False``
     when it must skip it (already claimed by another monitor, or a gh error was
     recorded). On ``GhCommandError`` the error is recorded via
-    :func:`_record_gh_error` (using ``error_context`` as the log prefix and the
-    optional ``notifier_label`` for the Discord notification).
+    :func:`_record_forge_error` (using ``error_context`` as the log prefix and
+    the optional ``notifier_label`` for the Discord notification).
     """
     if monitor.identity.shard_count <= 1:
         return True
