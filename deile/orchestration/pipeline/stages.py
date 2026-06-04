@@ -1311,6 +1311,41 @@ async def reconcile_refine_issues(monitor: "PipelineMonitor") -> None:
         ledger.clear(key)
 
 
+#: Fração máxima de mudança de tamanho do body para um refino ``REFINO: OK`` ser
+#: considerado convergido (só cosmético, ex.: corrigir ``arquivo:linha``). Acima
+#: disso o refino mudou o escopo de verdade → re-crítica. Fix do loop
+#: critic↔architect: a guarda byte-idêntico nunca disparava com mudança cosmética.
+_REFINE_CONVERGED_RATIO = 0.02
+
+
+async def _promote_refine_to_reviewed(
+    monitor: "PipelineMonitor", target, refine_state: str,
+    comment: str, log_msg: str,
+) -> None:
+    """Promove uma issue refinada para ``~workflow:revisada`` e limpa os labels
+    de refino. Compartilhada pelos dois caminhos de convergência em
+    :func:`_apply_refine_verdict`: o veredito explícito ``REFINO: OK`` (o
+    architect julgou o escopo suficiente) e a guarda body-inalterado (fallback
+    ``unknown``)."""
+    number = target.number
+    cleanup = [REFINAR, *REFINE_WORKFLOW_STATES] + [
+        lb for lb in target.labels if is_refine_attempt_label(lb)
+    ]
+    try:
+        await monitor.forge.transition_issue(
+            number, from_label=refine_state, to_label=WORKFLOW_REVIEWED
+        )
+        await monitor.forge.remove_labels("issue", number, cleanup)
+        await monitor.forge.comment_on_issue(number, comment)
+        monitor._resume_tracker.clear(number)
+        monitor._stats.issues_reviewed += 1
+        logger.info(log_msg)
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, f"could not promote #{number} to revisada", exc
+        )
+
+
 async def _apply_refine_verdict(
     monitor: "PipelineMonitor", target, info: dict, before_body
 ) -> None:
@@ -1343,10 +1378,7 @@ async def _apply_refine_verdict(
         logger.info("refine #%d → aguardando stakeholder", number)
         return
 
-    # OK / unknown. GUARD DE CONVERGÊNCIA (preservado de #438): se ESTE passe de
-    # refino NÃO alterou o body, promove a ``revisada`` em vez de re-circular pra
-    # sempre. O ``before_body`` vem do ledger (capturado no dispatch); o
-    # ``after_body`` é o body atual.
+    # OK / unknown. Ordem: Fix B (anti-divergência) → convergência → re-crítica.
     refine_state = next(
         (s for s in REFINE_WORKFLOW_STATES if s in target.labels),
         refine_workflow_state(issue_type),
@@ -1359,35 +1391,12 @@ async def _apply_refine_verdict(
         after_body = (refreshed.body or "").strip()
     except Exception:  # noqa: BLE001 — na dúvida, segue o fluxo normal de re-crítica
         after_body = None
-    if before_body is not None and after_body is not None and after_body == before_body:
-        cleanup = [REFINAR, *REFINE_WORKFLOW_STATES] + [
-            lb for lb in target.labels if is_refine_attempt_label(lb)
-        ]
-        try:
-            await monitor.forge.transition_issue(
-                number, from_label=refine_state, to_label=WORKFLOW_REVIEWED
-            )
-            await monitor.forge.remove_labels("issue", number, cleanup)
-            await monitor.forge.comment_on_issue(
-                number,
-                "✅ Refino convergiu: o passe não alterou o body — escopo "
-                "estável. Promovido a `~workflow:revisada`. Se o escopo ainda "
-                "estiver insuficiente, aplique `~workflow:bloqueada` para revisão "
-                "manual.",
-            )
-            monitor._resume_tracker.clear(number)
-            monitor._stats.issues_reviewed += 1
-            logger.info("refine #%d convergiu (body inalterado) → revisada", number)
-        except GhCommandError as exc:
-            await _record_forge_error(
-                monitor, f"could not promote converged #{number} to revisada", exc
-            )
-        return
-    # Fix B — divergence early-stop: se o body CONTINUA CRESCENDO no 3º+
-    # passe, o escopo está divergindo (cada passe só acumula gaps). Bloqueamos
-    # 2 passes antes do teto de 5 para economizar tokens caros. Damos
-    # benefício da dúvida nos 2 primeiros passes (LLM pode ainda estar
-    # convergindo); se no 3º ainda cresce, é loop de divergência.
+
+    # Fix B — divergence early-stop: se o body CONTINUA CRESCENDO no 3º+ passe, o
+    # escopo está divergindo (intent amplo demais — cada passe só acumula gaps).
+    # Roda ANTES de qualquer promoção: intents divergentes retornam ``REFINO:OK``
+    # a cada passe enquanto incham o body, então a promoção por OK não pode
+    # pular esta guarda. Damos benefício da dúvida nos 2 primeiros passes.
     current_refine_attempt = monitor._resume_tracker.refine_attempt(number)
     if (
         after_body is not None
@@ -1411,11 +1420,38 @@ async def _apply_refine_verdict(
             # _block_refinement → _block já chama monitor._resume_tracker.clear(number).
             return
 
+    # GUARD DE CONVERGÊNCIA + fix do loop critic↔architect. Promove a ``revisada``
+    # (sem re-crítica) quando ESTE passe NÃO mudou o body de forma substancial:
+    #   • body idêntico (``after == before``) — convergência forte (qualquer veredito);
+    #   • OU ``REFINO: OK`` + mudança ≤ ``_REFINE_CONVERGED_RATIO`` (só cosmético,
+    #     ex.: corrigir ``arquivo:linha``). Antes a guarda exigia body byte-idêntico,
+    #     então o architect declarava "Pronto" mas o body cosmético re-circulava
+    #     pra re-crítica (2ª chamada LLM que reprovava inconsistente) → loop até o
+    #     teto em issues triviais. O Fix B acima continua barrando a divergência real.
+    converged = False
+    if before_body is not None and after_body is not None:
+        if after_body == before_body:
+            converged = True
+        elif verdict == "ok":
+            denom = max(len(before_body), 1)
+            if abs(len(after_body) - len(before_body)) / denom <= _REFINE_CONVERGED_RATIO:
+                converged = True
+    if converged:
+        await _promote_refine_to_reviewed(
+            monitor, target, refine_state,
+            "✅ Refino convergiu: o passe não mudou o escopo de forma "
+            "substancial — promovido a `~workflow:revisada` sem re-crítica. Se o "
+            "escopo ainda estiver insuficiente, aplique `~workflow:bloqueada` "
+            "para revisão manual.",
+            f"refine #{number} convergiu (body estável) → revisada",
+        )
+        return
+
     # Grava o comprimento do after_body para o próximo passe comparar.
     if after_body is not None:
         monitor._resume_tracker.record_refine_body_len(number, len(after_body))
 
-    # Body mudou → conta o passe, persiste e devolve pra re-crítica.
+    # Body mudou de forma substancial → conta o passe, persiste e re-critica.
     monitor._resume_tracker.bump_refine(number)
     await _persist_refine_attempt(monitor, number)
     try:
@@ -1423,7 +1459,7 @@ async def _apply_refine_verdict(
     except GhCommandError as exc:
         await _record_forge_error(monitor, f"could not return #{number} to nova after refine", exc)
         return
-    logger.info("refine #%d OK (passe %d) → nova (re-crítica)", number,
+    logger.info("refine #%d body mudou (passe %d) → nova (re-crítica)", number,
                 monitor._resume_tracker.refine_attempt(number))
 
 

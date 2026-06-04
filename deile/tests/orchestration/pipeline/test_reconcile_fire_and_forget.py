@@ -283,9 +283,28 @@ class TestReconcileRefine:
             )
         )
 
-    async def test_ok_body_changed_returns_to_nova(self):
-        client = _Client(verdict="Reescrevi.\nREFINO: OK")
-        monitor, github, _, issue = self._make_refine(client, body="b0", get_issue_body="b1")
+    async def test_ok_cosmetic_change_promotes_to_revisada(self):
+        """Fix loop critic↔architect: REFINO:OK + mudança só COSMÉTICA (body
+        quase igual, ≤2%) promove a revisada SEM re-crítica. Antes do fix a
+        guarda byte-idêntico não disparava e gerava loop até o teto."""
+        before = "x" * 200
+        after = "x" * 201  # +0,5% → cosmético
+        client = _Client(verdict="Só corrigi arquivo:linha.\nREFINO: OK")
+        monitor, github, _, issue = self._make_refine(client, body=before, get_issue_body=after)
+        await monitor._refine_one_issue()
+        self._seed(monitor, github, issue)
+        await monitor._reconcile_refine_issues()
+        t = _transitions(github)
+        assert (6, WORKFLOW_ARCHITECTURE, WORKFLOW_REVIEWED) in t
+        assert (6, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) not in t
+
+    async def test_ok_substantial_change_returns_to_nova(self):
+        """REFINO:OK mas o passe mudou o body de forma substancial (>2%) → ainda
+        re-critica (o refino está trabalhando, não convergiu)."""
+        before = "x" * 100
+        after = "y" * 400  # +300% → mudança real
+        client = _Client(verdict="Reescrevi bastante.\nREFINO: OK")
+        monitor, github, _, issue = self._make_refine(client, body=before, get_issue_body=after)
         await monitor._refine_one_issue()
         self._seed(monitor, github, issue)
         await monitor._reconcile_refine_issues()
@@ -293,7 +312,7 @@ class TestReconcileRefine:
 
     async def test_convergence_promotes_to_revisada(self):
         client = _Client(verdict="Pronto.\nREFINO: OK")
-        # before_body (no ledger) == after_body (get_issue) ⇒ convergiu.
+        # before_body (no ledger) == after_body (get_issue) ⇒ convergiu (idêntico).
         monitor, github, _, issue = self._make_refine(client, body="estavel", get_issue_body="estavel")
         await monitor._refine_one_issue()
         self._seed(monitor, github, issue)
@@ -301,6 +320,18 @@ class TestReconcileRefine:
         t = _transitions(github)
         assert (6, WORKFLOW_ARCHITECTURE, WORKFLOW_REVIEWED) in t
         assert (6, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) not in t
+
+    async def test_unknown_body_changed_returns_to_nova(self):
+        """Veredito ambíguo (unknown) só converge com body IDÊNTICO; mudança
+        (mesmo cosmética) → re-crítica. Só REFINO:OK tolera cosmético."""
+        before = "x" * 200
+        after = "x" * 201  # cosmético, MAS verdict unknown → não tolera
+        client = _Client(verdict="Mexi em algo mas não declarei veredito.")
+        monitor, github, _, issue = self._make_refine(client, body=before, get_issue_body=after)
+        await monitor._refine_one_issue()
+        self._seed(monitor, github, issue)
+        await monitor._reconcile_refine_issues()
+        assert (6, WORKFLOW_ARCHITECTURE, WORKFLOW_NEW) in _transitions(github)
 
     async def test_waiting_adds_aguardando_stakeholder(self):
         client = _Client(verdict="Sugestões postadas.\nREFINO: AGUARDA_STAKEHOLDER")
