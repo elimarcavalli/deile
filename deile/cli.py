@@ -831,6 +831,15 @@ def _print_oneshot_content(content) -> None:
         console.print(item)
 
 
+def _write_usage_sidecar(session_id: str) -> None:
+    """Best-effort: write DEILE_USAGE_SIDECAR after a oneshot run."""
+    try:
+        from deile.observability.usage_sidecar import collect_and_write_sidecar
+        collect_and_write_sidecar(session_id)
+    except Exception:
+        pass
+
+
 async def _run_oneshot(
     message: str,
     forced_model: Optional[str] = None,
@@ -851,8 +860,10 @@ async def _run_oneshot(
 
     agent = await _construct_agent(model_router, config_manager)
 
+    import uuid as _uuid
+    _session_id = f"oneshot-{_uuid.uuid4().hex[:12]}"
     session = agent.create_session(
-        session_id="oneshot_cli_session",
+        session_id=_session_id,
         working_directory=settings.working_directory,
     )
     if forced_model:
@@ -876,6 +887,7 @@ async def _run_oneshot(
         return 1
 
     _print_oneshot_content(response.content)
+    _write_usage_sidecar(session.session_id)
     status = response.status.value if hasattr(response.status, "value") else str(response.status)
     return 0 if status != "error" else 1
 

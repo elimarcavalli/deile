@@ -370,6 +370,7 @@ class AuditLogger:
             action="fire",
             result="started",
             details={
+                "entry_id": entry_id,
                 "name": name,
                 "schedule": schedule,
                 "payload_hash": payload_hash,
@@ -390,6 +391,7 @@ class AuditLogger:
             action="skip",
             result="skipped",
             details={
+                "entry_id": entry_id,
                 "name": name,
                 "reason": reason,
             },
