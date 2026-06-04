@@ -13,10 +13,7 @@ Testes do refresh helper isolados também ficam aqui (lock-file, kubectl mocks).
 """
 from __future__ import annotations
 
-import asyncio
 import json
-from pathlib import Path
-from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

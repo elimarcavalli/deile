@@ -373,7 +373,7 @@ class StreamingRenderer:
                     # mostra todo o conteúdo no próximo evento bem-formado.
                     try:
                         self._apply_event(event, blocks, result)
-                    except Exception as exc:
+                    except Exception:
                         logger.warning(
                             "streaming_renderer: _apply_event falhou em %s — pulando frame",
                             getattr(event, "type", "?"),

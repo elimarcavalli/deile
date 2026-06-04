@@ -265,7 +265,6 @@ def test_apply_max_parallel_invalid_value(view_with_data):
 
 
 def test_apply_max_parallel_success(view_with_data):
-    import subprocess as sp
 
     def fake_run(cmd, **kw):
         m = MagicMock()
@@ -282,7 +281,6 @@ def test_apply_max_parallel_success(view_with_data):
 
 
 def test_apply_max_parallel_auto(view_with_data):
-    import subprocess as sp
 
     def fake_run(cmd, **kw):
         m = MagicMock()
@@ -300,7 +298,6 @@ def test_apply_max_parallel_auto(view_with_data):
 
 def test_apply_max_parallel_clear(view_with_data):
     """value=None → remove o override."""
-    import subprocess as sp
 
     def fake_run(cmd, **kw):
         m = MagicMock()

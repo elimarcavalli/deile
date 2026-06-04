@@ -10,7 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -153,7 +152,6 @@ class TestBuildDefaultPipelineConfigAutoMode:
         s = _make_settings(pipeline_max_parallel="auto")
         _patch_build_deps(monkeypatch, s, tmp_path)
 
-        import subprocess
         fake_proc = MagicMock()
         fake_proc.returncode = 0
         fake_proc.stdout = "4"

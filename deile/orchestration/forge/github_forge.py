@@ -35,7 +35,6 @@ from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
                                                  MENTION_LABELS, REFINE_LABELS,
-                                                 PRIORITY_LABEL_PREFIX,
                                                  PRIORITY_LABELS,
                                                  REVIEW_LABELS,
                                                  WORKFLOW_LABELS)

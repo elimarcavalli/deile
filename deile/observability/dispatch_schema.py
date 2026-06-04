@@ -11,7 +11,7 @@ divergirem do que ``dispatch_export`` efetivamente emite.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from typing import Any, ClassVar, Dict
 
 __all__ = [

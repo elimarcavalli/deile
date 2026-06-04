@@ -361,7 +361,7 @@ async def test_reaper_does_not_touch_em_arquitetura():
     aguarda o próximo tick de refine_one_issue — e NÃO é um lock transitório.
     Reapeá-la seria regressão: a issue perderia o contexto de refinamento.
     """
-    from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE, WORKFLOW_REVIEWING
+    from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
     issue = _make_issue(903, labels=[WORKFLOW_ARCHITECTURE, own, "refinar"])
@@ -382,7 +382,7 @@ async def test_reaper_does_not_touch_em_arquitetura():
 async def test_reaper_does_not_touch_em_refinamento():
     """REGRESSÃO-GUARD: issue em ~workflow:em_refinamento (refine state de
     descanso para intents) com idade > threshold NÃO é tocada pelo reaper."""
-    from deile.orchestration.pipeline.labels import WORKFLOW_REFINING, WORKFLOW_REVIEWING
+    from deile.orchestration.pipeline.labels import WORKFLOW_REFINING
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
     issue = _make_issue(904, labels=[WORKFLOW_REFINING, own, "refinar"])

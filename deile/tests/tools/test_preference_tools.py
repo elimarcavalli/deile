@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from deile.tools.base import ToolContext, ToolResult, ToolStatus
+from deile.tools.base import ToolContext
 from deile.tools.preference_tools import (
     ForgetPreferenceTool,
     ListPreferencesTool,

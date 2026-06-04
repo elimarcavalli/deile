@@ -12,11 +12,11 @@ from __future__ import annotations
 from decimal import Decimal
 from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deile.orchestration.pipeline.implementer import WorkerImplementer, WorkOutcome
+from deile.orchestration.pipeline.implementer import WorkerImplementer
 
 
 class _FakeClient:

@@ -12,7 +12,7 @@ and PII must never be stored — the tool description warns LLMs of this.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from ..preferences.store import PreferenceStore
 from .base import (

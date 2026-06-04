@@ -21,7 +21,6 @@ import sys
 import time
 from pathlib import Path
 from threading import Thread
-from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -545,8 +544,6 @@ class TestDispatch409WhenLeaseHeld:
         quando o workspace já tem um lease ativo (outro pod trabalhando),
         o handler deve retornar HTTP 409 com error_code=TASK_ALREADY_RUNNING.
         """
-        from aiohttp.test_utils import TestClient, TestServer
-        from aiohttp.web import Application
 
         # Substitui _acquire_lease por versão que sempre nega.
         # ``**kwargs`` aceita os novos channel=/session_id= do dedup por channel.
@@ -554,7 +551,6 @@ class TestDispatch409WhenLeaseHeld:
             return None
 
         # Monta request via objeto mínimo com json() mockado.
-        import aiohttp
         from unittest.mock import AsyncMock as _AM
 
         request = MagicMock()

@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):

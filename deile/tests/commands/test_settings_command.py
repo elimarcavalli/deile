@@ -6,7 +6,6 @@ and the blocked-secret / project-trust flows.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 

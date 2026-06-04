@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import pytest
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from typing import List
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -348,7 +348,6 @@ class TestResourceAttributes:
 
         from opentelemetry.sdk._logs.export import (
             InMemoryLogExporter, SimpleLogRecordProcessor)
-        from opentelemetry.sdk._logs import LoggerProvider as SdkLoggerProvider
 
         # Substituir _build_log_provider para capturar o resource sem OTLP real
         real_build = dle._build_log_provider

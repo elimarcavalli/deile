@@ -5,7 +5,6 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from deile.log_mgmt.log_analyzer import (
     Anomaly,
@@ -189,7 +188,7 @@ class TestDetectFlooding:
         assert result == []
 
     def test_below_threshold(self):
-        lines = [f"2026-05-28T14:00:00 ERROR repeated error"] * 5
+        lines = ["2026-05-28T14:00:00 ERROR repeated error"] * 5
         result = _detect_flooding("pod1", lines, threshold=10)
         assert result == []
 

@@ -9,9 +9,6 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
-import sys
-import tempfile
-from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -216,7 +213,6 @@ class TestHandler:
                 t.start = lambda: launched.append(True)
                 return t
 
-            import threading  # noqa: PLC0415
             with patch("threading.Thread", side_effect=fake_thread):
                 code, body = self._call(srv, "/auth/start", {"proc": None})
         assert code == 200

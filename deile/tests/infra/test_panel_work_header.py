@@ -23,7 +23,7 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from rich.console import Console

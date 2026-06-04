@@ -17,7 +17,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 
 # ─── shared test helpers ─────────────────────────────────────────────────────

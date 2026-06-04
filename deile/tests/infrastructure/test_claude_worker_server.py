@@ -519,7 +519,6 @@ async def test_dispatch_returns_auth_expired_when_claude_reports_not_logged_in(
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
 
     # Mock o subprocess pra emular claude reportando token expirado.
-    from infra.k8s import claude_worker_server as mod
     import types
 
     async def fake_run_subprocess(args, *, cwd, task_id, timeout, lease_path=None):
@@ -1098,7 +1097,8 @@ def test_is_claude_alive_returns_false_when_jsonl_stale(
     claude_worker_module, monkeypatch, tmp_path,
 ):
     """JSONL antigo (> threshold) = sessão morta, fallback retorna False."""
-    import os, time
+    import os
+    import time
     empty_proc = tmp_path / "fake_proc_empty"
     empty_proc.mkdir()
     monkeypatch.setattr(claude_worker_module, "_PROC_ROOT", str(empty_proc))
@@ -1907,7 +1907,6 @@ def test_anthropic_quota_capture_middleware_stores_latest_header(
 
 async def test_auth_start_requires_no_bearer_token(claude_worker_module, monkeypatch):
     """/v1/auth/start e /v1/auth/status são unauthenticated."""
-    import subprocess as _sp  # noqa: PLC0415
 
     def fake_popen(cmd, *args, **kwargs):
         raise FileNotFoundError("claude not found")

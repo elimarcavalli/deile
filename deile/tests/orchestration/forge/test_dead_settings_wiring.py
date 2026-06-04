@@ -11,9 +11,7 @@ Verifies that:
 from __future__ import annotations
 
 import json
-from typing import Tuple
 
-import pytest
 
 from deile.config.settings import Settings
 from deile.orchestration.forge import GitLabForge

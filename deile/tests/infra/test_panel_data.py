@@ -2555,7 +2555,6 @@ class TestClaudeWorkerInfoProvider:
 
     def test_consumes_endpoint_with_bearer(self, monkeypatch, tmp_path):
         """Provider fetches /v1/pod-status with Bearer token and maps the response."""
-        import io
         import json as _json
         import urllib.request as _urllib_req
 

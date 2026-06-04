@@ -15,13 +15,13 @@ Cobre:
 from __future__ import annotations
 
 from io import StringIO
-from typing import Any, Tuple
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.console import Console
 
-from deile.commands.base import CommandContext, CommandResult, CommandStatus
+from deile.commands.base import CommandContext, CommandStatus
 from deile.commands.builtin._backlog_collectors import (ISSUE_BUCKETS,
                                                         PR_BUCKETS, BacklogData,
                                                         _SEM_REVIEW,

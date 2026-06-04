@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from deile.config.settings import Settings
 from deile.orchestration.pipeline.monitor import (PipelineConfig,

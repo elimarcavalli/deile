@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
 
 from deile.ui.panel.observability.screens import (
     ClusterStatusData,

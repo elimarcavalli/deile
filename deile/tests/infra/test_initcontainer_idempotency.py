@@ -21,9 +21,7 @@ mesma lógica em produção (não uma cópia divergente).
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 

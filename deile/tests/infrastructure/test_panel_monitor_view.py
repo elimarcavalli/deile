@@ -122,7 +122,6 @@ def test_force_tick_calls_pkill_sleep_not_rm(pm, monkeypatch):
     monkeypatch.setattr(pm.MonitorView, "_exec", fake_exec)
     monkeypatch.setattr(pm.MonitorView, "_ns", lambda self: "deile")
 
-    import _panel
     view._apply_force_tick(object())
 
     # Garante que pkill -x sleep foi chamado.

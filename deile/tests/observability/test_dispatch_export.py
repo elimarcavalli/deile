@@ -16,13 +16,10 @@ from __future__ import annotations
 import logging
 import threading
 from typing import List
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from deile.observability.dispatch_export import (
-    _DROP_THROTTLE_S,
-    _active_spans,
     emit_dispatch_completed,
     emit_dispatch_failed,
     emit_dispatch_model_resolved,

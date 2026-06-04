@@ -14,7 +14,6 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import wrap_command_errors
 

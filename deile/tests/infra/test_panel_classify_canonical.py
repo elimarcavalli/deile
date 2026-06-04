@@ -25,10 +25,8 @@ if str(_INFRA_K8S) not in sys.path:
     sys.path.insert(0, str(_INFRA_K8S))
 
 from _panel_data import (  # noqa: E402
-    ActivityEvent,
     LogLine,
     PipelineProvider,
-    PipelineState,
     _classify_pipeline_line,
     _parse_canonical_kv,
     _redact_canonical_detail,

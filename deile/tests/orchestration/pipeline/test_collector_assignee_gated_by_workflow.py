@@ -15,7 +15,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from deile.orchestration.pipeline.github_client import IssueRef
 from deile.orchestration.pipeline.labels import MENTION_DONE

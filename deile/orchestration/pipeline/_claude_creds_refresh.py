@@ -298,7 +298,7 @@ async def try_refresh_claude_credentials(
 
         result.ok = True
         result.message = (
-            f"Secret claude-credentials atualizado a partir do token in-pod"
+            "Secret claude-credentials atualizado a partir do token in-pod"
             + (
                 f" (expira em {int(result.seconds_until_new_expiry)}s)"
                 if result.seconds_until_new_expiry is not None

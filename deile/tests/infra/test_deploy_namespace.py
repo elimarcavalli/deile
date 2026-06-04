@@ -11,10 +11,9 @@ Estratégia:
 from __future__ import annotations
 
 import inspect
-import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -45,7 +44,7 @@ def test_k8s_up_source_no_shell_pipe_list():
     pipe_shell_lines = [l for l in code_lines
                         if '"|"' in l and "shell=True" in l]
     assert not pipe_shell_lines, (
-        f"Bug original ainda presente (pipe literal + shell=True):\n"
+        "Bug original ainda presente (pipe literal + shell=True):\n"
         + "\n".join(pipe_shell_lines)
     )
 

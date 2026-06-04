@@ -281,7 +281,6 @@ def test_apply_scaling_with_data_no_kubectl(view_with_data):
 
 def test_apply_scaling_deployment_not_found(view_with_data):
     """Deployment ausente → last_ok=False com hint de instalação."""
-    import subprocess as sp
 
     def fake_run(cmd, **kw):
         m = MagicMock()

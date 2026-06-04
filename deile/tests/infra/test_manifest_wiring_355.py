@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 _MANIFESTS = Path(__file__).resolve().parents[3] / "infra" / "k8s" / "manifests"

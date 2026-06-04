@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from deile.log_mgmt.log_dispatcher import (
     _build_investigation_brief,

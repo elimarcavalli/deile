@@ -8,7 +8,6 @@ when ``aiohttp`` errors are raised by stubbed handlers.
 
 from __future__ import annotations
 
-import pytest
 
 from deile.ui.panel.observability.client import (
     ApiError,

@@ -55,7 +55,6 @@ class TestOtelImports:
 
     def test_no_direct_env_reads_in_module(self):
         """dispatch_log_export.py não lê os.environ diretamente."""
-        import importlib
         import inspect
         import deile.observability.dispatch_log_export as dle
 

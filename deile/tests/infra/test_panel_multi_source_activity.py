@@ -26,7 +26,6 @@ Coverage:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,7 +33,6 @@ from subprocess import CompletedProcess
 from typing import List
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
@@ -534,7 +532,6 @@ class TestActivityPanelActionStyle:
 
     def _render_activity_panel(self, events):
         """Return the Table's column[2] cells for the given events."""
-        from rich.text import Text as RichText
         view = panel.DashboardView.__new__(panel.DashboardView)
         view.data = self._make_data_with_events(events)
         rendered_panel = view._activity_panel()
@@ -573,7 +570,6 @@ class TestActivityPanelActionStyle:
 
     # AC3 — baseline: actor and detail cells of real actions unchanged
     def test_ac3_actor_cell_unchanged_for_real_action(self):
-        from rich.text import Text as RichText
         ev = _make_event(actor="pipeline", action="routing.mention", detail="ok")
         view = panel.DashboardView.__new__(panel.DashboardView)
         view.data = self._make_data_with_events([ev])
@@ -594,7 +590,6 @@ class TestActivityPanelActionStyle:
     # AC4 — precedência erro>atenuado: detail "bold red" coexiste com
     #       action "dim" em células distintas
     def test_ac4_error_detail_and_dim_action_coexist(self):
-        import re
         # Build a detail that triggers _ACTIVITY_ERROR_RE
         error_detail = "ERROR: something went wrong"
         assert pd._ERROR_DETAIL_RE.search(error_detail), (
