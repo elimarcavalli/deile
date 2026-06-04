@@ -29,40 +29,24 @@ from deile.orchestration.forge import (CommentRef, GhCommandError, IssueRef,
                                        find_last_pr_url)
 from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
+from deile.orchestration.pipeline.dispatch_resolver import \
+    resolve_stage_max_retries
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
-from deile.orchestration.pipeline.dispatch_resolver import resolve_stage_max_retries
 from deile.orchestration.pipeline.implementer import (_review_was_blocked,
                                                       parse_critique_verdict,
                                                       parse_decompose_result,
                                                       parse_refine_verdict)
-from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
-                                                 MENTION_DONE, PRIORITY_0,
-                                                 PRIORITY_1, PRIORITY_2,
-                                                 PRIORITY_3, REFINAR,
-                                                 REFINE_WORKFLOW_STATES,
-                                                 REVIEW_CONCLUDED,
-                                                 REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING, TYPE_INTENT,
-                                                 GATE_REDISPATCHES_COMMENT,
-                                                 WORKFLOW_ARCHITECTURE,
-                                                 WORKFLOW_BLOCKED,
-                                                 WORKFLOW_DECOMPOSED,
-                                                 WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW, WORKFLOW_PR,
-                                                 WORKFLOW_REFINING,
-                                                 WORKFLOW_REVIEWED,
-                                                 WORKFLOW_REVIEWING,
-                                                 WORKFLOW_WAITING,
-                                                 current_attempt_from_labels,
-                                                 current_refine_attempt_from_labels,
-                                                 is_attempt_label,
-                                                 is_batch_label,
-                                                 is_refine_attempt_label,
-                                                 issue_type_from_labels,
-                                                 make_attempt_label,
-                                                 make_refine_attempt_label,
-                                                 parse_priority_from_labels,
-                                                 refine_workflow_state)
+from deile.orchestration.pipeline.labels import (
+    FOLLOW_UPS_PROCESSED, GATE_REDISPATCHES_COMMENT, MENTION_DONE, PRIORITY_0,
+    PRIORITY_1, PRIORITY_2, PRIORITY_3, REFINAR, REFINE_WORKFLOW_STATES,
+    REVIEW_CONCLUDED, REVIEW_IN_PROGRESS, REVIEW_PENDING, TYPE_INTENT,
+    WORKFLOW_ARCHITECTURE, WORKFLOW_BLOCKED, WORKFLOW_DECOMPOSED,
+    WORKFLOW_IMPLEMENTING, WORKFLOW_NEW, WORKFLOW_PR, WORKFLOW_REFINING,
+    WORKFLOW_REVIEWED, WORKFLOW_REVIEWING, WORKFLOW_WAITING,
+    current_attempt_from_labels, current_refine_attempt_from_labels,
+    is_attempt_label, is_batch_label, is_refine_attempt_label,
+    issue_type_from_labels, make_attempt_label, make_refine_attempt_label,
+    parse_priority_from_labels, refine_workflow_state)
 
 # Mention triggers that describe a STICKY state (they re-appear on every poll
 # until the underlying GitHub state changes), as opposed to "comment", which is

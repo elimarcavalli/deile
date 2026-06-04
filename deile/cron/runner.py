@@ -25,9 +25,9 @@ from typing import Awaitable, Callable, Optional
 
 from deile.cron.constants import (CRON_DM_PROMPT_MAX_CHARS,
                                   CRON_DM_RESULT_MAX_CHARS,
-                                  cron_poll_interval_seconds,
                                   CRON_RESULT_MAX_CHARS,
-                                  CRON_STOP_TIMEOUT_SECONDS)
+                                  CRON_STOP_TIMEOUT_SECONDS,
+                                  cron_poll_interval_seconds)
 from deile.cron.store import CronEntry, CronStore
 from deile.security.audit_logger import get_audit_logger
 

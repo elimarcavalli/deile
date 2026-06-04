@@ -886,7 +886,8 @@ async def _run_oneshot(
 
     # AC2: populate usage metadata + write sidecar for cross-repo contract
     try:
-        from deile.core.usage_envelope import build_usage_envelope, write_usage_sidecar
+        from deile.core.usage_envelope import (build_usage_envelope,
+                                               write_usage_sidecar)
         _usage_env = build_usage_envelope(session.session_id)
         if response.metadata is None:
             response.metadata = {}
