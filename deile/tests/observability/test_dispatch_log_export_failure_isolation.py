@@ -48,8 +48,6 @@ class TestFailureIsolation:
         import deile.observability.dispatch_export as dep
 
         # Make _get_raw_tracer raise
-        original = dep._get_raw_tracer
-
         def broken_tracer():
             raise RuntimeError("tracer boom")
 

@@ -210,8 +210,6 @@ def test_k8s_create_namespace_global_namespace_propagated():
         # foi propagado para o cfg antes disso.
         captured_cfg = []
 
-        original = deploy.do_create_namespace
-
         def fake_do(cfg):
             captured_cfg.append(cfg)
             return 1

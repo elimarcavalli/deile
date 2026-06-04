@@ -131,7 +131,7 @@ class TestBuildPreferencesBlock:
             block = await _build_preferences_block(session_with_user)
 
         lines = block.split("\n")
-        key_lines = [l for l in lines if l.startswith("- `")]
+        key_lines = [line for line in lines if line.startswith("- `")]
         # sorted keys: a_key, m_key, z_key
         assert key_lines[0].startswith("- `a_key`")
         assert key_lines[1].startswith("- `m_key`")

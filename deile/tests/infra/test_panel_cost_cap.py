@@ -282,7 +282,7 @@ class TestDispatchMatrixViewCostCapCol:
 
         with patch("_panel.pd_reset_stage_cost_cap_usd",
                    return_value=(True, "ok")) as mock_reset:
-            result = view.handle_key("r", app)
+            view.handle_key("r", app)
 
         mock_reset.assert_called_once_with("implement", namespace="deile")
 

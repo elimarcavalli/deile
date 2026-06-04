@@ -33,7 +33,6 @@ def test_erase_empty_prompt_echo_writes_two_line_cleanup_when_tty() -> None:
     rule emitido por ``console.rule(style="dim")`` no scrollback.
     """
     cli = _DeileCLI.__new__(_DeileCLI)
-    buf = io.StringIO()
 
     class _TTYBuf(io.StringIO):
         def isatty(self) -> bool:  # noqa: D401

@@ -183,7 +183,7 @@ def _detect_auth_expiry(
     if auth_lines:
         # Agrupa por pattern
         for pat in AUTH_EXPIRED_PATTERNS:
-            matching = [l for l in auth_lines if pat.pattern.search(l)]
+            matching = [line for line in auth_lines if pat.pattern.search(line)]
             if matching:
                 anomalies.append(
                     Anomaly(

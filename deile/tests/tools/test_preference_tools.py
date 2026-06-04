@@ -26,7 +26,7 @@ def tmp_prefs_file(tmp_path: Path):
         "deile.preferences.store._PREFS_DIR", tmp_path
     ), patch(
         "deile.tools.preference_tools.PreferenceStore",
-    ) as mock_store_cls:
+    ):
         # We use the real store but with patched file paths.
         # So let the PreferenceStore class resolve normally.
         pass

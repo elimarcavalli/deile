@@ -96,7 +96,7 @@ def test_cluster_status_screen_adapts_width_200():
     out = render_to_string(ClusterStatusScreen(), data, width=200)
     assert "DEILE CLUSTER" in out
     # A handful of lines must use more than the 80-col baseline now.
-    long_lines = [l for l in out.splitlines() if len(l) > 100]
+    long_lines = [line for line in out.splitlines() if len(line) > 100]
     assert long_lines, "expected at least one wide line at width=200"
 
 

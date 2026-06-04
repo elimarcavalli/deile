@@ -330,7 +330,7 @@ def test_numeric_prompt_non_digit_is_ignored():
     """Non-digit keys are ignored during numeric input."""
     view = _make_view()
     view.mode = ("timeout", "implement", ["60"])
-    result = view._handle_numeric_prompt_key("a")
+    view._handle_numeric_prompt_key("a")
     assert view.mode[2] == ["60"]
 
 

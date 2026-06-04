@@ -602,7 +602,6 @@ class TestK8sUpForgeKindWarning:
         monkeypatch.delenv("DEILE_FORGE_KIND", raising=False)
 
         warnings = []
-        original_warn = deploy.ui.warn
         monkeypatch.setattr(deploy.ui, "warn", lambda msg: warnings.append(msg))
 
         deploy.k8s_up({

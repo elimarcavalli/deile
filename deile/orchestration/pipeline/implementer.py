@@ -1155,7 +1155,7 @@ class WorkerImplementer(PipelineImplementer):
         Best-effort: erros em qualquer fetch caem pro nudge mínimo (sem
         delta details). Resume continua funcional.
         """
-        prev_task_id = resume_meta["prev_task_id"]
+        _prev_task_id = resume_meta["prev_task_id"]
         session_id = resume_meta["resume_session_id"]
         # Extrai pr_number do ledger_key formato "pr:<N>".
         pr_number = None

@@ -284,7 +284,7 @@ class SubAgentOrchestrator:
         # o painel continua aparecendo no terminal mesmo enquanto ``sys.stdout``
         # está redirecionado para suprimir os ``print()`` dos sub-DEILEs.
         real_stdout: TextIO = sys.stdout
-        real_stderr: TextIO = sys.stderr
+        _real_stderr: TextIO = sys.stderr
 
         # Renderer é opcional: tests + chamadas headless passam None.
         renderer = None

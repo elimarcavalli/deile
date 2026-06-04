@@ -92,7 +92,6 @@ async def test_outcome_error_non_auth_does_not_fast_finish():
         enable_resume=False,  # garante caminho legacy
     )
     github = MagicMock()
-    own = "~by:default"
     pr = MagicMock()
     pr.number = 999
     pr.head_ref = "auto/issue-999"
@@ -122,7 +121,7 @@ async def test_outcome_error_non_auth_does_not_fast_finish():
         cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier,
     )
     # Forge expõe own_label via identity — vamos forçar batch
-    own = monitor.identity.ownership_label()
+    monitor.identity.ownership_label()
     pr.labels = ["~review:pendente"]
 
     # Implementer retorna erro NÃO-auth (não merged, não blocked).

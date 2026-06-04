@@ -352,7 +352,6 @@ class TestResourceAttributes:
                                                     SimpleLogRecordProcessor)
 
         # Substituir _build_log_provider para capturar o resource sem OTLP real
-        real_build = dle._build_log_provider
         built_providers = []
 
         def fake_build(config):

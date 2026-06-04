@@ -367,7 +367,7 @@ async def test_reaper_does_not_touch_em_arquitetura():
     from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
-    issue = _make_issue(903, labels=[WORKFLOW_ARCHITECTURE, own, "refinar"])
+    _make_issue(903, labels=[WORKFLOW_ARCHITECTURE, own, "refinar"])
     # list_issues_with_label retorna a issue para WORKFLOW_REVIEWING somente
     # se erroneamente invocado para esse estado — não deveria.
     # Para WORKFLOW_IMPLEMENTING retorna [] (nenhuma stuck implement).
@@ -388,7 +388,7 @@ async def test_reaper_does_not_touch_em_refinamento():
     from deile.orchestration.pipeline.labels import WORKFLOW_REFINING
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
-    issue = _make_issue(904, labels=[WORKFLOW_REFINING, own, "refinar"])
+    _make_issue(904, labels=[WORKFLOW_REFINING, own, "refinar"])
     github.list_issues_with_label = AsyncMock(return_value=[])
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 9999)
 

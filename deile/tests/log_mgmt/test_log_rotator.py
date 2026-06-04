@@ -88,7 +88,7 @@ class TestCappedRotatingFileHandler:
         # Clear root handlers first
         logging.root.handlers.clear()
 
-        handler = init_logging(pod_name="test-init", max_mb=1, backup_count=2)
+        init_logging(pod_name="test-init", max_mb=1, backup_count=2)
         logging.info("via init_logging")
 
         log_file = Path(tmp_log_dir) / "test-init.log"
@@ -98,7 +98,7 @@ class TestCappedRotatingFileHandler:
 
     def test_handler_creates_parent_dirs(self, tmp_log_dir):
         path = Path(tmp_log_dir) / "nested" / "deep" / "pod" / "pod.log"
-        handler = CappedRotatingFileHandler(str(path), max_mb=1, backup_count=1)
+        CappedRotatingFileHandler(str(path), max_mb=1, backup_count=1)
         assert path.parent.is_dir()
 
     def test_should_rollover_on_size(self, tmp_log_dir):

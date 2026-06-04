@@ -106,7 +106,6 @@ def test_failed_lifecycle_produces_root_span_with_error_events(in_memory_exporte
     emit_dispatch_received(tid, session_id="s1")
     emit_dispatch_failed(tid, reason="auth_expired", elapsed_s=5.0)
 
-    spans = in_memory_exporter.get_finished_spans()
     root = _root_span(in_memory_exporter)
     evts = _event_names(root)
     assert "dispatch.received" in evts
