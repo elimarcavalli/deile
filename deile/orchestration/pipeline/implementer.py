@@ -1440,6 +1440,12 @@ class WorkerImplementer(PipelineImplementer):
                 # pipeline reaproveite session se houver resume.
                 ledger_key=DispatchLedger.key_for_pr(number),
                 resume=resume,
+                # FIX #5 (issue #518): dispatch fire-and-forget — o tick NÃO
+                # pode ficar preso esperando o claude terminar a PR (até 2h).
+                # nowait=True espelha o que pr_review FRESH já faz (issue #373).
+                # O estado da PR (labels) reflete o progresso no tick seguinte.
+                # Resume usa wait=True (comportamento preservado via nowait=not resume).
+                nowait=not resume,
             )
         # Default: comment mention on an issue → do what the comment says.
         brief = _render_worker_mention_brief(
