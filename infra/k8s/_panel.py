@@ -2036,10 +2036,24 @@ def _default_export_path(kind: str, id_or_pod: str, ext: str = ".json") -> Path:
     return _deile_export_dir() / f"{kind}-{safe}-{ts}{ext}"
 
 
-def _write_atomic(content_bytes: bytes, target_path: Path) -> None:
-    """Write content_bytes to target_path atomically via tmp + os.replace."""
+def _write_atomic(content_bytes: bytes, target_path: Path, *, exclusive: bool = False) -> None:
+    """Write content_bytes to target_path atomically via tmp + os.replace.
+
+    When exclusive=True (new-file branch), a sentinel file is created with
+    O_CREAT|O_EXCL before the replace so that a concurrent creation between
+    the caller's exists()-check and this write raises FileExistsError instead
+    of silently overwriting.
+    """
     parent = target_path.parent
     parent.mkdir(parents=True, exist_ok=True)
+    if exclusive:
+        # Guard against TOCTOU: claim the target path before writing.
+        # If another process already created it between our exists() check
+        # and now, os.open with O_EXCL raises FileExistsError.
+        sentinel_fd = os.open(
+            str(target_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        )
+        os.close(sentinel_fd)
     fd, tmp_str = tempfile.mkstemp(dir=str(parent))
     tmp_path = Path(tmp_str)
     try:
@@ -2080,8 +2094,15 @@ def _build_live_session_json(
     history: List[Dict],
     *,
     redactor: Any,
+    include_history: bool = False,
 ) -> Dict:
-    """Build deile.export.v2 JSON dict for live_session."""
+    """Build JSON dict for live_session.
+
+    When include_history=False (default): schema_version="deile.export.v1",
+    no history field — snapshot export.
+    When include_history=True: schema_version="deile.export.v2", history
+    embedded.
+    """
     payload = {
         "session": _redact_for_export(data.session, redactor),
         "command": _redact_for_export(data.command, redactor),
@@ -2089,6 +2110,13 @@ def _build_live_session_json(
         "api_errors": [_redact_for_export(e, redactor) for e in (data.api_errors or [])],
         "stdout": _redact_for_export(data.stdout, redactor) if data.stdout is not None else None,
     }
+    if not include_history:
+        return {
+            "schema_version": "deile.export.v1",
+            "kind": "live_session",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "payload": payload,
+        }
     redacted_history = []
     for snap in history:
         redacted_history.append({
@@ -2111,7 +2139,7 @@ def _build_live_session_txt(data: Any, *, redactor: Any) -> str:
     now_iso = datetime.now(timezone.utc).isoformat()
     task_id = (data.session or {}).get("task_id", "?") if data.session else "?"
     parts = [
-        "# deile export: live_session",
+        "# deile export — kind=live_session",
         "# schema: deile.export.v2",
         f"# exported_at: {now_iso}",
         f"# task_id: {task_id}",
@@ -2177,7 +2205,7 @@ def _build_pod_watch_txt(
     """Build plain-text export for pod_watch (deile.export.v1)."""
     now_iso = datetime.now(timezone.utc).isoformat()
     parts = [
-        "# deile export: pod_watch",
+        "# deile export — kind=pod_watch",
         "# schema: deile.export.v1",
         f"# exported_at: {now_iso}",
         f"# pod: {pod_name}",
@@ -2895,7 +2923,7 @@ class PodWatchView(View):
                 self._export_mode = "overwrite"
             else:
                 self._export_mode = None
-                self._do_export_pod_watch(target)
+                self._do_export_pod_watch(target, exclusive=True)
             return ActionResult.refresh()
         if len(key) == 1 and key.isprintable():
             self._export_path_buf += key
@@ -2938,7 +2966,7 @@ class PodWatchView(View):
             border_style="yellow",
         )
 
-    def _do_export_pod_watch(self, target: Optional[Path]) -> None:
+    def _do_export_pod_watch(self, target: Optional[Path], *, exclusive: bool = False) -> None:
         if target is None or self.streamer is None:
             return
         try:
@@ -2959,7 +2987,7 @@ class PodWatchView(View):
                 content_bytes = json.dumps(
                     obj, indent=2, ensure_ascii=False, default=str
                 ).encode("utf-8")
-            _write_atomic(content_bytes, target)
+            _write_atomic(content_bytes, target, exclusive=exclusive)
             self._set_status(f"exportado: {target}")
         except OSError as exc:
             self._set_status(f"erro ao exportar: {exc}")
@@ -3313,7 +3341,7 @@ class LiveSessionView(View):
                 self._export_mode = "overwrite"
             else:
                 self._export_mode = None
-                self._do_export_live_session(target)
+                self._do_export_live_session(target, exclusive=True)
             return ActionResult.refresh()
         if len(key) == 1 and key.isprintable():
             self._export_path_buf += key
@@ -3356,7 +3384,7 @@ class LiveSessionView(View):
             border_style="yellow",
         )
 
-    def _do_export_live_session(self, target: Optional[Path]) -> None:
+    def _do_export_live_session(self, target: Optional[Path], *, exclusive: bool = False) -> None:
         if target is None or self._last_render is None:
             return
         try:
@@ -3376,7 +3404,7 @@ class LiveSessionView(View):
                 content_bytes = json.dumps(
                     obj, indent=2, ensure_ascii=False, default=str
                 ).encode("utf-8")
-            _write_atomic(content_bytes, target)
+            _write_atomic(content_bytes, target, exclusive=exclusive)
             self._set_status(f"exportado: {target}")
         except OSError as exc:
             self._set_status(f"erro ao exportar: {exc}")

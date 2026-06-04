@@ -18,7 +18,7 @@ class TestSchemaV2WithStdout:
         data = LiveSessionData(
             session=None, command=None, chat=None, api_errors=[], stdout="some output"
         )
-        obj = panel._build_live_session_json(data, [], redactor=None)
+        obj = panel._build_live_session_json(data, [], redactor=None, include_history=True)
         assert obj["schema_version"] == "deile.export.v2"
         assert obj["payload"]["stdout"] == "some output"
 
@@ -26,9 +26,19 @@ class TestSchemaV2WithStdout:
         data = LiveSessionData(
             session=None, command=None, chat=None, api_errors=[], stdout=None
         )
-        obj = panel._build_live_session_json(data, [], redactor=None)
+        obj = panel._build_live_session_json(data, [], redactor=None, include_history=True)
         assert obj["schema_version"] == "deile.export.v2"
         assert obj["payload"]["stdout"] is None
+
+    def test_stdout_present_default_is_v1(self):
+        """AC14: default export is v1 snapshot even when stdout is present."""
+        data = LiveSessionData(
+            session=None, command=None, chat=None, api_errors=[], stdout="some output"
+        )
+        obj = panel._build_live_session_json(data, [], redactor=None)
+        assert obj["schema_version"] == "deile.export.v1"
+        assert obj["payload"]["stdout"] == "some output"
+        assert "history" not in obj
 
     def test_stdout_redacted(self):
         from deile.security.secrets_scanner import SecretsScanner

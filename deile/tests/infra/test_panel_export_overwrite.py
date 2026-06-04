@@ -87,7 +87,7 @@ class TestWriteAtomic:
         v.handle_key("y", MagicMock())
         assert v._export_mode is None
         content = target.read_bytes()
-        assert b"deile.export.v2" in content
+        assert b"deile.export.v1" in content
 
     def test_n_cancels_overwrite(self, tmp_path):
         v = _make_live_view_with_data()
@@ -99,3 +99,30 @@ class TestWriteAtomic:
         v.handle_key("n", MagicMock())
         assert v._export_mode is None
         assert target.read_text() == "old content"
+
+    def test_exclusive_raises_file_exists_error_on_toctou(self, tmp_path):
+        """AC6: exclusive=True must raise FileExistsError if file appears between
+        exists() check and _write_atomic call (TOCTOU race guard)."""
+        target = tmp_path / "raced.json"
+        # Simulate TOCTOU: target doesn't exist yet but os.open raises FileExistsError
+        # to model a concurrent creator.
+        real_os_open = os.open
+
+        def mock_os_open(path, flags, *args, **kwargs):
+            if (flags & os.O_EXCL) and str(path) == str(target):
+                raise FileExistsError(f"File appeared concurrently: {path}")
+            return real_os_open(path, flags, *args, **kwargs)
+
+        with patch.object(os, "open", side_effect=mock_os_open):
+            try:
+                panel._write_atomic(b"content", target, exclusive=True)
+                assert False, "should have raised FileExistsError"
+            except FileExistsError:
+                pass  # expected — no silent clobber
+
+    def test_exclusive_false_does_not_raise_on_existing(self, tmp_path):
+        """Without exclusive, _write_atomic overwrites silently (normal overwrite path)."""
+        target = tmp_path / "overwrite.json"
+        target.write_bytes(b"old")
+        panel._write_atomic(b"new", target, exclusive=False)
+        assert target.read_bytes() == b"new"

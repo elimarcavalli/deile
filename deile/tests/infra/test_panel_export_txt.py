@@ -42,8 +42,15 @@ class TestBuildLiveSessionTxt:
     def test_has_schema_header(self):
         data = _make_session_data()
         txt = panel._build_live_session_txt(data, redactor=None)
-        assert "# deile export: live_session" in txt
+        assert "# deile export — kind=live_session" in txt
         assert "# schema: deile.export.v2" in txt
+
+    def test_header_em_dash_format(self):
+        """AC7: first line must match '# deile export — kind=live_session' with em-dash."""
+        data = _make_session_data()
+        txt = panel._build_live_session_txt(data, redactor=None)
+        first_line = txt.splitlines()[0]
+        assert first_line == "# deile export — kind=live_session"
 
     def test_has_session_section(self):
         data = _make_session_data()
@@ -83,11 +90,17 @@ class TestBuildPodWatchTxt:
 
     def test_has_header(self):
         txt = panel._build_pod_watch_txt("my-pod", "worker", ["line1", "line2"], redactor=None)
-        assert "# deile export: pod_watch" in txt
+        assert "# deile export — kind=pod_watch" in txt
         assert "# pod: my-pod" in txt
         assert "# role: worker" in txt
         assert "line1" in txt
         assert "line2" in txt
+
+    def test_pod_watch_header_em_dash_format(self):
+        """AC7: first line of pod_watch txt must use em-dash format."""
+        txt = panel._build_pod_watch_txt("my-pod", "worker", [], redactor=None)
+        first_line = txt.splitlines()[0]
+        assert first_line == "# deile export — kind=pod_watch"
 
 
 class TestTxtExtensionDetection:
