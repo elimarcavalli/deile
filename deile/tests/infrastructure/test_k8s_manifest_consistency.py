@@ -39,6 +39,20 @@ MANIFEST_DIR = Path(__file__).resolve().parents[3] / "infra" / "k8s" / "manifest
 # o ClusterIP — por isso aceitamos qualquer ipBlock RFC1918 nessas portas.
 APISERVER_PORTS = frozenset({443, 6443})
 
+# Prefixos da família crítica DEILE_PIPELINE_* que o guarda de paridade cobre
+# (issue #534 — "Definição operacional de 'família crítica'"). Prefixos terminam
+# em "_" para casar com o stage suffix; MAX_PARALLEL é chave exata (sem wildcard).
+_CRITICAL_PIPELINE_ENV_PREFIXES = frozenset({
+    "DEILE_PIPELINE_DISPATCH_",
+    "DEILE_PIPELINE_MODEL_",
+    "DEILE_PIPELINE_REASONING_",
+    "DEILE_PIPELINE_TIMEOUT_S_",
+    "DEILE_PIPELINE_RETRIES_",
+})
+_CRITICAL_PIPELINE_ENV_EXACT = frozenset({
+    "DEILE_PIPELINE_MAX_PARALLEL",
+})
+
 # Nome da egress policy do apiserver (fallback estático no manifest 40 +
 # override de runtime no `deploy.py`/`_netpol.py`, mesmo nome de propósito).
 _APISERVER_POLICY_NAME = "creds-renewer-egress-to-kube-api"
@@ -296,4 +310,95 @@ def test_apiserver_egress_fallback_is_private() -> None:
         f"ipBlock(s) não-privado(s) no fallback do apiserver: {offenders}. "
         "O fallback deve liberar apenas ranges RFC1918 (10/8, 172.16/12, "
         "192.168/16) — nunca 0.0.0.0/0 nem espaço público."
+    )
+
+
+def _pipeline_container_env(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retorna a lista env: do container 'pipeline' no Deployment 'deile-pipeline'."""
+    for d in docs:
+        if (
+            d.get("kind") == "Deployment"
+            and (d.get("metadata", {}) or {}).get("name") == "deile-pipeline"
+        ):
+            containers = (
+                (d.get("spec", {}) or {})
+                .get("template", {})
+                .get("spec", {})
+                .get("containers", [])
+            ) or []
+            for c in containers:
+                if c.get("name") == "pipeline":
+                    return list(c.get("env") or [])
+    return []
+
+
+def _matches_critical_family(name: str) -> bool:
+    return name in _CRITICAL_PIPELINE_ENV_EXACT or any(
+        name.startswith(p) for p in _CRITICAL_PIPELINE_ENV_PREFIXES
+    )
+
+
+def test_pipeline_critical_env_no_duplicates_and_non_empty(
+    docs: list[dict[str, Any]],
+) -> None:
+    """Regra 6 — família DEILE_PIPELINE_* no manifest 46: integridade de paridade.
+
+    Dois invariantes (issue #534):
+
+    (a) Nenhum ``name`` duplicado em todo o ``env:`` do container ``pipeline`` —
+        duplicata silencia o valor canônico (kubectl aplica LIFO para conflitos
+        de env) e é bug silencioso. Este invariante cobre TODOS os nomes,
+        independentemente de prefixo.
+
+    (b) Toda env var da família crítica que já esteja presente no ``env:`` **e**
+        que use o campo ``value`` direto (não ``valueFrom``) possui valor não-vazio
+        — string vazia reverte silenciosamente para a cadeia de fallback
+        (settings.json → built-in) sem qualquer log.
+
+    A asserção NÃO exige que qualquer chave da família esteja presente no
+    manifest (cenário A / cenário C de #530/#534 — sem drift material, nenhuma
+    chave precisa estar lá). O guarda só impede que chaves já presentes sejam
+    inválidas ou duplicadas.
+
+    Quando este teste falhar, NÃO mude o teste para passar. Mude o manifest.
+    """
+    env = _pipeline_container_env(docs)
+    assert env, (
+        "Container 'pipeline' do Deployment 'deile-pipeline' não encontrado ou "
+        "sem entradas em env: — verifique o manifest 46."
+    )
+
+    # (a) Sem duplicatas em todo o env: (independe de prefixo).
+    names = [e.get("name", "") for e in env]
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for name in names:
+        if name in seen:
+            duplicates.append(name)
+        seen.add(name)
+    assert not duplicates, (
+        f"Nomes duplicados em env: do container 'pipeline' (manifest 46): "
+        f"{sorted(set(duplicates))}.\n"
+        "Duplicata silencia silenciosamente o valor canônico (kubectl usa LIFO "
+        "para conflitos de env) — remova a entrada redundante."
+    )
+
+    # (b) Família crítica: value não-vazio quando presente com campo value direto.
+    offenders: list[str] = []
+    for entry in env:
+        name = entry.get("name", "")
+        if not _matches_critical_family(name):
+            continue
+        if "valueFrom" in entry:
+            continue  # valor vem de ConfigMap/Secret/Downward API — aceitável
+        value = entry.get("value")
+        if value is None or str(value).strip() == "":
+            offenders.append(name)
+
+    assert not offenders, (
+        f"Env vars da família crítica DEILE_PIPELINE_* com value vazio ou ausente "
+        f"em manifest 46: {sorted(offenders)}.\n"
+        "String vazia reverte silenciosamente para a cadeia de fallback "
+        "(settings.json → built-in) sem log — declare o valor explicitamente "
+        "ou remova a entrada do manifest."
     )
