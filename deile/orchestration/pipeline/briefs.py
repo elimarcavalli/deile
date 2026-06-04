@@ -708,16 +708,20 @@ def _render_worker_refine_brief(
     template: str,
     forge: Optional[ForgeConfig] = None,
 ) -> str:
-    cfg = forge or _default_forge_config(repo)
+    # _build_brief_params already resolves the default; we only need the
+    # concrete ForgeConfig for the per-forge author-lookup snippet below.
+    cfg_for_author = forge or _default_forge_config(repo)
     params = _build_brief_params(
         repo=repo, main="main", branch=f"refine-{number}", number=number,
-        forge=cfg, issue_template=template,
+        forge=forge, issue_template=template,
         extras={
             "title": title,
             "body": _refine_body(body),
             "type": issue_type,
             "title_prefix": title_prefix_for_type(issue_type) or "[FEATURE]",
-            "view_pr_author_cmd_for_issue": _view_issue_author_cmd(cfg, repo, number),
+            "view_pr_author_cmd_for_issue": _view_issue_author_cmd(
+                cfg_for_author, repo, number,
+            ),
         },
     )
     return _render_brief(_WORKER_REFINE_BRIEF, params=params)
