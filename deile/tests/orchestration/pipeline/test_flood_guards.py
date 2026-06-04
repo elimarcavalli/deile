@@ -16,10 +16,9 @@ que explicam o comportamento pré-fix).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.implementer import WorkerImplementer
@@ -28,8 +27,6 @@ from deile.orchestration.pipeline.labels import (
     REVIEW_IN_PROGRESS,
     WORKFLOW_ARCHITECTURE,
     WORKFLOW_BLOCKED,
-    WORKFLOW_NEW,
-    WORKFLOW_REFINING,
     WORKFLOW_REVIEWED,
 )
 from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
@@ -715,7 +712,6 @@ class TestRefineDivergenceEarlyStop:
         transition_targets = [
             call.kwargs.get("to_label") for call in github.transition_issue.await_args_list
         ]
-        from deile.orchestration.pipeline.labels import WORKFLOW_REVIEWED
         assert WORKFLOW_REVIEWED in transition_targets
 
     async def test_corpo_sem_prev_len_nao_bloqueia(self):

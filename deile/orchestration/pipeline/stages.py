@@ -2577,13 +2577,13 @@ async def _handle_review_concluded_invalidation(
 
     if classification == CLASS_DOCS_ONLY:
         action = (
-            f"📝 apenas arquivos de documentação (`docs/` ou `.md`) "
-            f"foram alterados — revisar apenas fidelidade docs↔código"
+            "📝 apenas arquivos de documentação (`docs/` ou `.md`) "
+            "foram alterados — revisar apenas fidelidade docs↔código"
         )
     else:
         action = (
-            f"💻 pelo menos um arquivo de código foi alterado "
-            f"— revisão completa necessária"
+            "💻 pelo menos um arquivo de código foi alterado "
+            "— revisão completa necessária"
         )
 
     comment = (
