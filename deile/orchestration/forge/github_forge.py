@@ -52,7 +52,7 @@ _GH_LOGIN_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 # misses a field when one list helper diverges from another (the shape feeds
 # ``IssueRef.from_gh_json`` / ``PrRef.from_gh_json``).
 _ISSUE_JSON_FIELDS = "number,title,url,labels,body,state,author"
-_PR_JSON_FIELDS = "number,title,url,labels,headRefName,baseRefName,state,isDraft"
+_PR_JSON_FIELDS = "number,title,url,labels,headRefName,baseRefName,state,isDraft,headRefOid"
 
 
 # Flags passed to ``gh api`` that consume the *next* argument as their value.
@@ -540,7 +540,7 @@ class GitHubForge(ForgeClient):
                     f'.[] | select(.requested_reviewers != null) | '
                     f'select(any(.requested_reviewers[]; .login == "{login}")) | '
                     f'{{number, title, url, labels, headRefName: .head.ref, '
-                    f'baseRefName: .base.ref, state, isDraft: .draft}}'
+                    f'baseRefName: .base.ref, state, isDraft: .draft, headRefOid: .head.sha}}'
                 ),
             )
         except ForgeCommandError as exc:

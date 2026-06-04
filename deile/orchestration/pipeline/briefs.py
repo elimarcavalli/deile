@@ -254,6 +254,31 @@ RETOMADA da issue #{number} de {repo}. Há trabalho parcial em ./repo — NÃO r
 {body}
 """
 
+# --- Address-review-feedback brief (Fix #8 — issue #521) ----------------------
+# Despachado quando a review da NOSSA PRÓPRIA PR concluiu REQUEST_CHANGES e o
+# HEAD não mudou desde a última review (nenhum fix aplicado). Em vez de bloquear
+# direto, o pipeline manda UMA task de IMPLEMENT na branch da PR que APLICA o que
+# o reviewer pediu e dá PUSH — explicitamente NÃO revisa, NÃO comenta veredito,
+# NÃO mergeia. Quando o push muda o HEAD, a próxima review valida o novo HEAD e
+# segue pro merge. Lean de propósito: o worker LÊ a última review via gh (o
+# feedback exato vive lá), evitando que o pipeline tenha de capturar e reembalar
+# o corpo do REQUEST_CHANGES.
+_WORKER_PR_ADDRESS_BRIEF = """\
+APLIQUE as mudanças que o reviewer pediu na {pr_noun} #{number} de {repo} e dê PUSH. NÃO revise, NÃO comente veredito, NÃO mergeie — só CORRIJA o código.
+
+A review anterior concluiu REQUEST_CHANGES e o HEAD não mudou — nenhum fix foi aplicado ainda. Sua única tarefa é IMPLEMENTAR o pedido do reviewer.
+
+1. Clone se preciso ({clone_cmd}); `{checkout_pr_cmd}` (trabalhe na branch da própria {pr_noun}, NÃO crie branch nova).
+2. Leia a ÚLTIMA review REQUEST_CHANGES e os comentários: `{list_pr_comments_cmd}` e `gh api repos/{repo}/pulls/{number}/reviews --jq '[.[] | select(.state=="CHANGES_REQUESTED")] | last | .body'`. Esse é o escopo exato do que corrigir.
+3. Leia `.deile-progress.md` no diretório de trabalho (um nível acima de ./repo) — TODO da tentativa anterior, se houver.
+4. APLIQUE a correção no código + testes. Se um achado for genuinamente fora-de-escopo/inválido, registre o porquê no `.deile-progress.md` (não re-comente na PR).
+5. {impact_test_strategy}
+6. Commit atômico + `git push -u origin {branch}` (PUSH é OBRIGATÓRIO — sem push o HEAD não muda e a {pr_noun} fica bloqueada). NÃO force-push. NÃO altere nada fora de ./repo.
+7. Impedimento real (não consegue aplicar o fix) → linha `{blocked_contract}`.
+
+ÚLTIMA LINHA = SHA do novo HEAD após o push (`git rev-parse HEAD`) OU `{blocked_contract}`.
+"""
+
 _WORKER_MENTION_BRIEF = """\
 Acionado por {trigger_summary} em {repo}.
 
@@ -501,6 +526,27 @@ def _render_worker_pr_unified_brief(
         extras={"gh_login": gh_login},
     )
     return _render_brief(_WORKER_PR_BRIEF, params=params)
+
+
+def _render_worker_pr_address_brief(
+    repo: str,
+    main: str,
+    branch: str,
+    number: int,
+    *,
+    forge: Optional[ForgeConfig] = None,
+) -> str:
+    """Renderiza o brief de address-review-feedback (Fix #8 — issue #521).
+
+    Lean de propósito: o worker lê a última review REQUEST_CHANGES via ``gh`` (o
+    feedback exato vive lá) e APLICA o fix + push na branch da própria PR. NÃO
+    revisa, NÃO comenta veredito, NÃO mergeia — o ciclo "pediu-mudança → próximo
+    tick IMPLEMENTA" da Decisão #46 materializado num dispatch dedicado.
+    """
+    params = _build_brief_params(
+        repo=repo, main=main, branch=branch, number=number, forge=forge,
+    )
+    return _render_brief(_WORKER_PR_ADDRESS_BRIEF, params=params)
 
 
 # The journal lives in the worker's per-channel PVC workspace (one level above

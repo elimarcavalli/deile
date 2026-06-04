@@ -39,7 +39,8 @@ from deile.orchestration.pipeline.briefs import (
     _render_claude_mention_prompt, _render_worker_critique_brief,
     _render_worker_decompose_brief, _render_worker_implement_brief,
     _render_worker_implement_resume_brief, _render_worker_mention_brief,
-    _render_worker_pr_unified_brief, _render_worker_refine_brief)
+    _render_worker_pr_address_brief, _render_worker_pr_unified_brief,
+    _render_worker_refine_brief)
 from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
 from deile.orchestration.pipeline.dispatch_resolver import (
@@ -229,6 +230,17 @@ class PipelineImplementer(ABC):
         self, monitor: "PipelineMonitor", issue: "IssueRef"
     ) -> WorkOutcome:
         return WorkOutcome(ok=False, text="", error="decompose não suportado nesta estratégia")
+
+    async def address_review(
+        self, monitor: "PipelineMonitor", pr: "PrRef"
+    ) -> WorkOutcome:
+        """Apply the reviewer's REQUEST_CHANGES feedback on our OWN PR (Fix #8).
+
+        Default falls back to a fresh ``review`` dispatch so the legacy Claude
+        path stays functional; the worker overrides this with a dedicated
+        implement-style dispatch that writes code + pushes (never reviews).
+        """
+        return await self.review(monitor, pr, resume=False)
 
     @abstractmethod
     async def implement(
@@ -1382,6 +1394,39 @@ class WorkerImplementer(PipelineImplementer):
             nowait=not resume,
         )
 
+    async def address_review(
+        self, monitor: "PipelineMonitor", pr: "PrRef"
+    ) -> WorkOutcome:
+        """Despacha um IMPLEMENT que aplica o feedback do reviewer + push (Fix #8).
+
+        Diferente de :meth:`review`, este dispatch NÃO revisa nem mergeia — manda
+        o worker LER a última review REQUEST_CHANGES, escrever o código que
+        atende e dar push na branch da própria PR. Quando o push muda o HEAD, a
+        próxima review (caminho normal) valida o novo HEAD e segue pro merge.
+
+        Roteado como ``stage="implement"`` (escreve código, não revisa) e
+        fire-and-forget (``nowait=True``, como o implement fresh): o tick não
+        bloqueia esperando o worker terminar — o resultado é observado no tick
+        seguinte pela mudança do HEAD SHA. Compartilha o ``channel_id`` do
+        pr_review para reaproveitar o workspace já com a PR clonada.
+        """
+        forge_cfg = monitor.forge.config
+        branch = pr.head_ref or f"pr/{pr.number}"
+        brief = _render_worker_pr_address_brief(
+            monitor.config.repo, monitor.config.main_branch, branch, pr.number,
+            forge=forge_cfg,
+        )
+        resume_block = _build_resume_block(
+            monitor.config.repo, monitor.config.main_branch, branch,
+            resume=False, expect_merge=False, pr_url_hint=pr.url,
+        )
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        return await self._dispatch(
+            brief, channel_id=f"pipeline-pr-{pr.number}", persona="developer",
+            resume_block=resume_block, stage="implement", branch=branch,
+            ledger_key=DispatchLedger.key_for_pr(pr.number), nowait=True,
+        )
+
     async def mention(
         self,
         monitor: "PipelineMonitor",
@@ -1440,6 +1485,12 @@ class WorkerImplementer(PipelineImplementer):
                 # pipeline reaproveite session se houver resume.
                 ledger_key=DispatchLedger.key_for_pr(number),
                 resume=resume,
+                # FIX #5 (issue #518): dispatch fire-and-forget — o tick NÃO
+                # pode ficar preso esperando o claude terminar a PR (até 2h).
+                # nowait=True espelha o que pr_review FRESH já faz (issue #373).
+                # O estado da PR (labels) reflete o progresso no tick seguinte.
+                # Resume usa wait=True (comportamento preservado via nowait=not resume).
+                nowait=not resume,
             )
         # Default: comment mention on an issue → do what the comment says.
         brief = _render_worker_mention_brief(

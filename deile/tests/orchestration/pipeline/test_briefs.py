@@ -263,6 +263,11 @@ class TestBriefInvariants:
         "DECISÃO É DECISÃO",
         "execute o pedido SEMPRE",
         "REGRA ANTI-FLOOD",
+        # FIX #7 (commit 9355289 regressão): regra anti-loop de PR própria e
+        # checkout obrigatório no PASSO 0 foram removidos silenciosamente,
+        # causando flood de re-review. Estas substrings travam ambas as regras.
+        "RESOLVER AGORA, nunca re-revisar",  # anti-loop: PR própria com REQUEST_CHANGES
+        "PASSO 0 — Checkout",               # checkout obrigatório antes de qualquer ação
     ]
 
     def _load_briefs_source(self) -> str:

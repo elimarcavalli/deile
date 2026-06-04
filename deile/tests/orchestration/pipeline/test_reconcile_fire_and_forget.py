@@ -422,6 +422,31 @@ class TestConcurrency:
         # available = 3 - 1 (em voo) = 2.
         assert len(claims) == 2
 
+    async def test_aguardando_stakeholder_does_not_count_as_in_flight(self):
+        """Regressão: issue parada em ``em_arquitetura`` + ``aguardando_stakeholder``
+        espera o humano por tempo indefinido e NÃO consome slot de worker. Antes
+        do fix, ``_count_total_in_flight`` só excluía bloqueada/em_pr, então um
+        backlog de parked stakeholders fixava ``in_flight`` em ``max_parallel`` e
+        esfomeava toda crítica nova (#515 ficou em nova por horas com in_flight=3
+        = 1 órfã em_arquitetura + 2 aguardando_stakeholder)."""
+        from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
+                                                         WORKFLOW_WAITING)
+        client = _Client(verdict="VEREDITO: CLARO")
+        news = [_issue(n, "feature", title=f"t{n}") for n in (1, 2, 3)]
+        own = "~by:default"
+        # 3 issues paradas aguardando stakeholder (em_arquitetura) — NÃO contam.
+        parked = [
+            _issue(80 + k, "feature", WORKFLOW_ARCHITECTURE, WORKFLOW_WAITING, own)
+            for k in range(3)
+        ]
+        lm = {WORKFLOW_NEW: news, WORKFLOW_ARCHITECTURE: parked}
+        monitor, github, _ = _make(client, label_map=lm, max_parallel=3)
+        await monitor._review_one_new_issue()
+        claims = [t for t in _transitions(github)
+                  if t[1] == WORKFLOW_NEW and t[2] == WORKFLOW_REVIEWING]
+        # available = 3 - 0 (parados não contam) = 3 ⇒ todas as 3 novas claimadas.
+        assert len(claims) == 3
+
 
 # ===========================================================================
 # Reaper estendido — refino claimed-por-dispatch (só com ledger entry)

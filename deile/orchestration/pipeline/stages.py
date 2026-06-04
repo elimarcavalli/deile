@@ -32,7 +32,8 @@ from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
 from deile.orchestration.pipeline.dispatch_resolver import resolve_stage_max_retries
-from deile.orchestration.pipeline.implementer import (parse_critique_verdict,
+from deile.orchestration.pipeline.implementer import (_review_was_blocked,
+                                                      parse_critique_verdict,
                                                       parse_decompose_result,
                                                       parse_refine_verdict)
 from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
@@ -80,6 +81,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _ENDED_CONCLUIDO = "concluido"
 _ENDED_INCOMPLETO = "incompleto"
 _ENDED_BLOQUEADO = "bloqueado"
+
+#: Fix #8 (issue #521) — teto de dispatches de auto-correção da PRÓPRIA PR.
+#: Quando a review da nossa PR conclui REQUEST_CHANGES e o HEAD não muda, em
+#: vez de bloquear direto (Fix A), o pipeline despacha UMA task de address
+#: (implement + push) para o worker aplicar o fix. O HEAD muda → próxima review
+#: valida e segue pro merge. Se após N tentativas o HEAD AINDA não mudou, o
+#: worker não conseguiu → bloqueia para o humano. Começa em 1: uma chance de
+#: auto-fix é o equilíbrio entre autonomia e queima de tokens — o worker recebe
+#: o feedback exato do reviewer no brief, então uma passada deveria bastar; se
+#: falhar, escalar para o humano é mais barato que rodar address↔review em loop.
+MAX_ADDRESS_ATTEMPTS = 1
 
 logger = logging.getLogger(__name__)
 
@@ -1415,6 +1427,38 @@ async def _apply_refine_verdict(
                 monitor, f"could not promote converged #{number} to revisada", exc
             )
         return
+    # Fix B — divergence early-stop: se o body CONTINUA CRESCENDO no 3º+
+    # passe, o escopo está divergindo (cada passe só acumula gaps). Bloqueamos
+    # 2 passes antes do teto de 5 para economizar tokens caros. Damos
+    # benefício da dúvida nos 2 primeiros passes (LLM pode ainda estar
+    # convergindo); se no 3º ainda cresce, é loop de divergência.
+    current_refine_attempt = monitor._resume_tracker.refine_attempt(number)
+    if (
+        after_body is not None
+        and before_body is not None
+        and current_refine_attempt >= 3
+    ):
+        after_len = len(after_body)
+        prev_len = monitor._resume_tracker.get_prev_refine_body_len(number)
+        if prev_len >= 0 and after_len > prev_len:
+            logger.warning(
+                "refine #%d: corpo ainda CRESCENDO no passe %d "
+                "(%d → %d chars) — escopo divergindo; bloqueando early",
+                number, current_refine_attempt, prev_len, after_len,
+            )
+            await _block_refinement(
+                monitor, target,
+                "refino divergindo: o escopo só cresce a cada passe "
+                "(intent amplo demais) — divida em sub-issues menores ou "
+                "escope manualmente, e remova ~workflow:bloqueada",
+            )
+            # _block_refinement → _block já chama monitor._resume_tracker.clear(number).
+            return
+
+    # Grava o comprimento do after_body para o próximo passe comparar.
+    if after_body is not None:
+        monitor._resume_tracker.record_refine_body_len(number, len(after_body))
+
     # Body mudou → conta o passe, persiste e devolve pra re-crítica.
     monitor._resume_tracker.bump_refine(number)
     await _persist_refine_attempt(monitor, number)
@@ -1716,8 +1760,8 @@ async def _count_total_in_flight(monitor: "PipelineMonitor") -> int:
 
     Cada despachador (crítica / refino) subtrai esse total de ``max_parallel``
     pra decidir quantos candidatos novos pode claimar no tick, distribuindo o
-    paralelismo pelos três workers (issue #373). Estados bloqueada/em_pr não
-    contam (não consomem slot de worker).
+    paralelismo pelos três workers (issue #373). Estados bloqueada/em_pr/
+    aguardando_stakeholder não contam (não consomem slot de worker).
     """
     own = monitor.identity.ownership_label()
 
@@ -1740,7 +1784,17 @@ async def _count_total_in_flight(monitor: "PipelineMonitor") -> int:
         for i in issues:
             if i.number in seen_issue:
                 continue
-            if WORKFLOW_BLOCKED in i.labels or WORKFLOW_PR in i.labels:
+            # Parked states NÃO consomem slot de worker. ``bloqueada`` (block
+            # duro) e ``aguardando_stakeholder`` (esperando humano por tempo
+            # indefinido) ambos ficam num lock state (ex.: em_arquitetura) mas
+            # SEM worker rodando. Contá-los esfomeia trabalho genuinamente novo:
+            # um backlog de issues em aguardando_stakeholder fixa ``in_flight``
+            # em ``max_parallel`` e bloqueia toda crítica/refino nova (observado:
+            # #515 esfomeada com in_flight=3 = #508 órfã + #418/#416
+            # aguardando_stakeholder). Espelha a exclusão já feita no candidate
+            # filter do refino (``_excluded``).
+            if (WORKFLOW_BLOCKED in i.labels or WORKFLOW_PR in i.labels
+                    or WORKFLOW_WAITING in i.labels):
                 continue
             if _mine(i):
                 seen_issue.add(i.number)
@@ -2111,6 +2165,21 @@ async def _finalize_implement_outcome(
     """
     pr_url = outcome.pr_url or _extract_pr_url(outcome.text)
     ended = outcome.ended  # "" on the Claude path; ground-truth on the worker path
+
+    # Skip-because-still-running is NOT a real attempt — the previous dispatch
+    # is still alive in the worker, so no new work happened this tick. Return
+    # BEFORE ``_absorb_progress`` (which bumps the attempt counter +1 per call
+    # AND would record a failure streak below): a long resume spanning more
+    # ticks than max_retries would otherwise burn its whole budget on no-op
+    # skips and block while healthy (same root cause as the pr_review #509
+    # regression). The durable ``em_implementacao`` label keeps the lock; the
+    # reaper retoma no próximo tick.
+    if not outcome.ok and "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
+        logger.info(
+            "implement #%d: dispatch skipped (claude ainda alive) — manter %s "
+            "(sem consumir tentativa)", number, WORKFLOW_IMPLEMENTING,
+        )
+        return
 
     zero_progress = _absorb_progress(monitor, number, outcome)
 
@@ -2759,9 +2828,15 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             monitor._stats.errors += 1
             return
     is_resume = REVIEW_IN_PROGRESS in target.labels
-    batch = await monitor.forge.claim_with_batch("pr", target.number)
-    if batch is None:
-        return
+    # FIX #6 (Decisão #33): monitor único (shard_count==1) NÃO deve claimar
+    # ~batch: — gera add/remove do label a cada tick sem necessidade, pois
+    # ~review:em_andamento já é o lock durável. Espelha _critique_one_issue
+    # (stages.py ~linha 977) que já aplicava este guard.
+    multi = monitor.identity.shard_count > 1
+    if multi:
+        batch = await monitor.forge.claim_with_batch("pr", target.number)
+        if batch is None:
+            return
     # Tag ownership so other monitors can identify who claimed this PR —
     # mirrors the identical pattern in stage 1 for issues.
     await monitor.forge.add_labels("pr", target.number, [monitor.identity.ownership_label()])
@@ -2817,7 +2892,39 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     # strategy checks out the branch in a worktree; the worker strategy clones
     # and runs ``gh pr checkout`` inside its own sandbox.
     outcome = await monitor.implementer.review(monitor, target, resume=is_resume)
+    # Skip-because-still-running is NOT a real attempt: the previous review is
+    # still alive in the worker, so no new review/merge work happened this tick.
+    # Returning BEFORE ``_absorb_progress`` is load-bearing — that helper calls
+    # ``update_from_worker`` which unconditionally bumps the attempt counter
+    # (+1 per call). A review that legitimately spans more ticks than the
+    # ``pr_review`` max_retries would otherwise burn its whole budget on these
+    # no-op skips and get blocked while perfectly healthy (#509: 4 skips →
+    # "teto 4/4 sem mergear" on a CLEAN+MERGEABLE PR).
+    if not outcome.ok and "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
+        logger.info(
+            "pr_review #%d: dispatch skipped (claude ainda alive) — manter "
+            "em_andamento (sem consumir tentativa)", target.number,
+        )
+        await monitor.forge.clear_batch_label("pr", target.number)
+        return
     zero_progress = _absorb_progress(monitor, target.number, outcome)
+
+    # Fix A — deterministic re-review flood guard: se o HEAD SHA da PR não
+    # mudou desde a última review incompleta, nenhum fix foi aplicado e
+    # re-revisar o mesmo HEAD é um flood. Forçamos zero_progress = True para
+    # que o block existente em ~linha 2936 dispare deterministicamente.
+    # Só ativo quando head_sha é não-vazio (GitLab sem SHA → comportamento legacy).
+    current_sha = getattr(target, "head_sha", "") or ""
+    last_sha = monitor._resume_tracker.reviewed_sha(target.number)
+    if current_sha and last_sha and current_sha == last_sha:
+        logger.warning(
+            "pr_review #%d: HEAD SHA %s não mudou desde a última review "
+            "incompleta — nenhum fix foi aplicado; forçando zero_progress "
+            "(re-review do mesmo HEAD é loop)",
+            target.number, current_sha[:8],
+        )
+        zero_progress = True
+
     # Ground-truth merge detection: the worker's structured ``ended`` is
     # authoritative; fall back to scanning the text for the MERGED marker.
     merged = outcome.ended == _ENDED_CONCLUIDO or (
@@ -2854,14 +2961,8 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         # ~review:concluida sem proof-of-work — vide R2/PR #344, 5s).
         # Libera o batch; reaper retoma no próximo tick (resume real
         # se sessão claude sobreviveu, fresh dispatch caso contrário).
-        # Skip dispatch-skipped-still-running (já intencional do resumer).
-        if "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
-            logger.info(
-                "pr_review #%d: dispatch skipped (claude ainda alive) — "
-                "manter em_andamento", target.number,
-            )
-            await monitor.forge.clear_batch_label("pr", target.number)
-            return
+        # (DISPATCH_SKIPPED_STILL_RUNNING já tratado antes do _absorb_progress
+        # acima — não consome tentativa e não chega aqui.)
         logger.warning(
             "pr_review #%d: worker error não-auth (%s); liberando batch pra reaper "
             "retomar (não marca concluida sem proof-of-work — Bug A fix)",
@@ -2901,12 +3002,72 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     # resume, preserve the legacy behaviour: mark concluded so the PR drops out.
     if resume_enabled:
         if zero_progress:
+            # Mensagem contextual: indica se o block veio do SHA-guard (Fix A)
+            # ou do fingerprint-guard clássico.
+            _current_sha_now = getattr(target, "head_sha", "") or ""
+            _last_sha_now = monitor._resume_tracker.reviewed_sha(target.number)
+            _sha_guard_fired = bool(
+                _current_sha_now and _last_sha_now and _current_sha_now == _last_sha_now
+            )
+            # Fix #8 (issue #521) — auto-correção da PRÓPRIA PR. Quando o
+            # SHA-guard disparou (HEAD inalterado) E a review pediu mudança
+            # (REQUEST_CHANGES) numa PR nossa, NÃO bloqueia direto: despacha um
+            # ADDRESS (implement + push) para o worker aplicar o fix. Só depois
+            # de esgotar o teto de tentativas (HEAD ainda não mudou → worker não
+            # conseguiu) é que cai no block do Fix A. O cap é o que impede o loop
+            # infinito address↔review.
+            if (
+                _sha_guard_fired
+                and _review_was_blocked(outcome.text)
+                and monitor._owns_pr_branch(target.head_ref, pr_number=target.number)
+                and monitor._resume_tracker.address_attempt(target.number)
+                < MAX_ADDRESS_ATTEMPTS
+            ):
+                _k = monitor._resume_tracker.bump_address_attempt(target.number)
+                logger.info(
+                    "pr_review #%d: review pediu mudança + HEAD %s inalterado — "
+                    "despachando address (implement + push) tentativa %d/%d em "
+                    "vez de bloquear (Fix #8)",
+                    target.number, _current_sha_now[:8], _k, MAX_ADDRESS_ATTEMPTS,
+                )
+                # NÃO regrava reviewed_sha: queremos detectar no próximo tick se
+                # o address mudou o HEAD. Mantém ~review:em_andamento; libera o
+                # batch para o próximo tick re-claimar.
+                _addr_outcome = await monitor.implementer.address_review(
+                    monitor, target,
+                )
+                if not _addr_outcome.ok:
+                    logger.warning(
+                        "pr_review #%d: address dispatch falhou (%s) — "
+                        "em_andamento; reaper/reconcile retomam", target.number,
+                        (_addr_outcome.error or "")[:160],
+                    )
+                await monitor.forge.clear_batch_label("pr", target.number)
+                return
+            if _sha_guard_fired:
+                _block_reason = (
+                    f"review pediu mudança mas o HEAD (`{_current_sha_now[:8]}`) "
+                    f"não mudou após {MAX_ADDRESS_ATTEMPTS} tentativa(s) de "
+                    "auto-correção — o worker não conseguiu aplicar o fix; "
+                    "humano: corrija manualmente ou faça checkout da PR (#520), "
+                    "depois remova ~workflow:bloqueada"
+                )
+            else:
+                _block_reason = "duas tentativas de review/merge sem progresso (diff idêntico)"
             await monitor.forge.clear_batch_label("pr", target.number)
             await _block_pr(
                 monitor, target.number, target.title, target.url,
-                "duas tentativas de review/merge sem progresso (diff idêntico)",
+                _block_reason,
             )
             return
+        # HEAD mudou (ou primeira review): o worker pushou um fix com sucesso —
+        # reseta a janela de auto-correção (Fix #8) e grava o SHA atual para o
+        # próximo tick comparar (Fix A). Se o worker fizer push de um fix, o
+        # HEAD muda e o SHA-guard não dispara.
+        monitor._resume_tracker.reset_address_attempt(target.number)
+        _sha_to_record = getattr(target, "head_sha", "") or ""
+        if _sha_to_record:
+            monitor._resume_tracker.set_reviewed_sha(target.number, _sha_to_record)
         # Release the batch lock so the next tick can re-claim; keep em_andamento.
         await monitor.forge.clear_batch_label("pr", target.number)
         logger.info("pr_review #%d incompleto — em_andamento (será retomada)", target.number)
