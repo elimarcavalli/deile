@@ -215,42 +215,32 @@ def _load_monitor_deployment():
     return [d for d in docs if d]
 
 
-def test_monitor_deployment_uses_shell_loop_tick_driver():
-    """The monitor pod must drive ticks via an explicit loop, not a bare CLI call.
+def test_monitor_deployment_runs_command_server_tick_driver():
+    """The monitor pod must drive ticks via monitor_command_server, not a shell loop.
 
-    Regression for issue raised in PR #430 reviews: an args of
-    ``["python3", "/app/wrapper.py", "monitor"]`` (no positional message and no
-    surrounding loop) drops into the interactive DEILE CLI, which on a pod
-    without TTY either blocks on stdin or exits immediately — neither runs the
-    tick loop described in monitor.md. The fix is a shell loop wrapping
-    one-shot DEILE invocations.
+    Supersedes the original PR #430 expectation (a ``while ... sleep`` bash loop):
+    the spec 2026-06-04 makes ``monitor_command_server.py`` the pod's MAIN process.
+    The server schedules ``monitor_tick.py`` as a subprocess each interval AND
+    serves the control plane on :8769 (force-tick via the /state/force-tick flag).
+    The tick cadence stays configurable at runtime via the
+    ``DEILE_MONITOR_TICK_INTERVAL_S`` env var (read by the server, not by bash).
     """
     docs = _load_monitor_deployment()
     deployment = next(d for d in docs if d.get("kind") == "Deployment")
     container = deployment["spec"]["template"]["spec"]["containers"][0]
     command = container.get("command") or []
     args = container.get("args") or []
-    joined = " ".join(command) + " " + " ".join(args)
 
-    # Must explicitly invoke a shell (otherwise there is no loop construct)
-    assert any("/bin/sh" in c or "/bin/bash" in c for c in command), (
-        f"monitor container must use a shell to drive the tick loop; "
-        f"got command={command!r}"
+    # Main process is the command server (the legacy bash while-loop is gone).
+    assert command == ["python3", "/app/monitor_command_server.py"], (
+        "monitor container must run monitor_command_server.py as its main "
+        f"process; got command={command!r}"
     )
-    # Loop primitive and the wrapper invocation must both be present
-    assert "while" in joined and "sleep" in joined, (
-        "monitor args must contain a 'while ... sleep' loop (the tick driver); "
-        f"got args={args!r}"
+    assert args in (None, []), (
+        f"the legacy bash while-loop args must be removed; got args={args!r}"
     )
-    assert "wrapper.py" in joined and "monitor" in joined, (
-        "monitor loop must invoke wrapper.py monitor each tick; "
-        f"got args={args!r}"
-    )
-    # Tick interval must be configurable at runtime via env (not baked in)
-    assert "DEILE_MONITOR_TICK_INTERVAL_S" in joined, (
-        "monitor loop must honor ${DEILE_MONITOR_TICK_INTERVAL_S} for runtime "
-        f"override; got args={args!r}"
-    )
+
+    # Tick interval must still be configurable at runtime via env (not baked in).
     env_names = {e["name"] for e in container.get("env", []) if "name" in e}
     assert "DEILE_MONITOR_TICK_INTERVAL_S" in env_names, (
         "monitor deployment must declare DEILE_MONITOR_TICK_INTERVAL_S in env "

@@ -101,6 +101,34 @@ def _wire_worker_bearer() -> None:
                 print(f"wrapper: cannot read {p}: {exc}", file=sys.stderr)
 
 
+def _wire_monitor_bearer() -> None:
+    """Bot Pod: read monitor-bearer Secret file and expose as env var.
+
+    The MonitorClient (deile/infrastructure/deile_monitor_client.py) reads
+    DEILE_MONITOR_AUTH_TOKEN from the environment (with fallback to the
+    secret file). We populate the env var here so the /monitor cog can
+    authenticate to monitor_command_server (:8769) on the first call,
+    before any lazy file fallback. Mirror of _wire_worker_bearer().
+    """
+    candidates = [
+        Path("/run/secrets/bot/monitor/MONITOR_BEARER_TOKEN"),
+        Path("/run/secrets/monitor/MONITOR_BEARER_TOKEN"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                tok = p.read_text(encoding="utf-8").strip()
+                if tok:
+                    os.environ["DEILE_MONITOR_AUTH_TOKEN"] = tok
+                    print(
+                        f"wrapper: monitor bearer wired from {p}",
+                        file=sys.stderr,
+                    )
+                    return
+            except OSError as exc:
+                print(f"wrapper: cannot read {p}: {exc}", file=sys.stderr)
+
+
 def _messaging_tool_whitelist() -> frozenset:
     """Tool names the bot agent is allowed to call.
 
@@ -764,6 +792,7 @@ def _run_bot(passthrough: List[str]) -> int:
     _harden_runtime_dirs()
     loaded = _load_secret_files(Path("/run/secrets/bot"))
     _wire_worker_bearer()
+    _wire_monitor_bearer()
     required = {"DEILE_BOT_DISCORD_TOKEN", "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN"}
     missing = required - set(loaded)
     if missing:

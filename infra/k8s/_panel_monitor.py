@@ -10,7 +10,7 @@ Exibe estado operacional completo do pod supervisor:
 - Log de notificações (últimas 5 linhas)
 
 Hotkeys locais:
-  t  força tick imediato  (pkill -x sleep no pod → loop ticka já)
+  t  força tick imediato  (touch /state/force-tick no pod → scheduler ticka já)
   p  pause com submenu duração (grava paused_until p/ auto-resume)
   r  resume               (rm /state/monitor-pause + limpa paused_until)
   a  ack fingerprint      (escreve acked_until em monitor-state.json via exec)
@@ -1113,19 +1113,18 @@ class MonitorView:
     def _apply_force_tick(self, app) -> Any:
         from _panel import ActionResult  # noqa: PLC0415
 
-        # Mata o `sleep` entre ticks — o loop volta imediatamente ao wrapper.py monitor.
-        # pkill exit≠0 significa que não há sleep rodando (tick já em andamento): OK.
+        # Cria o flag /state/force-tick — o scheduler do monitor_command_server
+        # aguarda o intervalo em fatias curtas e checa esse arquivo (poll ~5s);
+        # quando ele existe, interrompe o sleep e roda o tick já (consome o flag).
+        # Substitui o antigo `pkill -x sleep`: o servidor é o processo principal
+        # do pod (spec 2026-06-04), não há mais um `sleep` de bash para matar.
         ok, out = self._exec([
             "-n", self._ns(), "exec",
             f"deploy/{MonitorDataProvider._MONITOR_DEPLOY}",
-            "--", "pkill", "-x", "sleep",
+            "--", "touch", "/state/force-tick",
         ])
         if ok:
-            self._last_msg = "Tick forçado: sleep interrompido → próximo tick imediato."
-        elif "no process found" in out.lower() or "no processes found" in out.lower() or (not ok and not out.strip()):
-            # pkill retorna 1 quando nenhum processo casa — significa tick já em andamento.
-            self._last_msg = "Tick forçado (ou já em andamento)."
-            ok = True
+            self._last_msg = "Tick forçado: flag /state/force-tick criado → próximo tick imediato."
         else:
             self._last_msg = f"Falha ao forçar tick: {out[:120]}"
         self._last_ok = ok
