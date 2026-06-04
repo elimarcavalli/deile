@@ -831,15 +831,6 @@ def _print_oneshot_content(content) -> None:
         console.print(item)
 
 
-def _write_usage_sidecar(session_id: str) -> None:
-    """Best-effort: write DEILE_USAGE_SIDECAR after a oneshot run."""
-    try:
-        from deile.observability.usage_sidecar import collect_and_write_sidecar
-        collect_and_write_sidecar(session_id)
-    except Exception:
-        pass
-
-
 async def _run_oneshot(
     message: str,
     forced_model: Optional[str] = None,
