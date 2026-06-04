@@ -5,8 +5,8 @@ Mirrors test_pipeline_dispatchers_schema.py and test_settings_pipeline_models.py
 
 import pytest
 
-from deile.config.settings import Settings, _to_optional_pos_int, _to_optional_nonneg_int
-
+from deile.config.settings import (Settings, _to_optional_nonneg_int,
+                                   _to_optional_pos_int)
 
 # ---------------------------------------------------------------------------
 # Converter unit tests

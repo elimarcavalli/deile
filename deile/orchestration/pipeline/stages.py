@@ -29,6 +29,7 @@ from deile.orchestration.forge import (CommentRef, GhCommandError, IssueRef,
                                        find_last_pr_url)
 from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
+from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
 from deile.orchestration.pipeline.dispatch_resolver import \
     resolve_stage_max_retries
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
@@ -154,11 +155,10 @@ def _classify_new_commits(commits: list[dict]) -> str:
     # Check if all files are docs.
     def _is_docs(f: str) -> bool:
         f_lower = f.lower()
-        if any(f_lower.endswith(ext) for ext in _DOCS_EXTENSIONS):
-            return True
-        if any(f_lower.startswith(pfx) for pfx in _DOCS_PREFIXES):
-            return True
-        return False
+        return (
+            any(f_lower.endswith(ext) for ext in _DOCS_EXTENSIONS)
+            or any(f_lower.startswith(pfx) for pfx in _DOCS_PREFIXES)
+        )
 
     if all(_is_docs(f) for f in all_files):
         return CLASS_DOCS_ONLY
@@ -1066,7 +1066,6 @@ async def reconcile_critique_issues(monitor: "PipelineMonitor") -> None:
     ledger = getattr(monitor.implementer, "_ledger", None)
     if ledger is None:
         return
-    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     own = monitor.identity.ownership_label()
     for issue in sort_by_priority(issues):
         if WORKFLOW_BLOCKED in issue.labels:
@@ -1151,7 +1150,6 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     if not candidates:
         return
 
-    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     ledger = getattr(monitor.implementer, "_ledger", None)
     in_flight = await _count_total_in_flight(monitor)
     available = max(0, monitor.config.max_parallel - in_flight)
@@ -1240,7 +1238,6 @@ async def _refine_one_issue_dispatch(monitor: "PipelineMonitor", target) -> bool
     ledger = getattr(monitor.implementer, "_ledger", None)
     task_id = getattr(outcome, "task_id", "") or ""
     if ledger is not None and task_id:
-        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         ledger.record(
             DispatchLedger.key_for_issue(number),
             task_id=task_id, session_id="", stage="refine",
@@ -1283,7 +1280,6 @@ async def reconcile_refine_issues(monitor: "PipelineMonitor") -> None:
     ledger = getattr(monitor.implementer, "_ledger", None)
     if ledger is None:
         return
-    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     own = monitor.identity.ownership_label()
     _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
                  WORKFLOW_PR, WORKFLOW_DECOMPOSED)
@@ -2607,7 +2603,6 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
     ledger = getattr(monitor.implementer, "_ledger", None)
     if ledger is None:
         return
-    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     own = monitor.identity.ownership_label()
     for pr in sort_by_priority(prs):
         if REVIEW_IN_PROGRESS not in pr.labels or WORKFLOW_BLOCKED in pr.labels:
@@ -3420,7 +3415,6 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
     # entre passes (sem entry → o refino o reseleciona no próximo tick).
     ledger = getattr(monitor.implementer, "_ledger", None)
     if ledger is not None:
-        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         for refine_state in (WORKFLOW_REFINING, WORKFLOW_ARCHITECTURE):
             try:
                 refine_issues = await monitor.forge.list_issues_with_label(refine_state)

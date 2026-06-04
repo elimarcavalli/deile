@@ -8,12 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.preferences.store import (
-    PreferenceStore,
-    _validate_key,
-    _validate_value,
-)
-
+from deile.preferences.store import (PreferenceStore, _validate_key,
+                                     _validate_value)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 

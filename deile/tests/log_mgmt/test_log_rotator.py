@@ -10,13 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from deile.log_mgmt.log_rotator import (
-    CappedRotatingFileHandler,
-    _default_log_dir,
-    _default_log_file,
-    create_log_handler,
-    get_pod_name,
-)
+from deile.log_mgmt.log_rotator import (CappedRotatingFileHandler,
+                                        _default_log_dir, _default_log_file,
+                                        create_log_handler, get_pod_name)
 
 
 class TestGetPodName:

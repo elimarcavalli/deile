@@ -3,6 +3,7 @@
 import atexit
 import json
 import logging
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
@@ -431,35 +432,29 @@ class AuditLogger:
                 "log_file": str(self.log_file),
             }
         
-        # Count by type
-        type_counts = {}
-        for event in self.recent_events:
-            event_type = event.event_type.value
-            type_counts[event_type] = type_counts.get(event_type, 0) + 1
-        
-        # Count by severity
-        severity_counts = {}
-        for event in self.recent_events:
-            severity = event.severity.value
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-        
-        # Recent critical events
+        # Count by type / severity in a single pass.
+        type_counts = dict(Counter(e.event_type.value for e in self.recent_events))
+        severity_counts = dict(Counter(e.severity.value for e in self.recent_events))
+
+        # Recent critical events (last 10).
+        _critical_severities = {SeverityLevel.ERROR, SeverityLevel.CRITICAL}
         critical_events = [
-            e for e in self.recent_events 
-            if e.severity in [SeverityLevel.ERROR, SeverityLevel.CRITICAL]
-        ][-10:]  # Last 10 critical events
-        
+            e for e in self.recent_events
+            if e.severity in _critical_severities
+        ][-10:]
+
         # Permission denials
-        permission_denials = len([
-            e for e in self.recent_events 
+        permission_denials = sum(
+            1 for e in self.recent_events
             if e.event_type == AuditEventType.PERMISSION_DENIED
-        ])
-        
+        )
+
         # Secret detections
-        secret_detections = len([
-            e for e in self.recent_events 
-            if e.event_type in [AuditEventType.SECRET_DETECTED, AuditEventType.SECRET_REDACTED]
-        ])
+        _secret_types = {AuditEventType.SECRET_DETECTED, AuditEventType.SECRET_REDACTED}
+        secret_detections = sum(
+            1 for e in self.recent_events
+            if e.event_type in _secret_types
+        )
         
         return {
             "total_events": total_events,

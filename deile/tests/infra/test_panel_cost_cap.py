@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 _INFRA_K8S = Path(__file__).resolve().parents[3] / "infra" / "k8s"
 if str(_INFRA_K8S) not in sys.path:
     sys.path.insert(0, str(_INFRA_K8S))

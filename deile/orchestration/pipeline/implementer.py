@@ -43,13 +43,13 @@ from deile.orchestration.pipeline.briefs import (
     _render_worker_refine_brief)
 from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
+from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.dispatch_resolver import (
     get_endpoint_for, resolve_stage_dispatcher, resolve_stage_max_retries,
     resolve_stage_timeout_s)
 from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  persona_for_type,
                                                  template_for_type)
-from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.model_resolver import resolve_stage_model
 from deile.orchestration.pipeline.reasoning_resolver import \
     resolve_stage_reasoning
@@ -763,9 +763,8 @@ class WorkerImplementer(PipelineImplementer):
             return outcome
 
         try:
-            from deile.orchestration.pipeline._claude_creds_refresh import (  # noqa: PLC0415
-                try_refresh_claude_credentials,
-            )
+            from deile.orchestration.pipeline._claude_creds_refresh import \
+                try_refresh_claude_credentials  # noqa: PLC0415
         except ImportError as exc:
             logger.warning(
                 "auto-renew indisponível (módulo ausente): %s — bloqueio normal",
@@ -964,13 +963,11 @@ class WorkerImplementer(PipelineImplementer):
         # raise StageCostCapExceeded when over the cap. None cap = pass-through.
         if stage:
             try:
-                from deile.orchestration.pipeline.cost_estimator import (  # noqa: PLC0415
-                    StageCostEstimator,
-                )
+                from deile.orchestration.pipeline.cost_estimator import \
+                    StageCostEstimator  # noqa: PLC0415
                 from deile.storage.usage_repository import (  # noqa: PLC0415
                     StageBudgetGuard, StageCostCapExceeded,
-                    get_usage_repository,
-                )
+                    get_usage_repository)
                 _estimator = StageCostEstimator(
                     usage_repo=get_usage_repository(),
                 )
@@ -1233,7 +1230,8 @@ class WorkerImplementer(PipelineImplementer):
         PATH; `git` está no PATH (clone de pipeline-status existe).
         """
         import asyncio as _aio
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
         lines: List[str] = []
         # gh comments since prev_completed_at.
         if prev_completed_at:
@@ -1298,6 +1296,7 @@ class WorkerImplementer(PipelineImplementer):
             resume=resume, expect_merge=False,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         # Issue #373: fire-and-forget for FRESH dispatches — the pipeline no
         # longer blocks waiting for the worker to finish. Resume dispatches
         # still block because the stage handler needs the structured result
@@ -1382,6 +1381,7 @@ class WorkerImplementer(PipelineImplementer):
         # so the worker evaluates SOLID/SRP/DRY/KISS/security/idempotency, not
         # just whether the suite is green. implement/mention keep ``developer``.
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         # Issue #373 (espelhando implement): dispatch fresh fire-and-forget para
         # não bloquear o tick. Resume permanece bloqueante — o stage handler de
         # pr_review precisa do resultado estruturado (ended, fingerprint,

@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import time
 
-
 from deile.orchestration.pipeline.dispatch_ledger import (
     LEDGER_SCHEMA_VERSION, DispatchLedger, _default_ledger_path)
 

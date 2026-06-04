@@ -13,14 +13,12 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
 import deploy  # noqa: E402
-
 
 # ===== CreateNamespaceConfig defaults =======================================
 

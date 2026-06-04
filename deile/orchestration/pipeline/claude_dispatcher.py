@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Mapping, Optional, Sequence
 
-from deile.orchestration.pipeline.constants import (claude_timeout_seconds,
-                                                    ISSUE_BODY_MAX_CHARS)
+from deile.orchestration.pipeline.constants import (ISSUE_BODY_MAX_CHARS,
+                                                    claude_timeout_seconds)
 
 logger = logging.getLogger(__name__)
 

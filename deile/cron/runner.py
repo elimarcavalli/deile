@@ -36,8 +36,7 @@ logger = logging.getLogger(__name__)
 
 def _payload_hash(prompt: str) -> str:
     import hashlib
-    digest = hashlib.sha256(prompt.encode(), usedforsecurity=False).hexdigest()[:16]
-    return f"sha256:{digest}"
+    return f"sha256:{hashlib.sha256(prompt.encode(), usedforsecurity=False).hexdigest()[:16]}"
 
 
 FireCallback = Callable[[CronEntry], Awaitable[str]]

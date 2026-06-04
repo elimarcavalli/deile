@@ -27,9 +27,8 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-import dispatch_logger as dlog  # noqa: E402
 import _panel_data as pd  # noqa: E402
-
+import dispatch_logger as dlog  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers

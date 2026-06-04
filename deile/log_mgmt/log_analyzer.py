@@ -23,12 +23,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from deile.log_mgmt.log_patterns import (
-    AUTH_EXPIRED_PATTERNS,
-    Severity,
-    match_line,
-    PIPELINE_PATTERNS,
-)
+from deile.log_mgmt.log_patterns import (AUTH_EXPIRED_PATTERNS,
+                                         PIPELINE_PATTERNS, Severity,
+                                         match_line)
 
 logger = logging.getLogger("deile.log_analyzer")
 

@@ -3,19 +3,14 @@
 from __future__ import annotations
 
 from deile.orchestration.forge.refs import IssueRef, PrRef
-from deile.orchestration.pipeline.labels import (
-    LABEL_COLORS,
-    LABEL_DESCRIPTIONS,
-    PRIORITY_0,
-    PRIORITY_1,
-    PRIORITY_2,
-    PRIORITY_3,
-    PRIORITY_LABEL_PREFIX,
-    PRIORITY_LABELS,
-    parse_priority_from_labels,
-)
+from deile.orchestration.pipeline.labels import (LABEL_COLORS,
+                                                 LABEL_DESCRIPTIONS,
+                                                 PRIORITY_0, PRIORITY_1,
+                                                 PRIORITY_2, PRIORITY_3,
+                                                 PRIORITY_LABEL_PREFIX,
+                                                 PRIORITY_LABELS,
+                                                 parse_priority_from_labels)
 from deile.orchestration.pipeline.stages import sort_by_priority
-
 
 # ---------------------------------------------------------------------------
 # parse_priority_from_labels

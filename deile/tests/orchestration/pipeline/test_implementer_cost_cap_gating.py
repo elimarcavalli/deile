@@ -10,8 +10,8 @@ Covers:
 from __future__ import annotations
 
 from decimal import Decimal
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,8 +47,8 @@ def _issue(number=1, title="t", body="brief body"):
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES
     from deile.config.settings import reset_settings
+    from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES
     for stage in PIPELINE_STAGES:
         monkeypatch.delenv(f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}", raising=False)
     monkeypatch.delenv("DEILE_PIPELINE_COST_CAP_USD", raising=False)

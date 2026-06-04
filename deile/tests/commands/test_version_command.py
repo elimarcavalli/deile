@@ -233,6 +233,7 @@ class TestIssue412:
     async def test_version_not_hardcoded_in_command(self):
         """The command module must not hardcode the version string."""
         import inspect
+
         from deile.commands.builtin import version_command
         source = inspect.getsource(version_command)
         assert version_mod.__version__ not in source, (

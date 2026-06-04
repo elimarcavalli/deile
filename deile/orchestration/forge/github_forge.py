@@ -34,9 +34,9 @@ from deile.orchestration.forge.refs import CommentRef, IssueRef, PrRef
 from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
-                                                 MENTION_LABELS, REFINE_LABELS,
+                                                 MENTION_LABELS,
                                                  PRIORITY_LABELS,
-                                                 REVIEW_LABELS,
+                                                 REFINE_LABELS, REVIEW_LABELS,
                                                  WORKFLOW_LABELS)
 
 logger = logging.getLogger(__name__)
@@ -1034,7 +1034,8 @@ class GitHubForge(ForgeClient):
         # Deduplicate linked issue numbers.
         unique_numbers = set(int(n) for n in linked)
         best: Optional[int] = None
-        from deile.orchestration.pipeline.labels import parse_priority_from_labels
+        from deile.orchestration.pipeline.labels import \
+            parse_priority_from_labels
         for n in unique_numbers:
             try:
                 issue = await self.get_issue(n)

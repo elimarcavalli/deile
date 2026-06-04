@@ -8,7 +8,7 @@ log_cron_skipped round-trip correctly through the AuditEvent.details dict.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 

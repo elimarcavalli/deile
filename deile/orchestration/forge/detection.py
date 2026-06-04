@@ -124,6 +124,7 @@ def _check_gitlab_endpoint(host: str) -> Optional[ForgeKind]:
     Never raises."""
     import urllib.error
     import urllib.request
+
     from deile.config.settings import get_settings
     version = get_settings().forge_gitlab_api_version
     try:

@@ -113,7 +113,8 @@ class TestCollectorDown:
 
     def test_emit_failure_uses_drop_counter(self, monkeypatch, caplog):
         """Falha no emit_log_record usa _record_log_drop."""
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_dispatch_log_export()
 
         import deile.observability.dispatch_log_export as dle

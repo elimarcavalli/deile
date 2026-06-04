@@ -415,22 +415,26 @@ _MENTION_ACTION_TEMPLATES: dict[str, tuple[str | None, str]] = {
 }
 
 
-def _format_mention_action_rich(action: str, n: int, pr_noun: str = "PR") -> str:
-    """Render a mention action with markdown bold label (worker brief style)."""
+def _format_mention_action(action: str, n: int, pr_noun: str = "PR", *, rich: bool) -> str:
+    """Render a mention action label + body. ``rich=True`` wraps the label in
+    markdown bold (worker brief style); ``rich=False`` emits plain prose
+    (Claude prompt style)."""
     label, body = _MENTION_ACTION_TEMPLATES[action]
     body = body.format(n=n, pr_noun=pr_noun, label_pr=pr_noun)
     if label is None:
         return body
-    return f"**{label.format(label_pr=pr_noun)}**: {body}"
+    rendered_label = label.format(label_pr=pr_noun)
+    return f"**{rendered_label}**: {body}" if rich else f"{rendered_label}: {body}"
+
+
+def _format_mention_action_rich(action: str, n: int, pr_noun: str = "PR") -> str:
+    """Render a mention action with markdown bold label (worker brief style)."""
+    return _format_mention_action(action, n, pr_noun, rich=True)
 
 
 def _format_mention_action_plain(action: str, n: int, pr_noun: str = "PR") -> str:
     """Render a mention action with plain prose label (Claude prompt style)."""
-    label, body = _MENTION_ACTION_TEMPLATES[action]
-    body = body.format(n=n, pr_noun=pr_noun, label_pr=pr_noun)
-    if label is None:
-        return body
-    return f"{label.format(label_pr=pr_noun)}: {body}"
+    return _format_mention_action(action, n, pr_noun, rich=False)
 
 
 # Context-aware worker mention brief builder (issue #253)

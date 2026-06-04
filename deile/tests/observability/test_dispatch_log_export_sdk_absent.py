@@ -20,7 +20,8 @@ class TestSdkAbsent:
     def test_no_op_when_logs_sdk_absent(self, monkeypatch):
         """SDK ausente → emit_log_record é no-op (não lança)."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
@@ -33,7 +34,8 @@ class TestSdkAbsent:
     def test_info_line_emitted_on_first_call(self, monkeypatch, caplog):
         """Linha INFO emitida na primeira chamada a get_log_provider() (D6 lazy)."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
@@ -49,7 +51,8 @@ class TestSdkAbsent:
     def test_info_line_emitted_only_once(self, monkeypatch, caplog):
         """Linha INFO emitida apenas uma vez, não em chamadas subsequentes (D6)."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 
@@ -80,7 +83,8 @@ class TestSdkAbsent:
     def test_get_log_provider_returns_none_when_sdk_absent(self, monkeypatch):
         """get_log_provider() retorna None quando SDK ausente."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
-        from deile.observability import reset_dispatch_log_export, reset_observability_config
+        from deile.observability import (reset_dispatch_log_export,
+                                         reset_observability_config)
         reset_observability_config()
         reset_dispatch_log_export()
 

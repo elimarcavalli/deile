@@ -19,19 +19,16 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from unittest.mock import AsyncMock, MagicMock
 
-
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
-from deile.orchestration.pipeline.implementer import WorkerImplementer, WorkOutcome
-from deile.orchestration.pipeline.labels import (
-    REFINAR,
-    REVIEW_IN_PROGRESS,
-    WORKFLOW_ARCHITECTURE,
-    WORKFLOW_BLOCKED,
-    WORKFLOW_REVIEWED,
-)
-from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
+from deile.orchestration.pipeline.implementer import (WorkerImplementer,
+                                                      WorkOutcome)
+from deile.orchestration.pipeline.labels import (REFINAR, REVIEW_IN_PROGRESS,
+                                                 WORKFLOW_ARCHITECTURE,
+                                                 WORKFLOW_BLOCKED,
+                                                 WORKFLOW_REVIEWED)
+from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                  PipelineMonitor)
 from deile.orchestration.pipeline.resume_state import ResumeTracker
-
 
 # ---------------------------------------------------------------------------
 # Helpers compartilhados
@@ -491,8 +488,9 @@ def _make_monitor_for_refine(
     get_issue_body_fn=None,
 ) -> Tuple[PipelineMonitor, MagicMock, _SeqWorkerClientForRefine]:
     """Constrói um monitor focado em refino (fire-and-forget)."""
-    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     import tempfile
+
+    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
 
     cfg = PipelineConfig(
         repo="owner/name",

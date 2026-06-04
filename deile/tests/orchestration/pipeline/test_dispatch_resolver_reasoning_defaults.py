@@ -13,9 +13,7 @@ import pytest
 from deile.config.settings import reset_settings
 from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES
 from deile.orchestration.pipeline.reasoning_resolver import (
-    _STAGE_DEFAULT_REASONING_EFFORT,
-    resolve_stage_reasoning,
-)
+    _STAGE_DEFAULT_REASONING_EFFORT, resolve_stage_reasoning)
 
 
 @pytest.fixture(autouse=True)

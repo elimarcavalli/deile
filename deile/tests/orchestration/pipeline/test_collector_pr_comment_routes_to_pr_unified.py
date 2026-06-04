@@ -88,7 +88,9 @@ class TestPrCommentDetectionFromGitHubUrl:
     """
 
     def test_url_with_pull_segment_sets_flag(self):
-        from deile.orchestration.forge.github_forge import GitHubForge  # noqa: F401
+        from deile.orchestration.forge.github_forge import \
+            GitHubForge  # noqa: F401
+
         # O detector vive inline em _list_comments_since, mas a heurística é
         # simples: ``"/pull/" in html_url``. Validamos o invariante.
         url = "https://github.com/o/r/pull/5#issuecomment-123"

@@ -73,6 +73,7 @@ def test_footer_visible_when_body_overflows(pm, monkeypatch):
     import _panel
     from rich.panel import Panel
     from rich.text import Text
+
     # head depende de muitos atributos do app real; aqui só nos importa o
     # footer pinado, então simplificamos o head.
     monkeypatch.setattr(_panel, "_head_panel", lambda title, app: Panel(Text("HEAD")))

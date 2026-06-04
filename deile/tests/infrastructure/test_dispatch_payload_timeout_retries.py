@@ -5,10 +5,8 @@ Mirrors test_dispatch_payload_preferred_model.py.
 
 import pytest
 
-from deile.infrastructure.deile_worker_client import (
-    DispatchPayload,
-    build_dispatch_payload,
-)
+from deile.infrastructure.deile_worker_client import (DispatchPayload,
+                                                      build_dispatch_payload)
 
 
 class TestDispatchPayloadFields:

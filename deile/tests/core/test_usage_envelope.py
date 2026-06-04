@@ -12,12 +12,10 @@ Covers:
 """
 
 import json
-import os
 
 import pytest
 
 from deile.core.usage_envelope import build_usage_envelope, write_usage_sidecar
-
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures

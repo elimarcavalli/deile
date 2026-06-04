@@ -37,7 +37,8 @@ class TestIdempotency:
 
     def test_get_dispatch_log_export_same_instance(self):
         """get_dispatch_log_export() retorna o mesmo objeto."""
-        from deile.observability.dispatch_log_export import get_dispatch_log_export
+        from deile.observability.dispatch_log_export import \
+            get_dispatch_log_export
 
         e1 = get_dispatch_log_export()
         e2 = get_dispatch_log_export()

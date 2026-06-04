@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from deile.skills.registry import get_skill_registry, reset_skill_registry
-from deile.skills.watcher import _DebounceWorker, SkillsWatcher, reload_registry
+from deile.skills.watcher import (SkillsWatcher, _DebounceWorker,
+                                  reload_registry)
 
 
 @pytest.fixture(autouse=True)

@@ -33,7 +33,6 @@ from subprocess import CompletedProcess
 from typing import List
 from unittest.mock import MagicMock, patch
 
-
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:

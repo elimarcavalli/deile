@@ -4,16 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from deile.log_mgmt.log_patterns import (
-    ALL_PATTERNS,
-    AUTH_EXPIRED_PATTERNS,
-    CRASH_PATTERNS,
-    PIPELINE_PATTERNS,
-    RUNTIME_ERROR_PATTERNS,
-    Severity,
-    match_critical,
-    match_line,
-)
+from deile.log_mgmt.log_patterns import (ALL_PATTERNS, AUTH_EXPIRED_PATTERNS,
+                                         CRASH_PATTERNS, PIPELINE_PATTERNS,
+                                         RUNTIME_ERROR_PATTERNS, Severity,
+                                         match_critical, match_line)
 
 
 class TestPatternCatalog:

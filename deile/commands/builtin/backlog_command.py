@@ -22,8 +22,8 @@ from rich.table import Table
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._backlog_collectors import (ISSUE_BUCKETS, PR_BUCKETS, BacklogData,
-                                  _SEM_REVIEW, _SEM_WORKFLOW,
+from ._backlog_collectors import (_SEM_REVIEW, _SEM_WORKFLOW, ISSUE_BUCKETS,
+                                  PR_BUCKETS, BacklogData,
                                   collect_backlog_data)
 from ._git_helpers import ensure_gh_authenticated, ensure_git_repo
 from ._shared import emit_audit_event, wrap_command_errors

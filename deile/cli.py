@@ -32,18 +32,15 @@ from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
 # the public surface used by tests and external callers stays stable:
 # `from deile.cli import _user_scripts_dir`, `patch("deile.cli._run_self_install")`,
 # etc. The actual logic now lives in cli_install.py.
-from .cli_install import \
-    _create_venv_with_deile  # noqa: F401,E402  (re-export)
-from .cli_install import \
-    _ensure_scripts_dir_on_path  # noqa: F401,E402  (re-export)
-from .cli_install import _link_global_command  # noqa: F401,E402  (re-export)
-from .cli_install import _pip_run  # noqa: F401,E402  (re-export)
-from .cli_install import _prompt_install_mode  # noqa: F401,E402  (re-export)
-from .cli_install import _run_self_install  # noqa: F401,E402  (re-export)
-from .cli_install import \
-    _run_self_install_async  # noqa: F401,E402  (re-export)
-from .cli_install import _user_scripts_dir  # noqa: F401,E402  (re-export)
-from .cli_install import _wrapper_target_dir  # noqa: F401,E402  (re-export)
+from .cli_install import _create_venv_with_deile  # noqa: F401  (re-export)
+from .cli_install import _ensure_scripts_dir_on_path  # noqa: F401  (re-export)
+from .cli_install import _link_global_command  # noqa: F401  (re-export)
+from .cli_install import _pip_run  # noqa: F401  (re-export)
+from .cli_install import _prompt_install_mode  # noqa: F401  (re-export)
+from .cli_install import _run_self_install  # noqa: F401  (re-export)
+from .cli_install import _run_self_install_async  # noqa: F401  (re-export)
+from .cli_install import _user_scripts_dir  # noqa: F401  (re-export)
+from .cli_install import _wrapper_target_dir  # noqa: F401  (re-export)
 
 # ── package root (where deile/ lives) ───────────────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()

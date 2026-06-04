@@ -13,15 +13,13 @@ Covers:
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deile.core.context_manager import (
-    ContextManager,
-    _build_preferences_block,
-    _resolve_user_id,
-)
+from deile.core.context_manager import (ContextManager,
+                                        _build_preferences_block,
+                                        _resolve_user_id)
 
 # PreferenceStore is imported lazily inside _build_preferences_block via
 # ``from deile.preferences.store import PreferenceStore``.  Patch that

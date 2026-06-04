@@ -40,7 +40,8 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, List, Literal, Optional, Set, TextIO
+from typing import (Any, Callable, ClassVar, List, Literal, Optional, Set,
+                    TextIO)
 
 from deile.config.settings import get_settings
 

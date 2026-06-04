@@ -57,6 +57,7 @@ class PricingProvider:
         """Parse ``model_providers.yaml`` once and return the raw dict."""
         try:
             import importlib.resources as pkg
+
             import yaml  # type: ignore[import-untyped]
         except ImportError:
             return {}

@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import List
 from unittest.mock import patch
 
-
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
@@ -38,7 +37,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import _panel as panel  # noqa: E402
 import _panel_data as pd  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Test helpers

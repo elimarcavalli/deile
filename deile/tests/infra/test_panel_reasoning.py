@@ -40,6 +40,7 @@ class TestClaudeWorkerEffortCoercion:
 
     def test_coerce_ultracode_to_xhigh(self):
         import claude_worker_server as cw
+
         # ultracode = xhigh + "workflow" no prompt (modo interativo);
         # em -p replicamos só o esforço com xhigh.
         assert cw._coerce_claude_effort("ultracode") == "xhigh"
@@ -52,6 +53,7 @@ class TestClaudeWorkerEffortCoercion:
 
     def test_coerce_unknown_omits(self):
         import claude_worker_server as cw
+
         # off/none/minimal (other providers' vocab) or junk → omit, never passed to CLI
         for bad in ("off", "none", "minimal", "bogus"):
             assert cw._coerce_claude_effort(bad) is None

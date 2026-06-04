@@ -9,17 +9,12 @@ from __future__ import annotations
 
 import time
 
-
-from deile.ui.panel.observability.screens import (
-    ClusterStatusData,
-    ClusterStatusScreen,
-    HistoryData,
-    HistoryScreen,
-    LiveSessionData,
-    LiveSessionScreen,
-    render_to_string,
-)
-
+from deile.ui.panel.observability.screens import (ClusterStatusData,
+                                                  ClusterStatusScreen,
+                                                  HistoryData, HistoryScreen,
+                                                  LiveSessionData,
+                                                  LiveSessionScreen,
+                                                  render_to_string)
 
 # --------------------------------------------------------------------------- #
 # Cluster Status

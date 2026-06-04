@@ -402,7 +402,7 @@ def test_settings_has_pipeline_max_parallel_env_var(monkeypatch):
     fresca sem duplicar o módulo.
     """
     from deile.config.settings import (_apply_env_overrides, get_settings,
-                                        reset_settings)
+                                       reset_settings)
 
     monkeypatch.setenv("DEILE_PIPELINE_MAX_PARALLEL", "7")
     reset_settings()

@@ -23,7 +23,8 @@ from deile.orchestration.pipeline.labels import (REFINAR, REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING,
                                                  WORKFLOW_ARCHITECTURE,
                                                  WORKFLOW_BLOCKED,
-                                                 WORKFLOW_NEW, WORKFLOW_REFINING,
+                                                 WORKFLOW_NEW,
+                                                 WORKFLOW_REFINING,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
@@ -455,6 +456,7 @@ class TestConcurrency:
 class TestReaperRefineExtended:
     async def test_reaps_refine_only_with_ledger_entry(self):
         import time
+
         from deile.orchestration.pipeline.stages import reap_orphan_claims
         client = _Client()
         own = "~by:default"
@@ -478,6 +480,7 @@ class TestReaperRefineExtended:
 
     async def test_does_not_reap_refine_resting_without_ledger(self):
         import time
+
         from deile.orchestration.pipeline.stages import reap_orphan_claims
         client = _Client()
         own = "~by:default"

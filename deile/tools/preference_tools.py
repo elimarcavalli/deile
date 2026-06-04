@@ -15,14 +15,8 @@ import logging
 from typing import Any, Dict
 
 from ..preferences.store import PreferenceStore
-from .base import (
-    SecurityLevel,
-    Tool,
-    ToolCategory,
-    ToolContext,
-    ToolResult,
-    ToolSchema,
-)
+from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
+                   ToolSchema)
 
 logger = logging.getLogger(__name__)
 

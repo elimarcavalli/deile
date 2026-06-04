@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
-from deile.security.audit_logger import AuditEventType, AuditLogger, SeverityLevel
+
+from deile.security.audit_logger import (AuditEventType, AuditLogger,
+                                         SeverityLevel)
 
 
 @pytest.fixture

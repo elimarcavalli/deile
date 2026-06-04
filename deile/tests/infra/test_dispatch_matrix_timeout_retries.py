@@ -9,8 +9,8 @@ Mirrors test_dispatch_matrix_view.py — covers:
 - StageDispatchEntry new fields
 """
 
-import sys
 import os
+import sys
 import types
 from dataclasses import dataclass
 from typing import Optional
@@ -82,6 +82,7 @@ def _stub_panel_data_imports(monkeypatch):
 def test_stage_dispatch_entry_new_fields():
     sys.path.insert(0, _INFRA_K8S)
     import _panel_data as _pd
+
     # Check if real _panel_data is loaded or our stub
     if hasattr(_pd, "StageDispatchEntry"):
         entry = _pd.StageDispatchEntry("implement", "deile-worker", None, "default",

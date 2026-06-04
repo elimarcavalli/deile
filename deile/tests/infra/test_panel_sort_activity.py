@@ -32,9 +32,7 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import _panel as panel  # noqa: E402
 import _panel_data as pd  # noqa: E402
-
 from rich.console import Console  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Helpers

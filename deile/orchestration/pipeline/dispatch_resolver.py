@@ -352,7 +352,8 @@ def resolve_stage_cost_cap_usd(stage: str) -> Optional[Decimal]:
         return cap
 
     # 2. Settings per-stage (graceful).
-    from deile.config.settings import get_settings  # noqa: PLC0415 — lazy import
+    from deile.config.settings import \
+        get_settings  # noqa: PLC0415 — lazy import
     settings = get_settings()
     settings_val = getattr(settings, f"pipeline_cost_cap_usd_{stage}", None)
     if settings_val is not None:
