@@ -62,6 +62,20 @@ class CronRunner:
         self._task: Optional[asyncio.Task] = None
         self._fired_count = 0
 
+    @staticmethod
+    def _audit_best_effort(method_name: str, **kwargs) -> None:
+        """Invoke an ``AuditLogger.log_*`` method without propagating failures.
+
+        Audit log writes are best-effort by contract (cron must keep firing
+        even if the SQLite audit DB is locked or full); silencing the failure
+        with a bare ``pass`` violates principle 6 of the architectural rules,
+        so the helper logs at ``debug`` instead with the exception preserved.
+        """
+        try:
+            getattr(get_audit_logger(), method_name)(**kwargs)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.debug("audit %s failed: %s", method_name, exc, exc_info=True)
+
     @property
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
@@ -115,24 +129,20 @@ class CronRunner:
         if cb is None:
             logger.warning("CronRunner has no fire_callback wired; skipping %s", entry.id)
             self.store.mark_fired(entry.id, result="skipped: no callback")
-            try:
-                get_audit_logger().log_cron_skipped(
-                    entry_id=entry.id,
-                    name=entry.id,
-                    reason="no callback",
-                )
-            except Exception:
-                pass
-            return
-        try:
-            get_audit_logger().log_cron_fire(
+            self._audit_best_effort(
+                "log_cron_skipped",
                 entry_id=entry.id,
                 name=entry.id,
-                schedule=getattr(entry, "cron", None),
-                payload_hash=_payload_hash(entry.prompt),
+                reason="no callback",
             )
-        except Exception:
-            pass
+            return
+        self._audit_best_effort(
+            "log_cron_fire",
+            entry_id=entry.id,
+            name=entry.id,
+            schedule=getattr(entry, "cron", None),
+            payload_hash=_payload_hash(entry.prompt),
+        )
         result_summary = await cb(entry)
         self.store.mark_fired(entry.id, result=str(result_summary)[:CRON_RESULT_MAX_CHARS])
         if self.notify_dm and entry.notify_user_id and result_summary:
