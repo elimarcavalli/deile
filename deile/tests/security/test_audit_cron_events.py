@@ -68,3 +68,46 @@ class TestAuditEventTypeEnum:
 
     def test_cron_skipped_value(self) -> None:
         assert AuditEventType.CRON_SKIPPED.value == "cron_skipped"
+
+
+class TestCronFireFieldParity:
+    """AC3: assert exact field names match deilebot contract (name/schedule/payload_hash)."""
+
+    def test_cron_fire_details_keys_are_exactly_name_schedule_payload_hash(self, audit_logger):
+        audit_logger.log_cron_fire("job-1", "daily-renew", "0 3 * * *", "sha256:abc")
+        events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_FIRE)
+        ev = events[0]
+        assert set(ev.details.keys()) == {"name", "schedule", "payload_hash"}
+
+    def test_cron_fire_name_field_present(self, audit_logger):
+        audit_logger.log_cron_fire("j", "my-job", None, None)
+        ev = audit_logger.get_recent_events(event_type=AuditEventType.CRON_FIRE)[0]
+        assert "name" in ev.details
+        assert ev.details["name"] == "my-job"
+
+    def test_cron_fire_payload_hash_field_present(self, audit_logger):
+        h = "sha256:deadbeef"
+        audit_logger.log_cron_fire("j", None, None, h)
+        ev = audit_logger.get_recent_events(event_type=AuditEventType.CRON_FIRE)[0]
+        assert ev.details["payload_hash"] == h
+
+
+class TestCronSkippedFieldParity:
+    """AC3: assert exact field names match deilebot contract (name/reason)."""
+
+    def test_cron_skipped_details_keys_are_exactly_name_reason(self, audit_logger):
+        audit_logger.log_cron_skipped("job-2", "my-job", "no callback")
+        events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_SKIPPED)
+        ev = events[0]
+        assert set(ev.details.keys()) == {"name", "reason"}
+
+    def test_cron_skipped_name_field_present(self, audit_logger):
+        audit_logger.log_cron_skipped("j", "my-job", "disabled")
+        ev = audit_logger.get_recent_events(event_type=AuditEventType.CRON_SKIPPED)[0]
+        assert "name" in ev.details
+        assert ev.details["name"] == "my-job"
+
+    def test_cron_skipped_reason_field_present(self, audit_logger):
+        audit_logger.log_cron_skipped("j", None, "rate-limited")
+        ev = audit_logger.get_recent_events(event_type=AuditEventType.CRON_SKIPPED)[0]
+        assert ev.details["reason"] == "rate-limited"

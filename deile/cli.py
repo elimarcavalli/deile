@@ -831,12 +831,28 @@ def _print_oneshot_content(content) -> None:
         console.print(item)
 
 
+def _write_usage_sidecar(session_id: str) -> None:
+    """Best-effort: write DEILE_USAGE_SIDECAR after a oneshot run."""
+    try:
+        from deile.observability.usage_sidecar import collect_and_write_sidecar
+        collect_and_write_sidecar(session_id)
+    except Exception:
+        pass
+
+
 async def _run_oneshot(
     message: str,
     forced_model: Optional[str] = None,
     reasoning: Optional[str] = None,
 ) -> int:
     """Single-turn non-interactive. stdout = response.content."""
+    # AC2: re-parent spans under the W3C trace context injected by the bridge.
+    try:
+        from deile.observability.tracer import activate_traceparent_from_env
+        activate_traceparent_from_env()
+    except Exception:
+        pass
+
     from deile.config.manager import ConfigManager
     from deile.config.settings import get_settings
 
@@ -851,8 +867,10 @@ async def _run_oneshot(
 
     agent = await _construct_agent(model_router, config_manager)
 
+    import uuid as _uuid
+    _session_id = f"oneshot-{_uuid.uuid4().hex[:12]}"
     session = agent.create_session(
-        session_id="oneshot_cli_session",
+        session_id=_session_id,
         working_directory=settings.working_directory,
     )
     if forced_model:
@@ -874,6 +892,17 @@ async def _run_oneshot(
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+
+    # AC2: populate usage metadata + write sidecar for cross-repo contract
+    try:
+        from deile.core.usage_envelope import build_usage_envelope, write_usage_sidecar
+        _usage_env = build_usage_envelope(session.session_id)
+        if response.metadata is None:
+            response.metadata = {}
+        response.metadata["usage"] = _usage_env
+        write_usage_sidecar(session.session_id)
+    except Exception:
+        pass
 
     _print_oneshot_content(response.content)
     status = response.status.value if hasattr(response.status, "value") else str(response.status)
