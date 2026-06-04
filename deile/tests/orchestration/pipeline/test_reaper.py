@@ -107,6 +107,9 @@ def _make_monitor_for_reaper(
     github.comment_on_pr = AsyncMock()
     github.comment_on_issue = AsyncMock()
     notifier = MagicMock()
+    # reaper_blocked is awaited — must be an AsyncMock so existing tests don't
+    # fail with "object MagicMock can't be used in 'await' expression".
+    notifier.reaper_blocked = AsyncMock()
     worktrees = MagicMock()
     claude = MagicMock()
     monitor = PipelineMonitor(
@@ -411,3 +414,120 @@ async def test_reaper_em_revisao_without_ownership_skipped():
 
     github.remove_labels.assert_not_awaited()
     github.add_labels.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Issue #522 — Discord notification via deilebot when reaper blocks
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reaper_block_sends_discord_notification():
+    """Quando o reaper bloqueia um item (next_attempt >= max_attempts),
+    notifier.reaper_blocked deve ser chamado com os dados corretos: número,
+    url, kind, attempt/max e age_seconds."""
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=60, reaper_max_attempts=3,
+    )
+    own = monitor.identity.ownership_label()
+    # attempt:2 → next=3 >= max_attempts=3 → bloqueia
+    pr = _make_pr(1000, labels=[
+        "~review:em_andamento", own, "~attempt:2",
+    ])
+    github.list_open_prs = AsyncMock(return_value=[pr])
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    monitor.notifier.reaper_blocked = AsyncMock()
+
+    await reap_orphan_claims(monitor)
+
+    monitor.notifier.reaper_blocked.assert_awaited_once()
+    call_kwargs = monitor.notifier.reaper_blocked.await_args
+    args, kwargs = call_kwargs.args, call_kwargs.kwargs
+    # Posicionais: number, url
+    assert args[0] == 1000
+    assert args[1] == pr.url
+    # Keyword-only
+    assert kwargs["kind"] == "pr"
+    assert kwargs["attempt"] == 3
+    assert kwargs["max_attempts"] == 3
+    assert kwargs["age_seconds"] >= 200
+
+
+@pytest.mark.asyncio
+async def test_reaper_already_blocked_item_not_renotified():
+    """Item com ~workflow:bloqueada já removido do conjunto de candidatos
+    de reap_orphan_claims — reaper_blocked NÃO deve ser chamado de novo."""
+    monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
+    own = monitor.identity.ownership_label()
+    # Item JÁ tem ~workflow:bloqueada — não tem ~review:em_andamento,
+    # portanto não entra no laço do reaper.
+    pr = _make_pr(1001, labels=["~workflow:bloqueada", own, "~attempt:3"])
+    github.list_open_prs = AsyncMock(return_value=[pr])
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 9999)
+
+    monitor.notifier.reaper_blocked = AsyncMock()
+
+    await reap_orphan_claims(monitor)
+
+    # Nada foi tocado (o item não tem ~review:em_andamento).
+    github.remove_labels.assert_not_awaited()
+    github.add_labels.assert_not_awaited()
+    monitor.notifier.reaper_blocked.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reaper_block_notification_failure_is_best_effort():
+    """Se reaper_blocked lança, o bloqueio, comentário GitHub e stats já foram
+    registrados — a falha na DM NÃO deve propagar nem impedir o return normal."""
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=60, reaper_max_attempts=3,
+    )
+    own = monitor.identity.ownership_label()
+    pr = _make_pr(1002, labels=[
+        "~review:em_andamento", own, "~attempt:2",
+    ])
+    github.list_open_prs = AsyncMock(return_value=[pr])
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    # Simula falha no envio da DM — _send já captura Exception internamente,
+    # mas testamos que o chamador também não propaga.
+    monitor.notifier.reaper_blocked = AsyncMock(
+        side_effect=Exception("discord unavailable"),
+    )
+
+    # Não deve levantar.
+    await reap_orphan_claims(monitor)
+
+    # Bloqueio e stats já registrados antes da DM.
+    added = list(github.add_labels.await_args_list[0].args[2])
+    assert "~workflow:bloqueada" in added
+    assert monitor._stats.issues_blocked >= 1
+    github.comment_on_pr.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reaper_block_disabled_notifier_is_noop():
+    """Com notifier.enabled == False (sem user_id), a chamada a reaper_blocked
+    é no-op: sem exceção, sem DM, comportamento de bloqueio normal."""
+    from deile.orchestration.pipeline.notifier import DiscordNotifier
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=60, reaper_max_attempts=3,
+    )
+    own = monitor.identity.ownership_label()
+    pr = _make_pr(1003, labels=[
+        "~review:em_andamento", own, "~attempt:2",
+    ])
+    github.list_open_prs = AsyncMock(return_value=[pr])
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    # Substitui o notifier por um real com enabled=False (sem user_id).
+    real_notifier = DiscordNotifier(user_id="")
+    monitor.notifier = real_notifier
+    assert real_notifier.enabled is False
+
+    # Não deve levantar; bloqueio acontece normalmente.
+    await reap_orphan_claims(monitor)
+
+    added = list(github.add_labels.await_args_list[0].args[2])
+    assert "~workflow:bloqueada" in added
+    github.comment_on_pr.assert_awaited_once()

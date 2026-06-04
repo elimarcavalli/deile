@@ -165,6 +165,29 @@ class DiscordNotifier:
             f"`{WORKFLOW_BLOCKED}`."
         )
 
+    async def reaper_blocked(
+        self,
+        number: int,
+        url: str,
+        *,
+        kind: str,
+        attempt: int,
+        max_attempts: int,
+        age_seconds: int,
+    ) -> None:
+        """Fired when the reaper exhausts retries and blocks an item (issue #522).
+
+        The item gains ``~workflow:bloqueada`` and is removed from the reaper's
+        candidate set — so this DM fires exactly once per blocking event (dedup
+        by label transition, AC3). The GitHub comment is the durable channel;
+        the DM is best-effort notification so the operator can act promptly.
+        """
+        age_minutes = age_seconds // 60
+        await self._send(
+            f"⛔ **Reaper bloqueou** {kind} #{number} após {attempt}/{max_attempts} tentativas "
+            f"(idade: {age_minutes} min)\n🔗 {url}"
+        )
+
     async def pr_picked_up(self, number: int, title: str, url: str) -> None:
         await self._send(
             f"🔎 **Pipeline pegou para revisar** PR #{number}: {title}\n🔗 {url}"
