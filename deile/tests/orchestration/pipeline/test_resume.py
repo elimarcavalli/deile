@@ -82,6 +82,18 @@ def _worker_response(
     return resp
 
 
+async def _drain_bg(monitor) -> None:
+    """Aguarda as background tasks de resume terminarem (issue #445).
+
+    O caminho de RESUME de review agora roda detached via ``spawn_background``;
+    os testes precisam drenar para observar os efeitos (merge/block/notify).
+    """
+    import asyncio
+
+    if monitor._bg_tasks:
+        await asyncio.gather(*list(monitor._bg_tasks))
+
+
 def _make_monitor(
     *,
     issues_reviewed: Optional[List[IssueRef]] = None,
@@ -574,8 +586,9 @@ class TestReviewResume:
         # Reconfigura a lista de PRs para o segundo tick (PR agora em_andamento).
         monitor.github.list_open_prs = AsyncMock(return_value=[pr_in_progress])
 
-        # Tick 2: resume bloqueante → concluido → pr_reviewed chamada.
+        # Tick 2: resume → concluido → pr_reviewed chamada (resume roda em bg).
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.pr_reviewed.assert_called_once()
         _, kwargs = notifier.pr_reviewed.call_args
         assert kwargs.get("merged") is True
@@ -609,6 +622,7 @@ class TestReviewResume:
             )],
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_resumed.assert_called_once()
         assert client.payloads[-1]["resume"]["mode"] == "resume"
         assert monitor.stats.prs_reviewed == 1
@@ -634,6 +648,7 @@ class TestReviewResume:
             )],
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         monitor.github.comment_on_pr.assert_called_once()
         monitor.github.add_labels.assert_any_call("pr", 10, [WORKFLOW_BLOCKED])
         notifier.implementation_blocked.assert_called_once()
@@ -717,6 +732,7 @@ class TestSkipStillRunningDoesNotBurnAttempt:
         before = monitor._resume_tracker.get(10).attempt
 
         await stages.review_one_open_pr(monitor)
+        await _drain_bg(monitor)
 
         after = monitor._resume_tracker.get(10).attempt
         assert after == before == 1, "skip-still-running NÃO pode bumpar attempt"

@@ -2735,6 +2735,238 @@ def _review_was_blocked_marker(text: str) -> bool:
     )
 
 
+async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabled: bool) -> None:
+    """Processamento BLOQUEANTE do resume de uma PR (review/merge), extraído de
+    ``review_one_open_pr`` para rodar em background task — NÃO congela o loop do
+    monitor. A lógica (Fix A SHA-guard, Fix #8 auto-correção, teto, proof-of-work,
+    merge/block) é IDÊNTICA à anterior; só deixou de bloquear o tick.
+    O caller já fez claim/ceiling/record_dispatch e marcou ``_resume_in_flight``.
+    """
+    try:
+        # RESUME (issue #254): caminho BLOQUEANTE preservado — o stage handler
+        # precisa do resultado estruturado (ended, fingerprint, tentativa) pra
+        # decidir concluido/incompleto/bloqueado inline.
+        # Delegate the review/merge work to the configured strategy. The Claude
+        # strategy checks out the branch in a worktree; the worker strategy clones
+        # and runs ``gh pr checkout`` inside its own sandbox.
+        outcome = await monitor.implementer.review(monitor, target, resume=True)
+        # Skip-because-still-running is NOT a real attempt: the previous review is
+        # still alive in the worker, so no new review/merge work happened this tick.
+        # Returning BEFORE ``_absorb_progress`` is load-bearing — that helper calls
+        # ``update_from_worker`` which unconditionally bumps the attempt counter
+        # (+1 per call). A review that legitimately spans more ticks than the
+        # ``pr_review`` max_retries would otherwise burn its whole budget on these
+        # no-op skips and get blocked while perfectly healthy (#509: 4 skips →
+        # "teto 4/4 sem mergear" on a CLEAN+MERGEABLE PR).
+        if not outcome.ok and "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
+            logger.info(
+                "pr_review #%d: dispatch skipped (claude ainda alive) — manter "
+                "em_andamento (sem consumir tentativa)", target.number,
+            )
+            await monitor.forge.clear_batch_label("pr", target.number)
+            return
+        zero_progress = _absorb_progress(monitor, target.number, outcome)
+
+        # Fix A — deterministic re-review flood guard: se o HEAD SHA da PR não
+        # mudou desde a última review incompleta, nenhum fix foi aplicado e
+        # re-revisar o mesmo HEAD é um flood. Forçamos zero_progress = True para
+        # que o block existente em ~linha 2936 dispare deterministicamente.
+        # Só ativo quando head_sha é não-vazio (GitLab sem SHA → comportamento legacy).
+        current_sha = getattr(target, "head_sha", "") or ""
+        last_sha = monitor._resume_tracker.reviewed_sha(target.number)
+        if current_sha and last_sha and current_sha == last_sha:
+            logger.warning(
+                "pr_review #%d: HEAD SHA %s não mudou desde a última review "
+                "incompleta — nenhum fix foi aplicado; forçando zero_progress "
+                "(re-review do mesmo HEAD é loop)",
+                target.number, current_sha[:8],
+            )
+            zero_progress = True
+
+        # Ground-truth merge detection: the worker's structured ``ended`` is
+        # authoritative; fall back to scanning the text for the MERGED marker.
+        merged = outcome.ended == _ENDED_CONCLUIDO or (
+            not outcome.ended and outcome.ok and "merged" in outcome.text.lower()
+        )
+        blocked = outcome.ended == _ENDED_BLOQUEADO
+        if not outcome.ok:
+            monitor._stats.errors += 1
+            monitor._stats.claude_errors += 1
+            logger.error(
+                "pr_review #%d failed: %s", target.number,
+                (outcome.error or "review failed")[:PIPELINE_MSG_TRUNCATE_CHARS],
+            )
+            # Issue #309 fase 3 (estratégia C — auth-expired guard): bloqueia
+            # fast com mensagem clara em vez de cair em retry/escalation
+            # genérico. claude-worker já não pode entregar nada até renovar.
+            if _classify_outcome_error(outcome.error or "") == "WORKER_AUTH_EXPIRED":
+                # Decisão #46 — backoff exponencial: surto curto de OAuth
+                # expirado não deve bloquear deterministicamente em #1. Apenas
+                # após o threshold paramos por uma janela; o reaper retoma
+                # automaticamente quando a pausa expira.
+                count, pause_s = record_auth_failure_and_maybe_pause(
+                    monitor, "pr", target.number,
+                )
+                logger.warning(
+                    "pr_review #%d: WORKER_AUTH_EXPIRED #%d (pause=%.0fs) — "
+                    "liberando batch; reaper retoma após pausa",
+                    target.number, count, pause_s,
+                )
+                await monitor.forge.clear_batch_label("pr", target.number)
+                return
+            # Issue #309 fase 3.5 — Bug A fix: erro NÃO-auth do worker NÃO
+            # deve fluir pro fast-finish legacy abaixo (que marcava
+            # ~review:concluida sem proof-of-work — vide R2/PR #344, 5s).
+            # Libera o batch; reaper retoma no próximo tick (resume real
+            # se sessão claude sobreviveu, fresh dispatch caso contrário).
+            # (DISPATCH_SKIPPED_STILL_RUNNING já tratado antes do _absorb_progress
+            # acima — não consome tentativa e não chega aqui.)
+            logger.warning(
+                "pr_review #%d: worker error não-auth (%s); liberando batch pra reaper "
+                "retomar (não marca concluida sem proof-of-work — Bug A fix)",
+                target.number, (outcome.error or "")[:120],
+            )
+            await monitor.forge.clear_batch_label("pr", target.number)
+            return
+
+        if blocked:
+            await monitor.forge.clear_batch_label("pr", target.number)
+            await _block_pr(
+                monitor, target.number, target.title, target.url,
+                outcome.motivo_bloqueio or "o agente declarou BLOQUEADO sem motivo",
+            )
+            return
+
+        if merged:
+            try:
+                await monitor.forge.transition_pr(
+                    target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
+                )
+            except GhCommandError as exc:
+                await _record_forge_error(
+                    monitor, f"could not transition PR #{target.number} to concluida", exc,
+                )
+            await monitor.forge.clear_batch_label("pr", target.number)
+            monitor._resume_tracker.clear(target.number)
+            # Decisão #46 — sucesso real: reseta contadores de backoff de auth.
+            reset_auth_failures(monitor, "pr", target.number)
+            monitor._stats.prs_reviewed += 1
+            await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=True)
+            await _post_merge_follow_ups(monitor, target)
+            return
+
+        # Not merged. With resume enabled, keep the PR in ~review:em_andamento for
+        # the next resume tick (progress guard catches a stuck loop). Without
+        # resume, preserve the legacy behaviour: mark concluded so the PR drops out.
+        if resume_enabled:
+            if zero_progress:
+                # Mensagem contextual: indica se o block veio do SHA-guard (Fix A)
+                # ou do fingerprint-guard clássico.
+                _current_sha_now = getattr(target, "head_sha", "") or ""
+                _last_sha_now = monitor._resume_tracker.reviewed_sha(target.number)
+                _sha_guard_fired = bool(
+                    _current_sha_now and _last_sha_now and _current_sha_now == _last_sha_now
+                )
+                # Fix #8 (issue #521) — auto-correção da PRÓPRIA PR. Quando o
+                # SHA-guard disparou (HEAD inalterado) E a review pediu mudança
+                # (REQUEST_CHANGES) numa PR nossa, NÃO bloqueia direto: despacha um
+                # ADDRESS (implement + push) para o worker aplicar o fix. Só depois
+                # de esgotar o teto de tentativas (HEAD ainda não mudou → worker não
+                # conseguiu) é que cai no block do Fix A. O cap é o que impede o loop
+                # infinito address↔review.
+                if (
+                    _sha_guard_fired
+                    and _review_was_blocked(outcome.text)
+                    and monitor._owns_pr_branch(target.head_ref, pr_number=target.number)
+                    and monitor._resume_tracker.address_attempt(target.number)
+                    < MAX_ADDRESS_ATTEMPTS
+                ):
+                    _k = monitor._resume_tracker.bump_address_attempt(target.number)
+                    logger.info(
+                        "pr_review #%d: review pediu mudança + HEAD %s inalterado — "
+                        "despachando address (implement + push) tentativa %d/%d em "
+                        "vez de bloquear (Fix #8)",
+                        target.number, _current_sha_now[:8], _k, MAX_ADDRESS_ATTEMPTS,
+                    )
+                    # NÃO regrava reviewed_sha: queremos detectar no próximo tick se
+                    # o address mudou o HEAD. Mantém ~review:em_andamento; libera o
+                    # batch para o próximo tick re-claimar.
+                    _addr_outcome = await monitor.implementer.address_review(
+                        monitor, target,
+                    )
+                    if not _addr_outcome.ok:
+                        logger.warning(
+                            "pr_review #%d: address dispatch falhou (%s) — "
+                            "em_andamento; reaper/reconcile retomam", target.number,
+                            (_addr_outcome.error or "")[:160],
+                        )
+                    await monitor.forge.clear_batch_label("pr", target.number)
+                    return
+                if _sha_guard_fired:
+                    _block_reason = (
+                        f"review pediu mudança mas o HEAD (`{_current_sha_now[:8]}`) "
+                        f"não mudou após {MAX_ADDRESS_ATTEMPTS} tentativa(s) de "
+                        "auto-correção — o worker não conseguiu aplicar o fix; "
+                        "humano: corrija manualmente ou faça checkout da PR (#520), "
+                        "depois remova ~workflow:bloqueada"
+                    )
+                else:
+                    _block_reason = "duas tentativas de review/merge sem progresso (diff idêntico)"
+                await monitor.forge.clear_batch_label("pr", target.number)
+                await _block_pr(
+                    monitor, target.number, target.title, target.url,
+                    _block_reason,
+                )
+                return
+            # HEAD mudou (ou primeira review): o worker pushou um fix com sucesso —
+            # reseta a janela de auto-correção (Fix #8) e grava o SHA atual para o
+            # próximo tick comparar (Fix A). Se o worker fizer push de um fix, o
+            # HEAD muda e o SHA-guard não dispara.
+            monitor._resume_tracker.reset_address_attempt(target.number)
+            _sha_to_record = getattr(target, "head_sha", "") or ""
+            if _sha_to_record:
+                monitor._resume_tracker.set_reviewed_sha(target.number, _sha_to_record)
+            # Release the batch lock so the next tick can re-claim; keep em_andamento.
+            await monitor.forge.clear_batch_label("pr", target.number)
+            logger.info("pr_review #%d incompleto — em_andamento (será retomada)", target.number)
+            return
+
+        # Issue #309 fase 3.5 — Bug B fix: proof-of-work check antes de marcar
+        # CONCLUDED no caminho legacy (resume desligado). Sem evidência (comment
+        # do bot, review formal, merge, novo commit) NÃO marca concluida —
+        # libera batch pra reaper retomar (impede review-theatre silencioso
+        # observado no R2 da PR #344 onde labels alternaram em 5s sem qualquer
+        # ação real do worker).
+        bot_login = await _resolve_bot_login(monitor)
+        has_proof = await _assert_review_proof_of_work(
+            monitor.forge, "pr", target.number, bot_login,
+            since_ts=int(time.time() - 7200),  # janela: últimas 2h
+        )
+        if not has_proof:
+            logger.warning(
+                "pr_review #%d: worker reportou ok=True mas SEM proof-of-work "
+                "(zero comments, zero reviews, zero novos commits) — não marcando "
+                "concluida (Bug B fix). Libera batch; reaper retoma.",
+                target.number,
+            )
+            await monitor.forge.clear_batch_label("pr", target.number)
+            return
+
+        try:
+            await monitor.forge.transition_pr(
+                target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
+            )
+        except GhCommandError as exc:
+            await _record_forge_error(
+                monitor, f"could not transition PR #{target.number} to concluida", exc,
+            )
+        await monitor.forge.clear_batch_label("pr", target.number)
+        monitor._stats.prs_reviewed += 1
+        await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=False)
+    finally:
+        monitor._resume_in_flight.discard(target.number)
+
+
 async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     try:
         prs = await monitor.forge.list_open_prs(limit=50)
@@ -2782,6 +3014,7 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             return (
                 resume_enabled
                 and pr.batch_id is None
+                and pr.number not in monitor._resume_in_flight
                 and monitor._resume_tracker.cadence_ok(
                     pr.number, now, monitor.config.resume_interval
                 )
@@ -2885,226 +3118,12 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         )
         return
 
-    # RESUME (issue #254): caminho BLOQUEANTE preservado — o stage handler
-    # precisa do resultado estruturado (ended, fingerprint, tentativa) pra
-    # decidir concluido/incompleto/bloqueado inline.
-    # Delegate the review/merge work to the configured strategy. The Claude
-    # strategy checks out the branch in a worktree; the worker strategy clones
-    # and runs ``gh pr checkout`` inside its own sandbox.
-    outcome = await monitor.implementer.review(monitor, target, resume=is_resume)
-    # Skip-because-still-running is NOT a real attempt: the previous review is
-    # still alive in the worker, so no new review/merge work happened this tick.
-    # Returning BEFORE ``_absorb_progress`` is load-bearing — that helper calls
-    # ``update_from_worker`` which unconditionally bumps the attempt counter
-    # (+1 per call). A review that legitimately spans more ticks than the
-    # ``pr_review`` max_retries would otherwise burn its whole budget on these
-    # no-op skips and get blocked while perfectly healthy (#509: 4 skips →
-    # "teto 4/4 sem mergear" on a CLEAN+MERGEABLE PR).
-    if not outcome.ok and "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
-        logger.info(
-            "pr_review #%d: dispatch skipped (claude ainda alive) — manter "
-            "em_andamento (sem consumir tentativa)", target.number,
-        )
-        await monitor.forge.clear_batch_label("pr", target.number)
-        return
-    zero_progress = _absorb_progress(monitor, target.number, outcome)
-
-    # Fix A — deterministic re-review flood guard: se o HEAD SHA da PR não
-    # mudou desde a última review incompleta, nenhum fix foi aplicado e
-    # re-revisar o mesmo HEAD é um flood. Forçamos zero_progress = True para
-    # que o block existente em ~linha 2936 dispare deterministicamente.
-    # Só ativo quando head_sha é não-vazio (GitLab sem SHA → comportamento legacy).
-    current_sha = getattr(target, "head_sha", "") or ""
-    last_sha = monitor._resume_tracker.reviewed_sha(target.number)
-    if current_sha and last_sha and current_sha == last_sha:
-        logger.warning(
-            "pr_review #%d: HEAD SHA %s não mudou desde a última review "
-            "incompleta — nenhum fix foi aplicado; forçando zero_progress "
-            "(re-review do mesmo HEAD é loop)",
-            target.number, current_sha[:8],
-        )
-        zero_progress = True
-
-    # Ground-truth merge detection: the worker's structured ``ended`` is
-    # authoritative; fall back to scanning the text for the MERGED marker.
-    merged = outcome.ended == _ENDED_CONCLUIDO or (
-        not outcome.ended and outcome.ok and "merged" in outcome.text.lower()
-    )
-    blocked = outcome.ended == _ENDED_BLOQUEADO
-    if not outcome.ok:
-        monitor._stats.errors += 1
-        monitor._stats.claude_errors += 1
-        logger.error(
-            "pr_review #%d failed: %s", target.number,
-            (outcome.error or "review failed")[:PIPELINE_MSG_TRUNCATE_CHARS],
-        )
-        # Issue #309 fase 3 (estratégia C — auth-expired guard): bloqueia
-        # fast com mensagem clara em vez de cair em retry/escalation
-        # genérico. claude-worker já não pode entregar nada até renovar.
-        if _classify_outcome_error(outcome.error or "") == "WORKER_AUTH_EXPIRED":
-            # Decisão #46 — backoff exponencial: surto curto de OAuth
-            # expirado não deve bloquear deterministicamente em #1. Apenas
-            # após o threshold paramos por uma janela; o reaper retoma
-            # automaticamente quando a pausa expira.
-            count, pause_s = record_auth_failure_and_maybe_pause(
-                monitor, "pr", target.number,
-            )
-            logger.warning(
-                "pr_review #%d: WORKER_AUTH_EXPIRED #%d (pause=%.0fs) — "
-                "liberando batch; reaper retoma após pausa",
-                target.number, count, pause_s,
-            )
-            await monitor.forge.clear_batch_label("pr", target.number)
-            return
-        # Issue #309 fase 3.5 — Bug A fix: erro NÃO-auth do worker NÃO
-        # deve fluir pro fast-finish legacy abaixo (que marcava
-        # ~review:concluida sem proof-of-work — vide R2/PR #344, 5s).
-        # Libera o batch; reaper retoma no próximo tick (resume real
-        # se sessão claude sobreviveu, fresh dispatch caso contrário).
-        # (DISPATCH_SKIPPED_STILL_RUNNING já tratado antes do _absorb_progress
-        # acima — não consome tentativa e não chega aqui.)
-        logger.warning(
-            "pr_review #%d: worker error não-auth (%s); liberando batch pra reaper "
-            "retomar (não marca concluida sem proof-of-work — Bug A fix)",
-            target.number, (outcome.error or "")[:120],
-        )
-        await monitor.forge.clear_batch_label("pr", target.number)
-        return
-
-    if blocked:
-        await monitor.forge.clear_batch_label("pr", target.number)
-        await _block_pr(
-            monitor, target.number, target.title, target.url,
-            outcome.motivo_bloqueio or "o agente declarou BLOQUEADO sem motivo",
-        )
-        return
-
-    if merged:
-        try:
-            await monitor.forge.transition_pr(
-                target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
-            )
-        except GhCommandError as exc:
-            await _record_forge_error(
-                monitor, f"could not transition PR #{target.number} to concluida", exc,
-            )
-        await monitor.forge.clear_batch_label("pr", target.number)
-        monitor._resume_tracker.clear(target.number)
-        # Decisão #46 — sucesso real: reseta contadores de backoff de auth.
-        reset_auth_failures(monitor, "pr", target.number)
-        monitor._stats.prs_reviewed += 1
-        await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=True)
-        await _post_merge_follow_ups(monitor, target)
-        return
-
-    # Not merged. With resume enabled, keep the PR in ~review:em_andamento for
-    # the next resume tick (progress guard catches a stuck loop). Without
-    # resume, preserve the legacy behaviour: mark concluded so the PR drops out.
-    if resume_enabled:
-        if zero_progress:
-            # Mensagem contextual: indica se o block veio do SHA-guard (Fix A)
-            # ou do fingerprint-guard clássico.
-            _current_sha_now = getattr(target, "head_sha", "") or ""
-            _last_sha_now = monitor._resume_tracker.reviewed_sha(target.number)
-            _sha_guard_fired = bool(
-                _current_sha_now and _last_sha_now and _current_sha_now == _last_sha_now
-            )
-            # Fix #8 (issue #521) — auto-correção da PRÓPRIA PR. Quando o
-            # SHA-guard disparou (HEAD inalterado) E a review pediu mudança
-            # (REQUEST_CHANGES) numa PR nossa, NÃO bloqueia direto: despacha um
-            # ADDRESS (implement + push) para o worker aplicar o fix. Só depois
-            # de esgotar o teto de tentativas (HEAD ainda não mudou → worker não
-            # conseguiu) é que cai no block do Fix A. O cap é o que impede o loop
-            # infinito address↔review.
-            if (
-                _sha_guard_fired
-                and _review_was_blocked(outcome.text)
-                and monitor._owns_pr_branch(target.head_ref, pr_number=target.number)
-                and monitor._resume_tracker.address_attempt(target.number)
-                < MAX_ADDRESS_ATTEMPTS
-            ):
-                _k = monitor._resume_tracker.bump_address_attempt(target.number)
-                logger.info(
-                    "pr_review #%d: review pediu mudança + HEAD %s inalterado — "
-                    "despachando address (implement + push) tentativa %d/%d em "
-                    "vez de bloquear (Fix #8)",
-                    target.number, _current_sha_now[:8], _k, MAX_ADDRESS_ATTEMPTS,
-                )
-                # NÃO regrava reviewed_sha: queremos detectar no próximo tick se
-                # o address mudou o HEAD. Mantém ~review:em_andamento; libera o
-                # batch para o próximo tick re-claimar.
-                _addr_outcome = await monitor.implementer.address_review(
-                    monitor, target,
-                )
-                if not _addr_outcome.ok:
-                    logger.warning(
-                        "pr_review #%d: address dispatch falhou (%s) — "
-                        "em_andamento; reaper/reconcile retomam", target.number,
-                        (_addr_outcome.error or "")[:160],
-                    )
-                await monitor.forge.clear_batch_label("pr", target.number)
-                return
-            if _sha_guard_fired:
-                _block_reason = (
-                    f"review pediu mudança mas o HEAD (`{_current_sha_now[:8]}`) "
-                    f"não mudou após {MAX_ADDRESS_ATTEMPTS} tentativa(s) de "
-                    "auto-correção — o worker não conseguiu aplicar o fix; "
-                    "humano: corrija manualmente ou faça checkout da PR (#520), "
-                    "depois remova ~workflow:bloqueada"
-                )
-            else:
-                _block_reason = "duas tentativas de review/merge sem progresso (diff idêntico)"
-            await monitor.forge.clear_batch_label("pr", target.number)
-            await _block_pr(
-                monitor, target.number, target.title, target.url,
-                _block_reason,
-            )
-            return
-        # HEAD mudou (ou primeira review): o worker pushou um fix com sucesso —
-        # reseta a janela de auto-correção (Fix #8) e grava o SHA atual para o
-        # próximo tick comparar (Fix A). Se o worker fizer push de um fix, o
-        # HEAD muda e o SHA-guard não dispara.
-        monitor._resume_tracker.reset_address_attempt(target.number)
-        _sha_to_record = getattr(target, "head_sha", "") or ""
-        if _sha_to_record:
-            monitor._resume_tracker.set_reviewed_sha(target.number, _sha_to_record)
-        # Release the batch lock so the next tick can re-claim; keep em_andamento.
-        await monitor.forge.clear_batch_label("pr", target.number)
-        logger.info("pr_review #%d incompleto — em_andamento (será retomada)", target.number)
-        return
-
-    # Issue #309 fase 3.5 — Bug B fix: proof-of-work check antes de marcar
-    # CONCLUDED no caminho legacy (resume desligado). Sem evidência (comment
-    # do bot, review formal, merge, novo commit) NÃO marca concluida —
-    # libera batch pra reaper retomar (impede review-theatre silencioso
-    # observado no R2 da PR #344 onde labels alternaram em 5s sem qualquer
-    # ação real do worker).
-    bot_login = await _resolve_bot_login(monitor)
-    has_proof = await _assert_review_proof_of_work(
-        monitor.forge, "pr", target.number, bot_login,
-        since_ts=int(time.time() - 7200),  # janela: últimas 2h
-    )
-    if not has_proof:
-        logger.warning(
-            "pr_review #%d: worker reportou ok=True mas SEM proof-of-work "
-            "(zero comments, zero reviews, zero novos commits) — não marcando "
-            "concluida (Bug B fix). Libera batch; reaper retoma.",
-            target.number,
-        )
-        await monitor.forge.clear_batch_label("pr", target.number)
-        return
-
-    try:
-        await monitor.forge.transition_pr(
-            target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
-        )
-    except GhCommandError as exc:
-        await _record_forge_error(
-            monitor, f"could not transition PR #{target.number} to concluida", exc,
-        )
-    await monitor.forge.clear_batch_label("pr", target.number)
-    monitor._stats.prs_reviewed += 1
-    await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=False)
+    # RESUME: roda em BACKGROUND (não bloqueia o loop do monitor). O gate de
+    # cadência (record_dispatch acima) + _resume_in_flight impedem re-dispatch
+    # concorrente da mesma PR; o lease do worker é o backstop.
+    monitor._resume_in_flight.add(target.number)
+    monitor.spawn_background(_resume_review_one_pr(monitor, target, resume_enabled))
+    return
 
 
 async def _resolve_bot_login(monitor: "PipelineMonitor") -> str:

@@ -402,6 +402,12 @@ class PipelineMonitor:
         # arrumado o OAuth se reiniciou o pipeline).
         self._auth_failures_by_target: dict[str, int] = {}
         self._paused_until_ts: dict[str, float] = {}
+        # Background tasks detached do tick (issue #445): o caminho de RESUME
+        # de review roda aqui sem congelar o loop do monitor. ``_resume_in_flight``
+        # guarda os números de PR cujo resume já está rodando (impede re-dispatch
+        # concorrente da mesma PR num tick subsequente).
+        self._bg_tasks: set = set()
+        self._resume_in_flight: set = set()
         # Schedule store — when present, schedule entries drive when each
         # action fires (instead of the fixed poll interval). On startup the
         # monitor first drains any catch-up queue (entries whose run time
@@ -411,6 +417,23 @@ class PipelineMonitor:
         self.schedule_store = schedule_store or ScheduleStore(
             config.base_repo_path, monitor_id=self.identity.monitor_id
         )
+
+    def spawn_background(self, coro) -> None:
+        """Roda *coro* detached (fire-and-forget interno) sem bloquear o tick.
+
+        Mantém referência forte (evita GC) e loga exceção sem derrubar o monitor.
+        """
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+
+        def _done(t: "asyncio.Task") -> None:
+            self._bg_tasks.discard(t)
+            if not t.cancelled():
+                exc = t.exception()
+                if exc is not None:
+                    logger.error("background task falhou: %s", exc, exc_info=exc)
+
+        task.add_done_callback(_done)
 
     # ------------------------------------------------------------------
     # Backwards-compat aliases (issue #297)
@@ -595,6 +618,8 @@ class PipelineMonitor:
 
     async def stop(self) -> None:
         self._stop_event.set()
+        for t in list(self._bg_tasks):
+            t.cancel()
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=PIPELINE_STOP_TIMEOUT_SECONDS)

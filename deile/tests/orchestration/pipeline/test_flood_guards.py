@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
-from deile.orchestration.pipeline.implementer import WorkerImplementer
+from deile.orchestration.pipeline.implementer import WorkerImplementer, WorkOutcome
 from deile.orchestration.pipeline.labels import (
     REFINAR,
     REVIEW_IN_PROGRESS,
@@ -165,6 +165,19 @@ def _added_labels(github, kind: str, number: int) -> List[str]:
     return result
 
 
+async def _review_and_drain(monitor) -> None:
+    """Roda o stage de review e DRENA as background tasks de resume (issue #445).
+
+    O resume agora roda detached via ``spawn_background``; o teste precisa
+    aguardar a task concluir para observar os efeitos (block/merge/SHA gravado).
+    """
+    import asyncio
+
+    await monitor._review_one_open_pr()
+    if monitor._bg_tasks:
+        await asyncio.gather(*list(monitor._bg_tasks))
+
+
 # ===========================================================================
 # Fix A — ResumeTracker: set_reviewed_sha / reviewed_sha (unit)
 # ===========================================================================
@@ -291,7 +304,7 @@ class TestReviewHeadShaFloodGuard:
             ],
         )
 
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
 
         # Após o 1º resume incompleto, SHA deve estar gravado.
         assert monitor._resume_tracker.reviewed_sha(10) == SHA
@@ -312,7 +325,7 @@ class TestReviewHeadShaFloodGuard:
         ]
 
         monitor.github.add_labels.reset_mock()
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
 
         # Com o fix: mesmo SHA → zero_progress forçado → BLOQUEADA.
         added_2 = _added_labels(monitor.github, "pr", 10)
@@ -334,7 +347,7 @@ class TestReviewHeadShaFloodGuard:
                 _worker_response(ended="incompleto", fingerprint="fp1", tentativa=1),
             ],
         )
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
         assert monitor._resume_tracker.reviewed_sha(10) == SHA_1
 
         # Tick 2: developer aplicou o fix → SHA mudou para SHA_2.
@@ -345,7 +358,7 @@ class TestReviewHeadShaFloodGuard:
         ]
 
         monitor.github.add_labels.reset_mock()
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
 
         # SHA mudou → não bloqueia; deve concluir normalmente.
         added = _added_labels(monitor.github, "pr", 10)
@@ -363,7 +376,7 @@ class TestReviewHeadShaFloodGuard:
                 _worker_response(ended="incompleto", fingerprint="fp-x", tentativa=1),
             ],
         )
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
 
         # SHA vazio → nada gravado no tracker.
         assert monitor._resume_tracker.reviewed_sha(10) == ""
@@ -376,7 +389,7 @@ class TestReviewHeadShaFloodGuard:
             _worker_response(ended="incompleto", fingerprint="fp-y", tentativa=2),
         ]
         monitor.github.add_labels.reset_mock()
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
 
         added = _added_labels(monitor.github, "pr", 10)
         assert WORKFLOW_BLOCKED not in added, (
@@ -826,7 +839,7 @@ class TestSelfPrAutoFix:
             prs=[pr_1],
             worker_responses=[_request_changes_response(fingerprint="fp1", tentativa=1)],
         )
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
         assert monitor._resume_tracker.reviewed_sha(10) == SHA
         assert monitor._resume_tracker.address_attempt(10) == 0
 
@@ -840,7 +853,7 @@ class TestSelfPrAutoFix:
             _worker_response(ok=True, summary="address aceito"),
         ]
         monitor.github.add_labels.reset_mock()
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
 
         # NÃO bloqueou.
         added = _added_labels(monitor.github, "pr", 10)
@@ -874,7 +887,7 @@ class TestSelfPrAutoFix:
 
         monitor.github.add_labels.reset_mock()
         monitor.github.comment_on_pr.reset_mock()
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
 
         # Com address esgotado e HEAD inalterado → BLOQUEIA.
         added = _added_labels(monitor.github, "pr", 10)
@@ -910,7 +923,7 @@ class TestSelfPrAutoFix:
         )
         # Pré-condição: já gravou SHA_1 e já está com SHA-guard armado + 0 address.
         monitor._resume_tracker.set_reviewed_sha(10, SHA_1)
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
         # Disparou address no SHA inalterado.
         assert monitor._resume_tracker.address_attempt(10) == 1
 
@@ -923,7 +936,7 @@ class TestSelfPrAutoFix:
         ]
         monitor.github.add_labels.reset_mock()
         client.payloads.clear()  # isola os dispatches do tick 2
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
 
         added = _added_labels(monitor.github, "pr", 10)
         assert WORKFLOW_BLOCKED not in added, (
@@ -959,9 +972,49 @@ class TestSelfPrAutoFix:
             return await orig_dispatch(payload, wait=wait)
 
         client.dispatch = _spy
-        await monitor._review_one_open_pr()
+        await _review_and_drain(monitor)
 
         # Houve 2 dispatches: review (wait=True) e address (wait=False).
         assert waits == [True, False], (
             f"Esperava review wait=True e address wait=False; got {waits}"
         )
+
+
+# ===========================================================================
+# Issue #445 — RESUME de review roda em background (não congela o tick)
+# ===========================================================================
+
+class TestResumeReviewNonBlocking:
+    """O caminho de RESUME não pode bloquear o loop do monitor: ele agora roda
+    detached via ``spawn_background``. O tick retorna imediatamente; o gate
+    ``_resume_in_flight`` marca a PR enquanto a task vive."""
+
+    async def test_resume_review_nao_bloqueia_o_tick(self):
+        import asyncio
+
+        pr = _pr(10, REVIEW_IN_PROGRESS, head_sha="aabbccdd")
+        monitor, _, _ = _make_monitor_for_review(prs=[pr], worker_responses=[])
+
+        gate = asyncio.Event()
+
+        async def _slow_review(_monitor, _target, *, resume):
+            await gate.wait()
+            return WorkOutcome(
+                ok=True, text="https://x/pull/10 MERGED", ended="concluido",
+            )
+
+        monitor.implementer = MagicMock()
+        monitor.implementer.review = AsyncMock(side_effect=_slow_review)
+
+        # O tick retorna ANTES de a review (lenta) completar.
+        await monitor._review_one_open_pr()
+
+        assert len(monitor._bg_tasks) == 1, "resume deveria ter sido spawnado em bg"
+        assert 10 in monitor._resume_in_flight, "PR deveria estar marcada in-flight"
+
+        # Libera a review e drena a bg task.
+        gate.set()
+        await asyncio.gather(*list(monitor._bg_tasks))
+
+        assert 10 not in monitor._resume_in_flight, "_resume_in_flight deve esvaziar"
+        assert monitor.stats.prs_reviewed == 1
