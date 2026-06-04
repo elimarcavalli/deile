@@ -214,6 +214,18 @@ spec:
             # réplicas, deile-worker 2 réplicas → ~5 dispatches reais
             # concorrentes antes da fila.
             - { name: DEILE_PIPELINE_MAX_PARALLEL,         value: "5" }
+            # Timeouts per-stage (issue #530). Sem estas entradas, um
+            # `kubectl apply` cru remove os overrides injetados via
+            # `kubectl set env` e cada stage cai para o fallback global
+            # (pipeline_claude_timeout=1800 ou BUILT_IN_TIMEOUT_S_DEILE=900),
+            # causando kill prematuro em IMPLEMENT/PR_REVIEW/FOLLOW_UPS.
+            # Valores canônicos desta issue; cluster inacessível no momento
+            # da implementação (verificação registrada no PR).
+            - { name: DEILE_PIPELINE_TIMEOUT_S_CLASSIFY,   value: "600"  }
+            - { name: DEILE_PIPELINE_TIMEOUT_S_REFINE,     value: "1800" }
+            - { name: DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT,  value: "2700" }
+            - { name: DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW,  value: "3600" }
+            - { name: DEILE_PIPELINE_TIMEOUT_S_FOLLOW_UPS, value: "2700" }
             # Redireciona kubectl para o apiserver na porta nativa do k3s
             # (6443) em vez do ClusterIP kube-proxy (10.43.0.1:443).
             # Em Rancher Desktop / Lima, o kube-proxy iptables DNAT não
