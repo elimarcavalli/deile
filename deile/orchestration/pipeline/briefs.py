@@ -135,19 +135,6 @@ def _render_brief(template: str, *, params: dict[str, Any]) -> str:
     return template.format(**params)
 
 
-def _inject_view_issue_template(params: dict[str, Any], number: int) -> None:
-    """Add ``view_issue_cmd_template`` (the cmd with ``<N>`` placeholder).
-
-    The review briefs reference ``gh issue view <N> --comments`` where ``<N>``
-    is the issue closed by the PR — unknown at brief-render time. Replace the
-    concrete number in ``view_issue_cmd`` with the ``<N>`` literal so the
-    worker fills it in after parsing the closing reference.
-    """
-    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
-        f" {number} ", " <N> ", 1,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Implement / review briefs
 # ---------------------------------------------------------------------------
