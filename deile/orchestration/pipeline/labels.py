@@ -88,6 +88,10 @@ WORKFLOW_DECOMPOSED = "~workflow:decomposta"
 # A human removes this label to unblock (which lets auto-resume pick it up
 # again on the next free tick).
 WORKFLOW_BLOCKED = "~workflow:bloqueada"
+# GC terminal state — applied by run_terminal_gc to closed issues (issue #587).
+# Signals that the GC sweep has run; preserved by all subsequent GC invocations
+# (idempotent). Applied automatically, never manually by the pipeline.
+WORKFLOW_CONCLUDED = "~workflow:concluida"
 
 # PR workflow -------------------------------------------------------------
 REVIEW_PENDING = "~review:pendente"
@@ -195,6 +199,8 @@ def title_prefix_for_type(issue_type: Optional[str]) -> str:
 # Distributed lock --------------------------------------------------------
 BATCH_LABEL_PREFIX = "~batch:"
 
+BY_LABEL_PREFIX = "~by:"
+
 WORKFLOW_LABELS = (
     WORKFLOW_NEW,
     WORKFLOW_REVIEWING,
@@ -206,6 +212,7 @@ WORKFLOW_LABELS = (
     WORKFLOW_PR,
     WORKFLOW_DECOMPOSED,
     WORKFLOW_BLOCKED,
+    WORKFLOW_CONCLUDED,
 )
 
 #: Comment-routing truth table (issue #442). A comment on an OPEN issue carrying
@@ -286,6 +293,7 @@ LABEL_COLORS = {
     WORKFLOW_PR: _COLOR_BLUE_PR,
     WORKFLOW_DECOMPOSED: _COLOR_BLUE_DECOMPOSED,
     WORKFLOW_BLOCKED: _COLOR_RED_BLOCKED,
+    WORKFLOW_CONCLUDED: "006b75",
     REVIEW_PENDING: _COLOR_GREEN_PROGRESS,
     REVIEW_IN_PROGRESS: _COLOR_YELLOW_LOCK,
     REVIEW_CONCLUDED: _COLOR_GREEN_PROGRESS,
@@ -308,6 +316,7 @@ LABEL_DESCRIPTIONS = {
     WORKFLOW_PR: "Pipeline: PR aberta",
     WORKFLOW_DECOMPOSED: "Pipeline: intent decomposta em issues derivadas (épico aberto) — humano fecha manualmente",
     WORKFLOW_BLOCKED: "Pipeline: bloqueada (sem progresso / impedimento / teto) — humano remove para desbloquear",
+    WORKFLOW_CONCLUDED: "Pipeline: issue concluída (GC aplicado ao fechar) — label permanente pós-fechamento",
     REVIEW_PENDING: "Pipeline: PR aguardando revisão",
     REVIEW_IN_PROGRESS: "Pipeline: PR em revisão (lock)",
     REVIEW_CONCLUDED: "Pipeline: PR revisada/mergeada",
