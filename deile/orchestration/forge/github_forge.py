@@ -828,6 +828,11 @@ class GitHubForge(ForgeClient):
         for lb in labels_list:
             args += ["-f", f"labels[]={lb}"]
         await self._run_checked(*args)
+        if self.on_label_change is not None:
+            try:
+                self.on_label_change(kind, number, [], labels_list)
+            except Exception:
+                pass
 
     async def has_bot_activity_since(
         self,
@@ -975,6 +980,11 @@ class GitHubForge(ForgeClient):
                 raise ForgeCommandError(
                     ("gh", "api", "-X", "DELETE", path), rc, out, err,
                 )
+        if self.on_label_change is not None:
+            try:
+                self.on_label_change(kind, number, labels_list, [])
+            except Exception:
+                pass
 
     async def _ensure_label(self, name: str, *, color: str, description: str) -> None:
         rc, _, err = await self._run(

@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 from deile.orchestration.forge import (CommentRef, GhCommandError, IssueRef,
                                        MentionTrigger, declared_hosts,
                                        find_last_pr_url)
+from deile.orchestration.forge.refs import compute_batch_id_for_number
+from deile.orchestration.pipeline import pipeline_logger
 from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
@@ -252,6 +254,7 @@ async def _claim_for_classify(
     if batch is None:
         logger.debug("%s #%s already claimed by another monitor; skipping", kind, number)
         return False
+    pipeline_logger.log_batch_claim(sha=batch, issues=[number], reason=error_context)
     return True
 
 
@@ -265,6 +268,10 @@ async def _release_classify_claim(monitor: "PipelineMonitor", kind: str, number:
         return
     try:
         await monitor.forge.clear_batch_label(kind, number)
+        pipeline_logger.log_batch_release(
+            sha=compute_batch_id_for_number(kind, number),
+            reason="classify_released",
+        )
     except Exception as exc:  # noqa: BLE001 — label applied; clear is best-effort
         logger.warning("%s: could not clear batch on #%s: %s", kind, number, exc)
 

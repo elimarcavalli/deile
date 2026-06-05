@@ -308,6 +308,7 @@ class ForgeClient(ABC):
 
     def __init__(self, config: ForgeConfig) -> None:
         self._config = config
+        self.on_label_change: Optional[Callable[[str, int, list[str], list[str]], None]] = None
 
     # ------------------------------------------------------------------
     # Introspection
@@ -563,17 +564,37 @@ class ForgeClient(ABC):
         self, number: int, *, from_label: Optional[str], to_label: str,
     ) -> None:
         """Swap a workflow label on an issue."""
-        if from_label is not None:
-            await self.remove_labels("issue", number, [from_label])
-        await self.add_labels("issue", number, [to_label])
+        cb = self.on_label_change
+        self.on_label_change = None
+        try:
+            if from_label is not None:
+                await self.remove_labels("issue", number, [from_label])
+            await self.add_labels("issue", number, [to_label])
+        finally:
+            self.on_label_change = cb
+        if cb is not None:
+            try:
+                cb("issue", number, [from_label] if from_label is not None else [], [to_label])
+            except Exception:
+                pass
 
     async def transition_pr(
         self, number: int, *, from_label: Optional[str], to_label: str,
     ) -> None:
         """Swap a workflow label on a PR/MR."""
-        if from_label is not None:
-            await self.remove_labels("pr", number, [from_label])
-        await self.add_labels("pr", number, [to_label])
+        cb = self.on_label_change
+        self.on_label_change = None
+        try:
+            if from_label is not None:
+                await self.remove_labels("pr", number, [from_label])
+            await self.add_labels("pr", number, [to_label])
+        finally:
+            self.on_label_change = cb
+        if cb is not None:
+            try:
+                cb("pr", number, [from_label] if from_label is not None else [], [to_label])
+            except Exception:
+                pass
 
     async def claim_with_batch(self, kind: str, number: int) -> Optional[str]:
         """Claim an issue/PR via the ``~batch:<sha>`` lock label.

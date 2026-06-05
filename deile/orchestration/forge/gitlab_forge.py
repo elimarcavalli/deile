@@ -999,6 +999,11 @@ class GitLabForge(ForgeClient):
             "api", "-X", "PUT", endpoint,
             "-f", f"add_labels={','.join(labels_list)}",
         )
+        if self.on_label_change is not None:
+            try:
+                self.on_label_change(kind, number, [], labels_list)
+            except Exception:
+                pass
 
     async def label_applied_at(
         self, kind: str, number: int, label: str,
@@ -1077,6 +1082,11 @@ class GitLabForge(ForgeClient):
             raise ForgeCommandError(
                 ("glab", "api", "-X", "PUT", endpoint), rc, out, err,
             )
+        if self.on_label_change is not None:
+            try:
+                self.on_label_change(kind, number, labels_list, [])
+            except Exception:
+                pass
 
     def _label_target_endpoint(self, kind: str, number: int) -> str:
         if kind == "issue":
