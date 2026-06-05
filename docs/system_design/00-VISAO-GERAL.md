@@ -31,6 +31,7 @@
 | 12 | Padrões de código | [`12-PADROES-CODIGO.md`](12-PADROES-CODIGO.md) | Templates concretos para criar/editar artefatos |
 | 13 | Padrão de documentação | [`13-PADRAO-DOCUMENTACAO.md`](13-PADRAO-DOCUMENTACAO.md) | Template das 14 seções para `docs/<data>_FEATURE.md` |
 | 14 | Containerização (K8s) | [`14-CONTAINERIZACAO.md`](14-CONTAINERIZACAO.md) | Three init modes (Local / Job / deile-shell); isolation model |
+| 15 | Pipeline Logger | [`15-PIPELINE-LOGGER.md`](15-PIPELINE-LOGGER.md) | Logging canônico do ciclo do pipeline — 15 funções públicas, formato `familia.subtipo`, garantias never-raises/dedup/no-secrets/severity |
 | — | Registro de decisões | [`DECISOES.md`](DECISOES.md) | Decisões arquiteturais com histórico |
 
 ## Fonte única de verdade — onde cada fato vive
@@ -142,3 +143,4 @@
 | 12 Padrões de código | concluido |
 | 13 Padrão de documentação | concluido |
 | 14 Containerização | concluido |
+| 15 Pipeline Logger | concluido |

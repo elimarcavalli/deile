@@ -78,6 +78,12 @@ A classe `AgentSession` (em `deile/core/agent.py`) carrega:
 
 > Bus alvo: `EventBus` em `deile/events/event_bus.py`.
 
+### Eventos do ciclo autônomo do pipeline
+
+O ciclo autônomo (`stages.py` + `monitor.py`) emite eventos estruturados via `pipeline_logger` ao logger `deile.pipeline.events` — separado do `EventBus` acima. Esses eventos cobrem refinamento, decomposição, batch, mudanças de label, reaper e autenticação.
+
+> Ver [`15-PIPELINE-LOGGER.md`](15-PIPELINE-LOGGER.md) para o formato canônico, API completa das 15 funções e garantias formais.
+
 ## Tratamento de erros estruturados
 
 Erros que devem aparecer ao usuário com formatação especial são marcados via `metadata` em `AgentResponse`:
