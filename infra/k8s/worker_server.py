@@ -18,9 +18,9 @@ Security model (defence in depth):
      mirrored in the bot Pod). Mismatch → 401 + audit.
 
   3. Workspace: every dispatch gets its own subdirectory under
-     /home/deile/work/<task_id>/. The agent's CWD is changed to that
-     directory before invocation. Concurrency is bounded to 1 active
-     task by an asyncio.Lock so the global CWD does not race.
+     /home/deile/work/<task_id>/. The workdir is communicated to the
+     agent via the prompt envelope; no global CWD mutation is performed,
+     so multiple tasks can run concurrently (issue #507 #12b).
 
   4. Prompt envelope: an immutable system block surrounds the user's
      brief, telling the agent the brief is *data*, not instructions to
@@ -116,10 +116,6 @@ def _read_auth_token() -> str:
 # é None) preservando todas as tasks em execução.
 _TASKS: Dict[str, Dict[str, Any]] = {}
 _TASKS_MAX: int = int(os.environ.get("DEILE_WORKER_MAX_INMEM_TASKS", "500"))
-# MVP: serialize CWD-coupled work within a single replica.
-# Real parallelism (max_parallel>1 in the pipeline) requires multiple
-# deile-worker replicas — one task runs at a time per replica.
-_TASK_LOCK = asyncio.Lock()
 _AGENT = None
 _AGENT_LOCK = asyncio.Lock()
 
@@ -587,7 +583,7 @@ async def _run_task(
     reasoning_effort: Optional[str] = None,
     task_timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Body of a single dispatch — only one runs at a time (lock).
+    """Body of a single dispatch — concurrent dispatches are supported.
 
     ``history`` is a pre-rendered text block of recent channel turns,
     supplied only on the bot-mediated path; the /deile passthrough sends
@@ -657,7 +653,12 @@ async def _run_task(
         text = _format_progress(phase, progress_lines)
         await _edit_status_message(channel_id, status_msg_id, text)
 
-    # 2. CWD isolation (lock-protected) + agent invocation.
+    # 2. Agent invocation (per-task workdir passed explicitly via prompt envelope).
+    # _TASK_LOCK removed (issue #507 #12b): CWD is no longer mutated globally.
+    # The workdir is communicated to the agent via the prompt envelope
+    # (_ENVELOPE_HEAD includes "Seu CWD é {workdir}").  _compute_resume_result
+    # already takes workdir as an explicit Path argument so all git operations
+    # run against absolute paths.
     final_text = ""
     ok = False
     error_repr = ""
@@ -666,180 +667,177 @@ async def _run_task(
     loop_ended = resume.LOOP_NATURAL
     # Structured resume result, populated only on the pipeline path.
     resume_result: Optional[Dict[str, Any]] = None
-    async with _TASK_LOCK:
-        prev_cwd = os.getcwd()
+    try:
+        agent = await _get_agent()
+        session_id = f"worker_{task_id}"
         try:
-            os.chdir(workdir)
-            agent = await _get_agent()
-            session_id = f"worker_{task_id}"
+            session = await agent.get_or_create_session(session_id, persisted=False)
+        except AttributeError:
+            session = None
+        # Per-stage model override (issue #305) — when the pipeline
+        # dispatched this turn with a specific model, pin it on the
+        # session's context_data. The agent's _choose_provider_for_turn
+        # reads context_data["preferred_model"] first in the soft-override
+        # chain (see soft_candidates in deile/core/agent.py), ahead of
+        # the process-wide settings.preferred_model. Session is per-task
+        # (worker_<task_id>, persisted=False), so this never bleeds into
+        # another dispatch.
+        if preferred_model and session is not None:
             try:
-                session = await agent.get_or_create_session(session_id, persisted=False)
-            except AttributeError:
-                session = None
-            # Per-stage model override (issue #305) — when the pipeline
-            # dispatched this turn with a specific model, pin it on the
-            # session's context_data. The agent's _choose_provider_for_turn
-            # reads context_data["preferred_model"] first in the soft-override
-            # chain (see soft_candidates in deile/core/agent.py), ahead of
-            # the process-wide settings.preferred_model. Session is per-task
-            # (worker_<task_id>, persisted=False), so this never bleeds into
-            # another dispatch.
-            if preferred_model and session is not None:
-                try:
-                    session.context_data["preferred_model"] = preferred_model
-                    logger.info(
-                        "task %s: pinning preferred_model=%s for this turn",
-                        task_id, preferred_model,
-                    )
-                except (AttributeError, TypeError) as exc:
-                    logger.warning(
-                        "task %s: could not pin preferred_model=%s: %s",
-                        task_id, preferred_model, exc,
-                    )
-            # Per-stage reasoning effort (espelha preferred_model). O agente lê
-            # context_data["reasoning_effort"] e cada provider traduz para o
-            # parâmetro nativo (output_config.effort / reasoning_effort /
-            # thinking_config) com fail-open. Per-task: não vaza entre dispatches.
-            if reasoning_effort and session is not None:
-                try:
-                    session.context_data["reasoning_effort"] = reasoning_effort
-                    logger.info(
-                        "task %s: pinning reasoning_effort=%s for this turn",
-                        task_id, reasoning_effort,
-                    )
-                except (AttributeError, TypeError) as exc:
-                    logger.warning(
-                        "task %s: could not pin reasoning_effort=%s: %s",
-                        task_id, reasoning_effort, exc,
-                    )
-            prompt = _build_prompt(brief, workdir, history or "")
+                session.context_data["preferred_model"] = preferred_model
+                logger.info(
+                    "task %s: pinning preferred_model=%s for this turn",
+                    task_id, preferred_model,
+                )
+            except (AttributeError, TypeError) as exc:
+                logger.warning(
+                    "task %s: could not pin preferred_model=%s: %s",
+                    task_id, preferred_model, exc,
+                )
+        # Per-stage reasoning effort (espelha preferred_model). O agente lê
+        # context_data["reasoning_effort"] e cada provider traduz para o
+        # parâmetro nativo (output_config.effort / reasoning_effort /
+        # thinking_config) com fail-open. Per-task: não vaza entre dispatches.
+        if reasoning_effort and session is not None:
+            try:
+                session.context_data["reasoning_effort"] = reasoning_effort
+                logger.info(
+                    "task %s: pinning reasoning_effort=%s for this turn",
+                    task_id, reasoning_effort,
+                )
+            except (AttributeError, TypeError) as exc:
+                logger.warning(
+                    "task %s: could not pin reasoning_effort=%s: %s",
+                    task_id, reasoning_effort, exc,
+                )
+        prompt = _build_prompt(brief, workdir, history or "")
 
-            # Hook the agent's event bus if available, to feed progress.
-            # IMPORTANT: store the handler reference so we can unsubscribe
-            # in the finally block. Each _run_task registered a fresh
-            # closure; ``EventBus.subscribe_all`` keeps strong refs in
-            # ``_wildcard_handlers``, so under sustained dispatch the list
-            # grew unbounded — each new event invoked every stale handler
-            # (O(N²) CPU), each closure held the dead task's
-            # ``progress_lines`` (memory growth), and progress lines could
-            # leak across tasks. (PR #295 review B3, PR #298 worker_server.)
+        # Hook the agent's event bus if available, to feed progress.
+        # IMPORTANT: store the handler reference so we can unsubscribe
+        # in the finally block. Each _run_task registered a fresh
+        # closure; ``EventBus.subscribe_all`` keeps strong refs in
+        # ``_wildcard_handlers``, so under sustained dispatch the list
+        # grew unbounded — each new event invoked every stale handler
+        # (O(N²) CPU), each closure held the dead task's
+        # ``progress_lines`` (memory growth), and progress lines could
+        # leak across tasks. (PR #295 review B3, PR #298 worker_server.)
+        bus = None
+        _on_event = None
+        try:
+            from deile.events.event_bus import get_event_bus
+            bus = get_event_bus()
+
+            async def _on_event(evt):
+                try:
+                    name = getattr(evt, "name", None) or getattr(evt, "type", None) or "event"
+                    payload = getattr(evt, "data", None) or getattr(evt, "payload", None)
+                    label = str(name)
+                    if isinstance(payload, dict):
+                        tn = payload.get("tool") or payload.get("tool_name")
+                        if tn:
+                            label = f"{name}:{tn}"
+                    short = label[:120]
+                    progress_lines.append(short)
+                    # Issue #257: expor "atividade atual" para o polling
+                    # do WorkerSubAgentRunner (GET /v1/progress/{id}).
+                    _tstate["current_activity"] = short
+                except Exception:  # noqa: BLE001 — never break the bus
+                    pass
+
+            if hasattr(bus, "subscribe_all"):
+                bus.subscribe_all(_on_event)
+            elif hasattr(bus, "subscribe"):
+                # Some EventBus signatures take (event_type, handler) —
+                # try a sensible catch-all key if available. ``_on_event``
+                # keeps the reference so the finally block can unsubscribe.
+                try:
+                    bus.subscribe("*", _on_event)
+                except Exception:
+                    _on_event = None
+        except Exception:
+            logger.debug("event bus hook unavailable", exc_info=True)
             bus = None
             _on_event = None
+
+        kwargs: Dict[str, Any] = {"session_id": session_id}
+        if persona:
+            kwargs["persona_name"] = persona
+        # Forward attachments to the worker agent via bot_context so
+        # vision_describe_image / file processing can use them.
+        if attachments:
+            kwargs["bot_context"] = {
+                "channel_id": channel_id,
+                "user_message_id": user_message_id,
+                "attachments": attachments,
+            }
+
+        # Use process_input_stream if present (decisão #15) for live progress;
+        # fall back to process_input otherwise.
+        response_text_chunks: list[str] = []
+        stream_method = getattr(agent, "process_input_stream", None)
+        if stream_method is not None:
+            async def _consume_stream():
+                nonlocal final_text
+                async for chunk in stream_method(prompt, **kwargs):
+                    # Chunk shape varies; we accept str / dict / object.
+                    if isinstance(chunk, str):
+                        response_text_chunks.append(chunk)
+                    elif isinstance(chunk, dict):
+                        t = chunk.get("text") or chunk.get("content")
+                        if t:
+                            response_text_chunks.append(str(t))
+                    else:
+                        t = getattr(chunk, "content", None) or getattr(chunk, "text", None)
+                        if t:
+                            response_text_chunks.append(str(t))
+                    await maybe_edit(phase="▶️  modelo respondendo...")
+                final_text = "".join(response_text_chunks)
+
+            _eff_timeout = task_timeout_s if task_timeout_s is not None else TASK_TIMEOUT_S
+            await asyncio.wait_for(_consume_stream(), timeout=_eff_timeout)
+        else:
+            _eff_timeout = task_timeout_s if task_timeout_s is not None else TASK_TIMEOUT_S
+            resp = await asyncio.wait_for(
+                agent.process_input(prompt, **kwargs),
+                timeout=_eff_timeout,
+            )
+            final_text = str(getattr(resp, "content", "") or "")
+
+        ok = True
+    except asyncio.TimeoutError:
+        _eff_timeout_for_msg = task_timeout_s if task_timeout_s is not None else TASK_TIMEOUT_S
+        error_repr = f"timeout após {_eff_timeout_for_msg}s"
+        final_text = error_repr
+        loop_ended = resume.LOOP_TIMEOUT
+    except Exception as exc:
+        error_repr = f"{type(exc).__name__}: {exc}"
+        final_text = error_repr + "\n\n" + traceback.format_exc()[-1500:]
+        logger.exception("task %s failed", task_id)
+        loop_ended = resume.LOOP_ERROR
+    finally:
+        # B3 (PR #295 review): desinscreve o handler do EventBus singleton.
+        # Sem isto handlers stale acumulam pinando estado (memory leak +
+        # O(N) por evento × N dispatches passados).
+        if bus is not None and _on_event is not None:
             try:
-                from deile.events.event_bus import get_event_bus
-                bus = get_event_bus()
-
-                async def _on_event(evt):
-                    try:
-                        name = getattr(evt, "name", None) or getattr(evt, "type", None) or "event"
-                        payload = getattr(evt, "data", None) or getattr(evt, "payload", None)
-                        label = str(name)
-                        if isinstance(payload, dict):
-                            tn = payload.get("tool") or payload.get("tool_name")
-                            if tn:
-                                label = f"{name}:{tn}"
-                        short = label[:120]
-                        progress_lines.append(short)
-                        # Issue #257: expor "atividade atual" para o polling
-                        # do WorkerSubAgentRunner (GET /v1/progress/{id}).
-                        _tstate["current_activity"] = short
-                    except Exception:  # noqa: BLE001 — never break the bus
-                        pass
-
-                if hasattr(bus, "subscribe_all"):
-                    bus.subscribe_all(_on_event)
-                elif hasattr(bus, "subscribe"):
-                    # Some EventBus signatures take (event_type, handler) —
-                    # try a sensible catch-all key if available. ``_on_event``
-                    # keeps the reference so the finally block can unsubscribe.
-                    try:
-                        bus.subscribe("*", _on_event)
-                    except Exception:
-                        _on_event = None
-            except Exception:
-                logger.debug("event bus hook unavailable", exc_info=True)
-                bus = None
-                _on_event = None
-
-            kwargs: Dict[str, Any] = {"session_id": session_id}
-            if persona:
-                kwargs["persona_name"] = persona
-            # Forward attachments to the worker agent via bot_context so
-            # vision_describe_image / file processing can use them.
-            if attachments:
-                kwargs["bot_context"] = {
-                    "channel_id": channel_id,
-                    "user_message_id": user_message_id,
-                    "attachments": attachments,
-                }
-
-            # Use process_input_stream if present (decisão #15) for live progress;
-            # fall back to process_input otherwise.
-            response_text_chunks: list[str] = []
-            stream_method = getattr(agent, "process_input_stream", None)
-            if stream_method is not None:
-                async def _consume_stream():
-                    nonlocal final_text
-                    async for chunk in stream_method(prompt, **kwargs):
-                        # Chunk shape varies; we accept str / dict / object.
-                        if isinstance(chunk, str):
-                            response_text_chunks.append(chunk)
-                        elif isinstance(chunk, dict):
-                            t = chunk.get("text") or chunk.get("content")
-                            if t:
-                                response_text_chunks.append(str(t))
-                        else:
-                            t = getattr(chunk, "content", None) or getattr(chunk, "text", None)
-                            if t:
-                                response_text_chunks.append(str(t))
-                        await maybe_edit(phase="▶️  modelo respondendo...")
-                    final_text = "".join(response_text_chunks)
-
-                _eff_timeout = task_timeout_s if task_timeout_s is not None else TASK_TIMEOUT_S
-                await asyncio.wait_for(_consume_stream(), timeout=_eff_timeout)
-            else:
-                _eff_timeout = task_timeout_s if task_timeout_s is not None else TASK_TIMEOUT_S
-                resp = await asyncio.wait_for(
-                    agent.process_input(prompt, **kwargs),
-                    timeout=_eff_timeout,
+                if hasattr(bus, "unsubscribe_all"):
+                    bus.unsubscribe_all(_on_event)
+            except Exception:  # noqa: BLE001 — cleanup never breaks dispatch
+                logger.debug("event bus unsubscribe failed", exc_info=True)
+        # Resume bookkeeping (issue #254) — _compute_resume_result takes
+        # workdir as an explicit argument (uses absolute paths via repo_dir).
+        # Wrapped so a failure here never breaks the dispatch; on the
+        # non-pipeline path it is a no-op.
+        try:
+            if resume_ctx is not None:
+                # Pass the wall-clock spent so far so the accumulated budget
+                # (item 6) advances even on a timeout/crash path.
+                resume_ctx = {**resume_ctx, "elapsed_s": time.monotonic() - start}
+                resume_result = _compute_resume_result(
+                    workdir, final_text, loop_ended, resume_ctx
                 )
-                final_text = str(getattr(resp, "content", "") or "")
-
-            ok = True
-        except asyncio.TimeoutError:
-            _eff_timeout_for_msg = task_timeout_s if task_timeout_s is not None else TASK_TIMEOUT_S
-            error_repr = f"timeout após {_eff_timeout_for_msg}s"
-            final_text = error_repr
-            loop_ended = resume.LOOP_TIMEOUT
-        except Exception as exc:
-            error_repr = f"{type(exc).__name__}: {exc}"
-            final_text = error_repr + "\n\n" + traceback.format_exc()[-1500:]
-            logger.exception("task %s failed", task_id)
-            loop_ended = resume.LOOP_ERROR
-        finally:
-            # B3 (PR #295 review): desinscreve o handler do EventBus singleton.
-            # Sem isto handlers stale acumulam pinando estado (memory leak +
-            # O(N) por evento × N dispatches passados).
-            if bus is not None and _on_event is not None:
-                try:
-                    if hasattr(bus, "unsubscribe_all"):
-                        bus.unsubscribe_all(_on_event)
-                except Exception:  # noqa: BLE001 — cleanup never breaks dispatch
-                    logger.debug("event bus unsubscribe failed", exc_info=True)
-            # Resume bookkeeping (issue #254) — computed WHILE cwd is still the
-            # workspace so git sees ``./repo``. Wrapped so a failure here never
-            # breaks the dispatch; on the non-pipeline path it is a no-op.
-            try:
-                if resume_ctx is not None:
-                    # Pass the wall-clock spent so far so the accumulated budget
-                    # (item 6) advances even on a timeout/crash path.
-                    resume_ctx = {**resume_ctx, "elapsed_s": time.monotonic() - start}
-                    resume_result = _compute_resume_result(
-                        workdir, final_text, loop_ended, resume_ctx
-                    )
-            except Exception:  # noqa: BLE001 — never break the dispatch
-                logger.exception("resume bookkeeping failed for task %s", task_id)
-            os.chdir(prev_cwd)
+        except Exception:  # noqa: BLE001 — never break the dispatch
+            logger.exception("resume bookkeeping failed for task %s", task_id)
 
     elapsed = time.monotonic() - start
     files = await _list_workspace_files(workdir)

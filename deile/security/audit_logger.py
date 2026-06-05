@@ -27,6 +27,9 @@ class AuditEventType(Enum):
 
     COMMAND_EXECUTED = "command_executed"
 
+    # Admin access to raw (unredacted) prompt data
+    RAW_PROMPT_ACCESS = "raw_prompt_access"
+
     # Persona-specific audit events
     PERSONA_ERROR = "persona_error"
     PERSONA_LOAD = "persona_load"

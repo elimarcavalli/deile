@@ -744,6 +744,62 @@ def _read_auth_token() -> str:
     )
 
 
+def _read_admin_token() -> Optional[str]:
+    """Lê o Bearer token de admin do Secret K8s ``claude-worker-admin-bearer``.
+
+    Usado pelo endpoint ``?raw=true`` de ``/v1/sessions/{id}/command`` para
+    expor o prompt bruto (sem redação) a operadores autorizados.  Retorna
+    ``None`` se nenhuma source estiver configurada (acesso raw será negado).
+
+    Caminhos em ordem (primeiro existente e não-vazio vence):
+    1. ``/run/secrets/claude-worker-admin/CLAUDE_WORKER_ADMIN_BEARER_TOKEN``
+    2. ``DEILE_CLAUDE_WORKER_ADMIN_AUTH_TOKEN`` env var (testes / dev).
+    """
+    candidates = [
+        Path("/run/secrets/claude-worker-admin/CLAUDE_WORKER_ADMIN_BEARER_TOKEN"),
+    ]
+    for p in candidates:
+        if p and p.is_file():
+            token = p.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+    env_val = os.environ.get("DEILE_CLAUDE_WORKER_ADMIN_AUTH_TOKEN", "").strip()
+    return env_val or None
+
+
+# --------------------------------------------------------------------------- #
+# Per-actor rate limiter for admin raw-prompt access (issue #507 #13b).
+# In-memory, per-actor sliding window: max 10 requests per 60 s.
+# --------------------------------------------------------------------------- #
+
+_RAW_PROMPT_RATE_LIMIT_MAX: int = 10
+_RAW_PROMPT_RATE_LIMIT_WINDOW_S: float = 60.0
+
+# {actor: [timestamp, ...]} — monotonic times of recent requests.
+_raw_prompt_rate_buckets: dict = {}
+_raw_prompt_rate_lock = threading.Lock()
+
+
+def _check_raw_prompt_rate_limit(actor: str) -> bool:
+    """Return True if the actor is within rate limit, False if exceeded.
+
+    Slides a 60-second window over recent request timestamps.  Thread-safe
+    (the lock is held only for dict mutation, not for the comparison).
+    """
+    now = time.monotonic()
+    cutoff = now - _RAW_PROMPT_RATE_LIMIT_WINDOW_S
+    with _raw_prompt_rate_lock:
+        bucket = _raw_prompt_rate_buckets.get(actor, [])
+        # Prune timestamps outside the window.
+        bucket = [t for t in bucket if t > cutoff]
+        if len(bucket) >= _RAW_PROMPT_RATE_LIMIT_MAX:
+            _raw_prompt_rate_buckets[actor] = bucket
+            return False
+        bucket.append(now)
+        _raw_prompt_rate_buckets[actor] = bucket
+        return True
+
+
 @web.middleware
 async def _bearer_auth_mw(request: web.Request, handler):
     """Bearer auth middleware (paridade com ``worker_server._bearer_auth_mw``).
@@ -3038,10 +3094,24 @@ async def sessions_list_handler(request: web.Request) -> web.Response:
 async def sessions_command_handler(request: web.Request) -> web.Response:
     """``GET /v1/sessions/{task_id}/command`` — exact command line used.
 
-    The payload exposes the full ``argv`` list and the verbatim prompt that
-    was passed to ``claude -p``.  Sensitive environment variables are
-    redacted via :func:`_redact_env` before they leave the pod.  Useful for
-    the panel's ``[c] full command`` overlay.
+    The payload exposes the full ``argv`` list and a (by default redacted)
+    version of the prompt that was passed to ``claude -p``.  Sensitive
+    environment variables are redacted via :func:`_redact_env` before they
+    leave the pod.  Useful for the panel's ``[c] full command`` overlay.
+
+    **Prompt redaction (issue #507 #13b):**
+
+    * **Default** — ``full_prompt`` is redacted: known secret patterns
+      (tokens, API keys, credentials) are replaced with ``***`` via
+      :class:`deile.security.secrets_scanner.SecretsScanner`.
+    * **Raw / admin** — pass ``?raw=true`` together with:
+        - ``Authorization: Bearer <admin-token>`` (Secret
+          ``claude-worker-admin-bearer`` / env
+          ``DEILE_CLAUDE_WORKER_ADMIN_AUTH_TOKEN``)
+        - ``X-Deile-Actor: <actor-id>`` header (required for audit trail)
+      Rate limited to ``10 req / 60 s`` per actor. Every successful raw
+      access is logged via :class:`deile.security.audit_logger.AuditLogger`
+      with event type ``RAW_PROMPT_ACCESS``.
     """
     task_id = request.match_info["task_id"]
     if not _TASK_ID_RE.fullmatch(task_id):
@@ -3054,14 +3124,81 @@ async def sessions_command_handler(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"task_id {task_id} not found"}, status=404,
         )
-    from deile.security.secrets_scanner import SecretsScanner  # lazy: heavy import
-    _scanner = SecretsScanner()
+
     raw_prompt = meta.get("full_prompt") or ""
-    redacted_prompt, _ = _scanner.redact_text(raw_prompt)
+    want_raw = request.query.get("raw", "").lower() in ("true", "1", "yes")
+
+    if want_raw:
+        # --- admin-only raw access gate ---
+        actor = request.headers.get("X-Deile-Actor", "").strip()
+        if not actor:
+            return web.json_response(
+                {"error": {"code": "BAD_REQUEST",
+                           "message": "X-Deile-Actor header is required for ?raw=true"}},
+                status=400,
+            )
+        admin_token = _read_admin_token()
+        if admin_token is None:
+            return web.json_response(
+                {"error": {"code": "FORBIDDEN",
+                           "message": "raw prompt access is not configured on this pod"}},
+                status=403,
+            )
+        got = request.headers.get("Authorization", "")
+        if not got.startswith("Bearer ") or not hmac.compare_digest(
+                got[len("Bearer "):], admin_token):
+            return web.json_response(
+                {"error": {"code": "FORBIDDEN",
+                           "message": "admin bearer token required for ?raw=true"}},
+                status=403,
+            )
+        if not _check_raw_prompt_rate_limit(actor):
+            return web.json_response(
+                {"error": {"code": "RATE_LIMITED",
+                           "message": f"raw prompt access rate limit exceeded "
+                                      f"({_RAW_PROMPT_RATE_LIMIT_MAX} req / "
+                                      f"{int(_RAW_PROMPT_RATE_LIMIT_WINDOW_S)}s per actor)"}},
+                status=429,
+            )
+        # Audit the raw access before returning.
+        try:
+            from deile.security.audit_logger import (
+                AuditEventType,
+                AuditLogger,
+                SeverityLevel,
+            )
+            _audit = AuditLogger()
+            _audit.log_event(
+                event_type=AuditEventType.RAW_PROMPT_ACCESS,
+                severity=SeverityLevel.WARNING,
+                actor=actor,
+                resource=f"sessions/{task_id}/command",
+                action="read_raw_prompt",
+                result="granted",
+                details={
+                    "task_id": task_id,
+                    "actor": actor,
+                    "stage": meta.get("stage"),
+                    "branch": meta.get("branch"),
+                },
+            )
+        except Exception:
+            logger.warning("audit logging for RAW_PROMPT_ACCESS failed", exc_info=True)
+        full_prompt_field = raw_prompt
+    else:
+        # Default path: redact known secrets from the prompt.
+        try:
+            from deile.security.secrets_scanner import SecretsScanner
+            _scanner = SecretsScanner()
+            full_prompt_field, _ = _scanner.redact_text(raw_prompt)
+        except Exception:
+            logger.warning("prompt redaction failed, returning empty prompt", exc_info=True)
+            full_prompt_field = ""
+
     return web.json_response({
         "task_id": task_id,
         "cmd": meta.get("command") or [],
-        "full_prompt": redacted_prompt,
+        "full_prompt": full_prompt_field,
         "stage": meta.get("stage"),
         "branch": meta.get("branch"),
         "model": meta.get("model"),
