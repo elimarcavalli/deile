@@ -21,6 +21,7 @@ import asyncio
 import logging
 import re
 import time
+from datetime import timedelta
 from dataclasses import replace
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -29,7 +30,10 @@ from deile.orchestration.forge import (CommentRef, GhCommandError, IssueRef,
                                        find_last_pr_url)
 from deile.orchestration.forge.refs import compute_batch_id_for_number
 from deile.orchestration.pipeline import pipeline_logger
-from deile.orchestration.pipeline._time_utils import now_utc
+from deile.orchestration.pipeline._time_utils import format_iso_utc, now_utc
+from deile.orchestration.pipeline.pipeline_logger import (
+    log_auth_backoff, log_auth_fail, log_auth_recover, log_auth_skip,
+)
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
 from deile.orchestration.pipeline.dispatch_resolver import \
@@ -2016,6 +2020,13 @@ async def implement_one_reviewed_issue(
         # curtos de ``WORKER_AUTH_EXPIRED``. O target será reavaliado no
         # próximo tick depois que a janela expirar.
         if is_target_auth_paused(monitor, "issue", target.number):
+            _paused_until = monitor._paused_until_ts.get(_auth_target_key("issue", target.number), 0.0)
+            _rem = max(0, int(_paused_until - _monotonic()))
+            log_auth_skip(
+                target=_auth_target_key("issue", target.number),
+                until_iso=format_iso_utc(now_utc() + timedelta(seconds=_rem)),
+                remaining_s=_rem,
+            )
             logger.debug(
                 "implement #%d: pausado por backoff de auth — skip este tick",
                 target.number,
@@ -2316,6 +2327,7 @@ async def _finalize_implement_outcome(
             )
         monitor._resume_tracker.clear(number)
         # Decisão #46 — sucesso real: reseta contadores de backoff de auth.
+        log_auth_recover(target=_auth_target_key("issue", number), reason='success')
         reset_auth_failures(monitor, "issue", number)
         monitor._stats.issues_implemented += 1
         await monitor.notifier.implementation_finished(number, pr_url)
@@ -2445,9 +2457,11 @@ def record_auth_failure_and_maybe_pause(
     key = _auth_target_key(kind, number)
     count = monitor._auth_failures_by_target.get(key, 0) + 1
     monitor._auth_failures_by_target[key] = count
+    log_auth_fail(target=key, attempts=count, threshold=_AUTH_BACKOFF_THRESHOLD, reason='WORKER_AUTH_EXPIRED')
     if count < _AUTH_BACKOFF_THRESHOLD:
         return count, 0.0
     backoff_s = min(_AUTH_BACKOFF_BASE_S * (2 ** count), _AUTH_BACKOFF_MAX_S)
+    log_auth_backoff(target=key, attempts=count, until_iso=format_iso_utc(now_utc() + timedelta(seconds=backoff_s)), backoff_s=int(backoff_s))
     monitor._paused_until_ts[key] = _monotonic() + backoff_s
     logger.warning(
         "auth backoff: target=%s count=%d pause_for=%.0fs",
@@ -2749,6 +2763,7 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
                 )
             await monitor.forge.clear_batch_label("pr", pr.number)
             monitor._resume_tracker.clear(pr.number)
+            log_auth_recover(target=_auth_target_key("pr", pr.number), reason='success')
             reset_auth_failures(monitor, "pr", pr.number)
             ledger.clear(key)
             monitor._stats.prs_reviewed += 1
@@ -2909,6 +2924,7 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
             await monitor.forge.clear_batch_label("pr", target.number)
             monitor._resume_tracker.clear(target.number)
             # Decisão #46 — sucesso real: reseta contadores de backoff de auth.
+            log_auth_recover(target=_auth_target_key("pr", target.number), reason='success')
             reset_auth_failures(monitor, "pr", target.number)
             monitor._stats.prs_reviewed += 1
             await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=True)
@@ -3084,13 +3100,22 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
 
     # Sort by priority so the most urgent PR is reviewed first.
     # Decisão #46 — skip PRs em janela de pausa por backoff de auth.
-    target = next(
-        (
-            pr for pr in sort_by_priority(prs)
-            if _candidate(pr) and not is_target_auth_paused(monitor, "pr", pr.number)
-        ),
-        None,
-    )
+    target = None
+    for pr in sort_by_priority(prs):
+        if not _candidate(pr):
+            continue
+        if is_target_auth_paused(monitor, "pr", pr.number):
+            _key = _auth_target_key("pr", pr.number)
+            _paused_until = monitor._paused_until_ts.get(_key, 0.0)
+            _rem = max(0, int(_paused_until - _monotonic()))
+            log_auth_skip(
+                target=_key,
+                until_iso=format_iso_utc(now_utc() + timedelta(seconds=_rem)),
+                remaining_s=_rem,
+            )
+            continue
+        target = pr
+        break
     if target is None:
         return
     # Defensive guard (Mistério #4): if the head branch no longer exists on
