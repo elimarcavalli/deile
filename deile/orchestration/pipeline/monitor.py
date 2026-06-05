@@ -50,6 +50,7 @@ from deile.orchestration.pipeline.lockfile import LockHeldError
 from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
 from deile.orchestration.pipeline.lockfile import release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
+from deile.orchestration.pipeline import pipeline_logger
 from deile.orchestration.pipeline.resume_state import ResumeTracker
 from deile.orchestration.pipeline.scheduler import PendingRun, ScheduleStore
 from deile.orchestration.pipeline.stages import (_extract_pr_url,
@@ -358,6 +359,8 @@ class PipelineMonitor:
                 "PipelineMonitor: pass only one of forge=/github= (github= is deprecated)"
             )
         self.forge: ForgeClient = forge or github or build_forge(project_path=config.repo)
+        self.forge.on_label_change = lambda kind, num, rem, add: \
+            pipeline_logger.log_label_change(target_kind=kind, target=num, removed=rem, added=add)
         # WorktreeManager validates that base_repo_path is a git repo at
         # construction. The deile_worker strategy never creates local
         # worktrees (the worker Pod owns its own clone) and runs where
