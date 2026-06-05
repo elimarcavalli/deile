@@ -92,6 +92,16 @@ REJECTED = [
     "kubectl get pods --as=system:admin",
     "kubectl get pods --server=https://evil",
     "kubectl get pods --token=abc",
+    # kubectl config write-subcommands (config is a read verb but mutates here)
+    "kubectl config set-context monitor --namespace=kube-system",
+    "kubectl config set clusters.in-cluster.server https://evil",
+    "kubectl config delete-context monitor",
+    "kubectl config unset users",
+    "kubectl config use-context other",
+    # write-capable coreutils dropped from the allow-list
+    "sort -o /tmp/out /etc/hosts",
+    "sort --output=/tmp/out /etc/hosts",
+    "uniq /etc/hosts /tmp/out",
     # secret-path reads
     "cat /run/secrets/monitor/MONITOR_BEARER_TOKEN",
     "cat /run/secrets/deile/GITHUB_TOKEN",
@@ -118,6 +128,8 @@ ALLOWED = [
     "gh auth status",
     "kubectl get pods -o yaml",
     "kubectl logs deploy/deile-pipeline --tail=50 --since=10m",
+    "kubectl config view",
+    "kubectl config current-context",
     "glab mr list",
     "cat /state/monitor-state.json",
     "tail -20 /state/monitor-audit.log",

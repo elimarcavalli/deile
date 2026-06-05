@@ -1247,9 +1247,17 @@ def _install_monitor_negative_whitelist() -> None:
 # set of read binaries with read verbs — so chaining (`;`/`|`/`&&`), substitution
 # (`$()`/backticks) and redirection (`>`) are never interpreted, regardless of the
 # prompt. Safe-by-construction, not safe-by-instruction.
+# Coreutils here are all STDOUT-only (no output-file flag). `sort`/`uniq` are
+# deliberately EXCLUDED: `sort -o FILE` / `uniq IN OUT` can write a file, which
+# breaks the read-only-by-construction guarantee (and they need pipes — which we
+# don't have — to be useful anyway).
 _QA_ALLOWED_BINARIES = frozenset({
     "kubectl", "gh", "glab", "cat", "ls", "head", "tail", "grep", "egrep",
-    "wc", "jq", "cut", "sort", "uniq", "nl", "tac", "tr", "column", "echo", "date",
+    "wc", "jq", "cut", "nl", "tac", "tr", "column", "echo", "date",
+})
+# `kubectl config` has mutating subcommands; only these read it.
+_QA_KUBECTL_CONFIG_READ = frozenset({
+    "view", "get-contexts", "current-context", "get-clusters", "get-users",
 })
 _QA_KUBECTL_READ_VERBS = frozenset({
     "get", "describe", "logs", "top", "explain", "api-resources",
@@ -1323,6 +1331,10 @@ def _qa_command_allowed(cmd: str) -> "tuple[bool, str]":
         verb = next((a for a in argv[1:] if not a.startswith("-")), "")
         if verb not in _QA_KUBECTL_READ_VERBS:
             return False, f"kubectl '{verb}' não é um verbo de leitura permitido"
+        if verb == "config":
+            sub = next((a for a in argv[2:] if not a.startswith("-")), "")
+            if sub not in _QA_KUBECTL_CONFIG_READ:
+                return False, f"kubectl config '{sub or '?'}' não é somente-leitura"
         if verb in ("get", "describe") and any(
             a in ("secret", "secrets") or a.startswith(("secret/", "secrets/"))
             for a in argv[1:]
