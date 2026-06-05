@@ -34,6 +34,12 @@ import json
 import logging
 import os
 import re
+try:
+    import regex as _regex_mod  # type: ignore[import-untyped]  # issue #544
+    _HAS_REGEX = True
+except ImportError:
+    _regex_mod = None  # type: ignore[assignment]
+    _HAS_REGEX = False
 import select
 import shutil
 import signal
@@ -144,6 +150,270 @@ _SORT_WORKFLOW_ORDER: Dict[str, int] = {
     "bloqueada": 9,
 }
 _SORT_MODES = ("recent", "number", "status")
+
+# ===== filter helpers (issue #544) ==========================================
+
+_FILTER_REGEX_TIMEOUT = 0.1  # seconds per regex match/finditer call
+
+
+def _lit_compile(pattern: str) -> Any:
+    """Compile a literal (escaped) filter pattern using regex if available, else re."""
+    if _HAS_REGEX:
+        return _regex_mod.compile(_regex_mod.escape(pattern), _regex_mod.IGNORECASE)
+    return re.compile(re.escape(pattern), re.IGNORECASE)
+
+# Persistence constants
+_PANEL_FILTERS_PATH = Path.home() / ".deile" / "panel_filters.json"
+_PANEL_FILTERS_SCHEMA_VERSION = 1
+_PANEL_FILTERS_CAP = 50
+_PANEL_FILTERS_TTL_DAYS = 30
+
+
+def _split_filter_expr(text: str) -> Tuple[List[str], List[str]]:
+    """Split expr on ' AND '/' OR ' outside quoted strings.
+    Returns (parts, separators).
+    """
+    parts: List[str] = []
+    seps: List[str] = []
+    current: List[str] = []
+    in_quote = False
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == '\\' and in_quote and i + 1 < n and text[i + 1] == '"':
+            current.append('"')
+            i += 2
+        elif text[i] == '"':
+            in_quote = not in_quote
+            current.append(text[i])
+            i += 1
+        elif not in_quote and text[i:i + 5] == ' AND ':
+            parts.append(''.join(current))
+            seps.append('AND')
+            current = []
+            i += 5
+        elif not in_quote and text[i:i + 4] == ' OR ':
+            parts.append(''.join(current))
+            seps.append('OR')
+            current = []
+            i += 4
+        else:
+            current.append(text[i])
+            i += 1
+    parts.append(''.join(current))
+    return parts, seps
+
+
+def _parse_filter_expr(text: str) -> Tuple[List[Tuple[str, str, Any]], str, Optional[str]]:
+    """Parse a filter expression.
+
+    Returns (terms_info, op, error_msg) where:
+    - terms_info: list of (kind, raw, compiled) — kind in {"literal","regex"}
+    - op: "AND" | "OR" | "" (empty = single term or no terms)
+    - error_msg: non-None string on parse/compile error
+    """
+    if not text:
+        return [], "", None
+
+    if len(text) > 200:
+        return [], "", "filtro inválido — expressão excede 200 chars"
+
+    raw_parts, seps = _split_filter_expr(text)
+
+    if seps:
+        unique = set(seps)
+        if len(unique) > 1:
+            return [], "", "filtro inválido — combine só AND ou só OR"
+        op = seps[0]
+    else:
+        op = ""
+
+    terms_info: List[Tuple[str, str, Any]] = []
+    for idx, part in enumerate(raw_parts):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith('"') and part.endswith('"') and len(part) >= 2:
+            raw = part[1:-1].replace('\\"', '"')
+            terms_info.append(("literal", raw, None))
+        elif part.startswith("r:"):
+            pattern = part[2:]
+            try:
+                if _HAS_REGEX:
+                    compiled = _regex_mod.compile(pattern, _regex_mod.IGNORECASE)
+                else:
+                    compiled = re.compile(pattern, re.IGNORECASE)
+                terms_info.append(("regex", pattern, compiled))
+            except (re.error, Exception):
+                return [], "", f"regex inválido no termo {idx + 1} — filtro ignorado"
+        else:
+            terms_info.append(("literal", part, None))
+
+    return terms_info, op, None
+
+
+def _filter_matches_line(
+    line: str,
+    terms_info: List[Tuple[str, str, Any]],
+    op: str,
+) -> bool:
+    """Return True if line matches the filter expression."""
+    if not terms_info:
+        return True
+
+    def _term_matches(kind: str, raw: str, compiled: Any) -> bool:
+        if kind == "literal":
+            return raw.lower() in line.lower()
+        try:
+            if _HAS_REGEX:
+                return bool(compiled.search(line, timeout=_FILTER_REGEX_TIMEOUT))
+            return bool(compiled.search(line))
+        except Exception:  # noqa: BLE001 — regex.TimeoutError or compile error
+            return False
+
+    if op == "AND":
+        return all(_term_matches(k, r, c) for k, r, c in terms_info)
+    return any(_term_matches(k, r, c) for k, r, c in terms_info)
+
+
+def _highlight_filter_line(
+    line: str,
+    terms_info: List[Tuple[str, str, Any]],
+) -> "Text":
+    """Return a rich Text with 'reverse' spans for all matching term spans."""
+    text_obj = Text(no_wrap=False)
+    spans: List[Tuple[int, int]] = []
+
+    for kind, raw, compiled in terms_info:
+        if kind == "literal":
+            lower_line = line.lower()
+            lower_raw = raw.lower()
+            pos = 0
+            while True:
+                idx = lower_line.find(lower_raw, pos)
+                if idx == -1:
+                    break
+                spans.append((idx, idx + len(raw)))
+                pos = idx + 1
+        else:
+            try:
+                if _HAS_REGEX:
+                    for m in compiled.finditer(line, timeout=_FILTER_REGEX_TIMEOUT):
+                        if m.start() < m.end():
+                            spans.append((m.start(), m.end()))
+                else:
+                    for m in compiled.finditer(line):
+                        if m.start() < m.end():
+                            spans.append((m.start(), m.end()))
+            except Exception:  # noqa: BLE001 — regex.TimeoutError
+                pass
+
+    if not spans:
+        text_obj.append(line)
+        return text_obj
+
+    spans.sort()
+    merged: List[List[int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    pos = 0
+    for start, end in merged:
+        if pos < start:
+            text_obj.append(line[pos:start])
+        text_obj.append(line[start:end], style="reverse")
+        pos = end
+    if pos < len(line):
+        text_obj.append(line[pos:])
+
+    return text_obj
+
+
+def _build_highlighted_body(
+    lines: List[str],
+    terms_info: List[Tuple[str, str, Any]],
+) -> "Text":
+    """Build a rich Text body for a list of lines with highlight spans."""
+    body = Text(no_wrap=False)
+    for i, line in enumerate(lines):
+        if i > 0:
+            body.append("\n")
+        if terms_info:
+            body.append_text(_highlight_filter_line(line, terms_info))
+        else:
+            body.append(line)
+    return body
+
+
+def _sanitize_filter_key(raw: str) -> str:
+    """Sanitize a filter storage key (same character set as pod-name sanitization)."""
+    return re.sub(r"[^A-Za-z0-9._/-]", "_", raw)
+
+
+def _load_panel_filter(key: str, app: Any = None) -> str:
+    """Load saved filter text for key. Returns "" on miss, error, or stale entry."""
+    try:
+        if not _PANEL_FILTERS_PATH.exists():
+            return ""
+        data = json.loads(_PANEL_FILTERS_PATH.read_text(encoding="utf-8"))
+        if data.get("schema_version") != _PANEL_FILTERS_SCHEMA_VERSION:
+            if app is not None:
+                try:
+                    app.push_toast("⚠", "estado de filtro ilegível — ignorado")
+                except Exception:  # noqa: BLE001
+                    pass
+            return ""
+        entries = data.get("entries", {})
+        entry = entries.get(key)
+        if not isinstance(entry, dict):
+            return ""
+        cutoff = time.time() - _PANEL_FILTERS_TTL_DAYS * 86400
+        if entry.get("saved_at", 0) < cutoff:
+            return ""
+        return entry.get("text", "") or ""
+    except (json.JSONDecodeError, OSError, ValueError):
+        if app is not None:
+            try:
+                app.push_toast("⚠", "estado de filtro ilegível — ignorado")
+            except Exception:  # noqa: BLE001
+                pass
+        return ""
+
+
+def _save_panel_filter(key: str, text: str) -> None:
+    """Save filter text for key using read-merge-write + atomic write."""
+    try:
+        _PANEL_FILTERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data: Dict[str, Any] = {
+            "schema_version": _PANEL_FILTERS_SCHEMA_VERSION,
+            "entries": {},
+        }
+        if _PANEL_FILTERS_PATH.exists():
+            try:
+                raw = json.loads(_PANEL_FILTERS_PATH.read_text(encoding="utf-8"))
+                if raw.get("schema_version") == _PANEL_FILTERS_SCHEMA_VERSION:
+                    data = raw
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
+        entries: Dict[str, Any] = dict(data.get("entries", {}))
+        now = int(time.time())
+        cutoff = now - _PANEL_FILTERS_TTL_DAYS * 86400
+        entries = {k: v for k, v in entries.items()
+                   if isinstance(v, dict) and v.get("saved_at", 0) >= cutoff}
+        entries[key] = {"text": text, "saved_at": now}
+        if len(entries) > _PANEL_FILTERS_CAP:
+            sorted_keys = sorted(entries, key=lambda k: entries[k].get("saved_at", 0))
+            for k in sorted_keys[:len(entries) - _PANEL_FILTERS_CAP]:
+                del entries[k]
+        data["entries"] = entries
+        tmp = _PANEL_FILTERS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(_PANEL_FILTERS_PATH)
+    except OSError:
+        pass
 
 
 # ===== key reader ===========================================================
@@ -2293,9 +2563,11 @@ class PodWatchView(View):
         self._export_txt: bool = False
         self._export_path_buf: str = ""
         self._export_target: Optional[Path] = None
-        # Filtro grep-like (issue #460).
+        # Filtro grep-like (issue #460 + #544).
         self._filter_text: str = ""          # texto confirmado (exibido no rodapé)
-        self._filter_re: Optional[Any] = None  # padrão compilado (None = sem filtro)
+        self._filter_re: Optional[Any] = None  # padrão compilado — single-term compat
+        self._filter_terms: List[Tuple[str, str, Any]] = []  # parsed terms (issue #544)
+        self._filter_op: str = ""            # "AND" | "OR" | "" (issue #544)
         self._prompt_open: bool = False      # prompt de entrada de filtro aberto
         self._filter_buffer: str = ""        # caracteres digitados no prompt
 
@@ -2311,6 +2583,8 @@ class PodWatchView(View):
         self._export_target = None
         self._filter_text = ""
         self._filter_re = None
+        self._filter_terms = []
+        self._filter_op = ""
         self._prompt_open = False
         self._filter_buffer = ""
         if self.streamer is not None:
@@ -2322,6 +2596,21 @@ class PodWatchView(View):
         self.pod_role = payload.get("pod_role", "")
         if not self.pod_name:
             return
+        # Restore saved filter for this pod (issue #544).
+        _pod_ns = (self.data.context.namespace
+                   if self.data is not None and self.data.context is not None
+                   else _NS_DEFAULT)
+        _fkey = _sanitize_filter_key(f"pod:{_pod_ns}/{self.pod_name}")
+        _fsaved = _load_panel_filter(_fkey, app)
+        if _fsaved:
+            _fterms, _fop, _ferr = _parse_filter_expr(_fsaved)
+            if _ferr is None and _fterms:
+                self._filter_text = _fsaved
+                self._filter_terms = _fterms
+                self._filter_op = _fop
+                if len(_fterms) == 1:
+                    _fkind, _fraw, _fcomp = _fterms[0]
+                    self._filter_re = (_fcomp if _fkind == "regex" else _lit_compile(_fraw))
         # Dispatch por role: locais → tail de log local; k8s → kubectl logs -f.
         if _is_local_role(self.pod_role):
             if self.data is not None and self.data.context is not None:
@@ -2344,6 +2633,13 @@ class PodWatchView(View):
         if self.streamer is not None:
             self.streamer.stop()
             self.streamer = None
+        # Persist current filter (issue #544).
+        if self.pod_name and self._filter_text:
+            _pod_ns = (self.data.context.namespace
+                       if self.data is not None and self.data.context is not None
+                       else _NS_DEFAULT)
+            _fkey = _sanitize_filter_key(f"pod:{_pod_ns}/{self.pod_name}")
+            _save_panel_filter(_fkey, self._filter_text)
 
     def _header_body(self) -> RenderableType:
         if self.data is None:
@@ -2635,8 +2931,13 @@ class PodWatchView(View):
                 before = len(raw)
                 raw = [ln for ln in raw if not _HEALTH_LINE_RE.search(ln)]
                 hidden = before - len(raw)
-            # Grep filter — applied after health filter, before truncation (issue #460).
-            if self._filter_re is not None:
+            # Grep filter — applied after health filter, before truncation (issue #460+544).
+            if self._filter_terms:
+                before = len(raw)
+                raw = [ln for ln in raw
+                       if _filter_matches_line(ln, self._filter_terms, self._filter_op)]
+                grep_hidden = before - len(raw)
+            elif self._filter_re is not None:
                 before = len(raw)
                 raw = [ln for ln in raw if self._filter_re.search(ln)]
                 grep_hidden = before - len(raw)
@@ -2649,7 +2950,7 @@ class PodWatchView(View):
                     style="dim",
                 )
             else:
-                body = Text("\n".join(raw), no_wrap=False)
+                body = _build_highlighted_body(raw, self._filter_terms)
         follow_label = "FOLLOW ON" if self.following else "PAUSED"
         health_label = ("health ESCONDIDOS" if self.hide_health
                         else "health VISÍVEIS")
@@ -2713,16 +3014,24 @@ class PodWatchView(View):
             self._filter_text = text
             if not text:
                 self._filter_re = None
-            elif text.startswith("r:"):
-                pattern = text[2:]
-                try:
-                    self._filter_re = re.compile(pattern, re.IGNORECASE)
-                except re.error:
-                    app.push_toast("⚠", "regex inválido — usando filtro literal")
-                    self._filter_re = re.compile(re.escape(pattern), re.IGNORECASE)
-                    self._filter_text = pattern
+                self._filter_terms = []
+                self._filter_op = ""
             else:
-                self._filter_re = re.compile(re.escape(text), re.IGNORECASE)
+                _terms, _op, _err = _parse_filter_expr(text)
+                if _err is not None:
+                    app.push_toast("⚠", _err)
+                    self._filter_re = None
+                    self._filter_terms = []
+                    self._filter_op = ""
+                    self._filter_text = ""
+                else:
+                    self._filter_terms = _terms
+                    self._filter_op = _op
+                    if len(_terms) == 1:
+                        _k, _r, _c = _terms[0]
+                        self._filter_re = (_c if _k == "regex" else _lit_compile(_r))
+                    else:
+                        self._filter_re = None
             return ActionResult.refresh()
         if key == "ESC":
             self._prompt_open = False
@@ -3026,9 +3335,11 @@ class LiveSessionView(View):
         self._export_target: Optional[Path] = None
         self._status_msg: Optional[str] = None
         self._status_until: float = 0.0
-        # Filtro grep-like para as turns do chat (issue #460).
+        # Filtro grep-like para as turns do chat (issue #460 + #544).
         self._filter_text: str = ""
         self._filter_re: Optional[Any] = None
+        self._filter_terms: List[Tuple[str, str, Any]] = []  # issue #544
+        self._filter_op: str = ""  # issue #544
         self._prompt_open: bool = False
         self._filter_buffer: str = ""
 
@@ -3048,8 +3359,29 @@ class LiveSessionView(View):
         self._status_until = 0.0
         self._filter_text = ""
         self._filter_re = None
+        self._filter_terms = []
+        self._filter_op = ""
         self._prompt_open = False
         self._filter_buffer = ""
+        # Restore saved filter for this session (issue #544).
+        if self.task_id:
+            _fkey = _sanitize_filter_key(f"session:{self.task_id}")
+            _fsaved = _load_panel_filter(_fkey, app)
+            if _fsaved:
+                _fterms, _fop, _ferr = _parse_filter_expr(_fsaved)
+                if _ferr is None and _fterms:
+                    self._filter_text = _fsaved
+                    self._filter_terms = _fterms
+                    self._filter_op = _fop
+                    if len(_fterms) == 1:
+                        _fkind, _fraw, _fcomp = _fterms[0]
+                        self._filter_re = (_fcomp if _fkind == "regex" else _lit_compile(_fraw))
+
+    def on_unmount(self, app: "PanelApp") -> None:
+        # Persist current filter for this session (issue #544).
+        if self.task_id and self._filter_text:
+            _fkey = _sanitize_filter_key(f"session:{self.task_id}")
+            _save_panel_filter(_fkey, self._filter_text)
 
     def _fetch_data(self) -> Any:
         """Synchronously fetch session data via asyncio (called from render thread)."""
@@ -3202,15 +3534,24 @@ class LiveSessionView(View):
         if self._status_msg is not None and time.time() >= self._status_until:
             self._status_msg = None
 
-        # Apply grep filter to chat turns (issue #460): build a new LiveSessionData
+        # Apply grep filter to chat turns (issue #460+544): build a new LiveSessionData
         # with only matching turns; _render_chat's [-8:] then slices the filtered
         # list.  Original data is not mutated.  Preserve stdout (issue #547).
-        if self._filter_re is not None and live_data.chat:
+        _has_filter = bool(self._filter_terms) or self._filter_re is not None
+        if _has_filter and live_data.chat:
             turns = live_data.chat.get("turns", [])
-            filtered_turns = [
-                t for t in turns
-                if self._filter_re.search(str(t.get("content", "") or ""))
-            ]
+            if self._filter_terms:
+                filtered_turns = [
+                    t for t in turns
+                    if _filter_matches_line(
+                        str(t.get("content", "") or ""),
+                        self._filter_terms, self._filter_op)
+                ]
+            else:
+                filtered_turns = [
+                    t for t in turns
+                    if self._filter_re.search(str(t.get("content", "") or ""))
+                ]
             live_data = live_data.__class__(
                 session=live_data.session,
                 command=live_data.command,
@@ -3253,16 +3594,24 @@ class LiveSessionView(View):
             self._filter_text = text
             if not text:
                 self._filter_re = None
-            elif text.startswith("r:"):
-                pattern = text[2:]
-                try:
-                    self._filter_re = re.compile(pattern, re.IGNORECASE)
-                except re.error:
-                    app.push_toast("⚠", "regex inválido — usando filtro literal")
-                    self._filter_re = re.compile(re.escape(pattern), re.IGNORECASE)
-                    self._filter_text = pattern
+                self._filter_terms = []
+                self._filter_op = ""
             else:
-                self._filter_re = re.compile(re.escape(text), re.IGNORECASE)
+                _terms, _op, _err = _parse_filter_expr(text)
+                if _err is not None:
+                    app.push_toast("⚠", _err)
+                    self._filter_re = None
+                    self._filter_terms = []
+                    self._filter_op = ""
+                    self._filter_text = ""
+                else:
+                    self._filter_terms = _terms
+                    self._filter_op = _op
+                    if len(_terms) == 1:
+                        _k, _r, _c = _terms[0]
+                        self._filter_re = (_c if _k == "regex" else _lit_compile(_r))
+                    else:
+                        self._filter_re = None
             return ActionResult.refresh()
         if key == "ESC":
             self._prompt_open = False
@@ -3288,6 +3637,8 @@ class LiveSessionView(View):
             if self._filter_text:
                 self._filter_text = ""
                 self._filter_re = None
+                self._filter_terms = []
+                self._filter_op = ""
                 return ActionResult.refresh()
             return ActionResult.back()
         if key == "/":

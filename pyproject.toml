@@ -66,6 +66,7 @@ dependencies = [
     "watchdog>=6.0",
     "google-ai-generativelanguage>=0.7",
     "httpx>=0.25",
+    "regex>=2024.0",
 ]
 
 [project.optional-dependencies]
