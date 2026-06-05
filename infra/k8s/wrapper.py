@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import sys
 import warnings
 from pathlib import Path
@@ -1239,50 +1240,121 @@ def _install_monitor_negative_whitelist() -> None:
         agent_mod.DeileAgent.initialize = _harden
 
 
-# Shell commands a monitor-qa turn is allowed to run are READ-ONLY. This regex
-# matches anything that mutates state — kubectl/git/gh/glab/helm write verbs,
-# destructive coreutils, sudo, and output redirection. It is the second layer
-# (the persona instructions are the first); a match is hard-refused regardless
-# of the bash risk classifier, so prompt-injection of a write cannot land.
-_QA_MUTATING_RE = re.compile(
-    r"(?:^|[\s;&|(`])(?:rm|mv|cp|dd|tee|truncate|chmod|chown|chgrp|kill|pkill|killall|ln|shred|mkfs|mount)\b"
-    r"|\bkubectl\b[^|;&]*\b(?:delete|patch|apply|edit|scale|cordon|drain|uncordon|replace|annotate|label|create|expose|rollout|set|exec|cp|attach|taint|port-forward)\b"
-    r"|\bgit\b[^|;&]*\b(?:push|commit|reset|merge|rebase|checkout|switch|clean|tag|am|cherry-pick|revert|stash|fetch|pull)\b"
-    r"|\b(?:gh|glab)\b[^|;&]*\b(?:create|edit|close|reopen|merge|delete|comment|review|develop|ready|lock|unlock|pin|transfer|sync)\b"
-    r"|\bhelm\b[^|;&]*\b(?:install|upgrade|uninstall|delete|rollback)\b"
-    r"|(?<![0-9])>>?"          # output redirection (write); 2>&1 style is excluded
-    r"|\bsudo\b",
+# Read-only Q&A uses an ALLOW-LIST executor, not a denylist. A denylist over a
+# string handed to a real shell is bypassable (command substitution, indirection,
+# unlisted binaries like `curl`/`python3`). Instead the monitor-qa bash tool is
+# replaced by a SHELL-FREE runner (subprocess shell=False) that only runs a fixed
+# set of read binaries with read verbs — so chaining (`;`/`|`/`&&`), substitution
+# (`$()`/backticks) and redirection (`>`) are never interpreted, regardless of the
+# prompt. Safe-by-construction, not safe-by-instruction.
+_QA_ALLOWED_BINARIES = frozenset({
+    "kubectl", "gh", "glab", "cat", "ls", "head", "tail", "grep", "egrep",
+    "wc", "jq", "cut", "sort", "uniq", "nl", "tac", "tr", "column", "echo", "date",
+})
+_QA_KUBECTL_READ_VERBS = frozenset({
+    "get", "describe", "logs", "top", "explain", "api-resources",
+    "cluster-info", "events", "version", "config",
+})
+# gh/glab grammar is `<binary> <noun> <action>` (e.g. `gh pr merge`). Allow-list
+# the READ action (2nd non-flag token) rather than denylist writes — "run"/"pr"
+# are read NOUNS (`gh run list`) yet "create"/"merge" are write ACTIONS.
+_QA_FORGE_READ_ACTIONS = frozenset({
+    "list", "view", "status", "diff", "checks", "get", "show", "ls", "describe",
+})
+_QA_FORGE_READ_TOPLEVEL = frozenset({"status", "version"})
+# Paths whose contents are secrets — never readable via the Q&A read binaries.
+_QA_DENY_PATH_RE = re.compile(
+    r"/run/secrets|/var/run/secrets|\.git-credentials|\.config/(?:gh|glab)|/proc/",
     re.IGNORECASE,
 )
 
 
+def _qa_command_allowed(cmd: str) -> "tuple[bool, str]":
+    """Decide whether *cmd* is a permitted READ-ONLY command. Pure + testable.
+
+    Allow-list by construction: parse argv with ``shlex`` (no shell), require the
+    binary to be in :data:`_QA_ALLOWED_BINARIES`, constrain kubectl/gh/glab to
+    read verbs (no Secret reads, no `--raw`, no `gh api` writes), and deny any
+    path under a secret mount. Returns ``(ok, reason)``."""
+    cmd = (cmd or "").strip()
+    if not cmd:
+        return False, "comando vazio"
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False, "comando não parseável"
+    if not argv:
+        return False, "comando vazio"
+    binary = os.path.basename(argv[0])
+    if binary not in _QA_ALLOWED_BINARIES:
+        return False, f"binário '{binary}' não permitido (modo somente-leitura)"
+    if _QA_DENY_PATH_RE.search(cmd):
+        return False, "acesso a caminhos de segredo negado"
+    if binary == "kubectl":
+        if "--raw" in argv:
+            return False, "kubectl --raw negado"
+        verb = next((a for a in argv[1:] if not a.startswith("-")), "")
+        if verb not in _QA_KUBECTL_READ_VERBS:
+            return False, f"kubectl '{verb}' não é um verbo de leitura permitido"
+        if verb in ("get", "describe") and any(
+            a in ("secret", "secrets") or a.startswith(("secret/", "secrets/"))
+            for a in argv[1:]
+        ):
+            return False, "leitura de Secrets negada"
+    if binary in ("gh", "glab"):
+        nonflag = [a for a in argv[1:] if not a.startswith("-")]
+        noun = nonflag[0] if nonflag else ""
+        if noun == "api":
+            if any(f in argv for f in ("-f", "-F", "--field", "--raw-field", "--input")):
+                return False, f"{binary} api com corpo (escrita) negado"
+            for i, a in enumerate(argv):
+                if a in ("-X", "--method") and i + 1 < len(argv) and argv[i + 1].upper() != "GET":
+                    return False, f"{binary} api não-GET negado"
+            return True, ""
+        action = nonflag[1] if len(nonflag) > 1 else ""
+        if action:
+            if action not in _QA_FORGE_READ_ACTIONS:
+                return False, f"{binary} '{noun} {action}' não é uma ação de leitura permitida"
+        elif noun not in _QA_FORGE_READ_TOPLEVEL:
+            return False, f"{binary} '{noun}' não permitido (somente-leitura)"
+    return True, ""
+
+
 def _wrap_bash_readonly(bash_tool: object) -> None:
-    """Wrap the bash tool so a non-SAFE/mutating command is hard-refused.
+    """Replace the bash tool with a shell-FREE allow-list read executor.
 
-    Enforcement, not instruction: even if the persona is steered into asking
-    for a mutation, the command never reaches the shell. Allows MODERATE
-    commands (``kubectl get``/``gh list``/``curl`` are classified MODERATE)
-    so legitimate read inspection still works; refuses DANGEROUS or any
-    mutating verb in :data:`_QA_MUTATING_RE`.
-    """
-    from deile.tools._shell_security import assess_risk
-    from deile.tools.base import SecurityLevel, ToolResult
+    The command is parsed with ``shlex`` and executed via
+    ``subprocess.run(argv, shell=False)`` — so a prompt-injected chain /
+    substitution / redirection is never interpreted, and only the binaries +
+    verbs permitted by :func:`_qa_command_allowed` ever run. This REPLACES the
+    original (shell-based) ``execute_sync`` rather than delegating to it."""
+    import subprocess as _subprocess
 
-    original_execute_sync = bash_tool.execute_sync  # type: ignore[attr-defined]
+    from deile.tools.base import ToolResult
 
-    def _guarded(context):
+    def _readonly_exec(context):
         cmd = ((getattr(context, "parsed_args", None) or {}).get("command") or "")
-        level, _warnings = assess_risk(cmd)
-        if level == SecurityLevel.DANGEROUS.value or _QA_MUTATING_RE.search(cmd):
+        ok, reason = _qa_command_allowed(cmd)
+        if not ok:
             return ToolResult.error_result(
-                message=(
-                    "monitor-qa: comando recusado — modo somente-leitura "
-                    "(mutações e redirecionamentos são bloqueados)."
-                ),
+                message=f"monitor-qa: comando recusado — {reason}.",
             )
-        return original_execute_sync(context)
+        argv = shlex.split(cmd)
+        try:
+            proc = _subprocess.run(
+                argv, shell=False, capture_output=True, text=True, timeout=60,
+            )
+        except _subprocess.TimeoutExpired:
+            return ToolResult.error_result(message="monitor-qa: comando excedeu 60s.")
+        except (OSError, ValueError) as exc:
+            return ToolResult.error_result(message=f"monitor-qa: falha ao executar: {exc}")
+        out = proc.stdout or ""
+        if proc.returncode != 0:
+            err = (proc.stderr or out or f"exit {proc.returncode}")[:2000]
+            return ToolResult.error_result(message=f"comando retornou {proc.returncode}: {err}")
+        return ToolResult.success_result(data=out[:20000], message=out[:200])
 
-    bash_tool.execute_sync = _guarded  # type: ignore[attr-defined]
+    bash_tool.execute_sync = _readonly_exec  # type: ignore[attr-defined]
 
 
 def _install_monitor_qa_readonly_guard() -> None:
@@ -1329,9 +1401,20 @@ def _install_monitor_qa_readonly_guard() -> None:
             guarded = "bash_execute"
         else:
             guarded = "none"
+        # Apply the read-only persona reliably: DEILE_DEFAULT_PERSONA is NOT
+        # consumed anywhere in deile/ (the env var is dead); switch_persona is
+        # the real mechanism. Safety does not depend on this — the guard above
+        # enforces read-only regardless of which persona loads — but the
+        # monitor_qa instructions improve answer quality.
+        try:
+            pm = getattr(self, "persona_manager", None)
+            if pm is not None:
+                await pm.switch_persona("monitor_qa")
+        except Exception:  # noqa: BLE001 — guard already enforces read-only
+            pass
         print(
             f"wrapper(monitor-qa): read-only guard active — "
-            f"dropped={sorted(dropped)} guarded={guarded}",
+            f"dropped={sorted(dropped)} guarded={guarded} persona=monitor_qa",
             file=sys.stderr,
         )
         return result
@@ -1378,15 +1461,29 @@ def _run_monitor_qa(passthrough: List[str]) -> int:
 
     _patch_deile_bootstrap()
 
+    # kubectl in this Pod only authenticates via an explicit kubeconfig (issue
+    # #504): build one and point KUBECONFIG at it so the allow-listed `kubectl`
+    # reads work in Q&A. Best-effort — forge/state questions still answer without
+    # it. (The Phase-B/tick persona never ran kubectl, so this is net-new here.)
+    try:
+        import tempfile
+
+        import monitor_core  # sibling in /app
+        _kc = os.path.join(tempfile.gettempdir(), "deile-monitor-qa-kubeconfig")
+        if monitor_core.resolve_incluster_kube(monitor_core.run_cmd, _kc):
+            os.environ["KUBECONFIG"] = _kc
+    except Exception as exc:  # noqa: BLE001 — kubectl-less Q&A still works
+        print(f"wrapper(monitor-qa): kubeconfig setup skipped: {exc}", file=sys.stderr)
+
     try:
         _install_monitor_qa_readonly_guard()
     except Exception as exc:  # noqa: BLE001 — refuse to start unsafe
         print(f"wrapper(monitor-qa): read-only guard install failed: {exc}", file=sys.stderr)
         return 78
 
-    # FORCE (not setdefault): the Deployment env sets DEILE_DEFAULT_PERSONA=monitor
-    # for the tick; Q&A must override it to the read-only persona.
-    os.environ["DEILE_DEFAULT_PERSONA"] = "monitor_qa"
+    # Persona is applied by the guard's switch_persona("monitor_qa") after init
+    # (DEILE_DEFAULT_PERSONA is dead code). The one-shot CLI prints the agent's
+    # final response.content to stdout — that is the answer the server returns.
     sys.argv = ["deile", *passthrough]
     from deile.cli import main as deile_main
     return deile_main() or 0

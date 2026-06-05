@@ -1,9 +1,10 @@
 """Tests for the ``monitor-qa`` role in ``infra/k8s/wrapper.py``.
 
 The read-only Q&A path is security-critical: a prompt-injected mutation must
-never reach the shell. These tests pin (1) the mutating-command regex, (2) the
-bash guard's refuse/delegate decision, (3) the CLI role routing, and (4) the
-hard-fail when no LLM key is present.
+never reach the shell. The defense is an ALLOW-LIST executor (shell-free), so
+these tests pin (1) ``_qa_command_allowed`` against every bypass vector the
+review surfaced, (2) that the executor is genuinely shell-free (chaining /
+redirection are inert), (3) CLI role routing, and (4) the no-LLM-key hard-fail.
 """
 from __future__ import annotations
 
@@ -25,106 +26,144 @@ def wrapper():
 
 
 # --------------------------------------------------------------------------- #
-# 1. The mutating-command regex
+# 1. _qa_command_allowed — the allow-list decision (security crux)
 # --------------------------------------------------------------------------- #
 
-MUTATING = [
+# Every one of these is a real bypass vector from the adversarial review; ALL
+# must be REFUSED by the allow-list.
+REJECTED = [
+    # unlisted binaries — the apiserver/curl + interpreter bypasses
+    'curl -sk -X DELETE -H "Authorization: Bearer x" https://10.43.0.1/api/v1/namespaces/deile/pods/p',
+    'curl -s http://x/v1/status',
+    'python3 -c "import os; os.remove(1)"',
+    "python -c 'x'",
+    "perl -e '1'",
+    "node -e '1'",
+    "find / -delete",
+    "find . -name x -exec rm {} +",
+    "sed -i s/a/b/ f",
+    "awk 'BEGIN{system(\"rm x\")}'",
+    "helm uninstall r",
+    "bash -c 'rm -rf /'",
+    "sh -c x",
+    "eval x",
+    "xargs rm",
+    # kubectl write/exec verbs
     "kubectl delete pod foo",
-    "kubectl  patch deployment x -p '{}'",
-    "kubectl apply -f m.yaml",
-    "kubectl scale deploy/x --replicas=0",
-    "kubectl rollout restart deploy/x",
-    "kubectl set env deploy/x A=B",
+    "kubectl run evil --image=alpine",
+    "kubectl debug node/n1 -it --image=alpine",
     "kubectl exec deploy/x -- sh",
-    "git push origin main",
-    "git commit -am wip",
-    "git reset --hard",
+    "kubectl apply -f m.yaml",
+    "kubectl patch deploy x -p {}",
+    "kubectl scale deploy/x --replicas=0",
+    "kubectl edit deploy x",
+    "kubectl proxy --port=8001",
+    # kubectl secret reads + raw
+    "kubectl get secret claude-credentials -o yaml",
+    "kubectl get secrets",
+    "kubectl describe secret/claude-credentials",
+    "kubectl get --raw /api/v1/namespaces/deile/pods",
+    # variable indirection / reassembly (shlex makes argv0 not an allowed binary)
+    "k=kubectl; $k delete pod x",
+    # gh/glab writes + api writes
     "gh pr merge 5 --squash",
     "gh issue create --title x",
     "glab mr create",
-    "helm upgrade r chart",
-    "rm -rf /tmp/x",
-    "mv a b",
-    "cp a b",
-    "chmod 777 x",
-    "sudo kubectl get pods",
-    "echo hi > /tmp/out",
-    "kubectl get pods >> log.txt",
+    "gh api -X POST repos/o/r/issues -f title=x",
+    "gh api --method DELETE repos/o/r/issues/1",
+    "gh api repos/o/r/issues -f body=x",
+    # secret-path reads
+    "cat /run/secrets/monitor/MONITOR_BEARER_TOKEN",
+    "cat /run/secrets/deile/GITHUB_TOKEN",
+    "cat /var/run/secrets/kubernetes.io/serviceaccount/token",
+    "cat /proc/self/environ",
+    "tail /home/deile/.git-credentials",
+    "",
+    "   ",
 ]
 
-READ_ONLY = [
+ALLOWED = [
     "kubectl get pods",
     "kubectl get pod -l app=deile-pipeline -o json",
     "kubectl describe pod foo",
     "kubectl logs deploy/deile-pipeline --tail=50",
-    "kubectl logs deploy/x 2>&1",
     "kubectl top pods",
+    "kubectl get events",
+    "kubectl version",
     "gh pr list",
     "gh issue view 5",
     "gh api repos/o/r/issues",
+    "gh api -X GET repos/o/r",
     "glab mr list",
-    "curl -s http://deile-pipeline-status:8768/v1/pipeline-status",
     "cat /state/monitor-state.json",
     "tail -20 /state/monitor-audit.log",
-    "grep -c ERROR /state/monitor-audit.log",
+    "grep ERROR /state/monitor-audit.log",
+    "jq . /state/monitor-state.json",
     "ls /state",
 ]
 
 
-@pytest.mark.parametrize("cmd", MUTATING)
-def test_mutating_regex_matches(wrapper, cmd):
-    assert wrapper._QA_MUTATING_RE.search(cmd), f"should be flagged: {cmd!r}"
+@pytest.mark.parametrize("cmd", REJECTED)
+def test_qa_command_rejected(wrapper, cmd):
+    ok, reason = wrapper._qa_command_allowed(cmd)
+    assert ok is False, f"MUST be refused: {cmd!r}"
+    assert reason, "a refusal must carry a reason"
 
 
-@pytest.mark.parametrize("cmd", READ_ONLY)
-def test_readonly_regex_allows(wrapper, cmd):
-    assert not wrapper._QA_MUTATING_RE.search(cmd), f"should NOT be flagged: {cmd!r}"
+@pytest.mark.parametrize("cmd", ALLOWED)
+def test_qa_command_allowed(wrapper, cmd):
+    ok, reason = wrapper._qa_command_allowed(cmd)
+    assert ok is True, f"read command should be allowed: {cmd!r} (reason={reason!r})"
 
 
 # --------------------------------------------------------------------------- #
-# 2. The bash guard (regex + assess_risk) — refuse vs delegate
+# 2. The executor is genuinely shell-free (chaining / redirection are inert)
 # --------------------------------------------------------------------------- #
 
 
-class _FakeContext:
+class _Ctx:
     def __init__(self, command):
         self.parsed_args = {"command": command}
 
 
-class _FakeBashTool:
-    """Minimal stand-in exposing ``execute_sync`` like BashExecuteTool."""
+class _Bash:
+    """Stand-in exposing execute_sync; the wrap REPLACES it."""
 
-    def __init__(self):
-        self.calls = []
-
-    def execute_sync(self, context):
-        self.calls.append(context.parsed_args.get("command"))
-        return "DELEGATED"
+    def execute_sync(self, context):  # pragma: no cover - replaced by the wrap
+        raise AssertionError("original execute_sync must never be called (shell path)")
 
 
-def test_guard_refuses_mutations(wrapper):
-    tool = _FakeBashTool()
+def test_executor_refuses_disallowed_without_running(wrapper):
+    tool = _Bash()
     wrapper._wrap_bash_readonly(tool)
     from deile.tools.base import ToolResult
 
-    for cmd in ["kubectl delete pod foo", "git push origin main",
-                "rm -rf /", "echo x > f", "gh pr merge 5"]:
-        result = tool.execute_sync(_FakeContext(cmd))
-        assert isinstance(result, ToolResult), cmd
-        assert result.is_success is False, cmd
-        assert "recusado" in (result.message or "").lower(), cmd
-    assert tool.calls == [], "refused commands must not reach the real shell"
+    res = tool.execute_sync(_Ctx("kubectl delete pod foo"))
+    assert isinstance(res, ToolResult) and res.is_success is False
+    assert "recusado" in (res.message or "").lower()
 
 
-def test_guard_delegates_reads(wrapper):
-    tool = _FakeBashTool()
+def test_executor_runs_allowed_shell_free(wrapper, tmp_path):
+    tool = _Bash()
     wrapper._wrap_bash_readonly(tool)
-    for cmd in ["kubectl get pods", "gh pr list",
-                "curl -s http://x:8768/v1/pipeline-status",
-                "cat /state/monitor-state.json"]:
-        result = tool.execute_sync(_FakeContext(cmd))
-        assert result == "DELEGATED", f"read command should delegate: {cmd!r}"
-    assert len(tool.calls) == 4
+    # `echo` is allow-listed; a `;` + `rm` chain must be INERT (literal args to
+    # echo), proving there is no shell. The sentinel file must survive.
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    res = tool.execute_sync(_Ctx(f"echo hi ; rm -rf {victim}"))
+    assert res.is_success is True
+    assert "hi" in (res.data or "")
+    assert victim.exists(), "shell-free: the `; rm` chain must NOT have executed"
+
+
+def test_executor_redirection_is_inert(wrapper, tmp_path):
+    tool = _Bash()
+    wrapper._wrap_bash_readonly(tool)
+    target = tmp_path / "should_not_exist.txt"
+    res = tool.execute_sync(_Ctx(f"echo pwned > {target}"))
+    # echo prints the literal "pwned > <path>"; no file is written by a shell.
+    assert res.is_success is True
+    assert not target.exists(), "shell-free: `>` redirection must NOT create a file"
 
 
 # --------------------------------------------------------------------------- #
