@@ -221,6 +221,7 @@ O daemon em si vive em `elimarcavalli/deilebot` e tem extras próprios (`discord
 | `DEILE_CRON_AUTOSTART` | Se `1`, o daemon `deilebot` inicia o `CronRunner` automaticamente no boot | não setado |
 | `DEILE_CRON_DB_PATH` | Caminho absoluto do SQLite do `CronStore` | `<DEILE_PIPELINE_BASE_PATH>/data/cron.db` ou `<cwd>/data/cron.db` |
 | `DEILE_PIPELINE_DISPATCH_MODE` | Estratégia de execução: `claude` (`claude -p` em worktree) ou `deile_worker` (despacha ao Pod `deile-worker` por HTTP) — Decisão #31 | `deile_worker` |
+| `DEILE_PIPELINE_MAX_PARALLEL` | Teto de dispatches simultâneos por tick (gate de concorrência do monitor). Aceita inteiro ≥ 1 ou sentinel `auto` (lê réplicas do `claude-worker` via `kubectl`). Ver [§Gate de dispatch](#gate-de-dispatch-deile_pipeline_max_parallel-e-_count_total_in_flight) abaixo | `2` |
 | `DEILE_PIPELINE_RESUME_ENABLED` | Master switch do resume de trabalho parcial (Decisão #30); só ativa no caminho `deile_worker` | `true` |
 | `DEILE_PIPELINE_RESUME_INTERVAL` | Segundos mínimos entre tentativas de resume do mesmo item (`0` = imediato) | `0` |
 | `DEILE_PIPELINE_RESUME_MAX_ATTEMPTS` | Teto de tentativas por item antes do fluxo de bloqueio (`>= 1`) | `10` |
@@ -232,6 +233,64 @@ O daemon em si vive em `elimarcavalli/deilebot` e tem extras próprios (`discord
 > Estas variáveis mapeiam para chaves em `~/.deile/settings.json` (`pipeline.dispatch_mode`, `pipeline.resume_*`, `model.preferred`); usar as env vars ainda funciona mas emite *deprecation warning* pedindo para mover ao `settings.json`. Defaults a nível de `PipelineConfig` (não env): `mention_handle` (`@deile-one`) e `enable_review_human_prs` (`false` — se `true`, triagem/review reivindicam PRs de branch alheio; ver Decisões #32/#33).
 
 > O `pipeline_tool.py` e o `pipeline_command.py` leem essas variáveis diretamente via `os.environ` (pois são componentes de borda — não domínio); isso está alinhado com a regra "adapters podem ler env, core não pode".
+
+### Gate de dispatch: `DEILE_PIPELINE_MAX_PARALLEL` e `_count_total_in_flight`
+
+> Referência canônica para diagnosticar stalls de backlog (issue #585). Nenhum arquivo `.py` de runtime é alterado aqui — esta subseção é documentação pura.
+
+#### O que `DEILE_PIPELINE_MAX_PARALLEL` controla
+
+`DEILE_PIPELINE_MAX_PARALLEL` define o **teto de dispatches simultâneos** que o monitor pode manter em voo a cada tick. O valor é lido em `deile/orchestration/pipeline/monitor.py:236–242` (`build_default_pipeline_config`) e armazenado em `PipelineConfig.max_parallel` (`monitor.py:148`).
+
+| Valor | Semântica |
+|---|---|
+| inteiro ≥ 1 | limite fixo de slots concorrentes |
+| `auto` | lê o número corrente de réplicas do `claude-worker` via `kubectl` (`monitor.py:169–211`); cai em `2` se `kubectl` não estiver disponível |
+
+Default: **`2`**. Persistência: `DEILE_PIPELINE_MAX_PARALLEL` (env) → `settings.pipeline_max_parallel` → `PipelineConfig.max_parallel`. A chave `settings.json` equivalente é `pipeline.max_parallel`.
+
+#### Como `_count_total_in_flight` é calculado
+
+A função `_count_total_in_flight` (`deile/orchestration/pipeline/stages.py:1819`) contabiliza todo o trabalho em andamento que pertence a este monitor:
+
+1. **Issues em estado-lock** — labels `~workflow:em_revisao`, `~workflow:em_refinamento`, `~workflow:em_arquitetura` e `~workflow:em_implementacao`, **excluindo** aquelas que também carregam `~workflow:bloqueada`, `~workflow:em_pr` ou `~workflow:aguardando_stakeholder` (estados _parked_ que não consomem worker ativo — `stages.py:1849–1863`).
+2. **PRs em review** — label `~review:em_andamento` sem `~workflow:bloqueada` (`stages.py:1864–1874`).
+
+Apenas itens **de posse deste monitor** (label `~by:<id>` ou `_this_monitor_owns`) são contados.
+
+A regra de disponibilidade, aplicada nos despachadores de crítica (`stages.py:887`), refinamento (`stages.py:1207`) e implementação (`stages.py:2010`):
+
+```
+available = max(0, max_parallel − in_flight)
+```
+
+Quando `available ≤ 0`, o tick **silenciosamente pula** todos os novos claims daquele stage — sem erro, sem `WARNING`; apenas uma linha `logger.debug`.
+
+> Nota: o despachador de implementação usa `_count_in_flight_issues` (`stages.py:1878`) em vez de `_count_total_in_flight` — conta somente issues em `~workflow:em_implementacao`, não PRs em review. A fórmula `max_parallel − in_flight` é a mesma.
+
+#### Sintoma de stall e ponto de ajuste
+
+**Sintoma:** `dispatched=0` por vários ticks consecutivos com backlog não-vazio. Os logs do pod `deile-pipeline` mostrarão linhas como:
+
+```
+critique: todos os 2 slots ocupados (2 em voo); skip novos claims
+```
+
+**Causas comuns:**
+- `max_parallel` abaixo do `in_flight` real — por exemplo, issues presas em `aguardando_stakeholder` sem o label `~workflow:bloqueada`, contando incorretamente como slots ocupados.
+- Número de réplicas do `claude-worker` aumentado mas `DEILE_PIPELINE_MAX_PARALLEL` não acompanhou.
+
+**Ponto de ajuste — sem rebuild necessário:**
+
+1. **Painel TUI** → tecla `[p]` na view de pipeline → edita `max_parallel` em tempo real (grava via `kubectl set env`).
+2. **`kubectl set env`** direto:
+   ```bash
+   kubectl set env deployment/deile-pipeline \
+     -n deile DEILE_PIPELINE_MAX_PARALLEL=4
+   kubectl rollout status deployment/deile-pipeline -n deile
+   ```
+
+O monitor relê a variável no próximo boot do pod. Nenhuma reconstrução de imagem é necessária.
 
 ## Hot-reload
 
