@@ -20,6 +20,8 @@ from __future__ import annotations
 import io
 import re
 from pathlib import Path
+from typing import AsyncIterator
+from unittest.mock import patch
 
 import pytest
 from rich.console import Console
@@ -162,3 +164,105 @@ def test_no_text_derived_width_pattern_in_ui_or_commands() -> None:
         "Padrão de largura derivada de texto encontrado — usar Rich adaptativo:\n"
         + "\n".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# live_stream — comportamento não-TTY e adaptação de largura
+# ---------------------------------------------------------------------------
+
+
+async def _aiter(lines: list) -> AsyncIterator[str]:
+    """Converte uma lista em AsyncIterator de strings."""
+    for line in lines:
+        yield line
+
+
+@pytest.mark.unit
+class TestLiveStreamNonTty:
+    async def test_non_tty_prints_each_line_via_console(self):
+        """Em ambiente não-TTY, live_stream deve usar console.print por linha."""
+        from deile.ui.dynamic_render import live_stream
+
+        buf = io.StringIO()
+        console = Console(file=buf, no_color=True, width=80)
+        lines = ["linha 1", "linha 2", "linha 3"]
+
+        result = await live_stream(_aiter(lines), console=console)
+
+        assert result == lines
+        output = buf.getvalue()
+        for line in lines:
+            assert line in output
+
+    async def test_non_tty_returns_all_lines(self):
+        """live_stream deve retornar lista completa de linhas, independente do modo."""
+        from deile.ui.dynamic_render import live_stream
+
+        buf = io.StringIO()
+        console = Console(file=buf, no_color=True, width=80)
+        lines = ["a", "b", "c", "d", "e"]
+
+        result = await live_stream(_aiter(lines), console=console)
+
+        assert result == lines
+
+    async def test_non_tty_empty_iterator_returns_empty_list(self):
+        """Iterator vazio deve retornar lista vazia."""
+        from deile.ui.dynamic_render import live_stream
+
+        buf = io.StringIO()
+        console = Console(file=buf, no_color=True, width=80)
+
+        result = await live_stream(_aiter([]), console=console)
+
+        assert result == []
+
+    async def test_tty_live_returns_all_lines(self):
+        """Em modo TTY (mockado), live_stream deve ainda retornar todas as linhas."""
+        from deile.ui.dynamic_render import live_stream
+
+        buf = io.StringIO()
+        # force_terminal=True simula TTY para o Console, mas is_interactive_tty
+        # verifica sys.stdout — mockamos is_interactive_tty diretamente
+        console = Console(file=buf, no_color=True, width=80, force_terminal=True)
+        lines = ["building...", "done"]
+
+        with patch("deile.ui.dynamic_render.is_interactive_tty", return_value=True):
+            result = await live_stream(_aiter(lines), console=console)
+
+        assert result == lines
+
+
+@pytest.mark.unit
+class TestLiveStreamWidthAdaptation:
+    async def test_non_tty_output_respects_console_width(self):
+        """Saída em modo não-TTY deve respeitar a largura do console."""
+        from deile.ui.dynamic_render import live_stream
+
+        console_width = 40
+        # Uma linha longa — console.print pode truncar ou quebrar
+        long_line = "x" * 10  # conteúdo curto, sem truncamento esperado
+
+        buf = io.StringIO()
+        console = Console(file=buf, no_color=True, width=console_width)
+
+        await live_stream(_aiter([long_line]), console=console)
+
+        output = buf.getvalue()
+        for line in output.splitlines():
+            assert len(line) <= console_width, (
+                f"Linha estourou console_width={console_width} (len={len(line)}): {line!r}"
+            )
+
+    @pytest.mark.parametrize("width", [40, 80, 120, 200])
+    async def test_multiple_widths_all_return_same_lines(self, width: int):
+        """live_stream retorna as mesmas linhas independente da largura do console."""
+        from deile.ui.dynamic_render import live_stream
+
+        lines = ["line one", "line two", "line three"]
+        buf = io.StringIO()
+        console = Console(file=buf, no_color=True, width=width)
+
+        result = await live_stream(_aiter(lines), console=console)
+
+        assert result == lines

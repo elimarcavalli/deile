@@ -408,6 +408,14 @@ class PipelineMonitor:
         # concorrente da mesma PR num tick subsequente).
         self._bg_tasks: set = set()
         self._resume_in_flight: set = set()
+        # Anti-loop (issue #418): números de issues promovidas a ``revisada`` no
+        # TICK corrente (por convergência de refino OU crítica CLARO). O índice
+        # de labels do GitHub tem eventual consistency, então uma issue promovida
+        # neste tick ainda reaparece sob ``refinar``/``em_arquitetura`` na
+        # listagem de ``refine_one_issue`` (mesmo tick) — sem este guard o
+        # rehydrate a rebaixaria de volta, criando loop infinito. Limpo no início
+        # de cada tick; consultado pelo candidate-filter do refino.
+        self._refine_promoted_this_tick: set = set()
         # Schedule store — when present, schedule entries drive when each
         # action fires (instead of the fixed poll interval). On startup the
         # monitor first drains any catch-up queue (entries whose run time
@@ -845,6 +853,9 @@ class PipelineMonitor:
         skip = skip or set()
         scheduled_mode = bool(skip)
         cfg = self.config
+        # Anti-loop (issue #418): zera o set de "promovidas a revisada neste tick"
+        # no começo do tick, antes do reconcile que o preenche e do refine que o lê.
+        self._refine_promoted_this_tick.clear()
 
         async def _scheduled(enabled: bool, key: str, handler) -> None:
             """Run a schedulable stage unless the scheduler already covered it."""

@@ -1142,9 +1142,15 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
 
     _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
                  WORKFLOW_PR, WORKFLOW_DECOMPOSED)
+    # Anti-loop (issue #418): pula issues promovidas a ``revisada`` NESTE tick.
+    # ``reconcile_refine_issues`` roda antes (mesmo tick) e, ao convergir, marca a
+    # issue aqui; o índice de labels do GitHub ainda a lista sob ``refinar`` por
+    # eventual consistency, então sem este guard o rehydrate a rebaixaria de volta.
+    _promoted = getattr(monitor, "_refine_promoted_this_tick", set())
     candidates = [
         i for i in sort_by_priority(issues)
         if not any(lb in i.labels for lb in _excluded)
+        and i.number not in _promoted
         and monitor.identity.owns(i.title)
     ]
     if not candidates:
@@ -1338,6 +1344,12 @@ async def _promote_refine_to_reviewed(
         await monitor.forge.remove_labels("issue", number, cleanup)
         await monitor.forge.comment_on_issue(number, comment)
         monitor._resume_tracker.clear(number)
+        # Anti-loop (issue #418): marca a issue como promovida NESTE tick para o
+        # candidate-filter de ``refine_one_issue`` (mesmo tick) pular o snapshot
+        # stale do índice do GitHub que ainda a lista sob ``refinar``.
+        promoted = getattr(monitor, "_refine_promoted_this_tick", None)
+        if promoted is not None:
+            promoted.add(number)
         monitor._stats.issues_reviewed += 1
         logger.info(log_msg)
     except GhCommandError as exc:

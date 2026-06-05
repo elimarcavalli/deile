@@ -198,7 +198,10 @@ PIPELINE_PATTERNS: List[LogPattern] = [
         name="dispatch_failed",
         pattern=re.compile(
             r"dispatch.*failed|WORKER_TIMEOUT|"
-            r"dispatch_completed.*ok=False|"
+            # Accept both wire formats: canonical dot ``dispatch.completed``
+            # and legacy snake ``dispatch_completed`` (a detector must never
+            # miss a failed dispatch — false-negatives here = silent outages).
+            r"dispatch[._]completed.*ok=False|"
             r"implement.*BLOCKED|review.*BLOCKED",
             re.IGNORECASE,
         ),

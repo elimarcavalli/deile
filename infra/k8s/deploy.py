@@ -519,17 +519,26 @@ def _assert_bearer_sync(kubectl: str, ns: str) -> None:
         )
 
 
-def _k8s_up_resolve_profile(extra: List[str], env: Dict[str, str]) -> DeploymentProfile:
-    """Resolves the deployment profile from CLI flags, .env, or os.environ."""
+def _k8s_up_resolve_profile(
+    extra: List[str], env: Dict[str, str]
+) -> tuple:  # (DeploymentProfile, explicit: bool)
+    """Resolves the deployment profile from CLI flags, .env, or os.environ.
+
+    Returns a tuple (profile, explicit) where explicit=True means the operator
+    deliberately chose the profile (via --profile or DEILE_K8S_DEPLOY_PROFILE).
+    explicit=False means the profile is the implicit default ('full').
+    This distinction is used by k8s_up to decide whether to fallback silently
+    when the Discord token is absent (D2 — issue #531).
+    """
     i = 0
     while i < len(extra):
         if extra[i] == "--profile" and i + 1 < len(extra):
             name = extra[i + 1]
             try:
-                return DeploymentProfile(name)
+                return DeploymentProfile(name), True
             except ValueError as exc:
                 ui.warn(str(exc) + " — usando perfil padrão 'full'.")
-                return DeploymentProfile("full")
+                return DeploymentProfile("full"), True
         i += 1
     env_name = (
         env.get("DEILE_K8S_DEPLOY_PROFILE", "").strip()
@@ -537,10 +546,11 @@ def _k8s_up_resolve_profile(extra: List[str], env: Dict[str, str]) -> Deployment
     )
     if env_name:
         try:
-            return DeploymentProfile(env_name)
+            return DeploymentProfile(env_name), True
         except ValueError as exc:
             ui.warn(str(exc) + " — usando perfil padrão 'full'.")
-    return DeploymentProfile("full")
+            return DeploymentProfile("full"), True  # operator set env — intent was explicit
+    return DeploymentProfile("full"), False
 
 
 def k8s_up(args: dict) -> int:
@@ -567,7 +577,7 @@ def k8s_up(args: dict) -> int:
         return 1
 
     env = read_env()
-    profile = _k8s_up_resolve_profile(args.get("extra") or [], env)
+    profile, profile_explicit = _k8s_up_resolve_profile(args.get("extra") or [], env)
     ui.info(f"perfil de deploy: {profile.name}")
 
     llm = {k: env[k] for k in LLM_KEYS if env.get(k, "").strip()}
@@ -577,12 +587,24 @@ def k8s_up(args: dict) -> int:
 
     discord_token = env.get("DEILE_BOT_DISCORD_TOKEN", "").strip()
     if profile.requires_discord and not discord_token:
-        ui.err(
-            "DEILE_BOT_DISCORD_TOKEN ausente no `.env` "
-            "(obrigatório para perfil 'full')."
-        )
-        ui.info("Use --profile pipeline-only para deploy sem bot Discord.")
-        return 1
+        if not profile_explicit:
+            # Implicit default 'full' but no token — fall back to claude-only
+            # so operators can run `k8s up` without a Discord bot (D2/D3 #531).
+            profile = DeploymentProfile("claude-only")
+            ui.warn(
+                "DEILE_BOT_DISCORD_TOKEN ausente — perfil 'full' requer bot Discord. "
+                "Usando perfil 'claude-only' automaticamente (pipeline + worker + claude-worker). "
+                "Para subir o bot, defina DEILE_BOT_DISCORD_TOKEN no .env e rode novamente. "
+                "Para forçar o erro, passe --profile full explicitamente."
+            )
+            ui.info(f"perfil de deploy ajustado: {profile.name}")
+        else:
+            ui.err(
+                "DEILE_BOT_DISCORD_TOKEN ausente no `.env` "
+                "(obrigatório para perfil 'full')."
+            )
+            ui.info("Use --profile pipeline-only para deploy sem bot Discord.")
+            return 1
 
     # Tokens are generated once and persisted back to .env so consecutive
     # k8s up calls never diverge (issue #354).

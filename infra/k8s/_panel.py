@@ -34,6 +34,12 @@ import json
 import logging
 import os
 import re
+try:
+    import regex as _regex_mod  # type: ignore[import-untyped]  # issue #544
+    _HAS_REGEX = True
+except ImportError:
+    _regex_mod = None  # type: ignore[assignment]
+    _HAS_REGEX = False
 import select
 import shutil
 import signal
@@ -144,6 +150,270 @@ _SORT_WORKFLOW_ORDER: Dict[str, int] = {
     "bloqueada": 9,
 }
 _SORT_MODES = ("recent", "number", "status")
+
+# ===== filter helpers (issue #544) ==========================================
+
+_FILTER_REGEX_TIMEOUT = 0.1  # seconds per regex match/finditer call
+
+
+def _lit_compile(pattern: str) -> Any:
+    """Compile a literal (escaped) filter pattern using regex if available, else re."""
+    if _HAS_REGEX:
+        return _regex_mod.compile(_regex_mod.escape(pattern), _regex_mod.IGNORECASE)
+    return re.compile(re.escape(pattern), re.IGNORECASE)
+
+# Persistence constants
+_PANEL_FILTERS_PATH = Path.home() / ".deile" / "panel_filters.json"
+_PANEL_FILTERS_SCHEMA_VERSION = 1
+_PANEL_FILTERS_CAP = 50
+_PANEL_FILTERS_TTL_DAYS = 30
+
+
+def _split_filter_expr(text: str) -> Tuple[List[str], List[str]]:
+    """Split expr on ' AND '/' OR ' outside quoted strings.
+    Returns (parts, separators).
+    """
+    parts: List[str] = []
+    seps: List[str] = []
+    current: List[str] = []
+    in_quote = False
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == '\\' and in_quote and i + 1 < n and text[i + 1] == '"':
+            current.append('"')
+            i += 2
+        elif text[i] == '"':
+            in_quote = not in_quote
+            current.append(text[i])
+            i += 1
+        elif not in_quote and text[i:i + 5] == ' AND ':
+            parts.append(''.join(current))
+            seps.append('AND')
+            current = []
+            i += 5
+        elif not in_quote and text[i:i + 4] == ' OR ':
+            parts.append(''.join(current))
+            seps.append('OR')
+            current = []
+            i += 4
+        else:
+            current.append(text[i])
+            i += 1
+    parts.append(''.join(current))
+    return parts, seps
+
+
+def _parse_filter_expr(text: str) -> Tuple[List[Tuple[str, str, Any]], str, Optional[str]]:
+    """Parse a filter expression.
+
+    Returns (terms_info, op, error_msg) where:
+    - terms_info: list of (kind, raw, compiled) — kind in {"literal","regex"}
+    - op: "AND" | "OR" | "" (empty = single term or no terms)
+    - error_msg: non-None string on parse/compile error
+    """
+    if not text:
+        return [], "", None
+
+    if len(text) > 200:
+        return [], "", "filtro inválido — expressão excede 200 chars"
+
+    raw_parts, seps = _split_filter_expr(text)
+
+    if seps:
+        unique = set(seps)
+        if len(unique) > 1:
+            return [], "", "filtro inválido — combine só AND ou só OR"
+        op = seps[0]
+    else:
+        op = ""
+
+    terms_info: List[Tuple[str, str, Any]] = []
+    for idx, part in enumerate(raw_parts):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith('"') and part.endswith('"') and len(part) >= 2:
+            raw = part[1:-1].replace('\\"', '"')
+            terms_info.append(("literal", raw, None))
+        elif part.startswith("r:"):
+            pattern = part[2:]
+            try:
+                if _HAS_REGEX:
+                    compiled = _regex_mod.compile(pattern, _regex_mod.IGNORECASE)
+                else:
+                    compiled = re.compile(pattern, re.IGNORECASE)
+                terms_info.append(("regex", pattern, compiled))
+            except (re.error, Exception):
+                return [], "", f"regex inválido no termo {idx + 1} — filtro ignorado"
+        else:
+            terms_info.append(("literal", part, None))
+
+    return terms_info, op, None
+
+
+def _filter_matches_line(
+    line: str,
+    terms_info: List[Tuple[str, str, Any]],
+    op: str,
+) -> bool:
+    """Return True if line matches the filter expression."""
+    if not terms_info:
+        return True
+
+    def _term_matches(kind: str, raw: str, compiled: Any) -> bool:
+        if kind == "literal":
+            return raw.lower() in line.lower()
+        try:
+            if _HAS_REGEX:
+                return bool(compiled.search(line, timeout=_FILTER_REGEX_TIMEOUT))
+            return bool(compiled.search(line))
+        except Exception:  # noqa: BLE001 — regex.TimeoutError or compile error
+            return False
+
+    if op == "AND":
+        return all(_term_matches(k, r, c) for k, r, c in terms_info)
+    return any(_term_matches(k, r, c) for k, r, c in terms_info)
+
+
+def _highlight_filter_line(
+    line: str,
+    terms_info: List[Tuple[str, str, Any]],
+) -> "Text":
+    """Return a rich Text with 'reverse' spans for all matching term spans."""
+    text_obj = Text(no_wrap=False)
+    spans: List[Tuple[int, int]] = []
+
+    for kind, raw, compiled in terms_info:
+        if kind == "literal":
+            lower_line = line.lower()
+            lower_raw = raw.lower()
+            pos = 0
+            while True:
+                idx = lower_line.find(lower_raw, pos)
+                if idx == -1:
+                    break
+                spans.append((idx, idx + len(raw)))
+                pos = idx + 1
+        else:
+            try:
+                if _HAS_REGEX:
+                    for m in compiled.finditer(line, timeout=_FILTER_REGEX_TIMEOUT):
+                        if m.start() < m.end():
+                            spans.append((m.start(), m.end()))
+                else:
+                    for m in compiled.finditer(line):
+                        if m.start() < m.end():
+                            spans.append((m.start(), m.end()))
+            except Exception:  # noqa: BLE001 — regex.TimeoutError
+                pass
+
+    if not spans:
+        text_obj.append(line)
+        return text_obj
+
+    spans.sort()
+    merged: List[List[int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    pos = 0
+    for start, end in merged:
+        if pos < start:
+            text_obj.append(line[pos:start])
+        text_obj.append(line[start:end], style="reverse")
+        pos = end
+    if pos < len(line):
+        text_obj.append(line[pos:])
+
+    return text_obj
+
+
+def _build_highlighted_body(
+    lines: List[str],
+    terms_info: List[Tuple[str, str, Any]],
+) -> "Text":
+    """Build a rich Text body for a list of lines with highlight spans."""
+    body = Text(no_wrap=False)
+    for i, line in enumerate(lines):
+        if i > 0:
+            body.append("\n")
+        if terms_info:
+            body.append_text(_highlight_filter_line(line, terms_info))
+        else:
+            body.append(line)
+    return body
+
+
+def _sanitize_filter_key(raw: str) -> str:
+    """Sanitize a filter storage key (same character set as pod-name sanitization)."""
+    return re.sub(r"[^A-Za-z0-9._/-]", "_", raw)
+
+
+def _load_panel_filter(key: str, app: Any = None) -> str:
+    """Load saved filter text for key. Returns "" on miss, error, or stale entry."""
+    try:
+        if not _PANEL_FILTERS_PATH.exists():
+            return ""
+        data = json.loads(_PANEL_FILTERS_PATH.read_text(encoding="utf-8"))
+        if data.get("schema_version") != _PANEL_FILTERS_SCHEMA_VERSION:
+            if app is not None:
+                try:
+                    app.push_toast("⚠", "estado de filtro ilegível — ignorado")
+                except Exception:  # noqa: BLE001
+                    pass
+            return ""
+        entries = data.get("entries", {})
+        entry = entries.get(key)
+        if not isinstance(entry, dict):
+            return ""
+        cutoff = time.time() - _PANEL_FILTERS_TTL_DAYS * 86400
+        if entry.get("saved_at", 0) < cutoff:
+            return ""
+        return entry.get("text", "") or ""
+    except (json.JSONDecodeError, OSError, ValueError):
+        if app is not None:
+            try:
+                app.push_toast("⚠", "estado de filtro ilegível — ignorado")
+            except Exception:  # noqa: BLE001
+                pass
+        return ""
+
+
+def _save_panel_filter(key: str, text: str) -> None:
+    """Save filter text for key using read-merge-write + atomic write."""
+    try:
+        _PANEL_FILTERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data: Dict[str, Any] = {
+            "schema_version": _PANEL_FILTERS_SCHEMA_VERSION,
+            "entries": {},
+        }
+        if _PANEL_FILTERS_PATH.exists():
+            try:
+                raw = json.loads(_PANEL_FILTERS_PATH.read_text(encoding="utf-8"))
+                if raw.get("schema_version") == _PANEL_FILTERS_SCHEMA_VERSION:
+                    data = raw
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
+        entries: Dict[str, Any] = dict(data.get("entries", {}))
+        now = int(time.time())
+        cutoff = now - _PANEL_FILTERS_TTL_DAYS * 86400
+        entries = {k: v for k, v in entries.items()
+                   if isinstance(v, dict) and v.get("saved_at", 0) >= cutoff}
+        entries[key] = {"text": text, "saved_at": now}
+        if len(entries) > _PANEL_FILTERS_CAP:
+            sorted_keys = sorted(entries, key=lambda k: entries[k].get("saved_at", 0))
+            for k in sorted_keys[:len(entries) - _PANEL_FILTERS_CAP]:
+                del entries[k]
+        data["entries"] = entries
+        tmp = _PANEL_FILTERS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(_PANEL_FILTERS_PATH)
+    except OSError:
+        pass
 
 
 # ===== key reader ===========================================================
@@ -2015,6 +2285,206 @@ class _LocalLogTailer:
         return list(self.buf)[-n:]
 
 
+# ---------------------------------------------------------------------------
+# Export helpers (issues #461 + #547)
+# ---------------------------------------------------------------------------
+
+def _deile_export_dir() -> Path:
+    """Return (and create) ~/.deile/exports/ with mode 0o700."""
+    d = Path(os.path.expanduser("~/.deile/exports"))
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return d
+
+
+def _safe_id_segment(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", s or "unknown")[:64]
+
+
+def _default_export_path(kind: str, id_or_pod: str, ext: str = ".json") -> Path:
+    safe = _safe_id_segment(id_or_pod)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return _deile_export_dir() / f"{kind}-{safe}-{ts}{ext}"
+
+
+def _write_atomic(content_bytes: bytes, target_path: Path, *, exclusive: bool = False) -> None:
+    """Write content_bytes to target_path atomically via tmp + os.replace.
+
+    When exclusive=True (new-file branch), a sentinel file is created with
+    O_CREAT|O_EXCL before the replace so that a concurrent creation between
+    the caller's exists()-check and this write raises FileExistsError instead
+    of silently overwriting.
+    """
+    parent = target_path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if exclusive:
+        # Guard against TOCTOU: claim the target path before writing.
+        # If another process already created it between our exists() check
+        # and now, os.open with O_EXCL raises FileExistsError.
+        sentinel_fd = os.open(
+            str(target_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        )
+        os.close(sentinel_fd)
+    fd, tmp_str = tempfile.mkstemp(dir=str(parent))
+    tmp_path = Path(tmp_str)
+    try:
+        os.write(fd, content_bytes)
+        os.close(fd)
+        fd = -1
+        os.replace(tmp_path, target_path)
+        tmp_path = None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _redact_for_export(value: Any, redactor: Any) -> Any:
+    """Recursively redact strings using redactor.redact_text."""
+    if redactor is None:
+        return value
+    if isinstance(value, str):
+        redacted, _ = redactor.redact_text(value)
+        return redacted
+    if isinstance(value, dict):
+        return {k: _redact_for_export(v, redactor) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_for_export(i, redactor) for i in value]
+    return value
+
+
+def _build_live_session_json(
+    data: Any,
+    history: List[Dict],
+    *,
+    redactor: Any,
+    include_history: bool = False,
+) -> Dict:
+    """Build JSON dict for live_session.
+
+    When include_history=False (default): schema_version="deile.export.v1",
+    no history field — snapshot export.
+    When include_history=True: schema_version="deile.export.v2", history
+    embedded.
+    """
+    payload = {
+        "session": _redact_for_export(data.session, redactor),
+        "command": _redact_for_export(data.command, redactor),
+        "chat": _redact_for_export(data.chat, redactor),
+        "api_errors": [_redact_for_export(e, redactor) for e in (data.api_errors or [])],
+        "stdout": _redact_for_export(data.stdout, redactor) if data.stdout is not None else None,
+    }
+    if not include_history:
+        return {
+            "schema_version": "deile.export.v1",
+            "kind": "live_session",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "payload": payload,
+        }
+    redacted_history = []
+    for snap in history:
+        redacted_history.append({
+            "polled_at": snap.get("polled_at"),
+            "session": _redact_for_export(snap.get("session"), redactor),
+            "command": _redact_for_export(snap.get("command"), redactor),
+            "chat": _redact_for_export(snap.get("chat"), redactor),
+        })
+    return {
+        "schema_version": "deile.export.v2",
+        "kind": "live_session",
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "payload": payload,
+        "history": redacted_history,
+    }
+
+
+def _build_live_session_txt(data: Any, *, redactor: Any) -> str:
+    """Build plain-text export for live_session (deile.export.v2)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    task_id = (data.session or {}).get("task_id", "?") if data.session else "?"
+    parts = [
+        "# deile export — kind=live_session",
+        "# schema: deile.export.v2",
+        f"# exported_at: {now_iso}",
+        f"# task_id: {task_id}",
+        "# " + "-" * 60,
+        "[SESSION]",
+    ]
+    if data.session:
+        for k, v in data.session.items():
+            parts.append(f"  {k}: {_redact_for_export(str(v), redactor)}")
+    else:
+        parts.append("  (none)")
+    parts.append("[COMMAND]")
+    if data.command:
+        cmd = data.command.get("cmd") or []
+        cmd_str = _redact_for_export(" ".join(str(c) for c in cmd), redactor)
+        parts.append(f"  cmd: {cmd_str}")
+        fp = _redact_for_export(str(data.command.get("full_prompt") or ""), redactor)
+        parts.append(f"  full_prompt: {fp}")
+    else:
+        parts.append("  (none)")
+    parts.append("[CHAT]")
+    if data.chat:
+        for turn in ((data.chat or {}).get("turns") or []):
+            role = turn.get("role") or turn.get("type") or "?"
+            content = _redact_for_export(
+                str(turn.get("content") or turn.get("summary") or ""), redactor
+            )
+            parts.append(f"  [{role}] {content}")
+    else:
+        parts.append("  (none)")
+    parts.append("[STDOUT]")
+    if data.stdout is not None:
+        for ln in _redact_for_export(data.stdout, redactor).splitlines():
+            parts.append(f"  {ln}")
+    else:
+        parts.append("  (none)")
+    if data.api_errors:
+        parts.append("[API ERRORS]")
+        for err in data.api_errors:
+            parts.append(f"  {_redact_for_export(err, redactor)}")
+    return "\n".join(parts) + "\n"
+
+
+def _build_pod_watch_json(
+    pod_name: str, pod_role: str, lines: List[str], *, redactor: Any
+) -> Dict:
+    """Build deile.export.v1 JSON dict for pod_watch."""
+    return {
+        "schema_version": "deile.export.v1",
+        "kind": "pod_watch",
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "payload": {
+            "pod": pod_name,
+            "role": pod_role,
+            "lines": [_redact_for_export(ln, redactor) for ln in lines],
+        },
+    }
+
+
+def _build_pod_watch_txt(
+    pod_name: str, pod_role: str, lines: List[str], *, redactor: Any
+) -> str:
+    """Build plain-text export for pod_watch (deile.export.v1)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    parts = [
+        "# deile export — kind=pod_watch",
+        "# schema: deile.export.v1",
+        f"# exported_at: {now_iso}",
+        f"# pod: {pod_name}",
+        f"# role: {pod_role}",
+        "# " + "-" * 60,
+    ] + [_redact_for_export(ln, redactor) for ln in lines]
+    return "\n".join(parts) + "\n"
+
+
 def _is_local_role(role: str) -> bool:
     """Helper compartilhado: identifica roles locais (`local-*`)."""
     return role.startswith("local-")
@@ -2034,8 +2504,8 @@ class PodWatchView(View):
     refresh_s = 1.0
 
     HOTKEYS = ("[f] follow on/off   [h] mostrar/esconder health   "
-               "[c] clear log   [.] abrir log   [t] resize /tmp   "
-               "[esc] volta   [q] sai")
+               "[c] clear log   [.] abrir log   [E] export   [t] resize /tmp   "
+               "[/] filtro grep   [esc] volta   [q] sai")
 
     # Quantas linhas do buffer dumpamos no tempfile quando o usuário pede
     # "abrir log" num pod k8s. Suficiente pra contexto, sem inflar o disco.
@@ -2088,6 +2558,18 @@ class PodWatchView(View):
         # Modo "aguardando preset de /tmp" — quando True, próxima tecla 1-5
         # aplica o preset correspondente; qualquer outra cancela.
         self._awaiting_tmp_preset: bool = False
+        # Export state (issue #547)
+        self._export_mode: Optional[str] = None  # None | "path" | "overwrite"
+        self._export_txt: bool = False
+        self._export_path_buf: str = ""
+        self._export_target: Optional[Path] = None
+        # Filtro grep-like (issue #460 + #544).
+        self._filter_text: str = ""          # texto confirmado (exibido no rodapé)
+        self._filter_re: Optional[Any] = None  # padrão compilado — single-term compat
+        self._filter_terms: List[Tuple[str, str, Any]] = []  # parsed terms (issue #544)
+        self._filter_op: str = ""            # "AND" | "OR" | "" (issue #544)
+        self._prompt_open: bool = False      # prompt de entrada de filtro aberto
+        self._filter_buffer: str = ""        # caracteres digitados no prompt
 
     def on_mount(self, app: "PanelApp") -> None:
         # PodWatchView é singleton no registry — re-mount com pod diferente
@@ -2095,6 +2577,16 @@ class PodWatchView(View):
         # vazam entre pods, confundindo o operador.
         self.following = True
         self.hide_health = True
+        self._export_mode = None
+        self._export_txt = False
+        self._export_path_buf = ""
+        self._export_target = None
+        self._filter_text = ""
+        self._filter_re = None
+        self._filter_terms = []
+        self._filter_op = ""
+        self._prompt_open = False
+        self._filter_buffer = ""
         if self.streamer is not None:
             self.streamer.stop()
             self.streamer = None
@@ -2104,6 +2596,21 @@ class PodWatchView(View):
         self.pod_role = payload.get("pod_role", "")
         if not self.pod_name:
             return
+        # Restore saved filter for this pod (issue #544).
+        _pod_ns = (self.data.context.namespace
+                   if self.data is not None and self.data.context is not None
+                   else _NS_DEFAULT)
+        _fkey = _sanitize_filter_key(f"pod:{_pod_ns}/{self.pod_name}")
+        _fsaved = _load_panel_filter(_fkey, app)
+        if _fsaved:
+            _fterms, _fop, _ferr = _parse_filter_expr(_fsaved)
+            if _ferr is None and _fterms:
+                self._filter_text = _fsaved
+                self._filter_terms = _fterms
+                self._filter_op = _fop
+                if len(_fterms) == 1:
+                    _fkind, _fraw, _fcomp = _fterms[0]
+                    self._filter_re = (_fcomp if _fkind == "regex" else _lit_compile(_fraw))
         # Dispatch por role: locais → tail de log local; k8s → kubectl logs -f.
         if _is_local_role(self.pod_role):
             if self.data is not None and self.data.context is not None:
@@ -2126,6 +2633,13 @@ class PodWatchView(View):
         if self.streamer is not None:
             self.streamer.stop()
             self.streamer = None
+        # Persist current filter (issue #544).
+        if self.pod_name and self._filter_text:
+            _pod_ns = (self.data.context.namespace
+                       if self.data is not None and self.data.context is not None
+                       else _NS_DEFAULT)
+            _fkey = _sanitize_filter_key(f"pod:{_pod_ns}/{self.pod_name}")
+            _save_panel_filter(_fkey, self._filter_text)
 
     def _header_body(self) -> RenderableType:
         if self.data is None:
@@ -2408,6 +2922,7 @@ class PodWatchView(View):
 
     def _log_panel(self) -> Panel:
         hidden = 0
+        grep_hidden = 0
         if self.streamer is None:
             body: RenderableType = Text("(streamer não iniciado)", style="dim")
         else:
@@ -2416,6 +2931,16 @@ class PodWatchView(View):
                 before = len(raw)
                 raw = [ln for ln in raw if not _HEALTH_LINE_RE.search(ln)]
                 hidden = before - len(raw)
+            # Grep filter — applied after health filter, before truncation (issue #460+544).
+            if self._filter_terms:
+                before = len(raw)
+                raw = [ln for ln in raw
+                       if _filter_matches_line(ln, self._filter_terms, self._filter_op)]
+                grep_hidden = before - len(raw)
+            elif self._filter_re is not None:
+                before = len(raw)
+                raw = [ln for ln in raw if self._filter_re.search(ln)]
+                grep_hidden = before - len(raw)
             raw = raw[-30:]
             if not raw:
                 body = Text(
@@ -2425,21 +2950,31 @@ class PodWatchView(View):
                     style="dim",
                 )
             else:
-                body = Text("\n".join(raw), no_wrap=False)
+                body = _build_highlighted_body(raw, self._filter_terms)
         follow_label = "FOLLOW ON" if self.following else "PAUSED"
         health_label = ("health ESCONDIDOS" if self.hide_health
                         else "health VISÍVEIS")
         hidden_label = f"  ·  {hidden} health filtrados" if hidden else ""
+        grep_hidden_label = f"  ·  {grep_hidden} filtro grep" if grep_hidden else ""
         # Limpa status transitório expirado antes de compor o título.
         if self._status_msg is not None and time.time() >= self._status_until:
             self._status_msg = None
         status_label = (f"  ·  [yellow]{self._status_msg}[/yellow]"
                         if self._status_msg else "")
         title = (f"[bold]LIVE LOG[/bold]  ·  {follow_label}  ·  "
-                 f"{health_label}{hidden_label}  ·  "
+                 f"{health_label}{hidden_label}{grep_hidden_label}  ·  "
                  f"{self.pod_name}{status_label}")
         return Panel(body, title=title, title_align="left",
                      border_style="green" if self.following else "yellow")
+
+    def _footer_text(self) -> str:
+        """Dynamic footer: shows filter prompt, active filter indicator, or normal hotkeys."""
+        if self._prompt_open:
+            return (f"filtro: {self._filter_buffer}_"
+                    "   [enter] confirma   [esc] cancela   [backspace] apaga")
+        if self._filter_text:
+            return f'[filtro: "{self._filter_text}"]   ' + self.HOTKEYS
+        return self.HOTKEYS
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
@@ -2448,22 +2983,95 @@ class PodWatchView(View):
         # + current task). claude-worker adiciona LEASE/DISK/QUOTA (até 3
         # linhas extra) → size=12. Outros pods mantêm 9.
         info_size = 12 if self.pod_role == "claude-worker" else 9
-        layout.split_column(
+        rows: List[Any] = [
             Layout(_head_panel(self.title, app), name="head", size=4),
             Layout(Panel(self._header_body(),
                          title="[bold]POD[/bold]", title_align="left",
                          border_style="cyan"),
                    name="info", size=info_size),
             Layout(self._log_panel(), name="log"),
-            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
-        )
+        ]
+        if self._export_mode == "path":
+            rows.append(Layout(self._render_export_path_panel(), name="modal", size=5))
+        elif self._export_mode == "overwrite":
+            rows.append(Layout(self._render_export_overwrite_panel(), name="modal", size=4))
+        rows.append(Layout(_footer_panel(self._footer_text()), name="footer", size=3))
+        layout.split_column(*rows)
         return layout
 
+    def intercepts_key(self, key: str) -> bool:
+        # ESC em 3 níveis (issue #460): nível 1 fecha prompt, nível 2 limpa
+        # filtro, nível 3 passa para o handler global (pop view).
+        if key == "ESC" and (self._prompt_open or bool(self._filter_text)):
+            return True
+        return super().intercepts_key(key)
+
+    def _handle_filter_prompt_key(self, key: str, app: "PanelApp") -> ActionResult:
+        """Processa teclas enquanto o prompt de filtro está aberto."""
+        if key in ("\r", "\n"):
+            self._prompt_open = False
+            text = self._filter_buffer[:200]  # AC2: limite de 200 chars
+            self._filter_text = text
+            if not text:
+                self._filter_re = None
+                self._filter_terms = []
+                self._filter_op = ""
+            else:
+                _terms, _op, _err = _parse_filter_expr(text)
+                if _err is not None:
+                    app.push_toast("⚠", _err)
+                    self._filter_re = None
+                    self._filter_terms = []
+                    self._filter_op = ""
+                    self._filter_text = ""
+                else:
+                    self._filter_terms = _terms
+                    self._filter_op = _op
+                    if len(_terms) == 1:
+                        _k, _r, _c = _terms[0]
+                        self._filter_re = (_c if _k == "regex" else _lit_compile(_r))
+                    else:
+                        self._filter_re = None
+            return ActionResult.refresh()
+        if key == "ESC":
+            self._prompt_open = False
+            self._filter_buffer = ""
+            return ActionResult.refresh()
+        if key in ("\x7f", "\b", "backspace"):
+            if self._filter_buffer:
+                self._filter_buffer = self._filter_buffer[:-1]
+            return ActionResult.refresh()
+        if len(key) == 1 and key.isprintable():
+            self._filter_buffer += key
+            return ActionResult.refresh()
+        return ActionResult.refresh()
+
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # Export mode takes priority (issue #547).
+        if self._export_mode == "path":
+            return self._handle_pod_export_path_key(key)
+        if self._export_mode == "overwrite":
+            return self._handle_pod_export_overwrite_key(key)
+        # Modal: filtro grep — intercepts ALL keys including f/c/h/q (issue #460).
+        if self._prompt_open:
+            return self._handle_filter_prompt_key(key, app)
         # Resolve preset de /tmp PRIMEIRO — outras teclas ficam mortas até o
         # operador escolher ou cancelar (mesmo padrão do PodPickerView).
         if self._awaiting_tmp_preset:
             return self._handle_tmp_preset_key(key)
+        if key == "E":
+            return self._start_pod_export()
+        if key == "ESC":
+            # Nível 2: limpa filtro ativo (nível 3 = pop view via global handler).
+            if self._filter_text:
+                self._filter_text = ""
+                self._filter_re = None
+                return ActionResult.refresh()
+            return ActionResult()
+        if key == "/":
+            self._prompt_open = True
+            self._filter_buffer = ""
+            return ActionResult.refresh()
         if key == "f":
             self.following = not self.following
             if self.following and self.streamer is None:
@@ -2588,6 +3196,111 @@ class PodWatchView(View):
                 "nenhum editor encontrado (cursor/code/notepad/open/xdg-open)"
             )
 
+    def _start_pod_export(self) -> ActionResult:
+        if self.streamer is None:
+            self._set_status("streamer não iniciado — nada para exportar")
+            return ActionResult.refresh()
+        self._export_txt = False
+        default_path = _default_export_path(
+            "pod_watch", self.pod_name or "pod", ".json"
+        )
+        self._export_mode = "path"
+        self._export_path_buf = str(default_path)
+        self._export_target = None
+        return ActionResult.refresh()
+
+    def _handle_pod_export_path_key(self, key: str) -> ActionResult:
+        if key in ("ESC", "\x1b"):
+            self._export_mode = None
+            self._set_status("export cancelado")
+            return ActionResult.refresh()
+        if key in ("BACKSPACE", "\x7f"):
+            self._export_path_buf = self._export_path_buf[:-1]
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            path_str = self._export_path_buf.strip()
+            if not path_str:
+                self._export_mode = None
+                return ActionResult.refresh()
+            path_str = os.path.expanduser(path_str)
+            target = Path(path_str)
+            if not target.is_absolute():
+                target = _deile_export_dir() / target
+            self._export_txt = target.suffix == ".txt"
+            if target.exists():
+                self._export_target = target
+                self._export_mode = "overwrite"
+            else:
+                self._export_mode = None
+                self._do_export_pod_watch(target, exclusive=True)
+            return ActionResult.refresh()
+        if len(key) == 1 and key.isprintable():
+            self._export_path_buf += key
+            return ActionResult.refresh()
+        return ActionResult.refresh()
+
+    def _handle_pod_export_overwrite_key(self, key: str) -> ActionResult:
+        self._export_mode = None
+        if key in ("y", "Y"):
+            self._do_export_pod_watch(self._export_target)
+        else:
+            self._set_status("export cancelado")
+        self._export_target = None
+        return ActionResult.refresh()
+
+    def _render_export_path_panel(self) -> Panel:
+        return Panel(
+            Text.from_markup(
+                f"[bold]Path de destino:[/bold] {self._export_path_buf}[blink]█[/blink]\n\n"
+                "[dim]chars imprimíveis: editar   "
+                "[bold][backspace][/bold]: apagar   "
+                "[bold][esc][/bold]: cancelar   "
+                "[bold][enter][/bold]: confirmar[/dim]"
+            ),
+            title="[bold]EXPORT — editar path[/bold]",
+            title_align="left",
+            border_style="cyan",
+        )
+
+    def _render_export_overwrite_panel(self) -> Panel:
+        target = str(self._export_target or "?")
+        return Panel(
+            Text.from_markup(
+                f"Arquivo já existe: [bold]{target}[/bold]\n\n"
+                "[bold green][y][/bold green] sobrescrever  /  "
+                "qualquer outra tecla cancela"
+            ),
+            title="[bold]EXPORT — confirmar sobrescrita[/bold]",
+            title_align="left",
+            border_style="yellow",
+        )
+
+    def _do_export_pod_watch(self, target: Optional[Path], *, exclusive: bool = False) -> None:
+        if target is None or self.streamer is None:
+            return
+        try:
+            from deile.security.secrets_scanner import SecretsScanner  # noqa: PLC0415
+            redactor = SecretsScanner()
+        except ImportError:
+            redactor = None
+        try:
+            lines = self.streamer.snapshot(n=self._DUMP_TAIL_LINES)
+            if self._export_txt:
+                content_bytes = _build_pod_watch_txt(
+                    self.pod_name or "", self.pod_role or "", lines, redactor=redactor
+                ).encode("utf-8")
+            else:
+                obj = _build_pod_watch_json(
+                    self.pod_name or "", self.pod_role or "", lines, redactor=redactor
+                )
+                content_bytes = json.dumps(
+                    obj, indent=2, ensure_ascii=False, default=str
+                ).encode("utf-8")
+            _write_atomic(content_bytes, target, exclusive=exclusive)
+            self._set_status(f"exportado: {target}")
+        except OSError as exc:
+            self._set_status(f"erro ao exportar: {exc}")
+
 
 class LiveSessionView(View):
     """Live view for a claude-worker session identified by task_id (issue #446).
@@ -2605,7 +3318,8 @@ class LiveSessionView(View):
     title = "Live Session"
     refresh_s = 2.0
 
-    HOTKEYS = "[esc] volta   [r] força refresh   [q] sai"
+    HOTKEYS = ("[esc] volta   [r] força refresh   [E] export JSON/.txt   "
+               "[/] filtro grep   [q] sai")
 
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
@@ -2613,6 +3327,21 @@ class LiveSessionView(View):
         self.pod_name: str = ""
         self._last_render: Optional[Any] = None
         self._api_errors: List[str] = []
+        self._history: deque = deque(maxlen=200)
+        self._history_last_key: Optional[str] = None
+        self._export_mode: Optional[str] = None  # None | "path" | "overwrite"
+        self._export_txt: bool = False
+        self._export_path_buf: str = ""
+        self._export_target: Optional[Path] = None
+        self._status_msg: Optional[str] = None
+        self._status_until: float = 0.0
+        # Filtro grep-like para as turns do chat (issue #460 + #544).
+        self._filter_text: str = ""
+        self._filter_re: Optional[Any] = None
+        self._filter_terms: List[Tuple[str, str, Any]] = []  # issue #544
+        self._filter_op: str = ""  # issue #544
+        self._prompt_open: bool = False
+        self._filter_buffer: str = ""
 
     def on_mount(self, app: "PanelApp") -> None:
         payload = getattr(app, "last_payload", {}) or {}
@@ -2620,6 +3349,39 @@ class LiveSessionView(View):
         self.pod_name = payload.get("pod_name", "")
         self._last_render = None
         self._api_errors = []
+        self._history.clear()
+        self._history_last_key = None
+        self._export_mode = None
+        self._export_txt = False
+        self._export_path_buf = ""
+        self._export_target = None
+        self._status_msg = None
+        self._status_until = 0.0
+        self._filter_text = ""
+        self._filter_re = None
+        self._filter_terms = []
+        self._filter_op = ""
+        self._prompt_open = False
+        self._filter_buffer = ""
+        # Restore saved filter for this session (issue #544).
+        if self.task_id:
+            _fkey = _sanitize_filter_key(f"session:{self.task_id}")
+            _fsaved = _load_panel_filter(_fkey, app)
+            if _fsaved:
+                _fterms, _fop, _ferr = _parse_filter_expr(_fsaved)
+                if _ferr is None and _fterms:
+                    self._filter_text = _fsaved
+                    self._filter_terms = _fterms
+                    self._filter_op = _fop
+                    if len(_fterms) == 1:
+                        _fkind, _fraw, _fcomp = _fterms[0]
+                        self._filter_re = (_fcomp if _fkind == "regex" else _lit_compile(_fraw))
+
+    def on_unmount(self, app: "PanelApp") -> None:
+        # Persist current filter for this session (issue #544).
+        if self.task_id and self._filter_text:
+            _fkey = _sanitize_filter_key(f"session:{self.task_id}")
+            _save_panel_filter(_fkey, self._filter_text)
 
     def _fetch_data(self) -> Any:
         """Synchronously fetch session data via asyncio (called from render thread)."""
@@ -2660,10 +3422,11 @@ class LiveSessionView(View):
             # list_sessions + get_command + get_chat concurrently.
             # Reply = Union[dict/list, ApiError] — success is a dict/list,
             # failure is an ApiError instance (no .ok attribute).
-            sessions_reply, cmd_reply, chat_reply = await asyncio.gather(
+            sessions_reply, cmd_reply, chat_reply, stdout_reply = await asyncio.gather(
                 client.list_sessions(),
                 client.get_command(self.task_id),
                 client.get_chat(self.task_id, tail=50),
+                client.get_stdout(self.task_id),
                 return_exceptions=False,
             )
             # Filter sessions client-side by task_id.
@@ -2693,11 +3456,24 @@ class LiveSessionView(View):
             if not isinstance(chat_reply, (dict, list)):
                 errors.append(f"chat: {getattr(chat_reply, 'message', str(chat_reply))}")
 
+            stdout_text: Optional[str] = None
+            if isinstance(stdout_reply, dict):
+                raw = stdout_reply.get("stdout") or stdout_reply.get("content")
+                if isinstance(raw, str):
+                    stdout_text = raw
+            elif isinstance(stdout_reply, str):
+                stdout_text = stdout_reply
+            else:
+                errors.append(
+                    f"stdout: {getattr(stdout_reply, 'message', str(stdout_reply))}"
+                )
+
             return LiveSessionData(
                 session=session_row,
                 command=command_data,
                 chat=chat_data,
                 api_errors=errors,
+                stdout=stdout_text,
             )
 
         try:
@@ -2708,6 +3484,15 @@ class LiveSessionView(View):
                 loop.close()
         except Exception as exc:  # noqa: BLE001
             return None, [str(exc)]
+
+    def _live_session_footer_text(self) -> str:
+        """Dynamic footer for LiveSessionView."""
+        if self._prompt_open:
+            return (f"filtro: {self._filter_buffer}_"
+                    "   [enter] confirma   [esc] cancela   [backspace] apaga")
+        if self._filter_text:
+            return f'[filtro: "{self._filter_text}"]   ' + self.HOTKEYS
+        return self.HOTKEYS
 
     def render(self, app: "PanelApp") -> RenderableType:
         try:
@@ -2723,6 +3508,19 @@ class LiveSessionView(View):
             )
 
         live_data, errors = self._fetch_data()
+        if live_data is not None:
+            self._last_render = live_data
+            self._api_errors = live_data.api_errors
+            snap = {
+                "polled_at": datetime.now(timezone.utc).isoformat(),
+                "session": live_data.session,
+                "command": live_data.command,
+                "chat": live_data.chat,
+            }
+            snap_key = json.dumps(snap, sort_keys=True, default=str)
+            if snap_key != self._history_last_key:
+                self._history.append(snap)
+                self._history_last_key = snap_key
         if live_data is None:
             task_label = self.task_id[:16] if self.task_id else "?"
             errmsg = "; ".join(errors) if errors else "fetching…"
@@ -2732,21 +3530,235 @@ class LiveSessionView(View):
                 border_style="dim",
             )
 
-        layout = Layout()
-        layout.split_column(
+        # Clear expired status message before render.
+        if self._status_msg is not None and time.time() >= self._status_until:
+            self._status_msg = None
+
+        # Apply grep filter to chat turns (issue #460+544): build a new LiveSessionData
+        # with only matching turns; _render_chat's [-8:] then slices the filtered
+        # list.  Original data is not mutated.  Preserve stdout (issue #547).
+        _has_filter = bool(self._filter_terms) or self._filter_re is not None
+        if _has_filter and live_data.chat:
+            turns = live_data.chat.get("turns", [])
+            if self._filter_terms:
+                filtered_turns = [
+                    t for t in turns
+                    if _filter_matches_line(
+                        str(t.get("content", "") or ""),
+                        self._filter_terms, self._filter_op)
+                ]
+            else:
+                filtered_turns = [
+                    t for t in turns
+                    if self._filter_re.search(str(t.get("content", "") or ""))
+                ]
+            live_data = live_data.__class__(
+                session=live_data.session,
+                command=live_data.command,
+                chat={**live_data.chat, "turns": filtered_turns},
+                api_errors=live_data.api_errors,
+                stdout=getattr(live_data, "stdout", None),
+            )
+
+        rows: List[Any] = [
             Layout(_head_panel(
                 f"LIVE SESSION {self.task_id[:16]}", app), name="head", size=4),
             Layout(LiveSessionScreen().render(live_data), name="body"),
-            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
-        )
+        ]
+        if self._export_mode == "path":
+            rows.append(Layout(self._render_export_path_panel(), name="modal", size=5))
+        elif self._export_mode == "overwrite":
+            rows.append(Layout(self._render_export_overwrite_panel(), name="modal", size=4))
+        elif self._status_msg:
+            rows.append(Layout(
+                Panel(Text(self._status_msg, style="bold green"),
+                      border_style="green", title="export"),
+                name="status", size=3,
+            ))
+        rows.append(Layout(_footer_panel(self._live_session_footer_text()),
+                           name="footer", size=3))
+        layout = Layout()
+        layout.split_column(*rows)
         return layout
 
+    def intercepts_key(self, key: str) -> bool:
+        if key == "ESC" and (self._prompt_open or bool(self._filter_text)):
+            return True
+        return super().intercepts_key(key)
+
+    def _handle_filter_prompt_key(self, key: str, app: "PanelApp") -> ActionResult:
+        """Processa teclas enquanto o prompt de filtro está aberto."""
+        if key in ("\r", "\n"):
+            self._prompt_open = False
+            text = self._filter_buffer[:200]
+            self._filter_text = text
+            if not text:
+                self._filter_re = None
+                self._filter_terms = []
+                self._filter_op = ""
+            else:
+                _terms, _op, _err = _parse_filter_expr(text)
+                if _err is not None:
+                    app.push_toast("⚠", _err)
+                    self._filter_re = None
+                    self._filter_terms = []
+                    self._filter_op = ""
+                    self._filter_text = ""
+                else:
+                    self._filter_terms = _terms
+                    self._filter_op = _op
+                    if len(_terms) == 1:
+                        _k, _r, _c = _terms[0]
+                        self._filter_re = (_c if _k == "regex" else _lit_compile(_r))
+                    else:
+                        self._filter_re = None
+            return ActionResult.refresh()
+        if key == "ESC":
+            self._prompt_open = False
+            self._filter_buffer = ""
+            return ActionResult.refresh()
+        if key in ("\x7f", "\b", "backspace"):
+            if self._filter_buffer:
+                self._filter_buffer = self._filter_buffer[:-1]
+            return ActionResult.refresh()
+        if len(key) == 1 and key.isprintable():
+            self._filter_buffer += key
+            return ActionResult.refresh()
+        return ActionResult.refresh()
+
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        if self._export_mode == "path":
+            return self._handle_export_path_key(key)
+        if self._export_mode == "overwrite":
+            return self._handle_export_overwrite_key(key)
+        if self._prompt_open:
+            return self._handle_filter_prompt_key(key, app)
+        if key == "ESC":
+            if self._filter_text:
+                self._filter_text = ""
+                self._filter_re = None
+                self._filter_terms = []
+                self._filter_op = ""
+                return ActionResult.refresh()
+            return ActionResult.back()
+        if key == "/":
+            self._prompt_open = True
+            self._filter_buffer = ""
+            return ActionResult.refresh()
         if key in ("\x1b", "q"):
             return ActionResult.back()
         if key == "r":
             return ActionResult.refresh()
+        if key == "E":
+            return self._start_export()
         return ActionResult()
+
+    def _set_status(self, msg: str, ttl: float = 6.0) -> None:
+        self._status_msg = msg
+        self._status_until = time.time() + ttl
+
+    def _start_export(self) -> ActionResult:
+        if self._last_render is None:
+            self._set_status("nenhum dado ainda — aguarde o primeiro poll")
+            return ActionResult.refresh()
+        id_or_pod = self.task_id or self.pod_name or "unknown"
+        self._export_txt = False
+        default_path = _default_export_path("live_session", id_or_pod, ".json")
+        self._export_mode = "path"
+        self._export_path_buf = str(default_path)
+        self._export_target = None
+        return ActionResult.refresh()
+
+    def _handle_export_path_key(self, key: str) -> ActionResult:
+        if key in ("ESC", "\x1b"):
+            self._export_mode = None
+            self._set_status("export cancelado")
+            return ActionResult.refresh()
+        if key in ("BACKSPACE", "\x7f"):
+            self._export_path_buf = self._export_path_buf[:-1]
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            path_str = self._export_path_buf.strip()
+            if not path_str:
+                self._export_mode = None
+                return ActionResult.refresh()
+            path_str = os.path.expanduser(path_str)
+            target = Path(path_str)
+            if not target.is_absolute():
+                target = _deile_export_dir() / target
+            self._export_txt = target.suffix == ".txt"
+            if target.exists():
+                self._export_target = target
+                self._export_mode = "overwrite"
+            else:
+                self._export_mode = None
+                self._do_export_live_session(target, exclusive=True)
+            return ActionResult.refresh()
+        if len(key) == 1 and key.isprintable():
+            self._export_path_buf += key
+            return ActionResult.refresh()
+        return ActionResult.refresh()
+
+    def _handle_export_overwrite_key(self, key: str) -> ActionResult:
+        self._export_mode = None
+        if key in ("y", "Y"):
+            self._do_export_live_session(self._export_target)
+        else:
+            self._set_status("export cancelado")
+        self._export_target = None
+        return ActionResult.refresh()
+
+    def _render_export_path_panel(self) -> "Panel":
+        return Panel(
+            Text.from_markup(
+                f"[bold]Path de destino:[/bold] {self._export_path_buf}[blink]█[/blink]\n\n"
+                "[dim]chars imprimíveis: editar   "
+                "[bold][backspace][/bold]: apagar   "
+                "[bold][esc][/bold]: cancelar   "
+                "[bold][enter][/bold]: confirmar[/dim]"
+            ),
+            title="[bold]EXPORT — editar path[/bold]",
+            title_align="left",
+            border_style="cyan",
+        )
+
+    def _render_export_overwrite_panel(self) -> "Panel":
+        target = str(self._export_target or "?")
+        return Panel(
+            Text.from_markup(
+                f"Arquivo já existe: [bold]{target}[/bold]\n\n"
+                "[bold green][y][/bold green] sobrescrever  /  "
+                "qualquer outra tecla cancela"
+            ),
+            title="[bold]EXPORT — confirmar sobrescrita[/bold]",
+            title_align="left",
+            border_style="yellow",
+        )
+
+    def _do_export_live_session(self, target: Optional[Path], *, exclusive: bool = False) -> None:
+        if target is None or self._last_render is None:
+            return
+        try:
+            from deile.security.secrets_scanner import SecretsScanner  # noqa: PLC0415
+            redactor = SecretsScanner()
+        except ImportError:
+            redactor = None
+        try:
+            if self._export_txt:
+                content_bytes = _build_live_session_txt(
+                    self._last_render, redactor=redactor
+                ).encode("utf-8")
+            else:
+                obj = _build_live_session_json(
+                    self._last_render, list(self._history), redactor=redactor
+                )
+                content_bytes = json.dumps(
+                    obj, indent=2, ensure_ascii=False, default=str
+                ).encode("utf-8")
+            _write_atomic(content_bytes, target, exclusive=exclusive)
+            self._set_status(f"exportado: {target}")
+        except OSError as exc:
+            self._set_status(f"erro ao exportar: {exc}")
 
 
 class PipelineTimelineView(View):

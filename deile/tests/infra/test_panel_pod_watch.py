@@ -14,7 +14,7 @@ Cobertura:
    issue/PR/workflow que o worker está atendendo agora (issue #309
    fase 2 follow-up). Fonte de verdade reutilizada: o
    :class:`CurrentTask` populado pelo :class:`WorkerProvider` a partir
-   da linha estruturada ``dispatch_started`` emitida pelo worker.
+   da linha estruturada ``dispatch.received`` emitida pelo worker.
 
 Importante: nada bate em editor real — todos os ``subprocess.Popen``
 são mockados. Os tempfiles criados pelo dump são limpos no teardown.
@@ -530,17 +530,17 @@ class TestCurrentTaskTargetLabel:
 
 class TestWorkerProviderCurrentTask:
     """``WorkerProvider._parse`` extrai ``current_task`` da linha
-    estruturada ``dispatch_started`` emitida pelo worker server e
-    encerra quando vê o ``dispatch_completed`` pareado."""
+    estruturada ``dispatch.received`` emitida pelo worker server e
+    encerra quando vê o ``dispatch.completed`` pareado."""
 
     def _build(self) -> "pd.WorkerProvider":
         prov = pd.WorkerProvider(ttl_s=0.0)
         prov._kubectl = "kubectl"
         return prov
 
-    def test_current_task_extracted_from_dispatch_started(self):
+    def test_current_task_extracted_from_dispatch_received(self):
         prov = self._build()
-        body = ("dispatch_started task=abc123def456 channel=pipeline-issue-309 "
+        body = ("dispatch.received task=abc123def456 channel=pipeline-issue-309 "
                 "stage=implement kind=implement issue=309 branch=auto/issue-309")
         text = f"{_ts_now_str(2)} {body}"
         state = prov._parse("worker-1", text)
@@ -556,9 +556,9 @@ class TestWorkerProviderCurrentTask:
     def test_current_task_cleared_after_dispatch_completed(self):
         prov = self._build()
         text = "\n".join([
-            f"{_ts_now_str(5)} dispatch_started task=abc123def456 "
+            f"{_ts_now_str(5)} dispatch.received task=abc123def456 "
             f"channel=pipeline-issue-309 stage=implement issue=309",
-            f"{_ts_now_str(2)} dispatch_completed task=abc123def456 ok=True",
+            f"{_ts_now_str(2)} dispatch.completed task=abc123def456 ok=True",
         ])
         state = prov._parse("worker-1", text)
         # Pareamento started+completed → current_task = None (idle).
@@ -570,10 +570,10 @@ class TestWorkerProviderCurrentTask:
         ainda sem completed pareado."""
         prov = self._build()
         text = "\n".join([
-            f"{_ts_now_str(10)} dispatch_started task=oldoldoldold1 "
+            f"{_ts_now_str(10)} dispatch.received task=oldoldoldold1 "
             f"channel=pipeline-issue-100 issue=100",
-            f"{_ts_now_str(8)} dispatch_completed task=oldoldoldold1 ok=True",
-            f"{_ts_now_str(5)} dispatch_started task=newnewnewnew1 "
+            f"{_ts_now_str(8)} dispatch.completed task=oldoldoldold1 ok=True",
+            f"{_ts_now_str(5)} dispatch.received task=newnewnewnew1 "
             f"channel=pipeline-issue-200 issue=200",
         ])
         state = prov._parse("worker-1", text)
@@ -593,7 +593,7 @@ class TestWorkerProviderCurrentTask:
         """Worker antigo só logava ``channel`` — devemos extrair issue
         do channel_id pra UI continuar útil."""
         prov = self._build()
-        body = "dispatch_started task=abc123def456 channel=pipeline-issue-309"
+        body = "dispatch.received task=abc123def456 channel=pipeline-issue-309"
         text = f"{_ts_now_str(2)} {body}"
         state = prov._parse("worker-1", text)
         assert state.current_task is not None
@@ -601,13 +601,13 @@ class TestWorkerProviderCurrentTask:
         assert state.current_task.issue_number is None
         assert state.current_task.target_label == "#309"
 
-    def test_dispatch_started_does_not_double_count_substantive(self):
-        """``dispatch_started`` deve atualizar ``last_substantive_ts`` mas
+    def test_dispatch_received_does_not_double_count_substantive(self):
+        """``dispatch.received`` deve atualizar ``last_substantive_ts`` mas
         não criar um second ``last_substantive_body`` separado da access
         log normal — só queremos um ponto de "atividade real" por dispatch.
         """
         prov = self._build()
-        body = "dispatch_started task=abc123def456 channel=pipeline-issue-309 issue=309"
+        body = "dispatch.received task=abc123def456 channel=pipeline-issue-309 issue=309"
         text = f"{_ts_now_str(2)} {body}"
         state = prov._parse("worker-1", text)
         # last_substantive_ts atualizado pela linha started.

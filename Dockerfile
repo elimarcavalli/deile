@@ -34,26 +34,30 @@ RUN apt-get update \
 
 WORKDIR /build
 
-# Copy the deilebot subtree first (so deile can resolve it as a
-# *local* dep when [bot] is requested). Order matters for the layer
-# cache: deilebot rarely changes versus deile during dev.
-COPY deilebot/pyproject.toml deilebot/README.md ./deilebot/
-COPY deilebot/deilebot ./deilebot/deilebot
-COPY deilebot/deilebot_client ./deilebot/deilebot_client
+# WITH_BOT=0 (default) builds without the deilebot package — no deilebot/
+# directory needed in the build context. Set WITH_BOT=1 only when the
+# deilebot/ subtree is present and the Discord bot deployment is required.
+ARG WITH_BOT=0
 
 # Then deile.
 COPY pyproject.toml requirements.txt README.md ./
 COPY deile ./deile
 
-# Install both packages into a venv we'll copy into the final stage.
-# - deilebot[discord,client] gives us the Discord adapter + the thin HTTP
-#   client that deile imports (deilebot_client).
-# - deile is installed *without* the [bot] extra to skip its git URL —
-#   deilebot is already on disk from the previous step.
-RUN python -m venv /venv \
+# Install packages into a venv we'll copy into the final stage.
+# With WITH_BOT=1: the deilebot subtree is bind-mounted from the build
+#   context (required=false so the build never fails when the dir is absent),
+#   copied to /build/deilebot, then installed as deilebot[discord,client].
+# With WITH_BOT=0 (default): only deile is installed; messaging tools
+#   degrade silently (auto_discover.py:38-40 skips them when deilebot is
+#   absent — BOT_CLIENT_AVAILABLE=False path).
+RUN --mount=type=bind,source=deilebot,target=/tmp/deilebot-ctx,required=false \
+    python -m venv /venv \
     && /venv/bin/pip install --upgrade pip wheel \
     && /venv/bin/pip install -r requirements.txt \
-    && /venv/bin/pip install ./deilebot[discord,client] \
+    && if [ "$WITH_BOT" = "1" ]; then \
+           cp -r /tmp/deilebot-ctx /build/deilebot \
+           && /venv/bin/pip install ./deilebot[discord,client]; \
+       fi \
     && /venv/bin/pip install . \
     && find /venv -type d -name __pycache__ -exec rm -rf {} +
 
