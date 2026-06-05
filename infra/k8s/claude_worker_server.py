@@ -55,10 +55,12 @@ try:
     # ``summarize_jsonl`` é o extrator RICO (superset) que preserva tudo que a
     # tela de tokens mostra (título/brief/tools/PR/erros), não só os tokens.
     from jsonl_cost import aggregate_jsonl as _aggregate_jsonl
+    from jsonl_cost import context_window_of_model as _context_window_of_model
     from jsonl_cost import summarize_jsonl as _summarize_jsonl
 except Exception:  # pragma: no cover — sibling sempre presente in-pod
     _aggregate_jsonl = None
     _summarize_jsonl = None
+    _context_window_of_model = None
 
 logger = logging.getLogger("deile.claude_worker_server")
 
@@ -233,6 +235,11 @@ class _QuotaSnapshot:
 
 _quota_lock: threading.Lock = threading.Lock()
 _quota_snapshot: Optional[_QuotaSnapshot] = None
+
+#: Conjunto de strong-refs para tasks de dispatch em background (T2 — nowait).
+#: asyncio mantém apenas weak refs; sem este set o GC pode coletar a task
+#: antes de o subprocess terminar, resultando em lease órfão.
+_BG_NOWAIT_TASKS: set = set()
 
 #: Regex pattern matching anthropic rate-limit header in subprocess output.
 _QUOTA_RE = re.compile(
@@ -1345,16 +1352,24 @@ def _resolve_jsonl_path(session_id: str, workspace: Path) -> Optional[Path]:
     return None
 
 
-def _estimate_session_tokens(session_id: str, workspace: Path) -> int:
-    """Soma usage tokens do JSONL da sessão claude (input + output + cache).
+def _estimate_context_tokens(session_id: str, workspace: Path) -> int:
+    """Estima o CONTEXTO OCUPADO de uma sessão claude (pico de um round).
 
-    Retorna 0 quando JSONL ausente / unreadable — fallback conservador
-    (não bloqueia resume por incapacidade de medir).
+    Mede o tamanho da janela de contexto realmente ocupada: o MÁXIMO, entre
+    todas as respostas assistant do JSONL, de ``input_tokens +
+    cache_read_input_tokens + cache_creation_input_tokens`` — exatamente o
+    total de tokens enviados ao modelo naquele round (= tamanho do contexto).
+
+    NÃO soma os rounds. Cache-read é o MESMO contexto relido a cada turno;
+    somá-lo ao longo da sessão superestima o contexto em ordens de magnitude
+    (visto 11,5M tokens numa sessão cujo contexto real era ~70K, o que disparava
+    promoção-a-fresh espúria a cada review longa). Retorna 0 quando o JSONL está
+    ausente/ilegível — fallback conservador (não promove por falha de medição).
     """
     jsonl_path = _resolve_jsonl_path(session_id, workspace)
     if jsonl_path is None:
         return 0
-    total = 0
+    peak = 0
     try:
         with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -1371,15 +1386,18 @@ def _estimate_session_tokens(session_id: str, workspace: Path) -> int:
                     usage = d.get("usage") if isinstance(d, dict) else None
                 if not isinstance(usage, dict):
                     continue
-                for k in ("input_tokens", "output_tokens",
-                          "cache_read_input_tokens", "cache_creation_input_tokens"):
+                ctx = 0
+                for k in ("input_tokens", "cache_read_input_tokens",
+                          "cache_creation_input_tokens"):
                     v = usage.get(k)
                     if isinstance(v, (int, float)):
-                        total += int(v)
+                        ctx += int(v)
+                if ctx > peak:
+                    peak = ctx
     except OSError as exc:
-        logger.warning("session token count failed for %s: %s", session_id, exc)
+        logger.warning("context token estimate failed for %s: %s", session_id, exc)
         return 0
-    return total
+    return peak
 
 
 async def _git_fast_forward_workdir(workspace: Path, branch: Optional[str]) -> None:
@@ -2180,6 +2198,10 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     model_slug = payload.get("preferred_model")
     resume_session_id = payload.get("resume_session_id")
     prev_task_id = payload.get("prev_task_id")
+    # Modo fire-and-forget: quando False, retorna 202+task_id imediatamente e
+    # executa o subprocess em background (asyncio.create_task). Comportamento
+    # padrão (True ou ausente) = bloqueante, compatível com clientes legados.
+    wait_for_result: bool = bool(payload.get("wait_for_result", True))
     # Reasoning effort por etapa → ``claude --effort``. Traduzido para um valor
     # que o CLI aceita (ultracode→xhigh, auto→omitir); inválido vira None (fail-open).
     # O painel oferece o vocabulário Claude Code completo; a tradução acontece aqui.
@@ -2303,25 +2325,44 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 "session_id": session_id,
             }, status=409)
 
-        # Decisão #46 — Resume sob demanda: quando o resume é tentado e a
-        # sessão JSONL acumulada passou de 100K tokens, ABANDONAR o resume
-        # e PROMOVER fresh dispatch automaticamente. Antes rejeitávamos com
-        # 413 (RESUME_BUDGET_EXCEEDED), o que parava trabalho — agora apenas
-        # registramos a métrica e seguimos como fresh dispatch (novo task_id,
-        # novo session_id, workdir fresco). O brief unified já lê
-        # ``.deile-progress.md`` no PASSO 0, então o agente recupera o
-        # contexto natural sem dependência do JSONL gigante.
-        budget_limit = int(os.environ.get(
-            "DEILE_CLAUDE_RESUME_TOKEN_BUDGET", "100000",
-        ))
+        # Decisão #46 — Resume sob demanda: quando o resume é tentado e o
+        # CONTEXTO OCUPADO da sessão ultrapassa uma fração da janela real do
+        # modelo, ABANDONAR o resume e PROMOVER fresh dispatch automaticamente.
+        # O brief unified lê ``.deile-progress.md`` no PASSO 0, então o agente
+        # recupera o contexto natural sem arrastar um JSONL que não cabe mais.
+        #
+        # Threshold (issue #445 follow-up): 80% da janela do modelo
+        # (``context_window_of_model`` — Opus 4.8 = 1M → 800K), não um teto fixo
+        # de 100K. Mede-se o CONTEXTO OCUPADO (pico de um round via
+        # ``_estimate_context_tokens``), não a soma de cache-reads dos rounds
+        # (que inflava a métrica em ~150x e promovia toda review longa a fresh).
+        # Overrides (precedência): ``DEILE_CLAUDE_RESUME_TOKEN_BUDGET`` (teto
+        # absoluto em tokens, escape-hatch) > ``DEILE_CLAUDE_RESUME_CONTEXT_FRACTION``
+        # (fração, default 0.80) × janela do modelo.
+        _abs_override = os.environ.get("DEILE_CLAUDE_RESUME_TOKEN_BUDGET", "").strip()
+        if _abs_override and _abs_override not in ("0",):
+            try:
+                budget_limit = int(_abs_override)
+            except ValueError:
+                budget_limit = 0
+        else:
+            try:
+                _fraction = float(os.environ.get(
+                    "DEILE_CLAUDE_RESUME_CONTEXT_FRACTION", "0.80"))
+            except ValueError:
+                _fraction = 0.80
+            _window = (_context_window_of_model(claude_model)
+                       if _context_window_of_model else 200_000)
+            budget_limit = int(_window * _fraction)
         if budget_limit > 0:
-            jsonl_tokens = _estimate_session_tokens(session_id, workspace)
+            jsonl_tokens = _estimate_context_tokens(session_id, workspace)
             if jsonl_tokens > budget_limit:
                 logger.warning(
-                    "resume %s session JSONL acumulou %d tokens "
-                    "(>threshold=%d). Promovendo automaticamente para fresh "
-                    "dispatch (brief unified lê .deile-progress.md no PASSO 0).",
-                    session_id, jsonl_tokens, budget_limit,
+                    "resume %s contexto ocupado %d tokens (>threshold=%d "
+                    "= fração da janela do modelo %s). Promovendo automaticamente "
+                    "para fresh dispatch (brief unified lê .deile-progress.md no "
+                    "PASSO 0).",
+                    session_id, jsonl_tokens, budget_limit, claude_model,
                 )
                 # Promove para fresh: novo task_id, novo session_id, novo workdir.
                 # Mantém branch e demais campos do payload.
@@ -2480,6 +2521,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         "prev_task_id": prev_task_id if is_resume else None,
         "last_is_error": None,  # populado pós-spawn
         "last_result_summary": "",
+        "last_result_full": "",  # veredito completo — não truncado (T1)
         "last_returncode": None,
         "last_completed_at": None,
         "last_duration_seconds": None,
@@ -2531,64 +2573,163 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             pass
         await _release_lease(workspace / ".lease.json")
 
-    try:
-        result = await run_subprocess_with_progress(
-            cmd, cwd=workspace, task_id=task_id, timeout=timeout,
-            lease_path=workspace / ".lease.json",
+    async def _run_and_finalize() -> None:
+        """Executa o subprocess e persiste o resultado final na session.json.
+
+        Fatorado fora do handler principal para ser reutilizável tanto no
+        caminho bloqueante (wait_for_result=True) quanto no nowait (False).
+        Garante que lease + heartbeat são sempre liberados ao fim, mesmo em
+        caso de exceção — sem risk de lease órfão (T2).
+        """
+        try:
+            result = await run_subprocess_with_progress(
+                cmd, cwd=workspace, task_id=task_id, timeout=timeout,
+                lease_path=workspace / ".lease.json",
+            )
+        except Exception as exc:
+            logger.exception("dispatch failed task_id=%s", task_id)
+            meta_pre["last_is_error"] = True
+            _exc_text = f"{type(exc).__name__}: {exc}"
+            meta_pre["last_result_summary"] = _exc_text[:300]
+            meta_pre["last_result_full"] = _exc_text[:8192]
+            meta_pre["last_returncode"] = -1
+            meta_pre["last_completed_at"] = int(time.time())
+            await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
+            await _cleanup_lease()
+            # No caminho nowait o chamador já respondeu 202; apenas logamos.
+            dlog.dispatch_failed(
+                task=task_id,
+                reason=f"{type(exc).__name__}: {exc}"[:120],
+                error_code="SUBPROCESS_EXCEPTION",
+            )
+            return
+
+        # Parse do JSON output (--output-format json) — fonte estruturada de
+        # verdade pra is_error, result, cost. Resolve Bug A do Opus de forma
+        # estrutural (sem regex frágil no stdout livre).
+        claude_result = _parse_claude_json_output(result.stdout)
+
+        # Best-effort quota capture (issue #395): scan stderr for rate-limit
+        # header values printed by claude CLI.  O(1) em memória — nunca bloqueia.
+        _try_capture_quota_from_output(result.stdout, result.stderr)
+
+        # Detecção de auth expirado: estrutural (is_error=true + result contém
+        # signature de auth) E fallback regex no stdout/stderr crus (pra casos
+        # onde JSON output não veio — ex: timeout antes do final).
+        auth_expired_struct = (
+            claude_result["is_error"]
+            and any(sig in claude_result["result"].lower()
+                    for sig in _AUTH_EXPIRED_SIGNATURES)
         )
-    except Exception as exc:
-        logger.exception("dispatch failed task_id=%s", task_id)
-        meta_pre["last_is_error"] = True
-        meta_pre["last_result_summary"] = f"{type(exc).__name__}: {exc}"[:300]
-        meta_pre["last_returncode"] = -1
+        auth_expired_legacy = _detect_auth_expired(result.stdout, result.stderr)
+        auth_expired = auth_expired_struct or auth_expired_legacy
+        error_code = "WORKER_AUTH_EXPIRED" if auth_expired else None
+
+        # Considera "ok" se: rc=0 AND não auth_expired AND JSON output não diz
+        # is_error=true. JSON output sendo a fonte estrutural (claude pode
+        # imprimir rc=0 mesmo em falha de auth — vide investigação Opus).
+        ok = (
+            result.returncode == 0
+            and not auth_expired
+            and not claude_result["is_error"]
+        )
+
+        # Persistir metadata final.
+        meta_pre["last_is_error"] = claude_result["is_error"] or not ok
+        meta_pre["last_result_summary"] = claude_result["result"][:300]
+        # last_result_full: veredito completo para o pipeline parsear CLARO/VAGO/
+        # REFINO:OK sem perder informação pelo truncamento em 300 chars (T1).
+        # Cap generoso em 8 KiB para não estourar o session.json.
+        # Não há segredos no campo result do claude (é o texto do agente, não env);
+        # aplicamos apenas o teto de tamanho como medida defensiva.
+        meta_pre["last_result_full"] = claude_result["result"][:8192]
+        meta_pre["last_returncode"] = result.returncode
         meta_pre["last_completed_at"] = int(time.time())
+        meta_pre["last_duration_seconds"] = result.duration_seconds
+        meta_pre["last_total_cost_usd"] = claude_result["total_cost_usd"]
         await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
+
+        # Terminal marker for the panel — pairs with dispatch.received (#435).
+        if ok:
+            dlog.dispatch_completed(
+                task=task_id,
+                ok=True,
+                turns=claude_result.get("num_turns"),
+                cost_usd=claude_result.get("total_cost_usd"),
+                duration_s=result.duration_seconds,
+            )
+        else:
+            _err_code = error_code or ("AUTH_EXPIRED" if auth_expired else None)
+            failure_reason = _build_failure_reason(
+                result.returncode,
+                result.stderr,
+                result.stdout,
+                claude_result.get("result", ""),
+            )
+            dlog.dispatch_failed(
+                task=task_id,
+                reason=failure_reason[:120],
+                turns=claude_result.get("num_turns"),
+                duration_s=result.duration_seconds,
+                error_code=_err_code,
+            )
+
+        # Libera heartbeat + lease (caminho feliz e caminho de erro não-exc).
         await _cleanup_lease()
+
+        # Guarda resultado para o caminho bloqueante acessar depois.
+        meta_pre["_run_result"] = {
+            "ok": ok,
+            "error_code": error_code,
+            "auth_expired": auth_expired,
+            "result": result,
+            "claude_result": claude_result,
+        }
+
+    if not wait_for_result:
+        # T2 — Modo nowait: dispatch fire-and-forget.
+        # Retorna 202+task_id IMEDIATAMENTE; subprocess roda em background.
+        # Strong-ref em _BG_NOWAIT_TASKS evita GC prematuro da task.
+        async def _bg_nowait() -> None:
+            try:
+                await _run_and_finalize()
+            except asyncio.CancelledError:
+                # Cancelamento do loop (shutdown): garante cleanup mesmo assim.
+                await _cleanup_lease()
+                raise
+            except Exception:
+                logger.exception(
+                    "background nowait dispatch failed task_id=%s", task_id,
+                )
+                await _cleanup_lease()
+
+        bg_task = asyncio.create_task(_bg_nowait(), name=f"nowait-{task_id}")
+        _BG_NOWAIT_TASKS.add(bg_task)
+        bg_task.add_done_callback(_BG_NOWAIT_TASKS.discard)
+        return web.json_response(
+            {"task_id": task_id, "status": "running"}, status=202,
+        )
+
+    # Caminho bloqueante (wait_for_result=True — comportamento original).
+    await _run_and_finalize()
+
+    # Extrai resultado persistido pela _run_and_finalize para montar response.
+    _run = meta_pre.get("_run_result")
+    if _run is None:
+        # Só ocorre se _run_and_finalize lançou exceção antes de persistir —
+        # o erro já foi logado; lease já foi limpo no finally interno.
         return web.json_response({
             "ok": False,
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": "subprocess raised exception (see logs)",
             "task_id": task_id,
             "session_id": session_id,
         }, status=500)
 
-    # Parse do JSON output (--output-format json) — fonte estruturada de
-    # verdade pra is_error, result, cost. Resolve Bug A do Opus de forma
-    # estrutural (sem regex frágil no stdout livre).
-    claude_result = _parse_claude_json_output(result.stdout)
-
-    # Best-effort quota capture (issue #395): scan stderr for rate-limit
-    # header values printed by claude CLI.  O(1) em memória — nunca bloqueia.
-    _try_capture_quota_from_output(result.stdout, result.stderr)
-
-    # Detecção de auth expirado: estrutural (is_error=true + result contém
-    # signature de auth) E fallback regex no stdout/stderr crus (pra casos
-    # onde JSON output não veio — ex: timeout antes do final).
-    auth_expired_struct = (
-        claude_result["is_error"]
-        and any(sig in claude_result["result"].lower()
-                for sig in _AUTH_EXPIRED_SIGNATURES)
-    )
-    auth_expired_legacy = _detect_auth_expired(result.stdout, result.stderr)
-    auth_expired = auth_expired_struct or auth_expired_legacy
-    error_code = "WORKER_AUTH_EXPIRED" if auth_expired else None
-
-    # Considera "ok" se: rc=0 AND não auth_expired AND JSON output não diz
-    # is_error=true. JSON output sendo a fonte estrutural (claude pode
-    # imprimir rc=0 mesmo em falha de auth — vide investigação Opus).
-    ok = (
-        result.returncode == 0
-        and not auth_expired
-        and not claude_result["is_error"]
-    )
-
-    # Persistir metadata final.
-    meta_pre["last_is_error"] = claude_result["is_error"] or not ok
-    meta_pre["last_result_summary"] = claude_result["result"][:300]
-    meta_pre["last_returncode"] = result.returncode
-    meta_pre["last_completed_at"] = int(time.time())
-    meta_pre["last_duration_seconds"] = result.duration_seconds
-    meta_pre["last_total_cost_usd"] = claude_result["total_cost_usd"]
-    await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
+    ok = _run["ok"]
+    error_code = _run["error_code"]
+    auth_expired = _run["auth_expired"]
+    result = _run["result"]
+    claude_result = _run["claude_result"]
 
     response = {
         "ok": ok,
@@ -2621,34 +2762,6 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         )
         response["error"] = failure_reason[:500]
 
-    # Terminal marker for the panel — pairs with dispatch.received (#435).
-    if ok:
-        dlog.dispatch_completed(
-            task=task_id,
-            ok=True,
-            turns=claude_result.get("num_turns"),
-            cost_usd=claude_result.get("total_cost_usd"),
-            duration_s=result.duration_seconds,
-        )
-    else:
-        _err_code = error_code or ("AUTH_EXPIRED" if auth_expired else None)
-        failure_reason = _build_failure_reason(
-            result.returncode,
-            result.stderr,
-            result.stdout,
-            claude_result.get("result", ""),
-        )
-        dlog.dispatch_failed(
-            task=task_id,
-            reason=failure_reason[:120],
-            turns=claude_result.get("num_turns"),
-            duration_s=result.duration_seconds,
-            error_code=_err_code,
-        )
-
-    # Libera heartbeat + lease antes de responder (lease liberado apenas aqui
-    # no caminho feliz; o caminho de exceção já liberou no handler acima).
-    await _cleanup_lease()
     return web.json_response(response)
 
 
@@ -2836,6 +2949,10 @@ async def resume_info_handler(request: web.Request) -> web.Response:
         "last_completed_at": meta.get("last_completed_at"),
         "last_is_error": meta.get("last_is_error"),
         "last_result_summary": (meta.get("last_result_summary") or "")[:300],
+        # Veredito completo — não truncado a 300 chars — para o pipeline
+        # parsear CLARO/VAGO/REFINO:OK no reconcile (T1). Ausente em metadados
+        # antigos (pre-T1) → string vazia; pipeline cai em last_result_summary.
+        "last_result_full": meta.get("last_result_full") or "",
         "last_returncode": meta.get("last_returncode"),
         "last_duration_seconds": meta.get("last_duration_seconds"),
         "last_total_cost_usd": meta.get("last_total_cost_usd"),

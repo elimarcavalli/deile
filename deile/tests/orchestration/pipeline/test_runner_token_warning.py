@@ -8,10 +8,7 @@ from __future__ import annotations
 import logging
 import os
 
-import pytest
-
 from deile.orchestration.pipeline.runner import _warn_if_no_forge_token
-
 
 # ---------------------------------------------------------------------------
 # helpers

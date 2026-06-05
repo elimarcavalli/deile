@@ -12,7 +12,8 @@ import pytest
 
 from deile.orchestration.pipeline.dispatch_resolver import (
     PIPELINE_STAGES, VALID_DISPATCHERS, get_endpoint_for, is_valid_dispatcher,
-    resolve_stage_dispatcher, resolve_stage_max_retries, resolve_stage_timeout_s)
+    resolve_stage_dispatcher, resolve_stage_max_retries,
+    resolve_stage_timeout_s)
 
 
 def _clear_env(monkeypatch):
@@ -288,3 +289,45 @@ def test_retries_settings_per_stage(monkeypatch):
     assert resolve_stage_max_retries("implement") == 5
     # Cleanup
     s.pipeline_retries_implement = None
+
+
+# ===== Error message context (issue #478 finding #5) =========================
+
+def test_timeout_env_invalid_message_contains_env_var_name(monkeypatch):
+    """ValueError message must include the env var name for traceability."""
+    _clear_timeout_env(monkeypatch)
+    monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW", "foo")
+    from deile.config.settings import reset_settings
+    reset_settings()
+    with pytest.raises(ValueError, match="DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW"):
+        resolve_stage_timeout_s("pr_review")
+
+
+def test_timeout_env_invalid_message_contains_raw_value(monkeypatch):
+    """ValueError message must include the raw value that caused the failure."""
+    _clear_timeout_env(monkeypatch)
+    monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_CLASSIFY", "foo")
+    from deile.config.settings import reset_settings
+    reset_settings()
+    with pytest.raises(ValueError, match="foo"):
+        resolve_stage_timeout_s("classify")
+
+
+def test_retries_env_invalid_message_contains_env_var_name(monkeypatch):
+    """ValueError message must include the env var name for traceability."""
+    _clear_retries_env(monkeypatch)
+    monkeypatch.setenv("DEILE_PIPELINE_RETRIES_IMPLEMENT", "bar")
+    from deile.config.settings import reset_settings
+    reset_settings()
+    with pytest.raises(ValueError, match="DEILE_PIPELINE_RETRIES_IMPLEMENT"):
+        resolve_stage_max_retries("implement")
+
+
+def test_retries_env_invalid_message_contains_raw_value(monkeypatch):
+    """ValueError message must include the raw value that caused the failure."""
+    _clear_retries_env(monkeypatch)
+    monkeypatch.setenv("DEILE_PIPELINE_RETRIES_FOLLOW_UPS", "bar")
+    from deile.config.settings import reset_settings
+    reset_settings()
+    with pytest.raises(ValueError, match="bar"):
+        resolve_stage_max_retries("follow_ups")

@@ -6,10 +6,8 @@ import json
 
 from deile.config.settings import get_settings, reset_settings
 from deile.orchestration.pipeline.constants import (
-    PIPELINE_STOP_TIMEOUT_SECONDS,
-    claude_timeout_seconds,
-    pipeline_poll_interval_seconds,
-)
+    PIPELINE_STOP_TIMEOUT_SECONDS, claude_timeout_seconds,
+    pipeline_poll_interval_seconds)
 
 
 class TestClaudeTimeoutSeconds:

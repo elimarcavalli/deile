@@ -5,19 +5,11 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from deile.log_mgmt.log_analyzer import (
-    Anomaly,
-    _detect_auth_expiry,
-    _detect_error_spike,
-    _detect_flooding,
-    _detect_silent_pipeline,
-    _get_config,
-    _scan_files,
-    scan_crash_loops,
-    scan_logs,
-)
+from deile.log_mgmt.log_analyzer import (Anomaly, _detect_auth_expiry,
+                                         _detect_error_spike, _detect_flooding,
+                                         _detect_silent_pipeline, _get_config,
+                                         _scan_files, scan_crash_loops,
+                                         scan_logs)
 from deile.log_mgmt.log_patterns import Severity
 
 
@@ -189,7 +181,7 @@ class TestDetectFlooding:
         assert result == []
 
     def test_below_threshold(self):
-        lines = [f"2026-05-28T14:00:00 ERROR repeated error"] * 5
+        lines = ["2026-05-28T14:00:00 ERROR repeated error"] * 5
         result = _detect_flooding("pod1", lines, threshold=10)
         assert result == []
 

@@ -82,6 +82,18 @@ def _worker_response(
     return resp
 
 
+async def _drain_bg(monitor) -> None:
+    """Aguarda as background tasks de resume terminarem (issue #445).
+
+    O caminho de RESUME de review agora roda detached via ``spawn_background``;
+    os testes precisam drenar para observar os efeitos (merge/block/notify).
+    """
+    import asyncio
+
+    if monitor._bg_tasks:
+        await asyncio.gather(*list(monitor._bg_tasks))
+
+
 def _make_monitor(
     *,
     issues_reviewed: Optional[List[IssueRef]] = None,
@@ -358,6 +370,7 @@ class TestResumeSweep:
             )],
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_resumed.assert_called_once()
         assert monitor.stats.resume_dispatches == 1
         # The dispatch carried resume mode.
@@ -372,6 +385,7 @@ class TestResumeSweep:
             )],
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_finished.assert_called_once()
         assert monitor.stats.issues_implemented == 1
         monitor.github.transition_issue.assert_any_call(
@@ -410,6 +424,7 @@ class TestResumeSweep:
             2, fingerprint="SAME", attempt=1, budget_s=0.0
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_blocked.assert_called_once()
         monitor.github.add_labels.assert_any_call("issue", 2, [WORKFLOW_BLOCKED])
         assert monitor.stats.issues_blocked == 1
@@ -425,6 +440,7 @@ class TestResumeSweep:
             2, fingerprint="OLD", attempt=1, budget_s=0.0
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_blocked.assert_not_called()
         assert monitor._resume_tracker.get(2).last_fingerprint == "NEW"
 
@@ -470,10 +486,40 @@ class TestResumeSweep:
             ],
         )
         await monitor.tick()  # absorbs budget=900 from the worker result
+        await _drain_bg(monitor)
         assert monitor._resume_tracker.get(2).budget_s == 900.0
         notifier.implementation_blocked.assert_not_called()
         await monitor.tick()  # now the budget ceiling fires
         notifier.implementation_blocked.assert_called_once()
+
+    async def test_resume_implement_nao_bloqueia_o_tick(self):
+        # Issue #445: o resume de implement roda detached via spawn_background —
+        # resume_in_progress_issues retorna ANTES de o dispatch (lento) terminar.
+        import asyncio
+
+        from deile.orchestration.pipeline import stages
+
+        monitor, notifier, _ = _make_monitor(issues_in_progress=[_in_progress()])
+        gate = asyncio.Event()
+
+        async def _slow_implement(_monitor, _issue, *, resume):
+            await gate.wait()
+            return _outcome_from_worker_response(
+                _worker_response(ended="incompleto", fingerprint="f2", tentativa=2)
+            )
+
+        monitor.implementer = MagicMock()
+        monitor.implementer.implement = AsyncMock(side_effect=_slow_implement)
+
+        # O stage retorna imediatamente (dispatch ainda travado no gate).
+        await stages.resume_in_progress_issues(monitor)
+        assert len(monitor._bg_tasks) == 1
+        assert 2 in monitor._resume_in_flight
+
+        # Libera o dispatch e drena — o in-flight é limpo no finally.
+        gate.set()
+        await _drain_bg(monitor)
+        assert 2 not in monitor._resume_in_flight
 
     async def test_cadence_skips_when_too_soon(self):
         monitor, notifier, client = _make_monitor(
@@ -540,17 +586,43 @@ class TestBlockFlowSideEffects:
 # ===========================================================================
 
 class TestReviewResume:
-    async def test_fresh_review_merges_to_concluded(self):
-        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
-                   labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
-        monitor, notifier, _ = _make_monitor(
-            prs=[pr],
-            worker_responses=[_worker_response(
-                ended="concluido", pr_url="https://x/pull/10",
-                summary="https://x/pull/10 MERGED", fingerprint="f", tentativa=1,
-            )],
+    async def test_fresh_review_is_nowait_then_resume_concludes(self):
+        # Issue #373: review fresh agora é fire-and-forget (espelha implement).
+        # Tick 1: PR em REVIEW_PENDING → fresh dispatch nowait → PR fica em
+        #         em_andamento; pr_reviewed NÃO chamada ainda.
+        # Tick 2: PR em REVIEW_IN_PROGRESS → resume bloqueante → pr_reviewed.
+        pr_pending = PrRef(number=10, title="prt", url="https://x/pull/10",
+                           labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
+        pr_in_progress = PrRef(number=10, title="prt", url="https://x/pull/10",
+                               labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-2")
+
+        monitor, notifier, client = _make_monitor(
+            prs=[pr_pending],
+            worker_responses=[
+                # Tick 1 (nowait): worker aceita e retorna 202 + task_id imediato.
+                {"task_id": "rev-t1", "status": "running"},
+                # Tick 2 (resume bloqueante): worker termina e retorna resultado.
+                _worker_response(
+                    ended="concluido", pr_url="https://x/pull/10",
+                    summary="https://x/pull/10 MERGED", fingerprint="f", tentativa=2,
+                ),
+            ],
         )
+
+        # Tick 1: fresh dispatch → fire-and-forget. pr_reviewed NÃO chamada.
         await monitor.tick()
+        notifier.pr_reviewed.assert_not_called()
+        assert monitor.stats.prs_reviewed == 0
+        # O dispatch fire-and-forget foi feito (payload enfileirado no fake).
+        assert len(client.payloads) == 1
+        assert client.payloads[0]["resume"]["mode"] == "fresh"
+
+        # Reconfigura a lista de PRs para o segundo tick (PR agora em_andamento).
+        monitor.github.list_open_prs = AsyncMock(return_value=[pr_in_progress])
+
+        # Tick 2: resume → concluido → pr_reviewed chamada (resume roda em bg).
+        await monitor.tick()
+        await _drain_bg(monitor)
         notifier.pr_reviewed.assert_called_once()
         _, kwargs = notifier.pr_reviewed.call_args
         assert kwargs.get("merged") is True
@@ -584,6 +656,7 @@ class TestReviewResume:
             )],
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         notifier.implementation_resumed.assert_called_once()
         assert client.payloads[-1]["resume"]["mode"] == "resume"
         assert monitor.stats.prs_reviewed == 1
@@ -609,6 +682,7 @@ class TestReviewResume:
             )],
         )
         await monitor.tick()
+        await _drain_bg(monitor)
         monitor.github.comment_on_pr.assert_called_once()
         monitor.github.add_labels.assert_any_call("pr", 10, [WORKFLOW_BLOCKED])
         notifier.implementation_blocked.assert_called_once()
@@ -652,3 +726,70 @@ class TestOutcomePreservesErrorCode:
         outcome = _outcome_from_worker_response(response)
         assert outcome.ok is True
         assert outcome.error == ""
+
+
+# ===========================================================================
+# Regressão #509: skip-because-still-running NÃO consome tentativa
+# ===========================================================================
+
+class TestSkipStillRunningDoesNotBurnAttempt:
+    """Um dispatch pulado porque o anterior AINDA roda no worker não é uma
+    tentativa real — nenhum trabalho novo de review/merge aconteceu no tick.
+    Antes do fix, ``_absorb_progress`` (chamado incondicionalmente) bumpava o
+    contador +1 a cada skip; uma review saudável que durasse mais ticks que o
+    teto (``resolve_stage_max_retries`` = 3) queimava todo o orçamento em
+    skips e era bloqueada (#509: PR CLEAN+MERGEABLE → "teto 4/4 sem mergear").
+    """
+
+    @staticmethod
+    def _skip_outcome():
+        from deile.orchestration.pipeline.implementer import WorkOutcome
+        return WorkOutcome(
+            ok=False, text="",
+            error=("DISPATCH_SKIPPED_STILL_RUNNING: claude-worker ainda "
+                   "rodando o task anterior; skip nesse tick"),
+        )
+
+    async def test_pr_review_skip_does_not_increment_attempt_nor_block(self):
+        from deile.orchestration.pipeline import stages
+        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
+                   labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-2")
+        monitor, notifier, _ = _make_monitor(prs=[pr])
+        monitor.github.branch_exists = AsyncMock(return_value=True)
+        # Implementer devolve skip (review anterior ainda viva).
+        monitor.implementer = MagicMock()
+        monitor.implementer.review = AsyncMock(return_value=self._skip_outcome())
+        # 1 tentativa já registrada (bem abaixo do teto de 3).
+        monitor._resume_tracker.update_from_worker(
+            10, fingerprint="f", attempt=1, budget_s=0.0
+        )
+        before = monitor._resume_tracker.get(10).attempt
+
+        await stages.review_one_open_pr(monitor)
+        await _drain_bg(monitor)
+
+        after = monitor._resume_tracker.get(10).attempt
+        assert after == before == 1, "skip-still-running NÃO pode bumpar attempt"
+        # NÃO bloqueou.
+        notifier.implementation_blocked.assert_not_called()
+        for call in monitor.github.add_labels.call_args_list:
+            labels_arg = call.args[2] if len(call.args) > 2 else []
+            assert WORKFLOW_BLOCKED not in labels_arg
+        # batch transitório liberado (em_andamento permanece como lock durável).
+        monitor.github.clear_batch_label.assert_awaited()
+
+    async def test_implement_resume_skip_does_not_increment_attempt_nor_block(self):
+        from deile.orchestration.pipeline import stages
+        monitor, notifier, _ = _make_monitor(issues_in_progress=[_in_progress()])
+        monitor._resume_tracker.update_from_worker(
+            2, fingerprint="f", attempt=1, budget_s=0.0
+        )
+        before = monitor._resume_tracker.get(2).attempt
+
+        await stages._finalize_implement_outcome(
+            monitor, 2, self._skip_outcome(), resume=True,
+        )
+
+        after = monitor._resume_tracker.get(2).attempt
+        assert after == before == 1, "skip-still-running NÃO pode bumpar attempt"
+        notifier.implementation_blocked.assert_not_called()

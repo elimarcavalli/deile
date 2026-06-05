@@ -159,7 +159,7 @@ def test_enter_on_scaling_row_opens_scale_prompt(view_demo, app_stub):
     view_demo.cursor_row = n_stages + 1
     view_demo.cursor_col = 0  # col 0 = deile-worker
 
-    result = view_demo.handle_key("\r", app_stub)
+    view_demo.handle_key("\r", app_stub)
 
     assert view_demo.mode is not None, "mode deve estar ativo após [enter] no scaling"
     kind, deploy_name, options = view_demo.mode
@@ -266,7 +266,7 @@ def test_scale_prompt_enter_applies_scaling_demo(view_demo, app_stub):
 
 def test_apply_scaling_demo_mode_no_crash(view_demo):
     """Em modo demo, _apply_scaling não deve lançar exceção."""
-    result = view_demo._apply_scaling("deile-worker", 3)
+    view_demo._apply_scaling("deile-worker", 3)
     assert view_demo.last_ok is False  # demo → False (informativo)
     assert "demo" in (view_demo.last_msg or "").lower()
 
@@ -281,7 +281,6 @@ def test_apply_scaling_with_data_no_kubectl(view_with_data):
 
 def test_apply_scaling_deployment_not_found(view_with_data):
     """Deployment ausente → last_ok=False com hint de instalação."""
-    import subprocess as sp
 
     def fake_run(cmd, **kw):
         m = MagicMock()

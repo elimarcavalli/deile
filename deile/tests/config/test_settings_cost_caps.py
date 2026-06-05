@@ -8,18 +8,12 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 
-from deile.config.settings import (
-    Settings,
-    _to_optional_positive_decimal,
-    get_settings,
-    reset_settings,
-)
+from deile.config.settings import (Settings, _to_optional_positive_decimal,
+                                   reset_settings)
 
 
 @pytest.fixture(autouse=True)

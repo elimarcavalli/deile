@@ -2555,7 +2555,6 @@ class TestClaudeWorkerInfoProvider:
 
     def test_consumes_endpoint_with_bearer(self, monkeypatch, tmp_path):
         """Provider fetches /v1/pod-status with Bearer token and maps the response."""
-        import io
         import json as _json
         import urllib.request as _urllib_req
 
@@ -2644,14 +2643,14 @@ class TestNoiseFilter:
         assert pd._is_noise_line("") is True
         assert pd._is_noise_line("   ") is True
 
-    def test_dispatch_started_is_not_noise(self):
+    def test_dispatch_received_is_not_noise(self):
         assert pd._is_noise_line(
-            "dispatch_started task=abc123 stage=implement"
+            "dispatch.received task=abc123 stage=implement"
         ) is False
 
     def test_dispatch_completed_is_not_noise(self):
         assert pd._is_noise_line(
-            "dispatch_completed task=abc123 ok=True"
+            "dispatch.completed task=abc123 ok=True"
         ) is False
 
     def test_post_dispatch_is_not_noise(self):
@@ -2682,10 +2681,10 @@ class TestNoiseFilter:
         assert pd._parse_log_line(line) is None
 
     def test_parse_log_line_returns_logline_for_dispatch(self):
-        line = self._make_line("dispatch_started task=abc123 stage=implement")
+        line = self._make_line("dispatch.received task=abc123 stage=implement")
         result = pd._parse_log_line(line)
         assert result is not None
-        assert "dispatch_started" in result.body
+        assert "dispatch.received" in result.body
 
     # --- ACTIVITY widget: health checks não aparecem ---
 

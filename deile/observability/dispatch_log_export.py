@@ -52,13 +52,10 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from deile.observability.config import get_observability_config
-from deile.observability.dispatch_schema import (
-    ATTR_POD,
-    ATTR_ROLE,
-    ATTR_SCHEMA_VERSION,
-    SCHEMA_VERSION,
-    get_pod_metadata,
-)
+from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
+                                                 ATTR_SCHEMA_VERSION,
+                                                 SCHEMA_VERSION,
+                                                 get_pod_metadata)
 
 __all__ = [
     "get_log_provider",
@@ -281,7 +278,8 @@ def get_log_provider() -> Optional[Any]:
 
 def _build_log_provider(config: Any) -> Any:
     """Constrói o LoggerProvider apontando para o collector OTLP (D1)."""
-    from opentelemetry.sdk._logs import LoggerProvider  # pylint: disable=import-outside-toplevel
+    from opentelemetry.sdk._logs import \
+        LoggerProvider  # pylint: disable=import-outside-toplevel
     from opentelemetry.sdk._logs.export import \
         BatchLogRecordProcessor  # pylint: disable=import-outside-toplevel
     from opentelemetry.sdk.resources import (  # pylint: disable=import-outside-toplevel
@@ -401,7 +399,8 @@ def emit_log_record(
         if provider is None:
             return
 
-        from opentelemetry._logs import LogRecord, SeverityNumber  # pylint: disable=import-outside-toplevel
+        from opentelemetry._logs import (  # pylint: disable=import-outside-toplevel
+            LogRecord, SeverityNumber)
 
         severity_text, severity_number = _severity_for(event_name, attributes)
         safe = _safe_attrs(attributes)

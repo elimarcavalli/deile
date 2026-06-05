@@ -304,3 +304,22 @@ def test_summarize_brief_capped(jc, tmp_path):
     s = jc.summarize_jsonl(str(f))
     assert s["brief"] is not None
     assert len(s["brief"]) == jc._BRIEF_CAP  # capado em 4000
+
+
+# --- context_window_of_model (issue #445 follow-up: threshold de resume) ------
+@pytest.mark.parametrize("model,expected", [
+    ("claude-opus-4-8", 1_000_000),
+    ("claude-opus-4-8-20260101", 1_000_000),   # sufixo de data ignorado
+    ("anthropic:claude-opus-4-8", 1_000_000),  # prefixo de provider ignorado
+    ("opus-4-5", 1_000_000),
+    ("claude-opus-4-20250514", 200_000),       # Opus 4.0 legacy
+    ("claude-opus-4-1", 200_000),              # Opus 4.1 legacy
+    ("claude-sonnet-4-6", 1_000_000),
+    ("sonnet-4-5", 200_000),                   # Sonnet 4.5 = 200K
+    ("claude-haiku-4-5", 200_000),
+    ("gpt-4o", 200_000),                       # desconhecido = conservador
+    ("", 200_000),
+    (None, 200_000),
+])
+def test_context_window_of_model(jc, model, expected):
+    assert jc.context_window_of_model(model) == expected

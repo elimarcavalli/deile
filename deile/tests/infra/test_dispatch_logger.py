@@ -4,10 +4,8 @@ Covers:
 1. ``log_health_probe`` throttle (≤1/30s per path).
 2. Each ``dispatch.*``, ``git.*``, ``forge.*`` emitter: correct event name,
    required keys present, optional keys omitted when None.
-3. ``_panel_data`` regex backward-compat: both ``dispatch_started`` /
-   ``dispatch.received`` parse to the same CurrentTask; both
-   ``dispatch_completed`` / ``dispatch.completed`` clear it;
-   ``dispatch.failed`` also clears it as a terminal event.
+3. ``_panel_data`` regex: ``dispatch.received`` parses to CurrentTask;
+   ``dispatch.completed`` and ``dispatch.failed`` clear it.
 """
 
 from __future__ import annotations
@@ -27,9 +25,8 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-import dispatch_logger as dlog  # noqa: E402
 import _panel_data as pd  # noqa: E402
-
+import dispatch_logger as dlog  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -221,6 +218,26 @@ class TestDispatchProgressEmitters:
         assert records[0].getMessage().startswith("dispatch.model_resolved ")
         assert "model=anthropic:claude-opus-4-8" in records[0].getMessage()
 
+    def test_dispatch_model_resolved_with_reasoning(self):
+        """reasoning=<effort> is emitted when the knob is set (issue #441)."""
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_model_resolved(
+                task="t2", model="anthropic:claude-opus-4-8",
+                source="context_data", reasoning="high",
+            )
+        msg = records[0].getMessage()
+        assert "reasoning=high" in msg
+        assert "source=context_data" in msg
+
+    def test_dispatch_model_resolved_omits_reasoning_when_none(self):
+        """reasoning key is absent (not reasoning=None) when effort is not set."""
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_model_resolved(
+                task="t3", model="anthropic:claude-sonnet-4-6", source="settings",
+            )
+        msg = records[0].getMessage()
+        assert "reasoning=" not in msg
+
     def test_dispatch_progress(self):
         with _capture_records("deile.dispatch") as records:
             dlog.dispatch_progress(task="t1", elapsed_s=60.0, turn=3, tool_last="Bash")
@@ -320,58 +337,6 @@ class TestPanelDataRegexCompat:
         assert state.last_completed is not None
         assert state.last_completed.outcome == "FAIL"
 
-    # --- dispatch_started (legacy) still works --------------------------------
-
-    def test_legacy_dispatch_started_still_parsed(self):
-        prov = self._build()
-        body = ("dispatch_started task=aabbccddeeff1122 channel=pipeline-issue-309 "
-                "stage=implement kind=implement issue=309")
-        text = f"{_ts_now(2)} {body}"
-        state = prov._parse("worker-1", text)
-        assert state.current_task is not None
-        assert state.current_task.task_id == "aabbccddeeff1122"
-
-    def test_legacy_dispatch_completed_still_clears(self):
-        prov = self._build()
-        text = "\n".join([
-            f"{_ts_now(5)} dispatch_started task=aabbccddeeff1122 channel=pipeline-issue-309 issue=309",
-            f"{_ts_now(2)} dispatch_completed task=aabbccddeeff1122 ok=True",
-        ])
-        state = prov._parse("worker-1", text)
-        assert state.current_task is None
-
-    # --- mixed: old started, new completed (rolling deploy) -------------------
-
-    def test_old_started_new_completed_pairs_correctly(self):
-        prov = self._build()
-        text = "\n".join([
-            f"{_ts_now(5)} dispatch_started task=aabbccddeeff1122 channel=pipeline-issue-309 issue=309",
-            f"{_ts_now(2)} dispatch.completed task=aabbccddeeff1122 ok=True",
-        ])
-        state = prov._parse("worker-1", text)
-        assert state.current_task is None
-
-    def test_new_started_old_completed_pairs_correctly(self):
-        prov = self._build()
-        text = "\n".join([
-            f"{_ts_now(5)} dispatch.received task=aabbccddeeff1122 channel=pipeline-issue-309 issue=309",
-            f"{_ts_now(2)} dispatch_completed task=aabbccddeeff1122 ok=True",
-        ])
-        state = prov._parse("worker-1", text)
-        assert state.current_task is None
-
-    # --- dispatch.failed for old-format started task -------------------------
-
-    def test_dispatch_failed_clears_legacy_started_task(self):
-        prov = self._build()
-        text = "\n".join([
-            f"{_ts_now(5)} dispatch_started task=aabbccddeeff1122 channel=pipeline-issue-309 issue=309",
-            f"{_ts_now(2)} dispatch.failed task=aabbccddeeff1122 reason=cancelled",
-        ])
-        state = prov._parse("worker-1", text)
-        assert state.current_task is None
-        assert state.last_completed is not None
-        assert state.last_completed.outcome == "FAIL"
 
 
 # ---------------------------------------------------------------------------

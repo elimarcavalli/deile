@@ -6,7 +6,6 @@ and the blocked-secret / project-trust flows.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -165,6 +164,7 @@ class TestGet:
         assert result.success
         # content is a Rich Table — check it serialises to something containing 77
         from io import StringIO
+
         from rich.console import Console
         buf = StringIO()
         c = Console(file=buf, width=120)
@@ -213,6 +213,7 @@ class TestList:
             result = await _run(cmd, "list pipeline")
         assert result.success
         from io import StringIO
+
         from rich.console import Console
         buf = StringIO()
         c = Console(file=buf, width=200)
@@ -252,6 +253,7 @@ class TestList:
             result = await _run(cmd, "list pipeline")
         assert result.success
         from io import StringIO
+
         from rich.console import Console
         buf = StringIO()
         c = Console(file=buf, width=200)
@@ -334,6 +336,7 @@ class TestWhere:
             result = await _run(cmd, "where pipeline.poll_interval")
         assert result.success
         from io import StringIO
+
         from rich.console import Console
         buf = StringIO()
         c = Console(file=buf, width=200)
@@ -355,6 +358,7 @@ class TestWhere:
             result = await _run(cmd, "where pipeline.poll_interval")
         assert result.success
         from io import StringIO
+
         from rich.console import Console
         buf = StringIO()
         c = Console(file=buf, width=200)
@@ -377,6 +381,7 @@ class TestWhere:
             result = await _run(cmd, "where model.preferred")
         assert result.success
         from io import StringIO
+
         from rich.console import Console
         buf = StringIO()
         c = Console(file=buf, width=200)

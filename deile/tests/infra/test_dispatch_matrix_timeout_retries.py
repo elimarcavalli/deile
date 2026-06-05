@@ -9,8 +9,8 @@ Mirrors test_dispatch_matrix_view.py — covers:
 - StageDispatchEntry new fields
 """
 
-import sys
 import os
+import sys
 import types
 from dataclasses import dataclass
 from typing import Optional
@@ -81,8 +81,8 @@ def _stub_panel_data_imports(monkeypatch):
 
 def test_stage_dispatch_entry_new_fields():
     sys.path.insert(0, _INFRA_K8S)
-    import importlib
     import _panel_data as _pd
+
     # Check if real _panel_data is loaded or our stub
     if hasattr(_pd, "StageDispatchEntry"):
         entry = _pd.StageDispatchEntry("implement", "deile-worker", None, "default",
@@ -103,7 +103,6 @@ def test_stage_dispatch_entry_new_fields():
 def _make_view():
     """Create a DispatchMatrixView in demo mode (data=None)."""
     # We need to patch enough of _panel for the import to work
-    import importlib
     # If _panel is already imported, get it; else do a clean import
     panel_mod = sys.modules.get("_panel")
     if panel_mod is None:
@@ -331,7 +330,7 @@ def test_numeric_prompt_non_digit_is_ignored():
     """Non-digit keys are ignored during numeric input."""
     view = _make_view()
     view.mode = ("timeout", "implement", ["60"])
-    result = view._handle_numeric_prompt_key("a")
+    view._handle_numeric_prompt_key("a")
     assert view.mode[2] == ["60"]
 
 

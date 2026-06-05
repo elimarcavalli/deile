@@ -25,12 +25,18 @@ from typing import Awaitable, Callable, Optional
 
 from deile.cron.constants import (CRON_DM_PROMPT_MAX_CHARS,
                                   CRON_DM_RESULT_MAX_CHARS,
-                                  cron_poll_interval_seconds,
                                   CRON_RESULT_MAX_CHARS,
-                                  CRON_STOP_TIMEOUT_SECONDS)
+                                  CRON_STOP_TIMEOUT_SECONDS,
+                                  cron_poll_interval_seconds)
 from deile.cron.store import CronEntry, CronStore
+from deile.security.audit_logger import get_audit_logger
 
 logger = logging.getLogger(__name__)
+
+
+def _payload_hash(prompt: str) -> str:
+    import hashlib
+    return f"sha256:{hashlib.sha256(prompt.encode(), usedforsecurity=False).hexdigest()[:16]}"
 
 
 FireCallback = Callable[[CronEntry], Awaitable[str]]
@@ -54,6 +60,20 @@ class CronRunner:
         self._stop_event = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
         self._fired_count = 0
+
+    @staticmethod
+    def _audit_best_effort(method_name: str, **kwargs) -> None:
+        """Invoke an ``AuditLogger.log_*`` method without propagating failures.
+
+        Audit log writes are best-effort by contract (cron must keep firing
+        even if the SQLite audit DB is locked or full); silencing the failure
+        with a bare ``pass`` violates principle 6 of the architectural rules,
+        so the helper logs at ``debug`` instead with the exception preserved.
+        """
+        try:
+            getattr(get_audit_logger(), method_name)(**kwargs)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.debug("audit %s failed: %s", method_name, exc, exc_info=True)
 
     @property
     def is_running(self) -> bool:
@@ -108,7 +128,20 @@ class CronRunner:
         if cb is None:
             logger.warning("CronRunner has no fire_callback wired; skipping %s", entry.id)
             self.store.mark_fired(entry.id, result="skipped: no callback")
+            self._audit_best_effort(
+                "log_cron_skipped",
+                entry_id=entry.id,
+                name=entry.id,
+                reason="no callback",
+            )
             return
+        self._audit_best_effort(
+            "log_cron_fire",
+            entry_id=entry.id,
+            name=entry.id,
+            schedule=getattr(entry, "cron", None),
+            payload_hash=_payload_hash(entry.prompt),
+        )
         result_summary = await cb(entry)
         self.store.mark_fired(entry.id, result=str(result_summary)[:CRON_RESULT_MAX_CHARS])
         if self.notify_dm and entry.notify_user_id and result_summary:

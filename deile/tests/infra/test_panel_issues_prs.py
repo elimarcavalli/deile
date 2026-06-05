@@ -25,12 +25,10 @@ package, so the directory is appended before the imports.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
 from unittest.mock import patch
-
-import pytest
 
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
@@ -39,7 +37,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import _panel as panel  # noqa: E402
 import _panel_data as pd  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Test helpers

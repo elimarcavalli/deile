@@ -39,16 +39,17 @@ from deile.orchestration.pipeline.briefs import (
     _render_claude_mention_prompt, _render_worker_critique_brief,
     _render_worker_decompose_brief, _render_worker_implement_brief,
     _render_worker_implement_resume_brief, _render_worker_mention_brief,
-    _render_worker_pr_unified_brief, _render_worker_refine_brief)
+    _render_worker_pr_address_brief, _render_worker_pr_unified_brief,
+    _render_worker_refine_brief)
 from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
+from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.dispatch_resolver import (
     get_endpoint_for, resolve_stage_dispatcher, resolve_stage_max_retries,
     resolve_stage_timeout_s)
 from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  persona_for_type,
                                                  template_for_type)
-from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.model_resolver import resolve_stage_model
 from deile.orchestration.pipeline.reasoning_resolver import \
     resolve_stage_reasoning
@@ -229,6 +230,17 @@ class PipelineImplementer(ABC):
         self, monitor: "PipelineMonitor", issue: "IssueRef"
     ) -> WorkOutcome:
         return WorkOutcome(ok=False, text="", error="decompose não suportado nesta estratégia")
+
+    async def address_review(
+        self, monitor: "PipelineMonitor", pr: "PrRef"
+    ) -> WorkOutcome:
+        """Apply the reviewer's REQUEST_CHANGES feedback on our OWN PR (Fix #8).
+
+        Default falls back to a fresh ``review`` dispatch so the legacy Claude
+        path stays functional; the worker overrides this with a dedicated
+        implement-style dispatch that writes code + pushes (never reviews).
+        """
+        return await self.review(monitor, pr, resume=False)
 
     @abstractmethod
     async def implement(
@@ -417,9 +429,12 @@ def _estimate_session_tokens_from_jsonl(jsonl_text: str) -> int:
     """Soma usage tokens dos turns do JSONL claude. ``jsonl_text`` é o
     conteúdo bruto do arquivo. Tolerante a malformed lines.
 
-    Usado pelo budget check antes do resume: contexto grande > 500k justifica
-    compact ou fresh fallback (overhead de claude crescer linearmente com
-    o JSONL ressuscitado).
+    LEGADO / sem call-site de produção: a decisão real de promover resume a
+    fresh vive no worker (``claude_worker_server._estimate_context_tokens``),
+    que mede o CONTEXTO OCUPADO (pico de um round) — não a SOMA dos rounds.
+    Somar ``cache_read_input_tokens`` superestima em ordens de magnitude (o
+    mesmo contexto é relido a cada turno). NÃO reative esta função para gate
+    de resume sem antes trocar a soma pelo pico (ver issue #445 follow-up).
     """
     total = 0
     for line in (jsonl_text or "").splitlines():
@@ -751,9 +766,8 @@ class WorkerImplementer(PipelineImplementer):
             return outcome
 
         try:
-            from deile.orchestration.pipeline._claude_creds_refresh import (  # noqa: PLC0415
-                try_refresh_claude_credentials,
-            )
+            from deile.orchestration.pipeline._claude_creds_refresh import \
+                try_refresh_claude_credentials  # noqa: PLC0415
         except ImportError as exc:
             logger.warning(
                 "auto-renew indisponível (módulo ausente): %s — bloqueio normal",
@@ -952,13 +966,11 @@ class WorkerImplementer(PipelineImplementer):
         # raise StageCostCapExceeded when over the cap. None cap = pass-through.
         if stage:
             try:
-                from deile.orchestration.pipeline.cost_estimator import (  # noqa: PLC0415
-                    StageCostEstimator,
-                )
+                from deile.orchestration.pipeline.cost_estimator import \
+                    StageCostEstimator  # noqa: PLC0415
                 from deile.storage.usage_repository import (  # noqa: PLC0415
                     StageBudgetGuard, StageCostCapExceeded,
-                    get_usage_repository,
-                )
+                    get_usage_repository)
                 _estimator = StageCostEstimator(
                     usage_repo=get_usage_repository(),
                 )
@@ -1056,6 +1068,19 @@ class WorkerImplementer(PipelineImplementer):
                 "worker fire-and-forget accepted: task_id=%s stage=%s",
                 task_id, stage,
             )
+            # Grava no ledger também no caminho nowait — critique/refine/review
+            # fresh passam ledger_key e precisam de rastreabilidade igual ao
+            # implement. Sem isso o task_id se perde antes do reconcile poder
+            # fazer resume na próxima janela.
+            if ledger_key and task_id:
+                worker_kind = "claude" if "claude-worker" in url else "deile"
+                self._ledger.record(
+                    ledger_key,
+                    task_id=task_id,
+                    session_id="",  # Desconhecido até o worker terminar
+                    stage=stage, branch=branch,
+                    worker_kind=worker_kind,
+                )
             return WorkOutcome(
                 ok=True, text="", task_id=task_id,
                 ended="",  # Not yet known — reconcile via ground truth
@@ -1133,7 +1158,7 @@ class WorkerImplementer(PipelineImplementer):
         Best-effort: erros em qualquer fetch caem pro nudge mínimo (sem
         delta details). Resume continua funcional.
         """
-        prev_task_id = resume_meta["prev_task_id"]
+        _prev_task_id = resume_meta["prev_task_id"]
         session_id = resume_meta["resume_session_id"]
         # Extrai pr_number do ledger_key formato "pr:<N>".
         pr_number = None
@@ -1208,7 +1233,8 @@ class WorkerImplementer(PipelineImplementer):
         PATH; `git` está no PATH (clone de pipeline-status existe).
         """
         import asyncio as _aio
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
         lines: List[str] = []
         # gh comments since prev_completed_at.
         if prev_completed_at:
@@ -1273,6 +1299,7 @@ class WorkerImplementer(PipelineImplementer):
             resume=resume, expect_merge=False,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         # Issue #373: fire-and-forget for FRESH dispatches — the pipeline no
         # longer blocks waiting for the worker to finish. Resume dispatches
         # still block because the stage handler needs the structured result
@@ -1299,9 +1326,11 @@ class WorkerImplementer(PipelineImplementer):
             issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
             forge=monitor.forge.config,
         )
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
             persona=persona_for_type(issue_type), stage="refine",
+            ledger_key=DispatchLedger.key_for_issue(issue.number), nowait=True,
         )
 
     async def refine(
@@ -1313,9 +1342,11 @@ class WorkerImplementer(PipelineImplementer):
             issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
             forge=monitor.forge.config,
         )
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
             persona=persona_for_type(issue_type), stage="refine",
+            ledger_key=DispatchLedger.key_for_issue(issue.number), nowait=True,
         )
 
     async def decompose(
@@ -1353,11 +1384,50 @@ class WorkerImplementer(PipelineImplementer):
         # so the worker evaluates SOLID/SRP/DRY/KISS/security/idempotency, not
         # just whether the suite is green. implement/mention keep ``developer``.
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
+        # Issue #373 (espelhando implement): dispatch fresh fire-and-forget para
+        # não bloquear o tick. Resume permanece bloqueante — o stage handler de
+        # pr_review precisa do resultado estruturado (ended, fingerprint,
+        # tentativa) para decidir concluido/incompleto/bloqueado.
         return await self._dispatch(
             brief, channel_id=f"pipeline-pr-{pr.number}",
             persona="reviewer", resume_block=resume_block, stage="pr_review",
             branch=pr.head_ref or f"pr/{pr.number}",
             ledger_key=DispatchLedger.key_for_pr(pr.number), resume=resume,
+            nowait=not resume,
+        )
+
+    async def address_review(
+        self, monitor: "PipelineMonitor", pr: "PrRef"
+    ) -> WorkOutcome:
+        """Despacha um IMPLEMENT que aplica o feedback do reviewer + push (Fix #8).
+
+        Diferente de :meth:`review`, este dispatch NÃO revisa nem mergeia — manda
+        o worker LER a última review REQUEST_CHANGES, escrever o código que
+        atende e dar push na branch da própria PR. Quando o push muda o HEAD, a
+        próxima review (caminho normal) valida o novo HEAD e segue pro merge.
+
+        Roteado como ``stage="implement"`` (escreve código, não revisa) e
+        fire-and-forget (``nowait=True``, como o implement fresh): o tick não
+        bloqueia esperando o worker terminar — o resultado é observado no tick
+        seguinte pela mudança do HEAD SHA. Compartilha o ``channel_id`` do
+        pr_review para reaproveitar o workspace já com a PR clonada.
+        """
+        forge_cfg = monitor.forge.config
+        branch = pr.head_ref or f"pr/{pr.number}"
+        brief = _render_worker_pr_address_brief(
+            monitor.config.repo, monitor.config.main_branch, branch, pr.number,
+            forge=forge_cfg,
+        )
+        resume_block = _build_resume_block(
+            monitor.config.repo, monitor.config.main_branch, branch,
+            resume=False, expect_merge=False, pr_url_hint=pr.url,
+        )
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        return await self._dispatch(
+            brief, channel_id=f"pipeline-pr-{pr.number}", persona="developer",
+            resume_block=resume_block, stage="implement", branch=branch,
+            ledger_key=DispatchLedger.key_for_pr(pr.number), nowait=True,
         )
 
     async def mention(
@@ -1418,6 +1488,12 @@ class WorkerImplementer(PipelineImplementer):
                 # pipeline reaproveite session se houver resume.
                 ledger_key=DispatchLedger.key_for_pr(number),
                 resume=resume,
+                # FIX #5 (issue #518): dispatch fire-and-forget — o tick NÃO
+                # pode ficar preso esperando o claude terminar a PR (até 2h).
+                # nowait=True espelha o que pr_review FRESH já faz (issue #373).
+                # O estado da PR (labels) reflete o progresso no tick seguinte.
+                # Resume usa wait=True (comportamento preservado via nowait=not resume).
+                nowait=not resume,
             )
         # Default: comment mention on an issue → do what the comment says.
         brief = _render_worker_mention_brief(

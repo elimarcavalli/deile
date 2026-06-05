@@ -57,20 +57,6 @@ from aiohttp import web
 
 logger = logging.getLogger("deile.worker_server")
 
-# Logging inicializado via deile.log_mgmt com dual-write (arquivo + stdout).
-# O nível de log é controlado por DEILE_WORKER_LOG_LEVEL (default INFO).
-try:
-    from deile.log_mgmt import init_logging
-    _log_level = os.environ.get("DEILE_WORKER_LOG_LEVEL", "INFO")
-    os.environ.setdefault("DEILE_LOG_LEVEL", _log_level)
-    init_logging(pod_name="deile-worker")
-except ImportError:
-    logging.basicConfig(
-        level=os.environ.get("DEILE_WORKER_LOG_LEVEL", "INFO"),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-
-
 # ---- Config ------------------------------------------------------------------
 
 WORK_ROOT = Path(os.environ.get("DEILE_WORKER_ROOT", "/home/deile/work"))
@@ -1228,6 +1214,20 @@ async def _on_startup(app: web.Application) -> None:
 
 
 def main() -> int:
+    # Logging inicializado via deile.log_mgmt com dual-write (arquivo + stdout).
+    # O nível de log é controlado por DEILE_WORKER_LOG_LEVEL (default INFO).
+    # Inicializado aqui (dentro de main) e não no nível de módulo para evitar
+    # efeitos colaterais globais de logging durante a importação (ex.: testes).
+    try:
+        from deile.log_mgmt import init_logging
+        _log_level = os.environ.get("DEILE_WORKER_LOG_LEVEL", "INFO")
+        os.environ.setdefault("DEILE_LOG_LEVEL", _log_level)
+        init_logging(pod_name="deile-worker")
+    except ImportError:
+        logging.basicConfig(
+            level=os.environ.get("DEILE_WORKER_LOG_LEVEL", "INFO"),
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     try:
         token = _read_auth_token()

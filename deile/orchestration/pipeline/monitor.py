@@ -34,7 +34,7 @@ from deile.orchestration.pipeline._time_utils import now_utc, parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
-    pipeline_poll_interval_seconds, PIPELINE_STOP_TIMEOUT_SECONDS)
+    PIPELINE_STOP_TIMEOUT_SECONDS, pipeline_poll_interval_seconds)
 # Import path preserved for callers that still type-hint ``GitHubClient`` —
 # resolved through the shim so legacy attribute usage stays compatible.
 from deile.orchestration.pipeline.github_client import \
@@ -43,15 +43,15 @@ from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.implementer import (PipelineImplementer,
                                                       build_implementer,
                                                       is_claude_mode)
+from deile.orchestration.pipeline.labels import (WORKFLOW_IMPLEMENTING,
+                                                 WORKFLOW_NEW,
+                                                 WORKFLOW_REVIEWED)
 from deile.orchestration.pipeline.lockfile import LockHeldError
 from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
 from deile.orchestration.pipeline.lockfile import release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
 from deile.orchestration.pipeline.resume_state import ResumeTracker
 from deile.orchestration.pipeline.scheduler import PendingRun, ScheduleStore
-from deile.orchestration.pipeline.labels import (WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW,
-                                                 WORKFLOW_REVIEWED)
 from deile.orchestration.pipeline.stages import (_extract_pr_url,
                                                  _render_follow_up_report)
 from deile.orchestration.pipeline.worktree_manager import WorktreeManager
@@ -402,6 +402,20 @@ class PipelineMonitor:
         # arrumado o OAuth se reiniciou o pipeline).
         self._auth_failures_by_target: dict[str, int] = {}
         self._paused_until_ts: dict[str, float] = {}
+        # Background tasks detached do tick (issue #445): o caminho de RESUME
+        # de review roda aqui sem congelar o loop do monitor. ``_resume_in_flight``
+        # guarda os números de PR cujo resume já está rodando (impede re-dispatch
+        # concorrente da mesma PR num tick subsequente).
+        self._bg_tasks: set = set()
+        self._resume_in_flight: set = set()
+        # Anti-loop (issue #418): números de issues promovidas a ``revisada`` no
+        # TICK corrente (por convergência de refino OU crítica CLARO). O índice
+        # de labels do GitHub tem eventual consistency, então uma issue promovida
+        # neste tick ainda reaparece sob ``refinar``/``em_arquitetura`` na
+        # listagem de ``refine_one_issue`` (mesmo tick) — sem este guard o
+        # rehydrate a rebaixaria de volta, criando loop infinito. Limpo no início
+        # de cada tick; consultado pelo candidate-filter do refino.
+        self._refine_promoted_this_tick: set = set()
         # Schedule store — when present, schedule entries drive when each
         # action fires (instead of the fixed poll interval). On startup the
         # monitor first drains any catch-up queue (entries whose run time
@@ -411,6 +425,23 @@ class PipelineMonitor:
         self.schedule_store = schedule_store or ScheduleStore(
             config.base_repo_path, monitor_id=self.identity.monitor_id
         )
+
+    def spawn_background(self, coro) -> None:
+        """Roda *coro* detached (fire-and-forget interno) sem bloquear o tick.
+
+        Mantém referência forte (evita GC) e loga exceção sem derrubar o monitor.
+        """
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+
+        def _done(t: "asyncio.Task") -> None:
+            self._bg_tasks.discard(t)
+            if not t.cancelled():
+                exc = t.exception()
+                if exc is not None:
+                    logger.error("background task falhou: %s", exc, exc_info=exc)
+
+        task.add_done_callback(_done)
 
     # ------------------------------------------------------------------
     # Backwards-compat aliases (issue #297)
@@ -595,6 +626,8 @@ class PipelineMonitor:
 
     async def stop(self) -> None:
         self._stop_event.set()
+        for t in list(self._bg_tasks):
+            t.cancel()
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=PIPELINE_STOP_TIMEOUT_SECONDS)
@@ -820,6 +853,9 @@ class PipelineMonitor:
         skip = skip or set()
         scheduled_mode = bool(skip)
         cfg = self.config
+        # Anti-loop (issue #418): zera o set de "promovidas a revisada neste tick"
+        # no começo do tick, antes do reconcile que o preenche e do refine que o lê.
+        self._refine_promoted_this_tick.clear()
 
         async def _scheduled(enabled: bool, key: str, handler) -> None:
             """Run a schedulable stage unless the scheduler already covered it."""
@@ -829,11 +865,17 @@ class PipelineMonitor:
                 logger.debug("%s not in schedule; running legacy fallback", key)
             await handler()
 
+        # Issue #373: a crítica é fire-and-forget — reconcilia o veredito das
+        # críticas em voo ANTES de despachar novas (libera capacidade no mesmo
+        # tick, espelha o reconcile do implement).
+        if cfg.enable_refinement_gate:
+            await self._reconcile_critique_issues()
         await _scheduled(cfg.enable_classify, "classify", self._classify_new_issues)
         await _scheduled(cfg.enable_review, "review", self._review_one_new_issue)
-        # Refinement loop (issue #257): per-tick sweep, not a cron action —
-        # runs after critique so a POOR issue is refined on the NEXT tick.
+        # Refinement loop (issue #257/#373): reconcilia o veredito dos refinos em
+        # voo ANTES de despachar novos; o dispatch é fire-and-forget.
         if cfg.enable_refinement_gate:
+            await self._reconcile_refine_issues()
             await self._refine_one_issue()
         # Resume parked, continuable work BEFORE claiming new issues
         # (issue #254) so a freshly-claimed issue is not re-dispatched in
@@ -871,6 +913,10 @@ class PipelineMonitor:
         # Decompose CLEAR intents into derived issues (issue #257).
         if cfg.enable_refinement_gate:
             await self._decompose_one_reviewed_intent(reviewed_post)
+        # Issue #373: review fresh é fire-and-forget — reconcilia o veredito das
+        # reviews em voo (por ground-truth: PR merged?) ANTES de despachar novas.
+        if cfg.enable_pr_review and "pr_review" not in skip:
+            await self._reconcile_review_prs()
         await _scheduled(cfg.enable_pr_review, "pr_review", self._review_one_open_pr)
         if cfg.enable_pr_triage:
             await self._classify_new_prs()
@@ -913,6 +959,18 @@ class PipelineMonitor:
     async def _reconcile_implementing_issues(self) -> None:
         """Check ground truth for fire-and-forget implementing issues (issue #373)."""
         return await stages.reconcile_implementing_issues(self)
+
+    async def _reconcile_critique_issues(self) -> None:
+        """Process the verdict of fire-and-forget critiques (issue #373)."""
+        return await stages.reconcile_critique_issues(self)
+
+    async def _reconcile_refine_issues(self) -> None:
+        """Process the verdict of fire-and-forget refines (issue #373)."""
+        return await stages.reconcile_refine_issues(self)
+
+    async def _reconcile_review_prs(self) -> None:
+        """Process the verdict of fire-and-forget PR reviews (issue #373)."""
+        return await stages.reconcile_review_prs(self)
 
     async def _review_one_open_pr(self) -> None:
         return await stages.review_one_open_pr(self)

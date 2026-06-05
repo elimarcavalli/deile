@@ -20,8 +20,8 @@ import pytest
 
 from deile.infrastructure.deile_worker_client import WorkerDispatchError
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
-from deile.orchestration.pipeline.implementer import WorkerImplementer, WorkOutcome
-
+from deile.orchestration.pipeline.implementer import (WorkerImplementer,
+                                                      WorkOutcome)
 
 # ---------------------------------------------------------------------------
 # Helpers

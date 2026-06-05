@@ -11,10 +11,9 @@ Cobre:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -24,7 +23,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
         sys.path.insert(0, str(_p))
 
 import deploy  # noqa: E402
-
 
 # ===== ScaleConfig defaults =================================================
 

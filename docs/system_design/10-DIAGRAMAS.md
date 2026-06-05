@@ -292,10 +292,10 @@ EventBus.publish(Event)
    ├── tool_start / tool_end       — _publish_tool_event
    ├── router_event                — _emit_router_event
    ├── budget_alert                — quando uso aproxima de threshold
-   ├── permission_check            — log_permission_check
-   ├── secret_detection            — log_secret_detection
-   ├── plan_execution              — log_plan_execution
-   └── approval_event              — log_approval_event
+   ├── permission_check            — AuditLogger.log_permission_check
+   ├── secret_detection            — AuditLogger.log_secret_detection
+   ├── plan_execution              — AuditLogger.log_plan_execution
+   └── approval_event              — AuditLogger.log_approval_event
 
 Dead letter queue: get_dead_letters() / replay_dead_letter(event_id)
 ```

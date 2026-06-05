@@ -2,21 +2,16 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from deile.tools.base import ToolContext, ToolResult, ToolStatus
-from deile.tools.preference_tools import (
-    ForgetPreferenceTool,
-    ListPreferencesTool,
-    RememberPreferenceTool,
-    _coerce_value,
-    _resolve_user_id,
-)
-
+from deile.tools.base import ToolContext
+from deile.tools.preference_tools import (ForgetPreferenceTool,
+                                          ListPreferencesTool,
+                                          RememberPreferenceTool,
+                                          _coerce_value, _resolve_user_id)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -31,7 +26,7 @@ def tmp_prefs_file(tmp_path: Path):
         "deile.preferences.store._PREFS_DIR", tmp_path
     ), patch(
         "deile.tools.preference_tools.PreferenceStore",
-    ) as mock_store_cls:
+    ):
         # We use the real store but with patched file paths.
         # So let the PreferenceStore class resolve normally.
         pass
@@ -375,7 +370,8 @@ class TestForgetPreference:
 
 def test_tools_discoverable():
     """All three tools should be auto-discovered via DEFAULT_TOOL_PACKAGES."""
-    from deile.tools.discovery import DEFAULT_TOOL_PACKAGES, discover_tools_in_package
+    from deile.tools.discovery import (DEFAULT_TOOL_PACKAGES,
+                                       discover_tools_in_package)
     from deile.tools.registry import ToolRegistry
 
     assert "deile.tools.preference_tools" in DEFAULT_TOOL_PACKAGES

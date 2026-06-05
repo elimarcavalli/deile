@@ -11,16 +11,13 @@ Verifies that:
 from __future__ import annotations
 
 import json
-from typing import Tuple
-
-import pytest
 
 from deile.config.settings import Settings
 from deile.orchestration.forge import GitLabForge
 from deile.orchestration.forge.base import ForgeClient, ForgeConfig, ForgeKind
-from deile.orchestration.forge.github_forge import GitHubForge, _rewrite_gh_api_args
+from deile.orchestration.forge.github_forge import (GitHubForge,
+                                                    _rewrite_gh_api_args)
 from deile.orchestration.forge.gitlab_forge import _rewrite_gl_api_args
-
 
 # ---------------------------------------------------------------------------
 # _rewrite_gl_api_args (pure-function unit tests)

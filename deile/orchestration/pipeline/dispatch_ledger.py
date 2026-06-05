@@ -176,10 +176,16 @@ class DispatchLedger:
         stage: Optional[str] = None,
         branch: Optional[str] = None,
         worker_kind: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Grava (cria ou atualiza) dispatch record. Atualiza ``last_seen_at``
         e mantém ``first_seen_at`` do registro original (pra reaper calcular
-        idade total)."""
+        idade total).
+
+        ``extra`` é um dict livre de metadados adicionais (ex.: ``before_body``
+        do guard de convergência do refino). Só strings/números — quem chama
+        garante serializabilidade JSON. Ausente ou ``None`` → não grava o campo.
+        """
         if not key or not task_id:
             logger.warning("ledger.record: skipping empty key=%r or task_id=%r",
                            key, task_id)
@@ -187,7 +193,7 @@ class DispatchLedger:
         data = self._load()
         now = int(time.time())
         existing = data["dispatches"].get(key, {})
-        data["dispatches"][key] = {
+        entry: Dict[str, Any] = {
             "task_id": task_id,
             "session_id": session_id or "",
             "stage": stage,
@@ -197,6 +203,9 @@ class DispatchLedger:
             "last_seen_at": now,
             "attempt": int(existing.get("attempt", 0)) + 1,
         }
+        if extra is not None:
+            entry["extra"] = extra
+        data["dispatches"][key] = entry
         self._flush()
 
     def get(self, key: str) -> Optional[Dict[str, Any]]:

@@ -5,20 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 from io import StringIO
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from rich.console import Console
 
-from deile.commands.base import CommandContext, CommandResult
-from deile.commands.builtin.pods_command import (
-    PodsCommand,
-    _build_pods_table,
-    _format_age,
-    _parse_k8s_ts,
-    _resolve_namespace,
-)
-
+from deile.commands.base import CommandContext
+from deile.commands.builtin.pods_command import (PodsCommand,
+                                                 _build_pods_table,
+                                                 _format_age, _parse_k8s_ts,
+                                                 _resolve_namespace)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -327,9 +323,6 @@ class TestFetchPods:
             ),
         ):
             # Patch wait_for to just await the coroutine
-            import deile.commands.builtin.pods_command as mod
-
-            original_wait_for = asyncio.wait_for
 
             async def _passthrough(coro, timeout=None):
                 return await coro
@@ -347,7 +340,6 @@ class TestFetchPods:
         proc_mock.returncode = 0
         proc_mock.communicate = AsyncMock(return_value=(b"not json{{{", b""))
 
-        import deile.commands.builtin.pods_command as mod
 
         async def _passthrough(coro, timeout=None):
             return await coro

@@ -3,6 +3,7 @@
 import atexit
 import json
 import logging
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
@@ -37,6 +38,9 @@ class AuditEventType(Enum):
     PERSONA_EXECUTION_ERROR = "persona_execution_error"
     PERSONA_RECOVERY_SUCCESS = "persona_recovery_success"
     PERSONA_RECOVERY_FAILURE = "persona_recovery_failure"
+
+    CRON_FIRE = "cron_fire"
+    CRON_SKIPPED = "cron_skipped"
 
 
 class SeverityLevel(Enum):
@@ -355,7 +359,47 @@ class AuditLogger:
             tool_name=tool_name
         )
     
-    def get_recent_events(self, 
+    def log_cron_fire(
+        self,
+        entry_id: str,
+        name: Optional[str],
+        schedule: Optional[str],
+        payload_hash: Optional[str],
+    ) -> None:
+        self.log_event(
+            event_type=AuditEventType.CRON_FIRE,
+            severity=SeverityLevel.INFO,
+            actor="cron_runner",
+            resource=f"cron:{entry_id}",
+            action="fire",
+            result="started",
+            details={
+                "name": name,
+                "schedule": schedule,
+                "payload_hash": payload_hash,
+            },
+        )
+
+    def log_cron_skipped(
+        self,
+        entry_id: str,
+        name: Optional[str],
+        reason: str,
+    ) -> None:
+        self.log_event(
+            event_type=AuditEventType.CRON_SKIPPED,
+            severity=SeverityLevel.WARNING,
+            actor="cron_runner",
+            resource=f"cron:{entry_id}",
+            action="skip",
+            result="skipped",
+            details={
+                "name": name,
+                "reason": reason,
+            },
+        )
+
+    def get_recent_events(self,
                         limit: int = 100,
                         event_type: Optional[AuditEventType] = None,
                         severity: Optional[SeverityLevel] = None,
@@ -391,35 +435,29 @@ class AuditLogger:
                 "log_file": str(self.log_file),
             }
         
-        # Count by type
-        type_counts = {}
-        for event in self.recent_events:
-            event_type = event.event_type.value
-            type_counts[event_type] = type_counts.get(event_type, 0) + 1
-        
-        # Count by severity
-        severity_counts = {}
-        for event in self.recent_events:
-            severity = event.severity.value
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-        
-        # Recent critical events
+        # Count by type / severity in a single pass.
+        type_counts = dict(Counter(e.event_type.value for e in self.recent_events))
+        severity_counts = dict(Counter(e.severity.value for e in self.recent_events))
+
+        # Recent critical events (last 10).
+        _critical_severities = {SeverityLevel.ERROR, SeverityLevel.CRITICAL}
         critical_events = [
-            e for e in self.recent_events 
-            if e.severity in [SeverityLevel.ERROR, SeverityLevel.CRITICAL]
-        ][-10:]  # Last 10 critical events
-        
+            e for e in self.recent_events
+            if e.severity in _critical_severities
+        ][-10:]
+
         # Permission denials
-        permission_denials = len([
-            e for e in self.recent_events 
+        permission_denials = sum(
+            1 for e in self.recent_events
             if e.event_type == AuditEventType.PERMISSION_DENIED
-        ])
-        
+        )
+
         # Secret detections
-        secret_detections = len([
-            e for e in self.recent_events 
-            if e.event_type in [AuditEventType.SECRET_DETECTED, AuditEventType.SECRET_REDACTED]
-        ])
+        _secret_types = {AuditEventType.SECRET_DETECTED, AuditEventType.SECRET_REDACTED}
+        secret_detections = sum(
+            1 for e in self.recent_events
+            if e.event_type in _secret_types
+        )
         
         return {
             "total_events": total_events,
@@ -504,26 +542,3 @@ def get_audit_logger() -> AuditLogger:
     return _audit_logger
 
 
-def log_permission_check(tool_name: str, resource: str, action: str, allowed: bool, **kwargs) -> None:
-    """Convenience function for logging permission checks"""
-    get_audit_logger().log_permission_check(tool_name, resource, action, allowed, **kwargs)
-
-
-def log_secret_detection(file_path: str, secret_type: str, line_number: int, confidence: float, redacted: bool = True) -> None:
-    """Convenience function for logging secret detections"""
-    get_audit_logger().log_secret_detection(file_path, secret_type, line_number, confidence, redacted)
-
-
-def log_tool_execution(tool_name: str, resource: str, success: bool, **kwargs) -> None:
-    """Convenience function for logging tool executions"""
-    get_audit_logger().log_tool_execution(tool_name, resource, success, **kwargs)
-
-
-def log_plan_execution(plan_id: str, action: str, result: str, step_count: int = 0, duration_ms: int = 0, **kwargs) -> None:
-    """Convenience function for logging plan execution"""
-    get_audit_logger().log_plan_execution(plan_id, action, result, step_count, duration_ms)
-
-
-def log_approval_event(plan_id: str, step_id: str, approval_action: str, tool_name: str, risk_level: str, **kwargs) -> None:
-    """Convenience function for logging approval events"""
-    get_audit_logger().log_approval_event(plan_id, step_id, approval_action, tool_name, risk_level)

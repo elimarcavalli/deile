@@ -1261,8 +1261,6 @@ async def test_spinner_skips_refresh_when_parent_live_is_suspended():
     chamar update/refresh. Quando o Live está parado, o tick é
     no-op.
     """
-    from rich.live import Live
-    from rich.text import Text
 
     # Mock minimal Live-like object — só precisa de ``is_started``,
     # ``update`` e ``refresh``. Conta quantas vezes refresh é chamado.

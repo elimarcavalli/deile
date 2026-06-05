@@ -18,7 +18,7 @@ import logging
 import pytest
 
 from deile.config.settings import (Settings, _apply_env_overrides,
-                                   get_settings, reset_settings)
+                                   reset_settings)
 
 # Env vars que passam por _apply_env_overrides sem emitir WARNING "deprecated".
 # Inclui tanto vars ativas quanto vars silenciadas — o critério aqui é

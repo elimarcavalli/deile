@@ -13,16 +13,13 @@ Covers:
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deile.core.context_manager import (
-    ContextManager,
-    _build_preferences_block,
-    _resolve_user_id,
-)
+from deile.core.context_manager import (ContextManager,
+                                        _build_preferences_block,
+                                        _resolve_user_id)
 
 # PreferenceStore is imported lazily inside _build_preferences_block via
 # ``from deile.preferences.store import PreferenceStore``.  Patch that
@@ -134,7 +131,7 @@ class TestBuildPreferencesBlock:
             block = await _build_preferences_block(session_with_user)
 
         lines = block.split("\n")
-        key_lines = [l for l in lines if l.startswith("- `")]
+        key_lines = [line for line in lines if line.startswith("- `")]
         # sorted keys: a_key, m_key, z_key
         assert key_lines[0].startswith("- `a_key`")
         assert key_lines[1].startswith("- `m_key`")

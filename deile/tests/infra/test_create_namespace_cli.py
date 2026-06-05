@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
@@ -21,7 +19,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
         sys.path.insert(0, str(_p))
 
 import deploy  # noqa: E402
-
 
 # ===== CreateNamespaceConfig defaults =======================================
 
@@ -212,8 +209,6 @@ def test_k8s_create_namespace_global_namespace_propagated():
         # A função vai falhar por falta de LLM — mas queremos testar que o namespace
         # foi propagado para o cfg antes disso.
         captured_cfg = []
-
-        original = deploy.do_create_namespace
 
         def fake_do(cfg):
             captured_cfg.append(cfg)

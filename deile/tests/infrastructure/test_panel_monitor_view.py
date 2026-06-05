@@ -73,6 +73,7 @@ def test_footer_visible_when_body_overflows(pm, monkeypatch):
     import _panel
     from rich.panel import Panel
     from rich.text import Text
+
     # head depende de muitos atributos do app real; aqui só nos importa o
     # footer pinado, então simplificamos o head.
     monkeypatch.setattr(_panel, "_head_panel", lambda title, app: Panel(Text("HEAD")))
@@ -122,7 +123,6 @@ def test_force_tick_calls_pkill_sleep_not_rm(pm, monkeypatch):
     monkeypatch.setattr(pm.MonitorView, "_exec", fake_exec)
     monkeypatch.setattr(pm.MonitorView, "_ns", lambda self: "deile")
 
-    import _panel
     view._apply_force_tick(object())
 
     # Garante que pkill -x sleep foi chamado.
@@ -293,3 +293,73 @@ def test_models_fallback_no_stale_slugs(pm):
     present = set(pm._MODELS_FALLBACK)
     overlap = stale & present
     assert not overlap, f"Slugs desatualizados ainda em _MODELS_FALLBACK: {overlap}"
+
+
+# ---------------------------------------------------------------------------
+# Testes AC1/AC2/AC3 — parser schema novo + compatibilidade schema antigo (#440)
+# ---------------------------------------------------------------------------
+
+def test_parse_vigias_new_schema_action(pm):
+    """monitor.action com kind=oauth_renew → V1 has_action=True (AC1)."""
+    lines = [
+        "2026-06-01T10:00:00Z monitor.action kind=oauth_renew V1 ok=true",
+    ]
+    vigias = {v.number: v for v in pm.MonitorDataProvider._parse_vigias(None, lines)}
+    assert vigias[1].has_action is True, "V1 deveria ter has_action=True"
+    assert vigias[1].has_warn is False
+
+
+def test_parse_vigias_new_schema_ok_false(pm):
+    """monitor.vigia.check ok=false → has_warn=True (AC1)."""
+    lines = [
+        "2026-06-01T10:01:00Z monitor.vigia.check V2 ok=false",
+    ]
+    vigias = {v.number: v for v in pm.MonitorDataProvider._parse_vigias(None, lines)}
+    assert vigias[2].has_warn is True, "V2 deveria ter has_warn=True por ok=false"
+
+
+def test_parse_vigias_new_schema_vigia_skip(pm):
+    """monitor.vigia.skip → has_warn=True mesmo sem ok=false (AC1)."""
+    lines = [
+        "2026-06-01T10:02:00Z monitor.vigia.skip V3 reason=no_anomalies",
+    ]
+    vigias = {v.number: v for v in pm.MonitorDataProvider._parse_vigias(None, lines)}
+    assert vigias[3].has_warn is True, "V3 deveria ter has_warn=True por vigia.skip"
+
+
+def test_parse_vigias_new_schema_kind_fallback(pm):
+    """monitor.action kind=delete_pod sem V<n> explícito → V2 via _KIND_TO_VIGIA (AC1)."""
+    lines = [
+        "2026-06-01T10:03:00Z monitor.action kind=delete_pod ok=true",
+    ]
+    vigias = {v.number: v for v in pm.MonitorDataProvider._parse_vigias(None, lines)}
+    assert vigias[2].has_action is True, "V2 deveria ter has_action=True via kind=delete_pod"
+
+
+def test_parse_vigias_old_schema_fallback(pm):
+    """Schema antigo: ACTION + V1 → has_action=True (AC2)."""
+    lines = [
+        "2026-06-01T09:00:00Z ACTION abc123 V1 renovando oauth",
+    ]
+    vigias = {v.number: v for v in pm.MonitorDataProvider._parse_vigias(None, lines)}
+    assert vigias[1].has_action is True, "V1 deveria ter has_action=True (schema antigo)"
+
+
+def test_parse_vigias_malformed_line(pm):
+    """Linha malformada não levanta exceção; todos os vigias ficam sem dados (AC3)."""
+    lines = [
+        "isso nao eh uma linha valida do audit log !!!",
+    ]
+    vigias = pm.MonitorDataProvider._parse_vigias(None, lines)
+    # Não deve levantar exceção; vigias com last_seen_ts=None
+    assert all(v.last_seen_ts is None for v in vigias)
+
+
+def test_parse_vigias_last_seen_ts(pm):
+    """last_seen_ts é preenchido corretamente a partir do timestamp ISO (AC3)."""
+    lines = [
+        "2026-06-01T10:05:00Z monitor.action kind=oauth_renew V1 ok=true",
+    ]
+    vigias = {v.number: v for v in pm.MonitorDataProvider._parse_vigias(None, lines)}
+    assert vigias[1].last_seen_ts is not None, "last_seen_ts deveria ser preenchido"
+    assert vigias[1].last_seen_ts.year == 2026

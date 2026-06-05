@@ -16,10 +16,10 @@ from typing import Tuple
 
 import pytest
 
-from deile.orchestration.forge.base import ForgeConfig, ForgeKind, WorkItemDetails
+from deile.orchestration.forge.base import (ForgeConfig, ForgeKind,
+                                            WorkItemDetails)
 from deile.orchestration.forge.github_forge import GitHubForge
 from deile.orchestration.forge.gitlab_forge import GitLabForge
-
 
 # ---------------------------------------------------------------------------
 # Reference implementation of _parse_linked_items for isolated testing

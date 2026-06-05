@@ -49,7 +49,7 @@ def test_dispatch_handler_no_direct_save_session_meta_calls():
         and not line.strip().startswith("#")
     ]
     assert not direct_calls, (
-        f"Chamadas diretas (sem asyncio.to_thread) encontradas:\n"
+        "Chamadas diretas (sem asyncio.to_thread) encontradas:\n"
         + "\n".join(direct_calls)
     )
 
@@ -75,14 +75,14 @@ def test_run_subprocess_source_uses_to_thread_for_write_text():
     )
     lines = src.splitlines()
     direct_write = [
-        l.strip() for l in lines
-        if "write_text(" in l
-        and "asyncio.to_thread" not in l
-        and "tmp.write_text" not in l  # writes inside sync nested funcs são OK
-        and not l.strip().startswith("#")
+        line.strip() for line in lines
+        if "write_text(" in line
+        and "asyncio.to_thread" not in line
+        and "tmp.write_text" not in line  # writes inside sync nested funcs são OK
+        and not line.strip().startswith("#")
     ]
     assert not direct_write, (
-        f"write_text chamado diretamente (sem to_thread) em run_subprocess_with_progress:\n"
+        "write_text chamado diretamente (sem to_thread) em run_subprocess_with_progress:\n"
         + "\n".join(direct_write)
     )
 

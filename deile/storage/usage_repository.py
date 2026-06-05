@@ -449,9 +449,8 @@ class StageBudgetGuard:
         """
         # Lazy import to avoid import cycle and to allow resolve_stage_cost_cap_usd
         # to be imported after the module is fully initialized.
-        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
-            resolve_stage_cost_cap_usd,
-        )
+        from deile.orchestration.pipeline.dispatch_resolver import \
+            resolve_stage_cost_cap_usd  # noqa: PLC0415
 
         cap = resolve_stage_cost_cap_usd(stage)
         if cap is None:

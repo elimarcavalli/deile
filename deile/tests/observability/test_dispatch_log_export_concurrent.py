@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import pytest
 
@@ -19,9 +19,7 @@ class TestConcurrency:
     ):
         """10 dispatches paralelos → LogRecords não cruzam (cada trace_id único)."""
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed,
-            emit_dispatch_received,
-        )
+            emit_dispatch_completed, emit_dispatch_received)
 
         errors = []
         barrier = threading.Barrier(10)
@@ -57,9 +55,7 @@ class TestConcurrency:
     ):
         """LogRecords de dispatch diferentes não misturam trace_ids."""
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed,
-            emit_dispatch_received,
-        )
+            emit_dispatch_completed, emit_dispatch_received)
 
         # Run 3 sequential dispatches (easier to verify isolation)
         for i in range(3):

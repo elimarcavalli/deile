@@ -183,7 +183,7 @@ spec:
             # `[d]` (DispatchMatrixView) — o `kubectl set env` aplica patch
             # incremental, mantém estes como base.
             - { name: DEILE_PIPELINE_DISPATCH_MODE,        value: "deile-worker" }
-            - { name: DEILE_PIPELINE_DISPATCH_CLASSIFY,    value: "deile-worker" }
+            - { name: DEILE_PIPELINE_DISPATCH_CLASSIFY,    value: "claude-worker" }
             - { name: DEILE_PIPELINE_DISPATCH_REFINE,      value: "claude-worker" }
             - { name: DEILE_PIPELINE_DISPATCH_IMPLEMENT,   value: "claude-worker" }
             - { name: DEILE_PIPELINE_DISPATCH_PR_REVIEW,   value: "claude-worker" }
@@ -193,10 +193,10 @@ spec:
             # painel e o dispatch usava o modelo default global do worker
             # (que pode não ser o ideal para o stage).
             - { name: DEILE_PREFERRED_MODEL,               value: "deepseek:deepseek-v4-pro" }
-            - { name: DEILE_PIPELINE_MODEL_CLASSIFY,       value: "deepseek:deepseek-v4-pro" }
+            - { name: DEILE_PIPELINE_MODEL_CLASSIFY,       value: "anthropic:claude-sonnet-4-6" }
             - { name: DEILE_PIPELINE_MODEL_REFINE,         value: "anthropic:claude-opus-4-8" }
             - { name: DEILE_PIPELINE_MODEL_IMPLEMENT,      value: "anthropic:claude-sonnet-4-6" }
-            - { name: DEILE_PIPELINE_MODEL_PR_REVIEW,      value: "anthropic:claude-sonnet-4-6" }
+            - { name: DEILE_PIPELINE_MODEL_PR_REVIEW,      value: "anthropic:claude-opus-4-8" }
             - { name: DEILE_PIPELINE_MODEL_FOLLOW_UPS,     value: "anthropic:claude-sonnet-4-6" }
             # Per-stage reasoning effort (mesma motivação dos models): baked
             # default flipável live pelo painel [d] (coluna Reasoning). Vocabulário
@@ -205,15 +205,45 @@ spec:
             # default da API anthropic (preserva comportamento); classify dialado
             # pra baixo por ser tarefa leve. Ver deile/core/models/reasoning.py.
             - { name: DEILE_REASONING_EFFORT,             value: "high" }
-            - { name: DEILE_PIPELINE_REASONING_CLASSIFY,   value: "low" }
+            - { name: DEILE_PIPELINE_REASONING_CLASSIFY,   value: "medium" }
             - { name: DEILE_PIPELINE_REASONING_REFINE,     value: "high" }
-            - { name: DEILE_PIPELINE_REASONING_IMPLEMENT,  value: "high" }
-            - { name: DEILE_PIPELINE_REASONING_PR_REVIEW,  value: "high" }
+            - { name: DEILE_PIPELINE_REASONING_IMPLEMENT,  value: "ultracode" }
+            - { name: DEILE_PIPELINE_REASONING_PR_REVIEW,  value: "medium" }
             - { name: DEILE_PIPELINE_REASONING_FOLLOW_UPS, value: "medium" }
             # Paralelismo: até 5 grupos simultâneos. claude-worker tem 3
             # réplicas, deile-worker 2 réplicas → ~5 dispatches reais
             # concorrentes antes da fila.
             - { name: DEILE_PIPELINE_MAX_PARALLEL,         value: "5" }
+            # Timeouts per-stage (issue #530). Sem estas entradas, um
+            # `kubectl apply` cru remove os overrides injetados via
+            # `kubectl set env` e cada stage cai para o fallback global
+            # (pipeline_claude_timeout=1800 ou BUILT_IN_TIMEOUT_S_DEILE=900),
+            # causando kill prematuro em IMPLEMENT/PR_REVIEW/FOLLOW_UPS.
+            # Valores canônicos desta issue; cluster inacessível no momento
+            # da implementação (verificação registrada no PR).
+            - { name: DEILE_PIPELINE_TIMEOUT_S_CLASSIFY,   value: "600"  }
+            - { name: DEILE_PIPELINE_TIMEOUT_S_REFINE,     value: "1800" }
+            # NOTA: o live chegou a divergir para IMPLEMENT=600 (drift de
+            # painel/tuning sem registro de intenção); mantido 2700 de
+            # propósito — 600 mataria implements reais (built-in claude=1800)
+            # e contradiz o racional de kill-prematuro acima.
+            - { name: DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT,  value: "2700" }
+            - { name: DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW,  value: "3600" }
+            - { name: DEILE_PIPELINE_TIMEOUT_S_FOLLOW_UPS, value: "2700" }
+            # Cost cap per-stage (issue #392): teto de custo estimado antes do
+            # POST; StageCostCapExceeded aborta o dispatch acima do cap.
+            - { name: DEILE_PIPELINE_COST_CAP_USD_CLASSIFY,   value: "1.00" }
+            - { name: DEILE_PIPELINE_COST_CAP_USD_REFINE,     value: "5.00" }
+            - { name: DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT,  value: "5.00" }
+            - { name: DEILE_PIPELINE_COST_CAP_USD_PR_REVIEW,  value: "5.00" }
+            - { name: DEILE_PIPELINE_COST_CAP_USD_FOLLOW_UPS, value: "5.00" }
+            # Retries per-stage (issue #391): tentativas antes de marcar a
+            # etapa como falha; espelha o que o painel injeta via set env.
+            - { name: DEILE_PIPELINE_RETRIES_CLASSIFY,   value: "2" }
+            - { name: DEILE_PIPELINE_RETRIES_REFINE,     value: "1" }
+            - { name: DEILE_PIPELINE_RETRIES_IMPLEMENT,  value: "4" }
+            - { name: DEILE_PIPELINE_RETRIES_PR_REVIEW,  value: "3" }
+            - { name: DEILE_PIPELINE_RETRIES_FOLLOW_UPS, value: "5" }
             # Redireciona kubectl para o apiserver na porta nativa do k3s
             # (6443) em vez do ClusterIP kube-proxy (10.43.0.1:443).
             # Em Rancher Desktop / Lima, o kube-proxy iptables DNAT não

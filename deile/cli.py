@@ -32,18 +32,15 @@ from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
 # the public surface used by tests and external callers stays stable:
 # `from deile.cli import _user_scripts_dir`, `patch("deile.cli._run_self_install")`,
 # etc. The actual logic now lives in cli_install.py.
-from .cli_install import \
-    _create_venv_with_deile  # noqa: F401,E402  (re-export)
-from .cli_install import \
-    _ensure_scripts_dir_on_path  # noqa: F401,E402  (re-export)
-from .cli_install import _link_global_command  # noqa: F401,E402  (re-export)
-from .cli_install import _pip_run  # noqa: F401,E402  (re-export)
-from .cli_install import _prompt_install_mode  # noqa: F401,E402  (re-export)
-from .cli_install import _run_self_install  # noqa: F401,E402  (re-export)
-from .cli_install import \
-    _run_self_install_async  # noqa: F401,E402  (re-export)
-from .cli_install import _user_scripts_dir  # noqa: F401,E402  (re-export)
-from .cli_install import _wrapper_target_dir  # noqa: F401,E402  (re-export)
+from .cli_install import _create_venv_with_deile  # noqa: F401  (re-export)
+from .cli_install import _ensure_scripts_dir_on_path  # noqa: F401  (re-export)
+from .cli_install import _link_global_command  # noqa: F401  (re-export)
+from .cli_install import _pip_run  # noqa: F401  (re-export)
+from .cli_install import _prompt_install_mode  # noqa: F401  (re-export)
+from .cli_install import _run_self_install  # noqa: F401  (re-export)
+from .cli_install import _run_self_install_async  # noqa: F401  (re-export)
+from .cli_install import _user_scripts_dir  # noqa: F401  (re-export)
+from .cli_install import _wrapper_target_dir  # noqa: F401  (re-export)
 
 # ── package root (where deile/ lives) ───────────────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
@@ -837,6 +834,13 @@ async def _run_oneshot(
     reasoning: Optional[str] = None,
 ) -> int:
     """Single-turn non-interactive. stdout = response.content."""
+    # AC2: re-parent spans under the W3C trace context injected by the bridge.
+    try:
+        from deile.observability.tracer import activate_traceparent_from_env
+        activate_traceparent_from_env()
+    except Exception:
+        pass
+
     from deile.config.manager import ConfigManager
     from deile.config.settings import get_settings
 
@@ -851,8 +855,10 @@ async def _run_oneshot(
 
     agent = await _construct_agent(model_router, config_manager)
 
+    import uuid as _uuid
+    _session_id = f"oneshot-{_uuid.uuid4().hex[:12]}"
     session = agent.create_session(
-        session_id="oneshot_cli_session",
+        session_id=_session_id,
         working_directory=settings.working_directory,
     )
     if forced_model:
@@ -874,6 +880,18 @@ async def _run_oneshot(
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+
+    # AC2: populate usage metadata + write sidecar for cross-repo contract
+    try:
+        from deile.core.usage_envelope import (build_usage_envelope,
+                                               write_usage_sidecar)
+        _usage_env = build_usage_envelope(session.session_id)
+        if response.metadata is None:
+            response.metadata = {}
+        response.metadata["usage"] = _usage_env
+        write_usage_sidecar(session.session_id)
+    except Exception:
+        pass
 
     _print_oneshot_content(response.content)
     status = response.status.value if hasattr(response.status, "value") else str(response.status)

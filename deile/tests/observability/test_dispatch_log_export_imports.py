@@ -35,14 +35,16 @@ class TestOtelImports:
     def test_otel_sdk_logs_batch_processor_importable(self):
         """opentelemetry.sdk._logs.export.BatchLogRecordProcessor é importável."""
         try:
-            from opentelemetry.sdk._logs.export import BatchLogRecordProcessor  # noqa: F401
+            from opentelemetry.sdk._logs.export import \
+                BatchLogRecordProcessor  # noqa: F401
         except ImportError as e:
             pytest.skip(f"BatchLogRecordProcessor não disponível: {e}")
 
     def test_in_memory_log_exporter_importable(self):
         """opentelemetry.sdk._logs.export.InMemoryLogExporter é importável."""
         try:
-            from opentelemetry.sdk._logs.export import InMemoryLogExporter  # noqa: F401
+            from opentelemetry.sdk._logs.export import \
+                InMemoryLogExporter  # noqa: F401
         except ImportError as e:
             pytest.skip(f"InMemoryLogExporter não disponível: {e}")
 
@@ -55,8 +57,8 @@ class TestOtelImports:
 
     def test_no_direct_env_reads_in_module(self):
         """dispatch_log_export.py não lê os.environ diretamente."""
-        import importlib
         import inspect
+
         import deile.observability.dispatch_log_export as dle
 
         source = inspect.getsource(dle)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from deile.config.settings import get_settings
 
+
 # ── CronRunner ────────────────────────────────────────────────────────────
 #: Default polling cadence for :class:`CronRunner`.
 def cron_poll_interval_seconds() -> int:

@@ -9,11 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from deile.config.settings import Settings
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  build_default_pipeline_config)
+from deile.orchestration.pipeline.monitor import (
+    PipelineConfig, build_default_pipeline_config)
 
 
 def _make_settings(**kwargs) -> Settings:

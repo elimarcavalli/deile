@@ -98,7 +98,7 @@ async def test_auto_resume_when_pause_expired(tick, tmp_path, capsys):
 async def test_steer_pause_creates_flag_and_consumes_file(tick, tmp_path, capsys):
     sd = _state_dir(tmp_path)
     (sd / "monitor-commands" / "cmd1").write_text("pause 30m")
-    res = await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0))
+    await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0))
     assert (sd / "monitor-pause").exists()
     assert not (sd / "monitor-commands" / "cmd1").exists()  # consumed
     state = json.load(open(sd / "monitor-state.json"))
@@ -129,7 +129,7 @@ async def test_steer_unknown_command_emits_unknown(tick, tmp_path, capsys):
 
 async def test_tick_emits_summary_and_increments_counter(tick, tmp_path, capsys):
     sd = _state_dir(tmp_path)
-    res = await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0))
+    await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0))
     out = capsys.readouterr().out
     assert "monitor.tick #1 done in" in out
     state = json.load(open(sd / "monitor-state.json"))

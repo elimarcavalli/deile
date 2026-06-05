@@ -10,17 +10,12 @@ Covers:
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deile.config.settings import (
-    Settings,
-    _apply_env_overrides,
-    _to_pos_int_or_auto,
-    reset_settings,
-)
+from deile.config.settings import (Settings, _apply_env_overrides,
+                                   _to_pos_int_or_auto, reset_settings)
 
 
 @pytest.fixture(autouse=True)
@@ -144,7 +139,8 @@ class TestBuildDefaultPipelineConfigAutoMode:
         s = _make_settings(pipeline_max_parallel=5)
         _patch_build_deps(monkeypatch, s, tmp_path)
 
-        from deile.orchestration.pipeline.monitor import build_default_pipeline_config
+        from deile.orchestration.pipeline.monitor import \
+            build_default_pipeline_config
         cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 5
@@ -153,14 +149,14 @@ class TestBuildDefaultPipelineConfigAutoMode:
         s = _make_settings(pipeline_max_parallel="auto")
         _patch_build_deps(monkeypatch, s, tmp_path)
 
-        import subprocess
         fake_proc = MagicMock()
         fake_proc.returncode = 0
         fake_proc.stdout = "4"
 
         with patch("shutil.which", return_value="/usr/bin/kubectl"), \
              patch("subprocess.run", return_value=fake_proc):
-            from deile.orchestration.pipeline.monitor import build_default_pipeline_config
+            from deile.orchestration.pipeline.monitor import \
+                build_default_pipeline_config
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 4
@@ -170,7 +166,8 @@ class TestBuildDefaultPipelineConfigAutoMode:
         _patch_build_deps(monkeypatch, s, tmp_path)
 
         with patch("shutil.which", return_value=None):
-            from deile.orchestration.pipeline.monitor import build_default_pipeline_config
+            from deile.orchestration.pipeline.monitor import \
+                build_default_pipeline_config
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 2
@@ -185,7 +182,8 @@ class TestBuildDefaultPipelineConfigAutoMode:
 
         with patch("shutil.which", return_value="/usr/bin/kubectl"), \
              patch("subprocess.run", return_value=fake_proc):
-            from deile.orchestration.pipeline.monitor import build_default_pipeline_config
+            from deile.orchestration.pipeline.monitor import \
+                build_default_pipeline_config
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 2
@@ -200,7 +198,8 @@ class TestBuildDefaultPipelineConfigAutoMode:
 
         with patch("shutil.which", return_value="/usr/bin/kubectl"), \
              patch("subprocess.run", return_value=fake_proc):
-            from deile.orchestration.pipeline.monitor import build_default_pipeline_config
+            from deile.orchestration.pipeline.monitor import \
+                build_default_pipeline_config
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 2
@@ -212,7 +211,8 @@ class TestBuildDefaultPipelineConfigAutoMode:
 
         with patch("shutil.which", return_value="/usr/bin/kubectl"), \
              patch("subprocess.run", side_effect=subprocess.TimeoutExpired("kubectl", 10)):
-            from deile.orchestration.pipeline.monitor import build_default_pipeline_config
+            from deile.orchestration.pipeline.monitor import \
+                build_default_pipeline_config
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 2

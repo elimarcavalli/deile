@@ -16,6 +16,24 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[4]  # tests/orchestration/pipeline → repo root
 
 
+@pytest.fixture(autouse=True)
+def _isolated_dispatch_ledger(tmp_path, monkeypatch):
+    """Isola o ``DispatchLedger`` por teste (fire-and-forget reconcile, #373).
+
+    O default do ledger é o caminho REAL ``~/.deile/pipeline/dispatches.json``.
+    Desde que os reconciles (crítica/refino/pr_review) passaram a LER o ledger,
+    uma entry gravada por um teste vazava para outro via esse arquivo
+    compartilhado — poluição de ordenação (ex.: ``reconcile_review_prs`` lia uma
+    entry órfã e contava ``prs_reviewed`` a mais → ``assert 2 == 1``). Apontar
+    cada teste para um ``dispatches.json`` em ``tmp_path`` garante isolamento.
+    Em produção o ledger vive no PVC do pipeline (correto); isto é só higiene
+    de teste exposta pelo refator.
+    """
+    monkeypatch.setenv(
+        "DEILE_PIPELINE_LEDGER_PATH", str(tmp_path / "dispatches.json")
+    )
+
+
 @pytest.fixture()
 def repo_tmp_path():
     """Yield a temporary directory inside the git repo root (safe root)."""

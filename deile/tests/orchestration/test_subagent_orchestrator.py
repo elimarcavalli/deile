@@ -617,7 +617,6 @@ async def test_orphan_thread_after_cancel_does_not_leak_to_real_stdout():
     """
     import io
     import sys as _sys
-    import threading
     import time as _time
 
     class _ToThreadRunner:
@@ -676,6 +675,7 @@ async def test_capture_output_keeps_switchable_when_orphan_detected():
     import io
     import sys as _sys
     import time as _time
+
     from deile.orchestration.subagents._capture import SwitchableStream
 
     class _ToThreadOrphanRunner:

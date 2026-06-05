@@ -14,12 +14,11 @@ from unittest.mock import AsyncMock, MagicMock, call
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
-from deile.orchestration.pipeline.implementer import WorkOutcome
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING,
                                                  WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW, WORKFLOW_PR,
+                                                 WORKFLOW_NEW,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
@@ -104,19 +103,14 @@ def _make_monitor_full(
     ):
         setattr(notifier, attr, AsyncMock())
 
-    # Issue #309 fase 2: ``build_implementer`` agora sempre retorna
-    # ``WorkerImplementer``. Para manter a semântica do teste (que assumia
-    # o caminho Claude via ``claude.run``), injetamos um stub que respeita
-    # ``claude_rc``/``claude_stdout``.
-    outcome_for_test = WorkOutcome(
-        ok=(claude_rc == 0),
-        text=claude_stdout,
-        error="" if claude_rc == 0 else "boom",
+    # Issue #309 fase 2 + #373: pr_review fresh é fire-and-forget. Reusa o fake
+    # do test_monitor (grava task_id no ledger + simula resume-info concluído),
+    # preservando a semântica de ``claude_rc``/``claude_stdout``.
+    from deile.tests.orchestration.pipeline.test_monitor import \
+        _FakeFireAndForgetImplementer
+    implementer_stub = _FakeFireAndForgetImplementer(
+        claude_stdout=claude_stdout, claude_rc=claude_rc,
     )
-    implementer_stub = MagicMock()
-    implementer_stub.implement = AsyncMock(return_value=outcome_for_test)
-    implementer_stub.review = AsyncMock(return_value=outcome_for_test)
-    implementer_stub.mention = AsyncMock(return_value=outcome_for_test)
 
     monitor = PipelineMonitor(
         cfg,
@@ -216,9 +210,19 @@ class TestStageIntegration:
         )
         monitor3.config.enable_review = False
         monitor3.config.enable_implement = False
+        # Issue #373: tick A despacha fresh fire-and-forget; tick B reconcilia
+        # por ground-truth (PR merged → get_pr None) → pr_reviewed + concluida.
+        await monitor3.tick()
+        notifier3.pr_picked_up.assert_called_once()
+        notifier3.pr_reviewed.assert_not_called()
+        pr_in_progress = PrRef(
+            number=55, title="auto: issue-10", url=_PR_URL,
+            labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-10",
+        )
+        github3.list_open_prs = AsyncMock(return_value=[pr_in_progress])
+        github3.get_pr = AsyncMock(return_value=None)  # merged → não-aberta
         await monitor3.tick()
 
-        notifier3.pr_picked_up.assert_called_once()
         notifier3.pr_reviewed.assert_called_once()
         assert monitor3.stats.prs_reviewed == 1
 

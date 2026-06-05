@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -60,7 +58,7 @@ class TestInitLogging:
         monkeypatch.setenv("DEILE_POD_NAME", "test-pod")
         monkeypatch.setenv("DEILE_LOG_LEVEL", "INVALID_LEVEL")
 
-        handler = init_logging(pod_name="test-pod", max_mb=1, backup_count=1)
+        init_logging(pod_name="test-pod", max_mb=1, backup_count=1)
         assert logging.root.level == logging.INFO
 
     def test_pod_name_from_env(self, tmp_path, monkeypatch):
@@ -89,7 +87,6 @@ class TestInitLogging:
         # Add a dummy handler first (beyond pytest's own LogCaptureHandlers)
         dummy = logging.StreamHandler(sys.stdout)
         logging.root.addHandler(dummy)
-        pre_count = len(logging.root.handlers)
 
         init_logging(pod_name="test-pod", max_mb=1, backup_count=1)
         # Old handlers cleared, only our handler remains (+ pytest LogCaptureHandlers

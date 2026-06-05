@@ -54,7 +54,8 @@ def _all_known_keys() -> list[str]:
 
 def _default_value(key_path: str) -> Any:
     """Return the dataclass default for *key_path*, or None if unknown."""
-    from deile.config.settings import _JSON_ONLY_FIELD_MAP, _OVERRIDE_HANDLERS, Settings
+    from deile.config.settings import (_JSON_ONLY_FIELD_MAP,
+                                       _OVERRIDE_HANDLERS, Settings)
 
     field_name = None
     if key_path in _OVERRIDE_HANDLERS:
@@ -86,7 +87,8 @@ def _resolve_dotted_in_dict(data: dict, key_path: str) -> tuple[bool, Any]:
 
 def _env_var_for_key(key_path: str) -> Optional[str]:
     """Return the env var name that overrides *key_path*, if any."""
-    from deile.config.settings import _ENV_OVERRIDES, _JSON_ONLY_FIELD_MAP, _OVERRIDE_HANDLERS
+    from deile.config.settings import (_ENV_OVERRIDES, _JSON_ONLY_FIELD_MAP,
+                                       _OVERRIDE_HANDLERS)
 
     field_name = None
     if key_path in _OVERRIDE_HANDLERS:

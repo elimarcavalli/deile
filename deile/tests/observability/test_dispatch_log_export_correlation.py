@@ -61,12 +61,9 @@ class TestLogSpanCorrelation:
     ):
         """Todos os 6 dispatch events produzem LogRecords com trace_id != 0."""
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed,
-            emit_dispatch_model_resolved,
-            emit_dispatch_progress,
-            emit_dispatch_received,
-            emit_dispatch_tool_burst,
-        )
+            emit_dispatch_completed, emit_dispatch_model_resolved,
+            emit_dispatch_progress, emit_dispatch_received,
+            emit_dispatch_tool_burst)
 
         emit_dispatch_received("corr-all", session_id="s1")
         emit_dispatch_model_resolved("corr-all", model="m1")
@@ -85,10 +82,7 @@ class TestLogSpanCorrelation:
     ):
         """LogRecord de git.commit tem o mesmo trace_id do root span."""
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed,
-            emit_dispatch_received,
-            emit_git_commit,
-        )
+            emit_dispatch_completed, emit_dispatch_received, emit_git_commit)
 
         emit_dispatch_received("corr-git", session_id="s1")
         emit_git_commit("corr-git", repo="owner/repo", sha="abc123", status="ok")
@@ -116,10 +110,8 @@ class TestLogSpanCorrelation:
     ):
         """LogRecord de forge.pr_open correlaciona com o root span."""
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed,
-            emit_dispatch_received,
-            emit_forge_pr_open,
-        )
+            emit_dispatch_completed, emit_dispatch_received,
+            emit_forge_pr_open)
 
         emit_dispatch_received("corr-forge", session_id="s1")
         emit_forge_pr_open("corr-forge", repo="owner/repo", pr_number=42, status="ok")

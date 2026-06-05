@@ -135,19 +135,6 @@ def _render_brief(template: str, *, params: dict[str, Any]) -> str:
     return template.format(**params)
 
 
-def _inject_view_issue_template(params: dict[str, Any], number: int) -> None:
-    """Add ``view_issue_cmd_template`` (the cmd with ``<N>`` placeholder).
-
-    The review briefs reference ``gh issue view <N> --comments`` where ``<N>``
-    is the issue closed by the PR — unknown at brief-render time. Replace the
-    concrete number in ``view_issue_cmd`` with the ``<N>`` literal so the
-    worker fills it in after parsing the closing reference.
-    """
-    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
-        f" {number} ", " <N> ", 1,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Implement / review briefs
 # ---------------------------------------------------------------------------
@@ -158,7 +145,7 @@ Implemente a issue #{number} de {repo} e abra uma {pr_noun}. Execute de verdade 
 
 1. ./repo: se não existir → `{clone_cmd}`; se existir → `git fetch origin && git checkout {main} && git reset --hard origin/{main}`.
 2. Crie branch `{branch}` a partir de `{main}`.
-3. Leia comentários da issue (`{view_issue_cmd}`) — decisões do stakeholder FAZEM PARTE do escopo. Implemente o pedido + testes.
+3. Leia comentários da issue (`{view_issue_cmd}`) — decisões do stakeholder FAZEM PARTE do escopo. Implemente o pedido + testes. CHECKPOINT INCREMENTAL: grave `.deile-progress.md` (um nível acima de ./repo, NÃO commite, NÃO em ./repo) a cada milestone — o timeout mata o processo sem aviso (rc=124) e só o journal sobrevive pro próximo tick.
 4. {impact_test_strategy}
 5. Commit atômico + `git push -u origin {branch}`.
 6. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}`.
@@ -216,7 +203,7 @@ PASSO 2 — Executar a work-list:
 **PASSO 3 — DECISÃO É DECISÃO** (anti-loop, regra inegociável):
 - TEM conclusão → poste review formal e ENCERRE com veredito. NÃO escreva "incompleto" se chegou a decidir.
 - Work-list ESVAZIOU → pipeline marca `~mention:processado`.
-- Trabalho REAL pendente por estouro → grave `.deile-progress.md` (NÃO commite, NÃO dentro de ./repo) com: feito, falta, bloqueio, arquivo:linha.
+- CHECKPOINT INCREMENTAL: grave/atualize `.deile-progress.md` (um nível acima de ./repo, NÃO commite, NÃO dentro de ./repo) **a cada milestone concluído — não espere o fim**. O timeout do dispatch MATA o processo sem aviso (rc=124); só o que estiver no journal sobrevive pro próximo tick. Escreva-o como um PRE-COMPACT: feito, falta, decisões, bloqueio, arquivo:linha.
 
 PASSO 4 — ÚLTIMA LINHA:
 - `{pr_url_pattern} MERGED` — mergeado de fato (`{check_merged_cmd}`).
@@ -247,11 +234,36 @@ RETOMADA da issue #{number} de {repo}. Há trabalho parcial em ./repo — NÃO r
 4. {impact_test_strategy}
 5. Commit + `git push -u origin {branch}`.
 6. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}` (ou confirme existente: `{check_pr_cmd}`).
-7. ANTES de parar, atualize `.deile-progress.md` no diretório de trabalho (NÃO commite, NÃO em ./repo): feito, falta, decisões, bloqueios.
+7. CHECKPOINT INCREMENTAL: atualize `.deile-progress.md` no diretório de trabalho (NÃO commite, NÃO em ./repo) **a cada milestone E antes de parar** — o timeout mata o processo sem aviso (rc=124), só o journal sobrevive pro próximo tick: feito, falta, decisões, bloqueios.
 8. Impedimento real → linha `{blocked_contract}`. Última linha = URL da {pr_noun} (ex: {pr_url_pattern}) OU `{blocked_contract}`.
 
 === Issue #{number}: {title} ===
 {body}
+"""
+
+# --- Address-review-feedback brief (Fix #8 — issue #521) ----------------------
+# Despachado quando a review da NOSSA PRÓPRIA PR concluiu REQUEST_CHANGES e o
+# HEAD não mudou desde a última review (nenhum fix aplicado). Em vez de bloquear
+# direto, o pipeline manda UMA task de IMPLEMENT na branch da PR que APLICA o que
+# o reviewer pediu e dá PUSH — explicitamente NÃO revisa, NÃO comenta veredito,
+# NÃO mergeia. Quando o push muda o HEAD, a próxima review valida o novo HEAD e
+# segue pro merge. Lean de propósito: o worker LÊ a última review via gh (o
+# feedback exato vive lá), evitando que o pipeline tenha de capturar e reembalar
+# o corpo do REQUEST_CHANGES.
+_WORKER_PR_ADDRESS_BRIEF = """\
+APLIQUE as mudanças que o reviewer pediu na {pr_noun} #{number} de {repo} e dê PUSH. NÃO revise, NÃO comente veredito, NÃO mergeie — só CORRIJA o código.
+
+A review anterior concluiu REQUEST_CHANGES e o HEAD não mudou — nenhum fix foi aplicado ainda. Sua única tarefa é IMPLEMENTAR o pedido do reviewer.
+
+1. Clone se preciso ({clone_cmd}); `{checkout_pr_cmd}` (trabalhe na branch da própria {pr_noun}, NÃO crie branch nova).
+2. Leia a ÚLTIMA review REQUEST_CHANGES e os comentários: `{list_pr_comments_cmd}` e `gh api repos/{repo}/pulls/{number}/reviews --jq '[.[] | select(.state=="CHANGES_REQUESTED")] | last | .body'`. Esse é o escopo exato do que corrigir.
+3. Leia `.deile-progress.md` no diretório de trabalho (um nível acima de ./repo) — TODO da tentativa anterior, se houver.
+4. APLIQUE a correção no código + testes. Se um achado for genuinamente fora-de-escopo/inválido, registre o porquê no `.deile-progress.md` (não re-comente na PR).
+5. {impact_test_strategy}
+6. Commit atômico + `git push -u origin {branch}` (PUSH é OBRIGATÓRIO — sem push o HEAD não muda e a {pr_noun} fica bloqueada). NÃO force-push. NÃO altere nada fora de ./repo.
+7. Impedimento real (não consegue aplicar o fix) → linha `{blocked_contract}`.
+
+ÚLTIMA LINHA = SHA do novo HEAD após o push (`git rev-parse HEAD`) OU `{blocked_contract}`.
 """
 
 _WORKER_MENTION_BRIEF = """\
@@ -403,22 +415,26 @@ _MENTION_ACTION_TEMPLATES: dict[str, tuple[str | None, str]] = {
 }
 
 
-def _format_mention_action_rich(action: str, n: int, pr_noun: str = "PR") -> str:
-    """Render a mention action with markdown bold label (worker brief style)."""
+def _format_mention_action(action: str, n: int, pr_noun: str = "PR", *, rich: bool) -> str:
+    """Render a mention action label + body. ``rich=True`` wraps the label in
+    markdown bold (worker brief style); ``rich=False`` emits plain prose
+    (Claude prompt style)."""
     label, body = _MENTION_ACTION_TEMPLATES[action]
     body = body.format(n=n, pr_noun=pr_noun, label_pr=pr_noun)
     if label is None:
         return body
-    return f"**{label.format(label_pr=pr_noun)}**: {body}"
+    rendered_label = label.format(label_pr=pr_noun)
+    return f"**{rendered_label}**: {body}" if rich else f"{rendered_label}: {body}"
+
+
+def _format_mention_action_rich(action: str, n: int, pr_noun: str = "PR") -> str:
+    """Render a mention action with markdown bold label (worker brief style)."""
+    return _format_mention_action(action, n, pr_noun, rich=True)
 
 
 def _format_mention_action_plain(action: str, n: int, pr_noun: str = "PR") -> str:
     """Render a mention action with plain prose label (Claude prompt style)."""
-    label, body = _MENTION_ACTION_TEMPLATES[action]
-    body = body.format(n=n, pr_noun=pr_noun, label_pr=pr_noun)
-    if label is None:
-        return body
-    return f"{label.format(label_pr=pr_noun)}: {body}"
+    return _format_mention_action(action, n, pr_noun, rich=False)
 
 
 # Context-aware worker mention brief builder (issue #253)
@@ -501,6 +517,27 @@ def _render_worker_pr_unified_brief(
         extras={"gh_login": gh_login},
     )
     return _render_brief(_WORKER_PR_BRIEF, params=params)
+
+
+def _render_worker_pr_address_brief(
+    repo: str,
+    main: str,
+    branch: str,
+    number: int,
+    *,
+    forge: Optional[ForgeConfig] = None,
+) -> str:
+    """Renderiza o brief de address-review-feedback (Fix #8 — issue #521).
+
+    Lean de propósito: o worker lê a última review REQUEST_CHANGES via ``gh`` (o
+    feedback exato vive lá) e APLICA o fix + push na branch da própria PR. NÃO
+    revisa, NÃO comenta veredito, NÃO mergeia — o ciclo "pediu-mudança → próximo
+    tick IMPLEMENTA" da Decisão #46 materializado num dispatch dedicado.
+    """
+    params = _build_brief_params(
+        repo=repo, main=main, branch=branch, number=number, forge=forge,
+    )
+    return _render_brief(_WORKER_PR_ADDRESS_BRIEF, params=params)
 
 
 # The journal lives in the worker's per-channel PVC workspace (one level above
@@ -628,6 +665,21 @@ def _refine_body(body: str) -> str:
     return (body or "").strip()[:ISSUE_BODY_MAX_CHARS] or "(sem corpo — avalie a partir do título)"
 
 
+def _view_issue_author_cmd(cfg: ForgeConfig, repo: str, number: int) -> str:
+    """Per-forge command to fetch the author handle of an issue.
+
+    ``render_brief_cmds`` exposes ``view_pr_author_cmd`` (assumes a PR target);
+    the refine brief needs the same query against an issue, with the GitLab
+    branch using the same project-id resolution the other ``glab`` snippets do.
+    """
+    if cfg.kind is ForgeKind.GITHUB:
+        return f"gh issue view {number} --repo {repo} --json author -q .author.login"
+    return (
+        f"glab api projects/{cfg.project_id or cfg.encoded_project_path}"
+        f"/issues/{number} | jq -r .author.username"
+    )
+
+
 def _render_worker_critique_brief(
     repo: str,
     number: int,
@@ -638,21 +690,16 @@ def _render_worker_critique_brief(
     template: str,
     forge: Optional[ForgeConfig] = None,
 ) -> str:
-    cfg = forge or _default_forge_config(repo)
-    cmds = render_brief_cmds(
-        cfg, number=number, branch=f"refine-{number}", main="main",
-        issue_template=template,
+    params = _build_brief_params(
+        repo=repo, main="main", branch=f"refine-{number}", number=number,
+        forge=forge, issue_template=template,
+        extras={
+            "title": title,
+            "body": _refine_body(body),
+            "type": issue_type,
+        },
     )
-    return _WORKER_CRITIQUE_BRIEF.format(
-        repo=repo,
-        number=number,
-        title=title,
-        body=_refine_body(body),
-        type=issue_type,
-        fetch_template_cmd=cmds["fetch_template_cmd"],
-        view_issue_cmd=cmds["view_issue_cmd"],
-        clone_cmd=cmds["clone_cmd"],
-    )
+    return _render_brief(_WORKER_CRITIQUE_BRIEF, params=params)
 
 
 def _render_worker_refine_brief(
@@ -665,39 +712,23 @@ def _render_worker_refine_brief(
     template: str,
     forge: Optional[ForgeConfig] = None,
 ) -> str:
-    cfg = forge or _default_forge_config(repo)
-    cmds = render_brief_cmds(
-        cfg, number=number, branch=f"refine-{number}", main="main",
-        issue_template=template,
+    # _build_brief_params already resolves the default; we only need the
+    # concrete ForgeConfig for the per-forge author-lookup snippet below.
+    cfg_for_author = forge or _default_forge_config(repo)
+    params = _build_brief_params(
+        repo=repo, main="main", branch=f"refine-{number}", number=number,
+        forge=forge, issue_template=template,
+        extras={
+            "title": title,
+            "body": _refine_body(body),
+            "type": issue_type,
+            "title_prefix": title_prefix_for_type(issue_type) or "[FEATURE]",
+            "view_pr_author_cmd_for_issue": _view_issue_author_cmd(
+                cfg_for_author, repo, number,
+            ),
+        },
     )
-    # The "view PR author" command in the renderer assumes a PR; for an
-    # issue we adapt it to the proper per-forge issue-author lookup.
-    if cfg.kind is ForgeKind.GITHUB:
-        view_author_cmd_for_issue = (
-            f"gh issue view {number} --repo {repo} --json author -q .author.login"
-        )
-    else:
-        view_author_cmd_for_issue = (
-            f"glab api projects/{cfg.project_id or cfg.encoded_project_path}"
-            f"/issues/{number} | jq -r .author.username"
-        )
-    return _WORKER_REFINE_BRIEF.format(
-        repo=repo,
-        number=number,
-        title=title,
-        body=_refine_body(body),
-        type=issue_type,
-        fetch_template_cmd=cmds["fetch_template_cmd"],
-        view_issue_cmd=cmds["view_issue_cmd"],
-        clone_cmd=cmds["clone_cmd"],
-        title_prefix=title_prefix_for_type(issue_type) or "[FEATURE]",
-        edit_issue_title_cmd=cmds["edit_issue_title_cmd"],
-        edit_issue_body_cmd=cmds["edit_issue_body_cmd"],
-        comment_issue_cmd=cmds["comment_issue_cmd"],
-        create_issue_cmd=cmds["create_issue_cmd"],
-        view_pr_author_cmd_for_issue=view_author_cmd_for_issue,
-        assign_user_cmd=cmds["assign_user_cmd"],
-    )
+    return _render_brief(_WORKER_REFINE_BRIEF, params=params)
 
 
 def _render_worker_decompose_brief(
@@ -708,20 +739,15 @@ def _render_worker_decompose_brief(
     *,
     forge: Optional[ForgeConfig] = None,
 ) -> str:
-    cfg = forge or _default_forge_config(repo)
-    cmds = render_brief_cmds(
-        cfg, number=number, branch=f"decompose-{number}", main="main",
+    params = _build_brief_params(
+        repo=repo, main="main", branch=f"decompose-{number}", number=number,
+        forge=forge,
+        extras={
+            "title": title,
+            "body": _refine_body(body),
+        },
     )
-    return _WORKER_DECOMPOSE_BRIEF.format(
-        repo=repo,
-        number=number,
-        title=title,
-        body=_refine_body(body),
-        clone_cmd=cmds["clone_cmd"],
-        view_issue_cmd=cmds["view_issue_cmd"],
-        create_issue_cmd=cmds["create_issue_cmd"],
-        comment_issue_cmd=cmds["comment_issue_cmd"],
-    )
+    return _render_brief(_WORKER_DECOMPOSE_BRIEF, params=params)
 
 
 # ---------------------------------------------------------------------------

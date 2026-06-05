@@ -4,16 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from deile.log_mgmt.log_patterns import (
-    ALL_PATTERNS,
-    AUTH_EXPIRED_PATTERNS,
-    CRASH_PATTERNS,
-    PIPELINE_PATTERNS,
-    RUNTIME_ERROR_PATTERNS,
-    Severity,
-    match_critical,
-    match_line,
-)
+from deile.log_mgmt.log_patterns import (ALL_PATTERNS, AUTH_EXPIRED_PATTERNS,
+                                         CRASH_PATTERNS, PIPELINE_PATTERNS,
+                                         RUNTIME_ERROR_PATTERNS, Severity,
+                                         match_critical, match_line)
 
 
 class TestPatternCatalog:
@@ -126,6 +120,7 @@ class TestMatchLine:
         ("no eligible issues", ["pipeline_tick_silent"]),
         ("dispatch failed", ["dispatch_failed"]),
         ("WORKER_TIMEOUT after 300s", ["dispatch_failed"]),
+        ("dispatch.completed ok=False", ["dispatch_failed"]),
         ("dispatch_completed ok=False", ["dispatch_failed"]),
         ("implement BLOCKED: no credits", ["dispatch_failed"]),
         ("review BLOCKED: context too large", ["dispatch_failed"]),

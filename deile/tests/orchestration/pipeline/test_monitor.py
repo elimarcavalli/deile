@@ -83,27 +83,95 @@ def _make_monitor(
     ):
         setattr(notifier, attr, AsyncMock())
 
-    # Issue #309 fase 2: ``build_implementer`` agora sempre retorna
-    # ``WorkerImplementer`` (resolver per-stage decide endpoint em runtime).
-    # Os testes legacy assumiam o caminho Claude (subprocess ``claude -p`` via
-    # ``claude.run``). Para preservar a semântica — sucesso quando
-    # ``claude_rc==0`` e falha quando ``claude_rc!=0`` — injetamos um stub
-    # que respeita os mesmos knobs (``claude_stdout``/``claude_rc``).
-    outcome_for_test = WorkOutcome(
-        ok=(claude_rc == 0),
-        text=claude_stdout,
-        error="" if claude_rc == 0 else "boom",
+    # Issue #309 fase 2 + #373: ``build_implementer`` retorna ``WorkerImplementer``
+    # e o pr_review fresh agora é fire-and-forget (dispatch num tick, veredito no
+    # reconcile do tick seguinte por ground-truth). O stub abaixo mimetiza esse
+    # contrato: ``review(resume=False)`` grava task_id no ledger e devolve 202;
+    # ``_reconcile_review_prs`` consulta o ``_client.get_resume_info`` (done) e
+    # decide por ground-truth (``get_pr`` None ⇒ merged). ``implement`` segue
+    # fire-and-forget igual; o merge é sinalizado por ``claude_stdout``.
+    implementer_stub = _FakeFireAndForgetImplementer(
+        claude_stdout=claude_stdout, claude_rc=claude_rc,
     )
-    implementer_stub = MagicMock()
-    implementer_stub.implement = AsyncMock(return_value=outcome_for_test)
-    implementer_stub.review = AsyncMock(return_value=outcome_for_test)
-    implementer_stub.mention = AsyncMock(return_value=outcome_for_test)
 
     monitor = PipelineMonitor(
         cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier,
         review_callback=review_callback, implementer=implementer_stub,
     )
     return monitor, notifier
+
+
+class _FakeFireAndForgetImplementer:
+    """Implementer fake compatível com o fluxo fire-and-forget (issue #373).
+
+    - ``review(resume=False)`` / ``implement(resume=False)``: gravam um task_id no
+      ledger e devolvem ``WorkOutcome(ok, task_id)`` SEM bloquear (mimetiza o
+      dispatch 202). ``review(resume=True)`` devolve o outcome estruturado
+      bloqueante (caminho resume preservado).
+    - ``_client.get_resume_info(task_id)``: devolve o resultado concluído com
+      ``last_result_full`` = ``claude_stdout`` (o reconcile parseia/usa).
+    """
+
+    def __init__(self, *, claude_stdout: str, claude_rc: int):
+        import tempfile
+        from pathlib import Path as _P
+
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        self._stdout = claude_stdout
+        self._rc = claude_rc
+        self._ledger = DispatchLedger(
+            path=_P(tempfile.mkdtemp(prefix=".test_ledger_")) / "dispatches.json"
+        )
+        self._seq = 0
+        self._client = self  # get_resume_info vive aqui mesmo
+
+    def _ok(self) -> bool:
+        return self._rc == 0
+
+    async def review(self, monitor, pr, *, resume: bool = False):
+        self._seq += 1
+        task_id = f"rev-{self._seq:04d}"
+        if resume:
+            # Caminho resume bloqueante preservado — devolve outcome estruturado.
+            ended = "concluido" if ("merged" in self._stdout.lower() and self._ok()) else "incompleto"
+            return WorkOutcome(
+                ok=self._ok(), text=self._stdout,
+                error="" if self._ok() else "boom", ended=ended, task_id=task_id,
+            )
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        if self._ok():
+            self._ledger.record(
+                DispatchLedger.key_for_pr(pr.number),
+                task_id=task_id, session_id="", stage="pr_review",
+            )
+        return WorkOutcome(ok=self._ok(), text="", error="" if self._ok() else "boom", task_id=task_id)
+
+    async def implement(self, monitor, issue, *, resume: bool = False):
+        self._seq += 1
+        task_id = f"impl-{self._seq:04d}"
+        return WorkOutcome(ok=self._ok(), text="", error="" if self._ok() else "boom", task_id=task_id)
+
+    async def mention(self, monitor, ref, **kwargs):
+        return WorkOutcome(ok=self._ok(), text=self._stdout, error="" if self._ok() else "boom")
+
+    async def critique(self, monitor, issue):
+        return WorkOutcome(ok=self._ok(), text=self._stdout, error="" if self._ok() else "boom")
+
+    async def refine(self, monitor, issue):
+        return WorkOutcome(ok=self._ok(), text=self._stdout, error="" if self._ok() else "boom")
+
+    async def get_resume_info(self, task_id, *, endpoint_url=None):
+        return {
+            "last_completed_at": 1_700_000_000,
+            "last_is_error": not self._ok(),
+            "last_result_full": self._stdout,
+            "last_result_summary": self._stdout[:200],
+            "claude_alive": False,
+            "workdir_exists": True,
+        }
+
+    def _resolve_endpoint(self, stage):
+        return "http://fake-worker:8766"
 
 
 class TestExtractPrUrl:
@@ -457,8 +525,32 @@ class TestReconcileImplementingIssues:
         notifier.implementation_finished.assert_called_once_with(42, None)
 
 
+def _setup_pr_merge_groundtruth(
+    monitor, pr_number: int, *, head_ref: str = "auto/issue-2",
+    title: str = "prt", url: str = "https://x/pull/10",
+) -> None:
+    """Após o dispatch fresh (tick 1), o reconcile do tick 2 detecta MERGE por
+    ground-truth: ``get_pr(n)`` devolve None (PR não mais aberta). A PR segue
+    listada em ``em_andamento`` (com ledger entry) pro reconcile pegá-la."""
+    in_progress = PrRef(
+        number=pr_number, title=title, url=url,
+        labels=(REVIEW_IN_PROGRESS,), head_ref=head_ref,
+    )
+    monitor.github.list_open_prs = AsyncMock(return_value=[in_progress])
+    monitor.github.get_pr = AsyncMock(return_value=None)  # merged → não-aberta
+
+
+async def _review_to_merge(monitor, pr_number: int, *, head_ref: str = "auto/issue-2") -> None:
+    """Dirige o fluxo review fresh → reconcile-merge em dois ticks."""
+    await monitor.tick()
+    _setup_pr_merge_groundtruth(monitor, pr_number, head_ref=head_ref)
+    await monitor.tick()
+
+
 class TestStage3PrReview:
     async def test_picks_up_unclaimed_open_pr(self):
+        # Fire-and-forget (issue #373): tick 1 despacha fresh (pr_picked_up);
+        # tick 2 reconcilia por ground-truth (PR merged) → pr_reviewed.
         pr = PrRef(number=10, title="prt", url="https://x/pull/10",
                    labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
         monitor, notifier = _make_monitor(prs=[pr], claude_stdout="merged.")
@@ -466,6 +558,9 @@ class TestStage3PrReview:
         monitor.config.enable_implement = False
         await monitor.tick()
         notifier.pr_picked_up.assert_called_once()
+        notifier.pr_reviewed.assert_not_called()  # ainda não — reconcile no tick 2
+        _setup_pr_merge_groundtruth(monitor, 10)
+        await monitor.tick()
         notifier.pr_reviewed.assert_called_once()
         assert monitor.stats.prs_reviewed == 1
 
@@ -717,7 +812,7 @@ class TestStage4FollowUps:
         monitor, _ = _make_monitor(prs=[pr], claude_stdout="PR merged successfully", claude_rc=0)
         monitor.config.enable_review = False
         monitor.config.enable_implement = False
-        await monitor.tick()
+        await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
         monitor.github.get_pr_body.assert_called_once_with(55)
         monitor.github.list_pr_comments.assert_called_once_with(55)
 
@@ -731,7 +826,7 @@ class TestStage4FollowUps:
             return_value="## Follow-up\n- Write integration tests\n"
         )
         monitor.github.create_issue = AsyncMock(return_value=99)
-        await monitor.tick()
+        await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
         monitor.github.create_issue.assert_called_once()
         call_args = monitor.github.create_issue.call_args
         assert "Write integration tests" in call_args.args[0]
@@ -747,7 +842,7 @@ class TestStage4FollowUps:
         monitor.github.get_pr_body = AsyncMock(
             return_value="## Follow-up\n- Breaking change: remove old API\n"
         )
-        await monitor.tick()
+        await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
         monitor.github.create_issue.assert_not_called()
         assert monitor._stats.follow_ups_skipped == 1
 
@@ -761,7 +856,7 @@ class TestStage4FollowUps:
             return_value="## Follow-up\n- Add more tests\n"
         )
         monitor.github.create_issue = AsyncMock(return_value=42)
-        await monitor.tick()
+        await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
         monitor.github.comment_on_pr.assert_called()
         comment_body = monitor.github.comment_on_pr.call_args.args[1]
         assert "Stage 4" in comment_body
@@ -774,7 +869,7 @@ class TestStage4FollowUps:
         monitor.config.enable_implement = False
         monitor.github.get_pr_body = AsyncMock(return_value="Just a summary.")
         monitor.github.list_pr_comments = AsyncMock(return_value=[])
-        await monitor.tick()
+        await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
         monitor.github.comment_on_pr.assert_not_called()
 
     async def test_stage4_notifies_discord(self):
@@ -787,7 +882,7 @@ class TestStage4FollowUps:
             return_value="## Follow-up\n- Improve error messages\n"
         )
         monitor.github.create_issue = AsyncMock(return_value=77)
-        await monitor.tick()
+        await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
         notifier.follow_ups_processed.assert_called_once_with(55, 1, 0)
 
     async def test_stage4_error_in_get_pr_body_does_not_propagate(self):
@@ -801,7 +896,7 @@ class TestStage4FollowUps:
         monitor.github.get_pr_body = AsyncMock(
             side_effect=GhCommandError(["gh"], 1, "", "network error")
         )
-        await monitor.tick()
+        await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
         assert monitor._stats.errors == 0
 
     async def test_stage4_create_issue_failure_counted_as_skipped(self):
@@ -814,7 +909,7 @@ class TestStage4FollowUps:
             return_value="## Follow-up\n- Refactor logger\n"
         )
         monitor.github.create_issue = AsyncMock(side_effect=Exception("gh error"))
-        await monitor.tick()
+        await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
         assert monitor._stats.follow_ups_opened == 0
         assert monitor._stats.follow_ups_skipped == 1
 
@@ -831,7 +926,7 @@ class TestStage4FollowUps:
                 "- Incompatible API refactor\n"
             )
         )
-        await monitor.tick()
+        await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
         monitor.github.create_issue.assert_not_called()
         assert monitor._stats.follow_ups_opened == 0
         assert monitor._stats.follow_ups_skipped == 2
@@ -997,12 +1092,18 @@ class TestTickSummary:
         assert "implemented=0" in msg, f"expected implemented=0, got: {msg}"
 
     async def test_tick_summary_reflects_dispatched_delta(self, caplog):
-        """Reviewing a PR must show dispatched=1 in the summary."""
+        """Concluir uma review (merge detectado no reconcile) deve mostrar
+        dispatched=1 no resumo. Fire-and-forget (issue #373): o contador
+        ``prs_reviewed`` só sobe no reconcile (tick 2), não no dispatch fresh."""
         pr = PrRef(number=10, title="prt", url="https://x/pull/10",
                    labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
         monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged.")
         monitor.config.enable_review = False
         monitor.config.enable_implement = False
+        # Tick 1: dispatch fresh fire-and-forget (dispatched=0 ainda).
+        await monitor.tick()
+        _setup_pr_merge_groundtruth(monitor, 10)
+        # Tick 2: reconcile detecta merge → prs_reviewed++ → dispatched=1.
         with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
             await monitor.tick()
         records = [r for r in caplog.records if "tick #" in r.message]

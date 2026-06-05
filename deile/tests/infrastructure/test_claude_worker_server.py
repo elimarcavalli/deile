@@ -519,7 +519,6 @@ async def test_dispatch_returns_auth_expired_when_claude_reports_not_logged_in(
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
 
     # Mock o subprocess pra emular claude reportando token expirado.
-    from infra.k8s import claude_worker_server as mod
     import types
 
     async def fake_run_subprocess(args, *, cwd, task_id, timeout, lease_path=None):
@@ -1098,7 +1097,8 @@ def test_is_claude_alive_returns_false_when_jsonl_stale(
     claude_worker_module, monkeypatch, tmp_path,
 ):
     """JSONL antigo (> threshold) = sessão morta, fallback retorna False."""
-    import os, time
+    import os
+    import time
     empty_proc = tmp_path / "fake_proc_empty"
     empty_proc.mkdir()
     monkeypatch.setattr(claude_worker_module, "_PROC_ROOT", str(empty_proc))
@@ -1591,8 +1591,8 @@ def test_cleanup_scan_detects_dead_lease(claude_worker_module, tmp_path):
     root = tmp_path / "work"
     workdir = root / "ccdd0022ccdd0022"
     workdir.mkdir(parents=True)
-    import time
     import json
+    import time
     lease = {
         "pod": "p1", "pid": 999999999,  # non-existent PID
         "started_at": time.time() - 3600,
@@ -1907,7 +1907,6 @@ def test_anthropic_quota_capture_middleware_stores_latest_header(
 
 async def test_auth_start_requires_no_bearer_token(claude_worker_module, monkeypatch):
     """/v1/auth/start e /v1/auth/status são unauthenticated."""
-    import subprocess as _sp  # noqa: PLC0415
 
     def fake_popen(cmd, *args, **kwargs):
         raise FileNotFoundError("claude not found")
@@ -1969,8 +1968,8 @@ async def test_auth_start_captures_oauth_url_from_claude_output(
     claude_worker_module, monkeypatch,
 ):
     """/v1/auth/start captura URL OAuth impressa pelo claude auth login."""
-    import io                   # noqa: PLC0415
-    import subprocess as _sp    # noqa: PLC0415
+    import io  # noqa: PLC0415
+    import subprocess as _sp  # noqa: PLC0415
 
     fake_url = (
         "https://claude.ai/auth/login?state=abc&code_challenge=xyz"
@@ -2007,8 +2006,8 @@ async def test_auth_start_captures_callback_port_from_percent_encoded_url(
     claude_worker_module, monkeypatch,
 ):
     """/v1/auth/start extrai callback_port mesmo com redirect_uri percent-encoded."""
-    import io                   # noqa: PLC0415
-    import subprocess as _sp    # noqa: PLC0415
+    import io  # noqa: PLC0415
+    import subprocess as _sp  # noqa: PLC0415
 
     # redirect_uri é percent-encoded como o claude CLI produz em produção
     fake_url = (
@@ -2445,3 +2444,492 @@ async def test_dispatch_ok_nao_preenche_error(
     assert "error" not in body, (
         f"dispatch bem-sucedido não deve ter 'error', got: {body.get('error')}"
     )
+
+
+# =============================================================================
+# T1 — last_result_full: veredito completo sem truncagem a 300 chars
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_resume_info_expõe_last_result_full_completo(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """T1: resume_info_handler deve devolver ``last_result_full`` completo —
+    sem truncar a 300 chars como o ``last_result_summary`` faz.
+
+    Prova com veredito > 300 chars para garantir que a string não é cortada.
+    """
+    import json as _json
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    task_id = "aabbccdd11223344"
+    workdir = tmp_path / "work" / task_id
+    workdir.mkdir(parents=True)
+    meta_dir = tmp_path / ".claude" / "tasks" / task_id
+    meta_dir.mkdir(parents=True)
+
+    # Veredito com 500 chars — bem acima do limite de 300 do summary.
+    veredito_longo = "CLARO: " + "X" * 493  # total 500 chars
+    assert len(veredito_longo) == 500
+
+    (meta_dir / "session.json").write_text(_json.dumps({
+        "task_id": task_id,
+        "session_id": "sess-full",
+        "workdir": str(workdir),
+        "stage": "pr_review",
+        "branch": "auto/issue-1",
+        "started_at": 1000,
+        "last_completed_at": 1420,
+        "last_is_error": False,
+        "last_result_summary": veredito_longo[:300],   # como grava o handler
+        "last_result_full": veredito_longo,            # novo campo T1
+        "last_returncode": 0,
+        "attempt": 1,
+    }))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            f"/v1/dispatches/{task_id}/resume-info",
+            headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 200
+        body = await resp.json()
+
+    # last_result_summary DEVE ser truncado a 300.
+    assert body["last_result_summary"] == veredito_longo[:300]
+    # last_result_full NÃO deve ser truncado — 500 chars completos.
+    assert "last_result_full" in body, "campo last_result_full deve estar presente"
+    assert body["last_result_full"] == veredito_longo, (
+        f"last_result_full foi truncado: len={len(body['last_result_full'])} "
+        f"esperado=500"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persiste_last_result_full_no_session_json(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """T1: após um dispatch bloqueante (wait_for_result=True), o session.json
+    deve conter ``last_result_full`` com o texto completo do resultado do claude.
+    """
+    import json as _json
+
+    veredito = "CLARO: tudo certo " + "Y" * 400  # total > 300 chars
+    assert len(veredito) > 300
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        out = _json.dumps({
+            "is_error": False,
+            "result": veredito,
+            "session_id": "s-full",
+            "total_cost_usd": 0.01,
+            "duration_ms": 1000,
+            "num_turns": 1,
+        })
+        return claude_worker_module.SubprocessResult(0, out, "", 1.0)
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
+            "brief": "implement #1",
+            "stage": "implement",
+            "preferred_model": "anthropic:claude-sonnet-4-6",
+        })
+        body = await resp.json()
+
+    assert resp.status == 200
+    assert body["ok"] is True
+
+    # Lê o session.json gravado no disco.
+    meta_path = tmp_path / ".claude" / "tasks" / body["task_id"] / "session.json"
+    assert meta_path.exists()
+    meta = _json.loads(meta_path.read_text())
+
+    # last_result_summary = truncado a 300.
+    assert meta["last_result_summary"] == veredito[:300]
+    # last_result_full = texto completo (não truncado a 300).
+    assert meta["last_result_full"] == veredito, (
+        f"last_result_full foi truncado: len={len(meta['last_result_full'])}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_info_retorna_string_vazia_quando_last_result_full_ausente(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """T1 retrocompat: metadados antigos (sem last_result_full) → campo
+    ausente retorna string vazia (não KeyError nem None).
+    """
+    import json as _json
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    task_id = "0011223344556677"
+    meta_dir = tmp_path / ".claude" / "tasks" / task_id
+    meta_dir.mkdir(parents=True)
+    # session.json sem o campo last_result_full (metadado antigo).
+    (meta_dir / "session.json").write_text(_json.dumps({
+        "task_id": task_id,
+        "session_id": "s-old",
+        "workdir": "/tmp/nonexistent",
+        "attempt": 1,
+        "started_at": 100,
+        "last_result_summary": "ok",
+        # last_result_full ausente intencionalmente.
+    }))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            f"/v1/dispatches/{task_id}/resume-info",
+            headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 200
+        body = await resp.json()
+
+    assert "last_result_full" in body
+    assert body["last_result_full"] == ""
+
+
+# =============================================================================
+# T2 — dispatch nowait: 202 + task_id + background subprocess
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_dispatch_nowait_retorna_202_com_task_id(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """T2: POST dispatch com ``wait_for_result=False`` retorna 202 imediatamente
+    com ``{"task_id": ..., "status": "running"}`` sem esperar o subprocess.
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    # Evento para sincronizar: testa que 202 chegou ANTES do subprocess "terminar".
+    subprocess_started = _asyncio.Event()
+    subprocess_may_finish = _asyncio.Event()
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        subprocess_started.set()
+        await subprocess_may_finish.wait()
+        out = _json.dumps({
+            "is_error": False, "result": "done", "session_id": "s",
+            "total_cost_usd": 0.01, "duration_ms": 10, "num_turns": 1,
+        })
+        return claude_worker_module.SubprocessResult(0, out, "", 0.01)
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
+            "brief": "implement #2",
+            "stage": "implement",
+            "preferred_model": "anthropic:claude-sonnet-4-6",
+            "wait_for_result": False,
+        })
+        body = await resp.json()
+
+    # 202 deve chegar ANTES do subprocess terminar.
+    assert resp.status == 202, f"esperado 202, got {resp.status}: {body}"
+    assert "task_id" in body
+    assert len(body["task_id"]) == 16  # hex 16-char
+    assert body["status"] == "running"
+
+    # Libera o subprocess para que background task termine limpo.
+    subprocess_may_finish.set()
+    await _asyncio.sleep(0.05)  # aguarda cleanup da background task
+
+
+@pytest.mark.asyncio
+async def test_dispatch_nowait_grava_session_json_antes_do_subprocess(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """T2: session.json com task_id deve existir IMEDIATAMENTE após o 202,
+    antes mesmo de o subprocess terminar — permite que resume-info funcione
+    para tasks em andamento.
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    subprocess_may_finish = _asyncio.Event()
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        await subprocess_may_finish.wait()
+        out = _json.dumps({
+            "is_error": False, "result": "done", "session_id": "s",
+            "total_cost_usd": 0.0, "duration_ms": 1, "num_turns": 1,
+        })
+        return claude_worker_module.SubprocessResult(0, out, "", 0.01)
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
+            "brief": "x",
+            "preferred_model": "anthropic:claude-haiku-4-5",
+            "wait_for_result": False,
+        })
+        body = await resp.json()
+
+    assert resp.status == 202
+    task_id = body["task_id"]
+
+    # session.json deve existir imediatamente (gravado ANTES do spawn).
+    meta_path = tmp_path / ".claude" / "tasks" / task_id / "session.json"
+    assert meta_path.exists(), (
+        f"session.json deve existir imediatamente após 202, não encontrado: {meta_path}"
+    )
+    meta = _json.loads(meta_path.read_text())
+    assert meta["task_id"] == task_id
+    assert "session_id" in meta
+
+    subprocess_may_finish.set()
+    await _asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_nowait_grava_last_completed_ao_terminar(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """T2: após o subprocess terminar em background, session.json deve ter
+    ``last_completed_at`` e ``last_result_full`` preenchidos.
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    resultado = "STATUS: SUCCESS - tudo implementado corretamente " + "Z" * 300
+    subprocess_done = _asyncio.Event()
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        out = _json.dumps({
+            "is_error": False, "result": resultado, "session_id": "s",
+            "total_cost_usd": 0.05, "duration_ms": 500, "num_turns": 3,
+        })
+        result = claude_worker_module.SubprocessResult(0, out, "", 0.5)
+        subprocess_done.set()
+        return result
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
+            "brief": "implement #3",
+            "stage": "implement",
+            "preferred_model": "anthropic:claude-sonnet-4-6",
+            "wait_for_result": False,
+        })
+        body = await resp.json()
+
+    assert resp.status == 202
+    task_id = body["task_id"]
+
+    # Aguarda o subprocess terminar (com timeout de segurança).
+    try:
+        await _asyncio.wait_for(subprocess_done.wait(), timeout=5.0)
+    except _asyncio.TimeoutError:
+        pytest.fail("subprocess não terminou dentro do prazo esperado")
+
+    # Aguarda a background task gravar os metadados finais.
+    await _asyncio.sleep(0.1)
+
+    meta_path = tmp_path / ".claude" / "tasks" / task_id / "session.json"
+    meta = _json.loads(meta_path.read_text())
+
+    assert meta["last_completed_at"] is not None, (
+        "last_completed_at deve ser gravado após conclusão do subprocess"
+    )
+    assert meta["last_is_error"] is False
+    assert meta["last_result_full"] == resultado, (
+        f"last_result_full incompleto: len={len(meta['last_result_full'])}"
+    )
+    assert meta["last_result_summary"] == resultado[:300]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_nowait_limpa_lease_ao_terminar(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """T2: após o subprocess terminar em background, o lease deve ser removido
+    — sem lease órfão deixado no filesystem.
+    """
+    import asyncio as _asyncio
+    import json as _json
+
+    subprocess_done = _asyncio.Event()
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        out = _json.dumps({
+            "is_error": False, "result": "ok", "session_id": "s",
+            "total_cost_usd": 0.0, "duration_ms": 1, "num_turns": 1,
+        })
+        result = claude_worker_module.SubprocessResult(0, out, "", 0.01)
+        subprocess_done.set()
+        return result
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
+            "brief": "check lease",
+            "preferred_model": "anthropic:claude-haiku-4-5",
+            "wait_for_result": False,
+        })
+        body = await resp.json()
+
+    assert resp.status == 202
+    task_id = body["task_id"]
+    workspace = tmp_path / "work" / task_id
+    lease_path = workspace / ".lease.json"
+
+    # Aguarda o subprocess terminar.
+    try:
+        await _asyncio.wait_for(subprocess_done.wait(), timeout=5.0)
+    except _asyncio.TimeoutError:
+        pytest.fail("subprocess não terminou dentro do prazo")
+
+    # Aguarda o cleanup após o subprocess.
+    await _asyncio.sleep(0.1)
+
+    assert not lease_path.exists(), (
+        f"lease.json deve ser removido após conclusão do nowait; ainda existe: {lease_path}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_true_mantem_comportamento_bloqueante(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """T2 retrocompat: ``wait_for_result=True`` (explícito) retorna 200 com
+    resultado completo — comportamento original preservado.
+    """
+    import json as _json
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        out = _json.dumps({
+            "is_error": False, "result": "done", "session_id": "s",
+            "total_cost_usd": 0.02, "duration_ms": 200, "num_turns": 2,
+        })
+        return claude_worker_module.SubprocessResult(0, out, "", 0.2)
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
+            "brief": "implement #5",
+            "preferred_model": "anthropic:claude-sonnet-4-6",
+            "wait_for_result": True,  # explícito
+        })
+        body = await resp.json()
+
+    assert resp.status == 200, f"wait_for_result=True deve retornar 200, got {resp.status}"
+    assert body["ok"] is True
+    assert "task_id" in body
+    assert body["returncode"] == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_sem_wait_for_result_mantem_comportamento_bloqueante(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """T2 retrocompat: ausência de ``wait_for_result`` no payload (campo
+    omitido) retorna 200 bloqueante — default compatível com clientes legados.
+    """
+    import json as _json
+
+    async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
+        out = _json.dumps({
+            "is_error": False, "result": "done", "session_id": "s",
+            "total_cost_usd": 0.01, "duration_ms": 100, "num_turns": 1,
+        })
+        return claude_worker_module.SubprocessResult(0, out, "", 0.1)
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
+            "brief": "implement #6",
+            "preferred_model": "anthropic:claude-sonnet-4-6",
+            # wait_for_result ausente propositalmente.
+        })
+        body = await resp.json()
+
+    assert resp.status == 200, f"default deve ser 200 bloqueante, got {resp.status}"
+    assert body["ok"] is True
+
+
+# --- _estimate_context_tokens: pico de contexto, não soma (issue #445 FU) -----
+def test_estimate_context_tokens_uses_peak_not_sum(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Mede o CONTEXTO OCUPADO (pico de um round), não a soma dos rounds.
+
+    Regressão direta do bug que promovia toda review longa a fresh: somar
+    ``cache_read_input_tokens`` em 65 rounds gerava 11,5M tokens quando o
+    contexto real era ~70K. Aqui 5 rounds relendo 50K de cache cada têm soma
+    ~255K, mas o contexto real ocupado (pico de 1 round) é só 51K.
+    """
+    import json as _json
+    mod = claude_worker_module
+    jsonl = tmp_path / "sess.jsonl"
+    lines = []
+    for i in range(5):
+        lines.append(_json.dumps({
+            "type": "assistant",
+            "requestId": f"r{i}",
+            "message": {
+                "id": f"m{i}", "role": "assistant",
+                "usage": {
+                    "input_tokens": 1000,
+                    "cache_read_input_tokens": 50000,
+                    "cache_creation_input_tokens": 0,
+                    "output_tokens": 800,
+                },
+            },
+        }))
+    jsonl.write_text("\n".join(lines), encoding="utf-8")
+    monkeypatch.setattr(mod, "_resolve_jsonl_path", lambda s, w: jsonl)
+
+    got = mod._estimate_context_tokens("sess", tmp_path)
+    assert got == 51000  # pico (1000 + 50000) de um único round, não 5x
+
+
+def test_estimate_context_tokens_zero_when_missing(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """JSONL ausente → 0 (fallback conservador, não promove por falha de medir)."""
+    mod = claude_worker_module
+    monkeypatch.setattr(mod, "_resolve_jsonl_path", lambda s, w: None)
+    assert mod._estimate_context_tokens("sess", tmp_path) == 0

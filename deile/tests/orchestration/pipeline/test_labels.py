@@ -4,20 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
-                                                 LABEL_COLORS,
-                                                 LABEL_DESCRIPTIONS,
-                                                 MENTION_DONE, MENTION_LABELS,
-                                                 REVIEW_LABELS, REVIEW_PENDING,
-                                                 WORKFLOW_BLOCKED,
-                                                 WORKFLOW_LABELS, WORKFLOW_NEW,
-                                                 batch_id_from_label,
-                                                 current_refine_attempt_from_labels,
-                                                 is_batch_label,
-                                                 is_refine_attempt_label,
-                                                 make_batch_label,
-                                                 make_refine_attempt_label,
-                                                 parse_refine_attempt_label)
+from deile.orchestration.pipeline.labels import (
+    BATCH_LABEL_PREFIX, LABEL_COLORS, LABEL_DESCRIPTIONS, MENTION_DONE,
+    MENTION_LABELS, REVIEW_LABELS, REVIEW_PENDING, WORKFLOW_BLOCKED,
+    WORKFLOW_LABELS, WORKFLOW_NEW, batch_id_from_label,
+    current_refine_attempt_from_labels, is_batch_label,
+    is_refine_attempt_label, make_batch_label, make_refine_attempt_label,
+    parse_refine_attempt_label)
 
 
 class TestLabelConstants:

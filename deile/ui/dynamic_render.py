@@ -45,10 +45,11 @@ from __future__ import annotations
 import os
 import sys
 import time
-from typing import Callable, Union
+from typing import AsyncIterator, Callable, List, Union
 
 from rich.console import Console, RenderableType
 from rich.live import Live
+from rich.text import Text
 
 # Default refresh rate: 8 frames per second.
 # Suficiente para detectar resize via SIGWINCH em < 130ms; baixo o
@@ -124,6 +125,49 @@ def live_for(
         final = renderable() if callable(renderable) else renderable
         live.update(final)
         live.refresh()
+
+
+async def live_stream(
+    line_iterator: AsyncIterator[str],
+    *,
+    console: Console,
+) -> List[str]:
+    """Stream lines via Rich Live com reflow. Retorna lista de todas as linhas recebidas.
+
+    Em TTY interativo, usa ``rich.live.Live`` com ``auto_refresh=False`` para
+    renderizar cada linha recebida, possibilitando reflow enquanto o conteúdo
+    chega. Em ambiente não-TTY (pipe/CI/redirect), imprime cada linha via
+    ``console.print`` diretamente.
+
+    Nota: esta função NÃO usa ``live_for`` — ``live_for`` é para conteúdo com
+    duração fixa, não para streaming de saída de subprocesso.
+
+    Args:
+        line_iterator: AsyncIterator que produz strings (uma por linha).
+        console: Console Rich onde renderizar.
+
+    Returns:
+        Lista de todas as linhas recebidas, na ordem de chegada.
+    """
+    all_lines: List[str] = []
+
+    if is_interactive_tty():
+        with Live(
+            Text(""),
+            console=console,
+            auto_refresh=False,
+            transient=False,
+        ) as live:
+            async for line in line_iterator:
+                all_lines.append(line)
+                live.update(Text("\n".join(all_lines)))
+                live.refresh()
+    else:
+        async for line in line_iterator:
+            all_lines.append(line)
+            console.print(line)
+
+    return all_lines
 
 
 def turn_separator(console: Console, *, style: str = "#4285F4 dim") -> None:

@@ -15,10 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from deile.orchestration.pipeline.cost_estimator import (
-    StageCostEstimator,
-    _FALLBACK_TOKENS,
-    reset_pricing_provider,
-)
+    _FALLBACK_TOKENS, StageCostEstimator, reset_pricing_provider)
 from deile.storage.usage_repository import UsageRecord
 
 

@@ -59,6 +59,39 @@ def pricing_for(model: str) -> dict:
     return PRICING["free"]  # <synthetic> e desconhecidos não são cobrados
 
 
+# --------------------------------------------------------------------------- #
+# Janela de contexto (tokens) por família/versão de modelo. Fonte única para o #
+# threshold de promoção-a-fresh do resume (claude_worker_server). Opus 4.5+ e   #
+# Sonnet 4.6+ têm 1M; Opus 4.0/4.1, Sonnet <=4.5 e Haiku têm 200K. Conservador  #
+# (200K) para desconhecidos: subestimar nunca arrisca estourar a janela real.   #
+# --------------------------------------------------------------------------- #
+CONTEXT_WINDOW_1M = 1_000_000
+CONTEXT_WINDOW_200K = 200_000
+
+
+def context_window_of_model(model: str) -> int:
+    """Janela de contexto (tokens) de um modelo; 200K conservador p/ desconhecido."""
+    m = (model or "").lower()
+    if "haiku" in m:
+        return CONTEXT_WINDOW_200K
+    base = re.sub(r"-\d{6,}.*$", "", m)
+    if "sonnet" in m:
+        # Sonnet 4.6+ = 1M; 4.5 e anteriores = 200K.
+        ver = re.search(r"sonnet[-_.]?(\d+)(?:[-_.](\d+))?", base)
+        if not ver:
+            return CONTEXT_WINDOW_200K
+        major = int(ver.group(1))
+        minor = int(ver.group(2)) if ver.group(2) is not None else 0
+        return CONTEXT_WINDOW_1M if (major > 4 or (major == 4 and minor >= 6)) else CONTEXT_WINDOW_200K
+    if "opus" in m:
+        # Opus 4.5+ = 1M; 4.0/4.1 = 200K (espelha o split de preço em pricing_for).
+        ver = re.search(r"opus[-_.]?(\d+)(?:[-_.](\d+))?", base)
+        legacy = bool(ver) and int(ver.group(1)) == 4 and (
+            ver.group(2) is None or int(ver.group(2)) <= 1)
+        return CONTEXT_WINDOW_200K if legacy else CONTEXT_WINDOW_1M
+    return CONTEXT_WINDOW_200K
+
+
 def cost_of_model(tk: dict, model: str) -> float:
     """Custo em USD de um bloco de tokens {in,out,cc,cr,cc_5m,cc_1h} de um modelo."""
     p = pricing_for(model)

@@ -10,12 +10,9 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 _INFRA_K8S = Path(__file__).resolve().parents[3] / "infra" / "k8s"
 if str(_INFRA_K8S) not in sys.path:
@@ -222,7 +219,6 @@ class TestDispatchMatrixViewCostCapCol:
 
     def test_column_count_includes_cost_cap(self):
         """Rendered table has a 'Cost cap (USD/run)' column header."""
-        import _panel as panel_mod  # noqa: PLC0415
         from rich.console import Console  # noqa: PLC0415
 
         view = self._make_view()
@@ -235,7 +231,6 @@ class TestDispatchMatrixViewCostCapCol:
         assert "Cost cap" in output or "cost_cap" in output.lower() or "USD/run" in output
 
     def test_no_cap_renders_no_cap_text(self):
-        import _panel as panel_mod  # noqa: PLC0415
         from rich.console import Console  # noqa: PLC0415
 
         view = self._make_view(cost_cap_usd=None)
@@ -247,7 +242,6 @@ class TestDispatchMatrixViewCostCapCol:
         assert "(no cap)" in output
 
     def test_cap_value_renders_with_dollar_sign(self):
-        import _panel as panel_mod  # noqa: PLC0415
         from rich.console import Console  # noqa: PLC0415
 
         view = self._make_view(cost_cap_usd="5.00")
@@ -260,7 +254,6 @@ class TestDispatchMatrixViewCostCapCol:
 
     def test_cursor_col_max_is_five(self):
         """RIGHT advances up to col 5 (Reasoning) and clamps there."""
-        import _panel as panel_mod  # noqa: PLC0415
 
         view = self._make_view()
         view.cursor_col = 0
@@ -272,7 +265,6 @@ class TestDispatchMatrixViewCostCapCol:
 
     def test_reset_col_4_calls_reset_cost_cap(self):
         """[r] on the cost-cap col (4) calls reset_stage_cost_cap_usd."""
-        import _panel as panel_mod  # noqa: PLC0415
 
         view = self._make_view()
         view.cursor_row = 0
@@ -290,13 +282,12 @@ class TestDispatchMatrixViewCostCapCol:
 
         with patch("_panel.pd_reset_stage_cost_cap_usd",
                    return_value=(True, "ok")) as mock_reset:
-            result = view.handle_key("r", app)
+            view.handle_key("r", app)
 
         mock_reset.assert_called_once_with("implement", namespace="deile")
 
     def test_enter_col_4_opens_cost_cap_picker(self):
         """[enter] on the cost-cap col (4) opens the cost_cap_usd picker modal."""
-        import _panel as panel_mod  # noqa: PLC0415
 
         view = self._make_view(cost_cap_usd="5.00")
         view.cursor_row = 0
@@ -311,7 +302,6 @@ class TestDispatchMatrixViewCostCapCol:
 
     def test_picker_no_cap_calls_reset(self):
         """Selecting '(no cap)' in cost_cap picker calls reset_stage_cost_cap_usd."""
-        import _panel as panel_mod  # noqa: PLC0415
 
         view = self._make_view()
         view.cursor_row = 0

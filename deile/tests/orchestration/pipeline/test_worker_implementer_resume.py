@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
-from deile.orchestration.pipeline.implementer import (WorkerImplementer,
-                                                       _outcome_from_worker_response)
+from deile.orchestration.pipeline.implementer import (
+    WorkerImplementer, _outcome_from_worker_response)
 
 
 def _fake_client(dispatch_response: Dict[str, Any],
@@ -327,7 +327,8 @@ def test_review_was_blocked_returns_false_on_approve():
 
 
 def test_estimate_session_tokens_from_jsonl_sums_usage():
-    from deile.orchestration.pipeline.implementer import _estimate_session_tokens_from_jsonl
+    from deile.orchestration.pipeline.implementer import \
+        _estimate_session_tokens_from_jsonl
     jsonl = """
 {"type":"user","content":"hi"}
 {"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":1000,"cache_creation_input_tokens":200}}}
@@ -337,7 +338,8 @@ def test_estimate_session_tokens_from_jsonl_sums_usage():
 
 
 def test_estimate_session_tokens_from_jsonl_tolerates_malformed():
-    from deile.orchestration.pipeline.implementer import _estimate_session_tokens_from_jsonl
+    from deile.orchestration.pipeline.implementer import \
+        _estimate_session_tokens_from_jsonl
     jsonl = """
 not json
 {"type":"assistant"}
@@ -347,7 +349,8 @@ not json
 
 
 def test_estimate_session_tokens_from_jsonl_empty():
-    from deile.orchestration.pipeline.implementer import _estimate_session_tokens_from_jsonl
+    from deile.orchestration.pipeline.implementer import \
+        _estimate_session_tokens_from_jsonl
     assert _estimate_session_tokens_from_jsonl("") == 0
     assert _estimate_session_tokens_from_jsonl(None) == 0
 

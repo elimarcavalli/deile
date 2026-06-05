@@ -34,10 +34,9 @@ from deile.orchestration.forge.refs import CommentRef, IssueRef, PrRef
 from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
-                                                 MENTION_LABELS, REFINE_LABELS,
-                                                 PRIORITY_LABEL_PREFIX,
+                                                 MENTION_LABELS,
                                                  PRIORITY_LABELS,
-                                                 REVIEW_LABELS,
+                                                 REFINE_LABELS, REVIEW_LABELS,
                                                  WORKFLOW_LABELS)
 
 logger = logging.getLogger(__name__)
@@ -53,7 +52,7 @@ _GH_LOGIN_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 # misses a field when one list helper diverges from another (the shape feeds
 # ``IssueRef.from_gh_json`` / ``PrRef.from_gh_json``).
 _ISSUE_JSON_FIELDS = "number,title,url,labels,body,state,author"
-_PR_JSON_FIELDS = "number,title,url,labels,headRefName,baseRefName,state,isDraft"
+_PR_JSON_FIELDS = "number,title,url,labels,headRefName,baseRefName,state,isDraft,headRefOid"
 
 
 # Flags passed to ``gh api`` that consume the *next* argument as their value.
@@ -541,7 +540,7 @@ class GitHubForge(ForgeClient):
                     f'.[] | select(.requested_reviewers != null) | '
                     f'select(any(.requested_reviewers[]; .login == "{login}")) | '
                     f'{{number, title, url, labels, headRefName: .head.ref, '
-                    f'baseRefName: .base.ref, state, isDraft: .draft}}'
+                    f'baseRefName: .base.ref, state, isDraft: .draft, headRefOid: .head.sha}}'
                 ),
             )
         except ForgeCommandError as exc:
@@ -859,6 +858,14 @@ class GitHubForge(ForgeClient):
     async def _has_bot_activity_impl(
         self, kind: str, number: int, bot_login: str, since_ts: int,
     ) -> bool:
+        # Defense-in-depth: validate before interpolating into the jq filter,
+        # matching the invariant held by every other login surface in the forge.
+        if not _GH_LOGIN_RE.fullmatch(bot_login or ""):
+            logger.warning(
+                "_has_bot_activity_impl #%d: bot_login %r rejected by _GH_LOGIN_RE",
+                number, bot_login,
+            )
+            return False
         # Comments — issues + PRs compartilham endpoint.
         rc_c, out_c, _ = await self._run(
             "api", "--paginate",
@@ -1027,7 +1034,8 @@ class GitHubForge(ForgeClient):
         # Deduplicate linked issue numbers.
         unique_numbers = set(int(n) for n in linked)
         best: Optional[int] = None
-        from deile.orchestration.pipeline.labels import parse_priority_from_labels
+        from deile.orchestration.pipeline.labels import \
+            parse_priority_from_labels
         for n in unique_numbers:
             try:
                 issue = await self.get_issue(n)

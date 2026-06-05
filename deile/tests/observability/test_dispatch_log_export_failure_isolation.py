@@ -8,7 +8,6 @@ Verifica que:
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -22,9 +21,7 @@ class TestFailureIsolation:
         monkeypatch.setattr(dle, "emit_log_record", lambda **kw: (_ for _ in ()).throw(RuntimeError("log boom")))
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed,
-            emit_dispatch_received,
-        )
+            emit_dispatch_completed, emit_dispatch_received)
 
         # Should not raise
         emit_dispatch_received("isolation-log-fail", session_id="s1")
@@ -40,9 +37,7 @@ class TestFailureIsolation:
 
         monkeypatch.setattr(dle, "emit_log_record", lambda **kw: (_ for _ in ()).throw(RuntimeError("log boom")))
 
-        from deile.observability.dispatch_export import (
-            emit_dispatch_received,
-        )
+        from deile.observability.dispatch_export import emit_dispatch_received
 
         # Should return None (no exception)
         result = emit_dispatch_received("isolation-ret", session_id="s1")
@@ -53,8 +48,6 @@ class TestFailureIsolation:
         import deile.observability.dispatch_export as dep
 
         # Make _get_raw_tracer raise
-        original = dep._get_raw_tracer
-
         def broken_tracer():
             raise RuntimeError("tracer boom")
 
@@ -79,9 +72,7 @@ class TestFailureIsolation:
         monkeypatch.setattr(dep, "_try_emit_log", tracking_try_emit_log)
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed,
-            emit_dispatch_received,
-        )
+            emit_dispatch_completed, emit_dispatch_received)
 
         emit_dispatch_received("sep-test", session_id="s1")
         emit_dispatch_completed("sep-test", elapsed_s=1.0)
