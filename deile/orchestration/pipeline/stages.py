@@ -47,7 +47,12 @@ from deile.orchestration.pipeline.labels import (
     current_attempt_from_labels, current_refine_attempt_from_labels,
     is_attempt_label, is_batch_label, is_refine_attempt_label,
     issue_type_from_labels, make_attempt_label, make_refine_attempt_label,
-    parse_priority_from_labels, refine_workflow_state)
+    parse_priority_from_labels, persona_for_type, refine_workflow_state)
+from deile.orchestration.pipeline.pipeline_logger import (
+    log_decomposition_fanout,
+    log_refinement_critique,
+    log_refinement_refine,
+)
 
 # Mention triggers that describe a STICKY state (they re-appear on every poll
 # until the underlying GitHub state changes), as opposed to "comment", which is
@@ -1000,6 +1005,13 @@ async def _apply_critique_verdict(
     number = target.number
     is_clear, reason = parse_critique_verdict(verdict_text)
     issue_type = issue_type_from_labels(target.labels)
+    log_refinement_critique(
+        issue=number,
+        round=current_refine_attempt_from_labels(target.labels),
+        persona=persona_for_type(issue_type),
+        verdict="CLARO" if is_clear else "VAGO",
+        gaps=reason[:200],
+    )
     if is_clear:
         await monitor.forge.transition_issue(
             number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_REVIEWED
@@ -1384,6 +1396,13 @@ async def _apply_refine_verdict(
         return
 
     verdict = parse_refine_verdict(verdict_text)
+    log_refinement_refine(
+        issue=number,
+        round=current_refine_attempt_from_labels(target.labels),
+        persona=persona_for_type(issue_type),
+        body_chars=len(before_body or ""),
+        verdict=verdict,
+    )
     if verdict == "waiting":
         # The worker posted 2-3 suggestions and assigned the author; pause refino.
         await monitor.forge.add_labels("issue", number, [WORKFLOW_WAITING])
@@ -1671,6 +1690,11 @@ async def decompose_one_reviewed_intent(
     # no concurrent re-pick. On success the intent leaves the revisada queue.
     outcome = await monitor.implementer.decompose(monitor, target)
     derived = parse_decompose_result(outcome.text)
+    log_decomposition_fanout(
+        intent=target.number,
+        derivadas=derived,
+        complexity=[],
+    )
     if not outcome.ok and not derived:
         logger.warning("decompose #%d failed: %s", target.number, (outcome.error or "")[:200])
         return  # stays revisada — retry next tick
