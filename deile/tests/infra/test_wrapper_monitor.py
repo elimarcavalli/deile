@@ -231,13 +231,16 @@ def test_monitor_deployment_runs_command_server_tick_driver():
     command = container.get("command") or []
     args = container.get("args") or []
 
-    # Main process is the command server (the legacy bash while-loop is gone).
-    assert command == ["python3", "/app/monitor_command_server.py"], (
-        "monitor container must run monitor_command_server.py as its main "
-        f"process; got command={command!r}"
+    # Main process is the command server, launched via `args` so the image
+    # ENTRYPOINT (tini) stays PID 1 and reaps the kubectl/gh grandchildren the
+    # tick spawns (legacy bash while-loop gone). `command:` would drop tini →
+    # zombie accumulation → fork failure → the tick would stop.
+    assert args == ["python3", "/app/monitor_command_server.py"], (
+        "monitor container must run monitor_command_server.py via `args` "
+        f"(tini-wrapped); got args={args!r}"
     )
-    assert args in (None, []), (
-        f"the legacy bash while-loop args must be removed; got args={args!r}"
+    assert command in (None, []), (
+        f"`command:` must be absent so the tini ENTRYPOINT is not overridden; got command={command!r}"
     )
 
     # Tick interval must still be configurable at runtime via env (not baked in).
