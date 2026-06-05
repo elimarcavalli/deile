@@ -74,7 +74,7 @@ Cópia endurecida do `deile_worker_client.py` (resolução de endpoint+token de 
 A persona `monitor` atual é uma persona de **tick** que toma ações de cura (deletar pod, renovar OAuth, abrir issue `[FU]`). Usá-la para Q&A livre seria perigoso (poderia mutar). Para "zero possibilidade de falha", o Q&A roda sob **`monitor_qa`** — a persona de monitor em **modo somente-leitura**:
 
 - Instruções: "Você é o supervisor de cluster do DEILE em modo Q&A SOMENTE-LEITURA. Responda à pergunta do operador sobre cluster/pipeline/forge usando inspeção read-only (`kubectl get/describe/logs/top`, `gh`/`glab` de leitura). NUNCA mute: nada de `delete`/`patch`/`apply`/`edit`, `git push`, criar/editar/mergear issue ou PR, `rm`. Se a pergunta exigir mutação, explique o que faria — não faça."
-- **Enforcement (não só instrução):** o subprocess de Q&A roda com o gate de risco do `bash_tool` configurado para **negar** comandos `dangerous` (sem auto-approve), e/ou um whitelist de tools read-only. A persona é o "como"; o gate é a garantia.
+- **Enforcement — seguro por CONSTRUÇÃO (revisão cética):** a primeira ideia (denylist de verbos sobre uma string entregue a um shell) foi rejeitada na revisão por ser contornável (curl ao kube-apiserver com o token da SA, `kubectl run/debug`, `python3 -c`, indireção por variável, leitura de segredos via `cat`). A implementação real substitui o `bash_execute` do agente Q&A por um **executor SEM shell com lista de binários permitidos** (`_qa_command_allowed` + `subprocess.run(argv, shell=False)`): o comando é parseado com `shlex` e só roda se o binário ∈ {`kubectl`,`gh`,`glab`,`cat`,`ls`,`head`,`tail`,`grep`,`jq`,…} com verbo de leitura (kubectl `get/describe/logs/...`, sem `get secret`, sem `--raw`; gh/glab só ações de leitura; `api` só GET). Sem shell, encadeamento/substituição/redirecionamento nunca são interpretados; caminhos de segredo (`/run/secrets`, `/var/run/secrets`, `.git-credentials`) são negados. A persona é o "como"; o executor é a garantia. `KUBECONFIG` é montado via `monitor_core` (issue #504) para o `kubectl` read autenticar no pod.
 - Honra o pedido do Humano ("chamar um deile com a persona de monitor") preservando a linhagem da persona, mas com segurança por construção.
 
 ### 3.5 Lado do bot (repo deilebot)
@@ -115,7 +115,7 @@ A persona `monitor` atual é uma persona de **tick** que toma ações de cura (d
 
 - Transporte: Bearer constant-time em todas as rotas (exceto `/v1/health`); secret montado como arquivo (`/run/secrets/...`), nunca env.
 - Autorização: o cog `/monitor` é **owner-only** (gate do bot). Auto-route só para owner.
-- Q&A read-only por construção (§3.4): persona + gate de bash negando `dangerous`. O pod do monitor já tem esses poderes hoje (tick); o incremento é o Q&A, contido a leitura.
+- Q&A read-only por construção (§3.4): executor sem shell com lista de binários/verbos permitidos (não denylist). O pod do monitor já tem esses poderes hoje (tick); o incremento é o Q&A, contido a leitura por construção.
 - NetworkPolicy: ingress ao `:8769` só do `deilebot`.
 - Prompt-injection: Phase B mantém a instrução fixa (judgment nunca vira argv); Q&A é owner-gated e read-only.
 
@@ -138,7 +138,9 @@ A persona `monitor` atual é uma persona de **tick** que toma ações de cura (d
 |---|---|
 | Servidor como main process derruba o tick se travar | tick é subprocess isolado; HTTP em try/except; liveness reinicia; espelha runner.py (precedente em produção) |
 | Sem validação live (k8s não reiniciado) | cobertura unit alta + manifest dry-run + revisão cética 5x; PR declara pendência de deploy |
-| Q&A muta o cluster | persona read-only + gate de bash deny-dangerous (enforcement, não só instrução) |
+| Q&A muta o cluster | executor SEM shell + allow-list de binários/verbos de leitura (seguro por construção, não denylist) |
+| Tick para (zumbis / wedge / OOM) | `args:` preserva tini (reaper); `/v1/health` 503 em tick stale + livenessProbe reinicia wedge; QA concurrency=1 + 1.5Gi |
+| Bot não autentica no :8769 | manifest 20 monta `monitor-bearer` em `/run/secrets/bot/monitor` (espelha worker-bearer) |
 | Painel force-tick quebra (`pkill sleep` some) | painel migra para `touch /state/force-tick` no mesmo PR |
 | `origin/main` se move (pipeline mergeia) | rebase antes do merge |
 
