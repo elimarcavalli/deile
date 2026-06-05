@@ -278,17 +278,22 @@ class TestEscThreeLevels:
 # ---------------------------------------------------------------------------
 
 class TestInvalidRegex:
-    def test_invalid_regex_falls_back_to_literal(self):
+    def test_invalid_regex_is_no_op(self):
+        # V2 (issue #544): invalid regex → no-op + "regex inválido no termo N" toast.
+        # V1 behaviour (fallback to literal) was replaced by AC-C4.
         view = _make_view()
         app = _make_app()
         view._prompt_open = True
         for ch in "r:[invalid":
             view._filter_buffer += ch
         view.handle_key("\r", app)
-        app.push_toast.assert_called_once_with("⚠", "regex inválido — usando filtro literal")
-        # Filter should be a compiled literal (re.escape of the pattern part)
-        assert view._filter_re is not None
-        assert view._filter_text == "[invalid"
+        app.push_toast.assert_called_once()
+        toast_msg = app.push_toast.call_args[0][1]
+        assert "regex inválido" in toast_msg
+        # Filter must be cleared (no-op)
+        assert view._filter_re is None
+        assert view._filter_text == ""
+        assert view._filter_terms == []
 
     def test_valid_regex_compiles(self):
         view = _make_view()
