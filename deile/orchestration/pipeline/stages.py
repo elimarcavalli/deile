@@ -56,6 +56,8 @@ from deile.orchestration.pipeline.labels import (
     parse_priority_from_labels, persona_for_type, refine_workflow_state)
 from deile.orchestration.pipeline.pipeline_logger import (
     log_decomposition_fanout,
+    log_reaper_block,
+    log_reaper_unblock,
     log_refinement_critique,
     log_refinement_refine,
 )
@@ -3647,6 +3649,10 @@ async def _reap_one(
             "reaper BLOCKED %s #%d after %d attempts (age=%ds)",
             kind, number, next_attempt, age_seconds,
         )
+        log_reaper_block(
+            target_kind=kind, target=number, attempts=next_attempt,
+            cap=max_attempts, reason=description,
+        )
         try:
             await monitor.notifier.reaper_blocked(
                 number, url,
@@ -3680,4 +3686,8 @@ async def _reap_one(
     logger.info(
         "reaper RELEASED %s #%d to %s (attempt %d/%d, age=%ds)",
         kind, number, to_label, next_attempt, max_attempts, age_seconds,
+    )
+    log_reaper_unblock(
+        target_kind=kind, target=number, attempts=next_attempt,
+        reason=description, last_activity_s=age_seconds,
     )
