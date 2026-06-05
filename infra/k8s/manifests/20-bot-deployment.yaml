@@ -107,6 +107,13 @@ spec:
             - name: worker-bearer
               mountPath: /run/secrets/bot/worker
               readOnly: true
+            # Monitor bearer token mirror — bot reads it to authenticate
+            # against the deile-monitor :8769 control plane (/monitor cog +
+            # cluster-question auto-route). wrapper.py:_wire_monitor_bearer and
+            # MonitorClient both read /run/secrets/bot/monitor/MONITOR_BEARER_TOKEN.
+            - name: monitor-bearer
+              mountPath: /run/secrets/bot/monitor
+              readOnly: true
             # /home/deile generic emptyDir (logs, cache, etc.).
             - name: home
               mountPath: /home/deile
@@ -181,6 +188,13 @@ spec:
           secret:
             secretName: worker-bearer
             defaultMode: 288
+        # optional: the bot still boots without it (no /monitor channel) so a
+        # bot-only / monitor-less profile is not blocked.
+        - name: monitor-bearer
+          secret:
+            secretName: monitor-bearer
+            defaultMode: 288
+            optional: true
         - name: bot-config
           configMap:
             name: bot-config

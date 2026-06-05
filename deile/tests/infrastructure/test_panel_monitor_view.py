@@ -105,8 +105,8 @@ def test_footer_visible_when_body_overflows(pm, monkeypatch):
 # Testes das correções de bugs (adicionados em 01/jun/2026)
 # ---------------------------------------------------------------------------
 
-def test_force_tick_calls_pkill_sleep_not_rm(pm, monkeypatch):
-    """[t] força-tick usa pkill -x sleep (não rm -f monitor-state.json)."""
+def test_force_tick_touches_flag_not_rm(pm, monkeypatch):
+    """[t] força-tick cria o flag /state/force-tick (não pkill, não rm)."""
     import types
 
     captured = []
@@ -125,22 +125,29 @@ def test_force_tick_calls_pkill_sleep_not_rm(pm, monkeypatch):
 
     view._apply_force_tick(object())
 
-    # Garante que pkill -x sleep foi chamado.
-    assert any("pkill" in arg for args in captured for arg in args), (
-        "pkill não foi chamado; args capturados: " + str(captured)
+    # Garante que `touch /state/force-tick` foi chamado.
+    flat = [arg for args in captured for arg in args]
+    assert "touch" in flat, "touch não foi chamado; args capturados: " + str(captured)
+    assert "/state/force-tick" in flat, (
+        "/state/force-tick não apareceu nos args; args: " + str(captured)
     )
-    # Garante que rm NÃO foi chamado (não é destrutivo).
-    assert not any("rm" in arg for args in captured for arg in args), (
+    # O mecanismo antigo (pkill -x sleep) não deve mais ser usado.
+    assert not any("pkill" in arg for arg in flat), (
+        "pkill ainda é chamado (mecanismo antigo); args: " + str(captured)
+    )
+    # Garante que rm NÃO foi chamado (não é destrutivo) e que o state não some.
+    assert not any("rm" in arg for arg in flat), (
         "rm foi chamado inesperadamente; args: " + str(captured)
     )
-    # Garante que monitor-state.json não foi deletado.
-    assert not any("monitor-state.json" in arg for args in captured for arg in args), (
+    assert not any("monitor-state.json" in arg for arg in flat), (
         "monitor-state.json apareceu nos args (state não deve ser apagado); args: " + str(captured)
     )
+    assert view._last_ok is True
+    assert "force-tick" in view._last_msg.lower() or "forçado" in view._last_msg.lower()
 
 
-def test_force_tick_no_sleep_process_ok(pm, monkeypatch):
-    """[t] pkill exit≠0 (nenhum sleep) é tratado como tick já em andamento — não erro."""
+def test_force_tick_failure_surfaces_error(pm, monkeypatch):
+    """[t] touch falhando (ex.: /state read-only) vira erro visível, não sucesso."""
     import types
 
     view = pm.MonitorView(
@@ -148,14 +155,16 @@ def test_force_tick_no_sleep_process_ok(pm, monkeypatch):
             get=lambda: pm.MonitorSnapshot(), invalidate=lambda: None,
         )
     )
-    # pkill retorna falso (exit 1) com saída vazia — nenhum sleep para matar.
-    monkeypatch.setattr(pm.MonitorView, "_exec", lambda self, args, timeout=8.0: (False, ""))
+    monkeypatch.setattr(
+        pm.MonitorView, "_exec",
+        lambda self, args, timeout=8.0: (False, "touch: cannot touch '/state/force-tick'"),
+    )
     monkeypatch.setattr(pm.MonitorView, "_ns", lambda self: "deile")
 
     view._apply_force_tick(object())
 
-    assert view._last_ok is True
-    assert "andamento" in view._last_msg.lower() or "forçado" in view._last_msg.lower()
+    assert view._last_ok is False
+    assert "falha" in view._last_msg.lower()
 
 
 def test_apply_pause_writes_paused_until(pm, monkeypatch):

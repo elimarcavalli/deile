@@ -209,7 +209,7 @@ Cluster = **Rancher Desktop (k3s/containerd)**, single image **`deile-stack:loca
 | `deile-worker` | `:8766` | runs DEILE Python in-process; HTTP dispatch target for the pipeline |
 | `claude-worker` | `:8767` | runs `claude -p` in isolated workdirs; OAuth creds in PVC `claude-worker-home` |
 | `deile-pipeline` | `:8768` (status only) | the forge monitor — **no dispatch ingress**; exposes only the read-only `deile-pipeline-status` ClusterIP Service for the panel; otherwise just "calls out" |
-| `deile-monitor` | — | **24/7 deterministic cluster supervisor** (distinct from the pipeline's tick) — see §5.5 |
+| `deile-monitor` | `:8769` | **24/7 deterministic cluster supervisor** (distinct from the pipeline's tick); its main process `monitor_command_server.py` also serves a Bearer command/status/ask control plane on `:8769` consumed by `deilebot` — see §5.5 |
 | `deile-shell` | — | `kubectl exec`-only sandbox; full toolset; prompt comes from the Human (`wrapper.py deile`) |
 
 > **Only `deile-pipeline` runs the autonomous forge monitor.** `deile-monitor` runs a separate supervisory tick; workers/bot/shell never autostart anything.
@@ -272,7 +272,7 @@ The 6 core deployments are namespace-agnostic; **caveat:** some auxiliary manife
 **Threat model (be precise):** ingress to `:8767` is restricted to `deile-pipeline` only. **Egress is NOT host-whitelisted at L3/L4** — the NetworkPolicy allows generic TCP 443 to anywhere (`to: []`) + DNS (k3s has no FQDN-aware CNI). The host/repo allowlist (`api.anthropic.com`, `github.com`, `gitlab.com`, per-repo) is enforced **only in `wrapper.py`** via ConfigMap `claude-worker-allowed-repos` (a `git` guard). Known gap (spec §7): prompt injection could exfiltrate creds through legitimate channels. Spec: `docs/superpowers/specs/2026-05-26-claude-worker-design.md`. *(Note: Decisão #43 still calls this an L3/L4 egress whitelist — inaccurate; the real control is application-level.)*
 
 ### 5.5 deile-monitor — the 24/7 cluster supervisor (6th pod)
-Two-phase deterministic tick (PR #504): **Phase A** = mechanical sweep with **zero LLM** — 8 "vigias" (OAuth health, error pods, orphan issues, `auto/*` PR attempt N/3, awaiting-stakeholder, failed Jobs, pipeline-pod health, follow-up collection); **Phase B** invokes the `monitor` persona **only** when Phase-A candidates survive (signalled via a state file). Steady state burns **no tokens** (it used to burn ~3.5M/tick as a tool-loop — that was the #504 fix). Tick default 30 min; RBAC `deile-monitor-sa` (read pods/jobs + `pods/exec` for OAuth renew). Behaviour is persona-driven (`deile/personas/instructions/monitor.md`, hot-reload).
+Two-phase deterministic tick (PR #504): **Phase A** = mechanical sweep with **zero LLM** — 8 "vigias" (OAuth health, error pods, orphan issues, `auto/*` PR attempt N/3, awaiting-stakeholder, failed Jobs, pipeline-pod health, follow-up collection); **Phase B** invokes the `monitor` persona **only** when Phase-A candidates survive (signalled via a state file). Steady state burns **no tokens** (it used to burn ~3.5M/tick as a tool-loop — that was the #504 fix). Tick default 30 min; RBAC `deile-monitor-sa` (read pods/jobs + `pods/exec` for OAuth renew). Behaviour is persona-driven (`deile/personas/instructions/monitor.md`, hot-reload). **As of the bot↔monitor PR**, the pod's main process is `monitor_command_server.py` (launched via `args:`, tini-wrapped) which schedules the tick as a subprocess AND serves a Bearer control plane on `:8769` (deterministic status, `pause`/`resume`/`ack`/`force-tick`, and read-only Q&A via the `monitor_qa` persona run in-pod — the only pod that sees kubectl + forge + `/state`). The `deilebot` `/monitor` cog + cluster-question auto-route consume it; `/v1/health` returns 503 on a stale tick so a wedged loop is restarted.
 
 ### 5.6 Observability gotchas — what you see is NOT always reality
 1. **`ps`/`pgrep` work** now that `procps` is in the image. On an old image, `cat /proc/*/cmdline | tr '\0' ' '` works (`/proc` shows the host PIDNS).
@@ -285,6 +285,7 @@ All Bearer-authed except `/v1/health` and the OAuth flow. Full list + params: **
 - **`deile-worker` `:8766`** — `GET /v1/health` · `POST /v1/dispatch` · `GET /v1/result/{id}` · `GET /v1/progress/{id}`
 - **`claude-worker` `:8767`** — `health` · `auth/start|status` · `pod-status` · `POST /v1/dispatch` · `progress/{id}` · `dispatches/{id}/resume-info` · `sessions` (+ `/command,/chat,/stdout,/kill,/cleanup`) · `GET|POST /v1/cleanup`
 - **`deile-pipeline-status` `:8768`** — `health` · `/v1/pipeline-status[/backlog|/recent|/ledger|/reaper-preview]` · `POST /v1/pipeline/force-tick`
+- **`deile-monitor` `:8769`** — `GET /v1/health` (503 on stale tick) · `GET /v1/monitor-status` · `POST /v1/command` · `POST /v1/ask` · `GET /v1/ask/{id}`
 
 ---
 

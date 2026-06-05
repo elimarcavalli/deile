@@ -262,6 +262,13 @@ COPY --chown=deile:deile infra/k8s/monitor_vigias.py /app/monitor_vigias.py
 COPY --chown=deile:deile infra/k8s/monitor_tick.py /app/monitor_tick.py
 RUN chmod 0555 /app/monitor_core.py /app/monitor_vigias.py /app/monitor_tick.py
 
+# DEILE-Monitor command/query/order server (spec 2026-06-04). Now the
+# deile-monitor pod's MAIN process: it schedules monitor_tick.py as a
+# subprocess each tick and serves the :8769 control plane concurrently.
+# Imports monitor_core by bare name, so it sits alongside the trio above.
+COPY --chown=deile:deile infra/k8s/monitor_command_server.py /app/monitor_command_server.py
+RUN chmod 0555 /app/monitor_command_server.py
+
 WORKDIR /app
 USER deile:deile
 

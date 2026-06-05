@@ -471,7 +471,7 @@ Todos os pods compartilham uma **única imagem** `deile-stack:local` (`imagePull
 | `deile-worker` | `:8766` | Roda **DEILE Python in-process**; alvo de dispatch HTTP do pipeline |
 | `claude-worker` | `:8767` | Roda **`claude -p`** em worktrees isolados; OAuth no PVC `claude-worker-home` |
 | `deile-pipeline` | `:8768` (status, in-process) | O **monitor de forge** — não recebe dispatch (sem Service de ingestão de tarefas); expõe só o Service read-only `deile-pipeline-status` p/ o painel. No mais, só "chama pra fora" |
-| `deile-monitor` | — | **Supervisor determinístico do cluster** (vigias V1–V8); distinto do pipeline |
+| `deile-monitor` | `:8769` | **Supervisor determinístico do cluster** (vigias V1–V8); distinto do pipeline. Expõe um control-plane on-demand (status sem-LLM, ordens, Q&A read-only) consumido pelo `deilebot` |
 | `deile-shell` | — | Sandbox `kubectl exec`-only, toolset cheio; prompt vem do humano |
 
 > **`deile-monitor`** roda um tick em duas fases: **Fase A** é uma varredura mecânica **sem LLM** (8 vigias: saúde OAuth, pods em erro, issues órfãs, PRs `auto/*` com tentativa N/3, aguardando-stakeholder, Jobs falhos, saúde do pipeline, coleta de follow-ups); **Fase B** só aciona a persona `monitor` quando candidatos sobrevivem à Fase A. Em regime estável, **não gasta token**. Tick default a cada 30 min. Tem RBAC dedicado (`deile-monitor-sa`).
@@ -539,6 +539,8 @@ Cada processo DEILE publica seu estado vivo em `~/.deile/run/<instance_id>.json`
 **`claude-worker` (`:8767`)** — `GET /v1/health` · `GET /v1/auth/start` · `GET /v1/auth/status` · `GET /v1/pod-status` · `POST /v1/dispatch` · `GET /v1/progress/{task_id}` · `GET /v1/dispatches/{task_id}/resume-info` · `GET /v1/sessions` · `GET /v1/sessions/{id}/{command,chat,stdout}` · `POST /v1/sessions/{id}/kill` · `DELETE /v1/sessions/{id}/cleanup` · `GET\|POST /v1/cleanup`
 
 **`deile-pipeline` status (`:8768`)** — `GET /v1/health` · `GET /v1/pipeline-status[/backlog\|/recent\|/ledger\|/reaper-preview]` · `POST /v1/pipeline/force-tick`
+
+**`deile-monitor` (`:8769`)** — `GET /v1/health` · `GET /v1/monitor-status` · `POST /v1/command` · `POST /v1/ask` · `GET /v1/ask/{request_id}`
 
 ---
 

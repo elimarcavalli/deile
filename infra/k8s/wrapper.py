@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import sys
 import warnings
 from pathlib import Path
@@ -94,6 +95,34 @@ def _wire_worker_bearer() -> None:
                     os.environ["DEILE_WORKER_BEARER_TOKEN"] = tok
                     print(
                         f"wrapper: worker bearer wired from {p}",
+                        file=sys.stderr,
+                    )
+                    return
+            except OSError as exc:
+                print(f"wrapper: cannot read {p}: {exc}", file=sys.stderr)
+
+
+def _wire_monitor_bearer() -> None:
+    """Bot Pod: read monitor-bearer Secret file and expose as env var.
+
+    The MonitorClient (deile/infrastructure/deile_monitor_client.py) reads
+    DEILE_MONITOR_AUTH_TOKEN from the environment (with fallback to the
+    secret file). We populate the env var here so the /monitor cog can
+    authenticate to monitor_command_server (:8769) on the first call,
+    before any lazy file fallback. Mirror of _wire_worker_bearer().
+    """
+    candidates = [
+        Path("/run/secrets/bot/monitor/MONITOR_BEARER_TOKEN"),
+        Path("/run/secrets/monitor/MONITOR_BEARER_TOKEN"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                tok = p.read_text(encoding="utf-8").strip()
+                if tok:
+                    os.environ["DEILE_MONITOR_AUTH_TOKEN"] = tok
+                    print(
+                        f"wrapper: monitor bearer wired from {p}",
                         file=sys.stderr,
                     )
                     return
@@ -764,6 +793,7 @@ def _run_bot(passthrough: List[str]) -> int:
     _harden_runtime_dirs()
     loaded = _load_secret_files(Path("/run/secrets/bot"))
     _wire_worker_bearer()
+    _wire_monitor_bearer()
     required = {"DEILE_BOT_DISCORD_TOKEN", "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN"}
     missing = required - set(loaded)
     if missing:
@@ -1210,10 +1240,311 @@ def _install_monitor_negative_whitelist() -> None:
         agent_mod.DeileAgent.initialize = _harden
 
 
+# Read-only Q&A uses an ALLOW-LIST executor, not a denylist. A denylist over a
+# string handed to a real shell is bypassable (command substitution, indirection,
+# unlisted binaries like `curl`/`python3`). Instead the monitor-qa bash tool is
+# replaced by a SHELL-FREE runner (subprocess shell=False) that only runs a fixed
+# set of read binaries with read verbs — so chaining (`;`/`|`/`&&`), substitution
+# (`$()`/backticks) and redirection (`>`) are never interpreted, regardless of the
+# prompt. Safe-by-construction, not safe-by-instruction.
+# Coreutils here are all STDOUT-only (no output-file flag). `sort`/`uniq` are
+# deliberately EXCLUDED: `sort -o FILE` / `uniq IN OUT` can write a file, which
+# breaks the read-only-by-construction guarantee (and they need pipes — which we
+# don't have — to be useful anyway).
+_QA_ALLOWED_BINARIES = frozenset({
+    "kubectl", "gh", "glab", "cat", "ls", "head", "tail", "grep", "egrep",
+    "wc", "jq", "cut", "nl", "tac", "tr", "column", "echo", "date",
+})
+# `kubectl config` has mutating subcommands; only these read it.
+_QA_KUBECTL_CONFIG_READ = frozenset({
+    "view", "get-contexts", "current-context", "get-clusters", "get-users",
+})
+_QA_KUBECTL_READ_VERBS = frozenset({
+    "get", "describe", "logs", "top", "explain", "api-resources",
+    "cluster-info", "events", "version", "config",
+})
+# gh/glab grammar is `<binary> <noun> <action>` (e.g. `gh pr merge`). Allow-list
+# the READ action (2nd non-flag token) rather than denylist writes — "run"/"pr"
+# are read NOUNS (`gh run list`) yet "create"/"merge" are write ACTIONS.
+_QA_FORGE_READ_ACTIONS = frozenset({
+    "list", "view", "status", "diff", "checks", "get", "show", "ls", "describe",
+})
+_QA_FORGE_READ_TOPLEVEL = frozenset({"status", "version"})
+# Paths whose contents are secrets — never readable via the Q&A read binaries.
+_QA_DENY_PATH_RE = re.compile(
+    r"/run/secrets|/var/run/secrets|\.git-credentials|\.config/(?:gh|glab)|/proc/",
+    re.IGNORECASE,
+)
+
+
+def _qa_api_method(argv: List[str]) -> str:
+    """HTTP method of a gh/glab ``api`` call across ALL flag forms — ``-X GET``,
+    ``-XGET``, ``--method GET``, ``--method=GET``. Default ``GET``. (Token-shape
+    naivety here is what let ``-XDELETE`` slip past the first cut.)"""
+    method = "GET"
+    for i, a in enumerate(argv):
+        if a in ("-X", "--method"):
+            if i + 1 < len(argv):
+                method = argv[i + 1]
+        elif a.startswith("-X") and len(a) > 2:
+            method = a[2:]
+        elif a.startswith("--method="):
+            method = a.split("=", 1)[1]
+    return method
+
+
+def _qa_is_field_flag(token: str) -> bool:
+    """True if *token* is a gh/glab ``api`` field/body flag (a WRITE), any form:
+    ``-f`` / ``-fkey=v`` / ``-F`` / ``--field[=v]`` / ``--raw-field[…]`` / ``--input[…]``."""
+    return token.startswith(("-f", "-F", "--field", "--raw-field", "--input"))
+
+
+def _qa_command_allowed(cmd: str) -> "tuple[bool, str]":
+    """Decide whether *cmd* is a permitted READ-ONLY command. Pure + testable.
+
+    Allow-list by construction: parse argv with ``shlex`` (no shell), require the
+    binary to be in :data:`_QA_ALLOWED_BINARIES`, constrain kubectl/gh/glab to
+    read verbs (no Secret reads, no `--raw`, no `gh api` writes), and deny any
+    path under a secret mount. Returns ``(ok, reason)``."""
+    cmd = (cmd or "").strip()
+    if not cmd:
+        return False, "comando vazio"
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False, "comando não parseável"
+    if not argv:
+        return False, "comando vazio"
+    binary = os.path.basename(argv[0])
+    if binary not in _QA_ALLOWED_BINARIES:
+        return False, f"binário '{binary}' não permitido (modo somente-leitura)"
+    if _QA_DENY_PATH_RE.search(cmd):
+        return False, "acesso a caminhos de segredo negado"
+    if binary == "kubectl":
+        # Reject raw-API + credential/endpoint-override flags in EVERY form
+        # (incl. attached `--raw=PATH`, `--as=...`). `--raw=` was the bypass that
+        # read Secrets past the verb check; `--as` is impersonation; the agent
+        # uses the pod KUBECONFIG so `--server/--token/--kubeconfig` are vectors.
+        if any(a.startswith(("--raw", "--as", "--token", "--server", "--kubeconfig"))
+               for a in argv):
+            return False, "kubectl: flag não permitida (--raw/--as/--token/--server/--kubeconfig)"
+        verb = next((a for a in argv[1:] if not a.startswith("-")), "")
+        if verb not in _QA_KUBECTL_READ_VERBS:
+            return False, f"kubectl '{verb}' não é um verbo de leitura permitido"
+        if verb == "config":
+            sub = next((a for a in argv[2:] if not a.startswith("-")), "")
+            if sub not in _QA_KUBECTL_CONFIG_READ:
+                return False, f"kubectl config '{sub or '?'}' não é somente-leitura"
+        if verb in ("get", "describe") and any(
+            a in ("secret", "secrets") or a.startswith(("secret/", "secrets/"))
+            for a in argv[1:]
+        ):
+            return False, "leitura de Secrets negada"
+    if binary in ("gh", "glab"):
+        # Token-disclosure is never allowed (gh/glab auth status --show-token,
+        # glab config get token, auth token, ...).
+        if any(a == "--show-token" for a in argv):
+            return False, f"{binary}: --show-token negado"
+        nonflag = [a for a in argv[1:] if not a.startswith("-")]
+        noun = nonflag[0] if nonflag else ""
+        action = nonflag[1] if len(nonflag) > 1 else ""
+        if noun == "config":
+            return False, f"{binary} config negado (pode expor o token)"
+        if noun == "auth":
+            # only `auth status` and never with a token-printing flag.
+            if action != "status" or any(a == "-t" for a in argv):
+                return False, f"{binary} auth '{action or '?'}' negado (somente-leitura)"
+            return True, ""
+        if noun == "api":
+            method = _qa_api_method(argv)
+            if method.upper() not in ("GET", "HEAD"):
+                return False, f"{binary} api método '{method}' negado (só GET)"
+            if any(_qa_is_field_flag(a) for a in argv):
+                return False, f"{binary} api com campo/corpo (escrita) negado"
+            if any("secrets" in a for a in nonflag[1:]):
+                return False, f"{binary} api a endpoint de secrets negado"
+            return True, ""
+        if action:
+            if action not in _QA_FORGE_READ_ACTIONS:
+                return False, f"{binary} '{noun} {action}' não é uma ação de leitura permitida"
+        elif noun not in _QA_FORGE_READ_TOPLEVEL:
+            return False, f"{binary} '{noun}' não permitido (somente-leitura)"
+    return True, ""
+
+
+def _wrap_bash_readonly(bash_tool: object) -> None:
+    """Replace the bash tool with a shell-FREE allow-list read executor.
+
+    The command is parsed with ``shlex`` and executed via
+    ``subprocess.run(argv, shell=False)`` — so a prompt-injected chain /
+    substitution / redirection is never interpreted, and only the binaries +
+    verbs permitted by :func:`_qa_command_allowed` ever run. This REPLACES the
+    original (shell-based) ``execute_sync`` rather than delegating to it."""
+    import subprocess as _subprocess
+
+    from deile.tools.base import ToolResult
+
+    def _readonly_exec(context):
+        cmd = ((getattr(context, "parsed_args", None) or {}).get("command") or "")
+        ok, reason = _qa_command_allowed(cmd)
+        if not ok:
+            return ToolResult.error_result(
+                message=f"monitor-qa: comando recusado — {reason}.",
+            )
+        argv = shlex.split(cmd)
+        try:
+            proc = _subprocess.run(
+                argv, shell=False, capture_output=True, text=True, timeout=60,
+            )
+        except _subprocess.TimeoutExpired:
+            return ToolResult.error_result(message="monitor-qa: comando excedeu 60s.")
+        except (OSError, ValueError) as exc:
+            return ToolResult.error_result(message=f"monitor-qa: falha ao executar: {exc}")
+        out = proc.stdout or ""
+        if proc.returncode != 0:
+            err = (proc.stderr or out or f"exit {proc.returncode}")[:2000]
+            return ToolResult.error_result(message=f"comando retornou {proc.returncode}: {err}")
+        return ToolResult.success_result(data=out[:20000], message=out[:200])
+
+    bash_tool.execute_sync = _readonly_exec  # type: ignore[attr-defined]
+
+
+def _install_monitor_qa_readonly_guard() -> None:
+    """Harden the agent for read-only Q&A: drop mutating tools + guard bash.
+
+    Mirrors :func:`_install_monitor_negative_whitelist` but is far stricter:
+    it removes every tool that can change state (file writes, package install,
+    code/test execution, dispatch, messaging) and wraps ``bash_execute`` with
+    :func:`_wrap_bash_readonly`. Only read tools survive: ``bash_execute``
+    (guarded), ``read_file``, ``list_files``, ``find_in_files``,
+    ``vision_describe_image``.
+    """
+    import asyncio as _asyncio
+
+    import deile.core.agent as agent_mod
+
+    DROP = {
+        "dispatch_deile_task", "dispatch_parallel_subagents",
+        "write_file", "edit_file", "delete_file",
+        "python_execute", "pip_install", "run_tests",
+        "worktree", "pipeline", "pipeline_schedule",
+        "cron_create", "cron_delete",
+        "discord_send_message", "discord_send_dm", "discord_edit_message",
+        "discord_react", "discord_start_thread", "discord_pin_message",
+        "discord_mention_role", "discord_get_user_profile",
+        "whatsapp_send_template",
+    }
+    original_init = agent_mod.DeileAgent.initialize
+
+    async def _harden(self, *args, **kwargs):
+        result = await original_init(self, *args, **kwargs)
+        try:
+            registry = self.tool_registry
+            tools = registry.list_all()
+        except Exception:  # noqa: BLE001 — never block startup over introspection
+            return result
+        dropped = []
+        for tool in tools:
+            if tool.name in DROP and registry.disable_tool(tool.name):
+                dropped.append(tool.name)
+        bash = registry.get("bash_execute")
+        if bash is not None and hasattr(bash, "execute_sync"):
+            _wrap_bash_readonly(bash)
+            guarded = "bash_execute"
+        else:
+            guarded = "none"
+        # Apply the read-only persona reliably: DEILE_DEFAULT_PERSONA is NOT
+        # consumed anywhere in deile/ (the env var is dead); switch_persona is
+        # the real mechanism. Safety does not depend on this — the guard above
+        # enforces read-only regardless of which persona loads — but the
+        # monitor_qa instructions improve answer quality.
+        try:
+            pm = getattr(self, "persona_manager", None)
+            if pm is not None:
+                await pm.switch_persona("monitor_qa")
+        except Exception:  # noqa: BLE001 — guard already enforces read-only
+            pass
+        print(
+            f"wrapper(monitor-qa): read-only guard active — "
+            f"dropped={sorted(dropped)} guarded={guarded} persona=monitor_qa",
+            file=sys.stderr,
+        )
+        return result
+
+    if _asyncio.iscoroutinefunction(original_init):
+        agent_mod.DeileAgent.initialize = _harden
+
+
+def _run_monitor_qa(passthrough: List[str]) -> int:
+    """deile-monitor-qa mode: one-shot READ-ONLY cluster/pipeline/forge Q&A.
+
+    Invoked on demand by ``monitor_command_server`` (``POST /v1/ask``) as a
+    subprocess inside the deile-monitor Pod — the only Pod with kubectl +
+    forge + ``/state`` visibility. Mirrors :func:`_run_monitor` bootstrap but
+    pins the read-only ``monitor_qa`` persona and installs
+    :func:`_install_monitor_qa_readonly_guard`. The one-shot CLI prints the
+    agent's final ``response.content`` to stdout — that is the answer the
+    server returns.
+    """
+    _harden_runtime_dirs()
+    loaded = _load_secret_files(Path("/run/secrets/deile"))
+    if not _has_llm_key(loaded):
+        print(
+            "wrapper(monitor-qa): no *_API_KEY found under /run/secrets/deile — "
+            "cannot bootstrap any LLM provider.",
+            file=sys.stderr,
+        )
+        return 78  # EX_CONFIG
+
+    # Forge token is OPTIONAL for Q&A: pure-k8s questions only need kubectl.
+    # When present, wire git/gh/glab credentials so forge questions work too.
+    has_forge = any(
+        (name in loaded) or bool(os.environ.get(name))
+        for name in ("GITHUB_TOKEN", "GITLAB_TOKEN", "GL_TOKEN")
+    )
+    if has_forge:
+        _setup_forge_credentials()
+    else:
+        print(
+            "wrapper(monitor-qa): no forge token under /run/secrets/deile — "
+            "forge-scoped questions will be limited to kubectl/state.",
+            file=sys.stderr,
+        )
+
+    _patch_deile_bootstrap()
+
+    # kubectl in this Pod only authenticates via an explicit kubeconfig (issue
+    # #504): build one and point KUBECONFIG at it so the allow-listed `kubectl`
+    # reads work in Q&A. Best-effort — forge/state questions still answer without
+    # it. (The Phase-B/tick persona never ran kubectl, so this is net-new here.)
+    try:
+        import tempfile
+
+        import monitor_core  # sibling in /app
+        _kc = os.path.join(tempfile.gettempdir(), "deile-monitor-qa-kubeconfig")
+        if monitor_core.resolve_incluster_kube(monitor_core.run_cmd, _kc):
+            os.environ["KUBECONFIG"] = _kc
+    except Exception as exc:  # noqa: BLE001 — kubectl-less Q&A still works
+        print(f"wrapper(monitor-qa): kubeconfig setup skipped: {exc}", file=sys.stderr)
+
+    try:
+        _install_monitor_qa_readonly_guard()
+    except Exception as exc:  # noqa: BLE001 — refuse to start unsafe
+        print(f"wrapper(monitor-qa): read-only guard install failed: {exc}", file=sys.stderr)
+        return 78
+
+    # Persona is applied by the guard's switch_persona("monitor_qa") after init
+    # (DEILE_DEFAULT_PERSONA is dead code). The one-shot CLI prints the agent's
+    # final response.content to stdout — that is the answer the server returns.
+    sys.argv = ["deile", *passthrough]
+    from deile.cli import main as deile_main
+    return deile_main() or 0
+
+
 def main(argv: List[str]) -> int:
     if len(argv) < 2:
         print(
-            "usage: wrapper.py {deile|bot|worker|claude-worker|pipeline|monitor} <args ...>",
+            "usage: wrapper.py {deile|bot|worker|claude-worker|pipeline|monitor|monitor-qa} <args ...>",
             file=sys.stderr,
         )
         return 64  # EX_USAGE
@@ -1230,9 +1561,12 @@ def main(argv: List[str]) -> int:
         return _run_pipeline(rest)
     if role == "monitor":
         return _run_monitor(rest)
+    if role == "monitor-qa":
+        return _run_monitor_qa(rest)
     print(
         f"wrapper: unknown role {role!r} "
-        "(expected 'deile' | 'bot' | 'worker' | 'claude-worker' | 'pipeline' | 'monitor')",
+        "(expected 'deile' | 'bot' | 'worker' | 'claude-worker' | 'pipeline' | "
+        "'monitor' | 'monitor-qa')",
         file=sys.stderr,
     )
     return 64

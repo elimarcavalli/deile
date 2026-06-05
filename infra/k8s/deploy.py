@@ -68,7 +68,14 @@ K8S_DEPLOYMENTS = ("deilebot", "deile-worker", "deile-shell", "deile-pipeline",
                    # deployment <X>` antes do rollout, então se o claude-worker
                    # não existe (perfil core/full sem claude-login) o restart
                    # é pulado silenciosamente — sem regressão pra quem não usa.
-                   "claude-worker")
+                   "claude-worker",
+                   # spec 2026-06-04 — deile-monitor (Service :8769). É um
+                   # supervisor de réplica ÚNICA (replicas:1 + strategy Recreate
+                   # no manifest 55, RWO PVC /state): start/stop/restart o cobrem
+                   # com segurança (scale→0/1, rollout derruba antes de subir),
+                   # nunca rodando duas instâncias. `k8s scale` só mexe em
+                   # worker/claude-worker, então o monitor jamais escala >1.
+                   "deile-monitor")
 
 # Label aplicada a todos os namespaces gerenciados pelo DEILE para que
 # `k8s list` possa enumerá-los sem ambiguidade.
@@ -144,6 +151,10 @@ class DeploymentProfile:
                 # PVC antes do Deployment que o monta (mesma regra do issue #404).
                 "56-deile-monitor-pvc.yaml",
                 "55-deile-monitor-deployment.yaml",
+                # 57-monitor-bearer-secret.yaml é o stub (stringData vazio) — NÃO
+                # entra aqui: o token real é criado por _apply_secret("monitor-bearer",
+                # ...) ANTES deste loop. Re-aplicar o YAML vazio depois zeraria o
+                # token. Mesmo padrão do 44-pipeline-status-bearer-secret.yaml.
             )
         # full
         return (
@@ -161,6 +172,10 @@ class DeploymentProfile:
             # PVC antes do Deployment que o monta (mesma regra do issue #404).
             "56-deile-monitor-pvc.yaml",
             "55-deile-monitor-deployment.yaml",
+            # 57-monitor-bearer-secret.yaml é stub (stringData vazio) — NÃO entra
+            # aqui: o token real é criado por _apply_secret("monitor-bearer", ...)
+            # antes deste loop. Reaplicar o YAML vazio zeraria o token (mesmo
+            # padrão do 44-pipeline-status-bearer-secret.yaml).
         )
 
 
@@ -596,6 +611,9 @@ def k8s_up(args: dict) -> int:
     bearer = _ensure_persisted_token("DEILE_BOT_AUTH_TOKEN", env)
     worker_token = _ensure_persisted_token("DEILE_WORKER_BEARER_TOKEN", env)
     pipeline_status_token = _ensure_persisted_token("PIPELINE_STATUS_BEARER_TOKEN", env)
+    # monitor_command_server (:8769, spec 2026-06-04) — bearer compartilhado
+    # entre deile-monitor (servidor) e deilebot (cliente do canal de Q&A/ordens).
+    monitor_token = _ensure_persisted_token("DEILE_MONITOR_AUTH_TOKEN", env)
 
     github_token = env.get("GITHUB_TOKEN", "").strip()
     gitlab_token = (
@@ -647,6 +665,7 @@ def k8s_up(args: dict) -> int:
         ("deile-secrets", deile_secret),
         ("worker-bearer", {"AUTH_TOKEN": worker_token}),
         ("pipeline-status-bearer", {"PIPELINE_STATUS_BEARER_TOKEN": pipeline_status_token}),
+        ("monitor-bearer", {"MONITOR_BEARER_TOKEN": monitor_token}),
     ]
     if profile.includes_bot and discord_token:
         bot_secret: Dict[str, str] = {
@@ -842,7 +861,8 @@ def k8s_logs(args: dict) -> int:
     if kubectl is None or not namespace_exists(ns):
         ui.err(f"namespace `{ns}` ausente.")
         return 1
-    alias = {"bot": "deilebot", "worker": "deile-worker", "shell": "deile-shell"}
+    alias = {"bot": "deilebot", "worker": "deile-worker", "shell": "deile-shell",
+             "monitor": "deile-monitor"}
     which_pod = args["extra"][0] if args["extra"] else "all"
     deps = ["deilebot", "deile-worker"] if which_pod == "all" \
         else [alias.get(which_pod, which_pod)]
