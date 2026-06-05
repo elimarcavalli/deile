@@ -65,13 +65,33 @@ REJECTED = [
     "kubectl get --raw /api/v1/namespaces/deile/pods",
     # variable indirection / reassembly (shlex makes argv0 not an allowed binary)
     "k=kubectl; $k delete pod x",
-    # gh/glab writes + api writes
+    # gh/glab writes + api writes (separate-token forms)
     "gh pr merge 5 --squash",
     "gh issue create --title x",
     "glab mr create",
     "gh api -X POST repos/o/r/issues -f title=x",
     "gh api --method DELETE repos/o/r/issues/1",
     "gh api repos/o/r/issues -f body=x",
+    # gh/glab api writes — ATTACHED / EQUALS flag forms (the re-review bypass)
+    "gh api -XDELETE repos/o/r/issues/comments/1",
+    "gh api -XPOST repos/o/r/issues",
+    "gh api --method=DELETE repos/o/r/git/refs/heads/main",
+    "gh api -ftitle=pwn repos/o/r/issues",
+    "gh api -Fbody=x repos/o/r/issues",
+    "gh api --field=title=x repos/o/r/issues",
+    "glab api -XDELETE projects/1/repository/branches/main",
+    # token disclosure
+    "gh auth status --show-token",
+    "gh auth token",
+    "glab auth status -t",
+    "glab config get -h gitlab.com token",
+    "gh config get oauth_token",
+    # kubectl raw-API / impersonation / endpoint override (equals + space forms)
+    "kubectl get --raw=/api/v1/namespaces/deile/secrets/claude-credentials",
+    "kubectl get --raw /api/v1/namespaces/deile/secrets/claude-credentials",
+    "kubectl get pods --as=system:admin",
+    "kubectl get pods --server=https://evil",
+    "kubectl get pods --token=abc",
     # secret-path reads
     "cat /run/secrets/monitor/MONITOR_BEARER_TOKEN",
     "cat /run/secrets/deile/GITHUB_TOKEN",
@@ -94,6 +114,10 @@ ALLOWED = [
     "gh issue view 5",
     "gh api repos/o/r/issues",
     "gh api -X GET repos/o/r",
+    "gh api -XGET repos/o/r/pulls",
+    "gh auth status",
+    "kubectl get pods -o yaml",
+    "kubectl logs deploy/deile-pipeline --tail=50 --since=10m",
     "glab mr list",
     "cat /state/monitor-state.json",
     "tail -20 /state/monitor-audit.log",

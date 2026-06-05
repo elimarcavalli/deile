@@ -1269,6 +1269,28 @@ _QA_DENY_PATH_RE = re.compile(
 )
 
 
+def _qa_api_method(argv: List[str]) -> str:
+    """HTTP method of a gh/glab ``api`` call across ALL flag forms — ``-X GET``,
+    ``-XGET``, ``--method GET``, ``--method=GET``. Default ``GET``. (Token-shape
+    naivety here is what let ``-XDELETE`` slip past the first cut.)"""
+    method = "GET"
+    for i, a in enumerate(argv):
+        if a in ("-X", "--method"):
+            if i + 1 < len(argv):
+                method = argv[i + 1]
+        elif a.startswith("-X") and len(a) > 2:
+            method = a[2:]
+        elif a.startswith("--method="):
+            method = a.split("=", 1)[1]
+    return method
+
+
+def _qa_is_field_flag(token: str) -> bool:
+    """True if *token* is a gh/glab ``api`` field/body flag (a WRITE), any form:
+    ``-f`` / ``-fkey=v`` / ``-F`` / ``--field[=v]`` / ``--raw-field[…]`` / ``--input[…]``."""
+    return token.startswith(("-f", "-F", "--field", "--raw-field", "--input"))
+
+
 def _qa_command_allowed(cmd: str) -> "tuple[bool, str]":
     """Decide whether *cmd* is a permitted READ-ONLY command. Pure + testable.
 
@@ -1291,8 +1313,13 @@ def _qa_command_allowed(cmd: str) -> "tuple[bool, str]":
     if _QA_DENY_PATH_RE.search(cmd):
         return False, "acesso a caminhos de segredo negado"
     if binary == "kubectl":
-        if "--raw" in argv:
-            return False, "kubectl --raw negado"
+        # Reject raw-API + credential/endpoint-override flags in EVERY form
+        # (incl. attached `--raw=PATH`, `--as=...`). `--raw=` was the bypass that
+        # read Secrets past the verb check; `--as` is impersonation; the agent
+        # uses the pod KUBECONFIG so `--server/--token/--kubeconfig` are vectors.
+        if any(a.startswith(("--raw", "--as", "--token", "--server", "--kubeconfig"))
+               for a in argv):
+            return False, "kubectl: flag não permitida (--raw/--as/--token/--server/--kubeconfig)"
         verb = next((a for a in argv[1:] if not a.startswith("-")), "")
         if verb not in _QA_KUBECTL_READ_VERBS:
             return False, f"kubectl '{verb}' não é um verbo de leitura permitido"
@@ -1302,16 +1329,29 @@ def _qa_command_allowed(cmd: str) -> "tuple[bool, str]":
         ):
             return False, "leitura de Secrets negada"
     if binary in ("gh", "glab"):
+        # Token-disclosure is never allowed (gh/glab auth status --show-token,
+        # glab config get token, auth token, ...).
+        if any(a == "--show-token" for a in argv):
+            return False, f"{binary}: --show-token negado"
         nonflag = [a for a in argv[1:] if not a.startswith("-")]
         noun = nonflag[0] if nonflag else ""
-        if noun == "api":
-            if any(f in argv for f in ("-f", "-F", "--field", "--raw-field", "--input")):
-                return False, f"{binary} api com corpo (escrita) negado"
-            for i, a in enumerate(argv):
-                if a in ("-X", "--method") and i + 1 < len(argv) and argv[i + 1].upper() != "GET":
-                    return False, f"{binary} api não-GET negado"
-            return True, ""
         action = nonflag[1] if len(nonflag) > 1 else ""
+        if noun == "config":
+            return False, f"{binary} config negado (pode expor o token)"
+        if noun == "auth":
+            # only `auth status` and never with a token-printing flag.
+            if action != "status" or any(a == "-t" for a in argv):
+                return False, f"{binary} auth '{action or '?'}' negado (somente-leitura)"
+            return True, ""
+        if noun == "api":
+            method = _qa_api_method(argv)
+            if method.upper() not in ("GET", "HEAD"):
+                return False, f"{binary} api método '{method}' negado (só GET)"
+            if any(_qa_is_field_flag(a) for a in argv):
+                return False, f"{binary} api com campo/corpo (escrita) negado"
+            if any("secrets" in a for a in nonflag[1:]):
+                return False, f"{binary} api a endpoint de secrets negado"
+            return True, ""
         if action:
             if action not in _QA_FORGE_READ_ACTIONS:
                 return False, f"{binary} '{noun} {action}' não é uma ação de leitura permitida"
