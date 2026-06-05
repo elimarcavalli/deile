@@ -132,7 +132,11 @@ spec:
           # Mirrors deile/orchestration/pipeline/runner.py (loop + status server
           # co-hosted on one event loop). Tick interval + iteration cap remain
           # overridable at runtime via env without rebuilding the image.
-          command: ["python3", "/app/monitor_command_server.py"]
+          # `args` (NOT `command`) so the image ENTRYPOINT (tini) stays PID 1 and
+          # reaps the kubectl/gh grandchildren the tick spawns — same pattern as
+          # deile-worker/deile-pipeline. Overriding with `command:` would drop
+          # tini → zombies accumulate until fork() fails → the tick would stop.
+          args: ["python3", "/app/monitor_command_server.py"]
           env:
             - { name: HOME,                    value: /home/deile }
             - { name: PYTHONUNBUFFERED,        value: "1" }
@@ -156,6 +160,9 @@ spec:
             # bearer auth comes from /run/secrets/monitor/MONITOR_BEARER_TOKEN.
             - { name: DEILE_MONITOR_PORT,        value: "8769" }
             - { name: DEILE_MONITOR_STATUS_HOST, value: "0.0.0.0" }
+            # A Q&A turn spawns a FULL DEILE agent subprocess; cap to 1 concurrent
+            # so a burst can't OOM the pod alongside the tick + Phase-B subprocesses.
+            - { name: DEILE_MONITOR_QA_MAX_CONCURRENT, value: "1" }
           ports:
             - { name: monitor-api, containerPort: 8769, protocol: TCP }
           readinessProbe:
@@ -163,6 +170,15 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 20
             failureThreshold: 4
+          # /v1/health returns 503 when the deterministic tick goes STALE (the
+          # supervisor wedged) — so a hung tick loop behind a still-serving HTTP
+          # server gets restarted instead of sitting silently. Generous thresholds
+          # tolerate a slow startup / a single late tick.
+          livenessProbe:
+            httpGet: { path: /v1/health, port: monitor-api }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 6
           volumeMounts:
             - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
             # Bearer token for the :8769 control plane (spec 2026-06-04 §3.6).
@@ -178,10 +194,11 @@ spec:
               subPath: pipeline-settings.json
               readOnly: true
           resources:
-            requests: { cpu: "50m",  memory: "128Mi" }
-            # 768Mi: the server now hosts the supervisor loop in-process; the
-            # tick + Phase-B + Q&A still run as isolated subprocesses.
-            limits:   { cpu: "500m", memory: "768Mi" }
+            requests: { cpu: "50m",  memory: "192Mi" }
+            # 1.5Gi: a Q&A turn runs a FULL DEILE agent subprocess (deile-worker
+            # gets 2Gi for one). With QA concurrency capped at 1 (env above) the
+            # peak is tick + Phase-B + 1 Q&A; 768Mi risked OOM under /monitor ask.
+            limits:   { cpu: "1000m", memory: "1536Mi" }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

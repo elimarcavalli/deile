@@ -69,6 +69,47 @@ async def test_status_401_with_bad_bearer(client):
 
 
 # --------------------------------------------------------------------------- #
+# Health reflects TICK FRESHNESS (livenessProbe restarts a wedged supervisor)
+# --------------------------------------------------------------------------- #
+
+
+def test_health_status_grace_when_no_tick_yet(tmp_path):
+    now = time.time()
+    status, body = mcs._health_status(tmp_path, started_at=now, now=now)
+    assert status == 200 and body["status"] == "ok"
+
+
+def test_health_status_fresh_tick_ok(tmp_path):
+    (tmp_path / "monitor-state.json").write_text(
+        json.dumps({"last_tick_epoch": int(time.time())}), encoding="utf-8")
+    status, body = mcs._health_status(tmp_path, started_at=0.0, now=time.time())
+    assert status == 200 and body["status"] == "ok"
+
+
+def test_health_status_stale_tick_is_503(tmp_path):
+    old = int(time.time()) - 100_000  # far beyond 3×interval
+    (tmp_path / "monitor-state.json").write_text(
+        json.dumps({"last_tick_epoch": old}), encoding="utf-8")
+    status, body = mcs._health_status(tmp_path, started_at=0.0, now=time.time())
+    assert status == 503 and body["status"] == "stale"
+
+
+def test_health_status_no_tick_after_grace_is_503(tmp_path):
+    status, body = mcs._health_status(
+        tmp_path, started_at=time.time() - 100_000, now=time.time())
+    assert status == 503 and body["status"] == "no-tick"
+
+
+async def test_health_endpoint_503_on_stale_tick(client):
+    state_dir = client.app["_state_dir_for_test"]
+    (state_dir / "monitor-state.json").write_text(
+        json.dumps({"last_tick_epoch": int(time.time()) - 100_000}), encoding="utf-8")
+    resp = await client.get("/v1/health")
+    assert resp.status == 503
+    assert (await resp.json())["status"] == "stale"
+
+
+# --------------------------------------------------------------------------- #
 # Deterministic status (no LLM)
 # --------------------------------------------------------------------------- #
 

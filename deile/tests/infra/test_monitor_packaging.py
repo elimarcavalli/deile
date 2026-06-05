@@ -77,16 +77,20 @@ def test_dockerignore_excepts_command_server(dockerignore):
     )
 
 
-def test_manifest_command_is_the_command_server(manifest):
-    """The pod's main process is now the command server (it schedules the tick
-    subprocess internally). Asserted against the parsed container `command`, not
-    a substring — so a stray mention in a comment can't make this pass."""
+def test_manifest_runs_command_server_via_args_preserving_tini(manifest):
+    """The pod's main process is the command server, launched via `args` (NOT
+    `command`) so the image ENTRYPOINT (tini) stays PID 1 and reaps the
+    kubectl/gh grandchildren the tick spawns — same pattern as worker/pipeline.
+    Overriding `command:` would drop tini → zombie accumulation → fork failure.
+    Asserted against the parsed container, not a substring."""
     container = _monitor_container(manifest)
-    assert container.get("command") == ["python3", "/app/monitor_command_server.py"], (
-        "deile-monitor must run monitor_command_server.py as its main process"
+    assert container.get("args") == ["python3", "/app/monitor_command_server.py"], (
+        "deile-monitor must run monitor_command_server.py via `args` (tini-wrapped)"
     )
-    # The legacy bash heartbeat must be gone.
-    assert container.get("args") in (None, []), "the bash while-loop args must be removed"
+    # `command:` MUST be absent so the image's tini ENTRYPOINT is not overridden.
+    assert container.get("command") in (None, []), (
+        "must NOT set `command:` (it would drop the tini ENTRYPOINT / zombie reaper)"
+    )
 
 
 def test_server_runs_flattened_monitor_tick(server_src):
@@ -103,12 +107,50 @@ def test_server_runs_phase_b_conditionally(server_src):
     assert "/app/wrapper.py" in server_src and '"monitor"' in server_src
 
 
+def _monitor_env(manifest: str) -> dict:
+    """Parse the deile-monitor container env list into a {name: value} dict."""
+    env = {}
+    for item in _monitor_container(manifest).get("env", []):
+        if isinstance(item, dict) and "name" in item:
+            env[item["name"]] = item.get("value")
+    return env
+
+
 def test_manifest_tick_interval_is_1800(manifest):
-    assert 'DEILE_MONITOR_TICK_INTERVAL_S, value: "1800"' in manifest
+    assert _monitor_env(manifest).get("DEILE_MONITOR_TICK_INTERVAL_S") == "1800"
 
 
 def test_manifest_caps_tool_iterations(manifest):
-    assert 'DEILE_MAX_TOOL_ITERATIONS, value: "50"' in manifest
+    assert _monitor_env(manifest).get("DEILE_MAX_TOOL_ITERATIONS") == "50"
+
+
+def test_manifest_caps_qa_concurrency(manifest):
+    # A Q&A turn spawns a full DEILE agent; concurrency must be pinned to 1 so a
+    # burst can't OOM the pod alongside the tick + Phase-B subprocesses.
+    assert _monitor_env(manifest).get("DEILE_MONITOR_QA_MAX_CONCURRENT") == "1"
+
+
+def test_manifest_has_liveness_reflecting_tick(manifest):
+    # A wedged tick behind a healthy HTTP server must be restartable.
+    container = _monitor_container(manifest)
+    live = container.get("livenessProbe")
+    assert live and live["httpGet"]["path"] == "/v1/health", (
+        "deile-monitor needs a livenessProbe on /v1/health (returns 503 on stale tick)"
+    )
+
+
+def test_manifest_bot_mounts_monitor_bearer():
+    """The BOT pod must mount monitor-bearer or it can't authenticate to :8769."""
+    import yaml as _yaml
+    bot = (_REPO / "infra" / "k8s" / "manifests" / "20-bot-deployment.yaml").read_text(encoding="utf-8")
+    docs = [d for d in _yaml.safe_load_all(bot) if d and d.get("kind") == "Deployment"]
+    container = docs[0]["spec"]["template"]["spec"]["containers"][0]
+    mounts = {m["name"]: m["mountPath"] for m in container.get("volumeMounts", [])}
+    assert mounts.get("monitor-bearer") == "/run/secrets/bot/monitor", (
+        "bot must mount monitor-bearer at /run/secrets/bot/monitor (else MONITOR_AUTH_MISSING)"
+    )
+    vols = {v["name"] for v in docs[0]["spec"]["template"]["spec"].get("volumes", [])}
+    assert "monitor-bearer" in vols, "bot must declare the monitor-bearer volume"
 
 
 def test_manifest_grants_secret_rbac_for_renew(manifest):

@@ -278,8 +278,31 @@ def _evict_old_jobs(jobs: Dict[str, Dict[str, Any]]) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _health_status(state_dir: Path, started_at: float, now: float) -> Tuple[int, Dict[str, Any]]:
+    """Compute (http_status, body) for /v1/health based on TICK FRESHNESS.
+
+    The deterministic tick is the supervisor's core job; the HTTP server staying
+    up is not enough. Once the tick has run at least once, a tick older than
+    ``3×interval`` means the loop wedged → 503 (the livenessProbe restarts the
+    pod). Before the first tick, a generous startup grace returns 200."""
+    interval = int(os.environ.get("DEILE_MONITOR_TICK_INTERVAL_S", "1800"))
+    stale_after = max(3 * interval, 600)
+    grace = max(2 * interval, 600)
+    last = int(_load_monitor_state(state_dir).get("last_tick_epoch", 0) or 0)
+    if last:
+        age = int(now - last)
+        if age <= stale_after:
+            return 200, {"status": "ok", "last_tick_age_s": age}
+        return 503, {"status": "stale", "last_tick_age_s": age, "stale_after_s": stale_after}
+    if now - started_at <= grace:
+        return 200, {"status": "ok", "tick": "starting"}
+    return 503, {"status": "no-tick", "uptime_s": int(now - started_at)}
+
+
 async def health_handler(request: web.Request) -> web.Response:
-    return web.json_response({"status": "ok"})
+    status, body = _health_status(
+        request.app["state_dir"], request.app.get("started_at", 0.0), time.time())
+    return web.json_response(body, status=status)
 
 
 async def monitor_status_handler(request: web.Request) -> web.Response:
@@ -347,6 +370,7 @@ def build_app(
     app = web.Application(middlewares=[_bearer_auth_mw], client_max_size=64 * 1024)
     app["auth_token"] = auth_token or _read_auth_token()
     app["state_dir"] = state_dir or Path(os.environ.get("DEILE_MONITOR_STATE_DIR", "/state"))
+    app["started_at"] = time.time()
     app["ask_jobs"] = ask_jobs if ask_jobs is not None else {}
     app["qa_semaphore"] = asyncio.Semaphore(_QA_MAX_CONCURRENT)
     app["qa_runner"] = qa_runner or _default_qa_runner
@@ -384,16 +408,24 @@ async def _run_passthrough_subprocess(args: List[str], timeout: int) -> int:
 
 
 async def _interruptible_sleep(state_dir: Path, interval: int) -> None:
-    """Sleep ``interval`` seconds, returning early if ``/state/force-tick`` flag
-    appears (and consuming it)."""
+    """Sleep ``interval`` seconds, returning early if the ``/state/force-tick``
+    flag appears AND can be consumed.
+
+    If the flag exists but ``unlink`` fails (e.g. ``/state`` went read-only), do
+    NOT return early — that would tight-loop ticks back-to-back forever. Instead
+    keep sleeping the normal cadence (force-tick degrades to "ignored" rather
+    than becoming a DoS)."""
     flag = state_dir / "force-tick"
     slept = 0
     while slept < interval:
         if flag.exists():
             try:
                 flag.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning("force-tick flag present but unconsumable: %s", exc)
+                await asyncio.sleep(min(_FORCE_TICK_POLL_S, interval - slept))
+                slept += _FORCE_TICK_POLL_S
+                continue
             logger.info("force-tick flag observed — running tick now")
             return
         await asyncio.sleep(min(_FORCE_TICK_POLL_S, interval - slept))
@@ -414,11 +446,15 @@ async def _tick_loop(state_dir: Path, interval: int) -> None:
                     judgment.unlink()
                 except OSError:
                     pass
+            # Sleep is INSIDE the try so even a sleep-path error can't kill the
+            # loop (the supervisor's core job must survive any single failure).
+            await _interruptible_sleep(state_dir, interval)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 — heartbeat must survive any tick failure
+        except Exception as exc:  # noqa: BLE001 — heartbeat must survive any failure
             logger.warning("tick iteration failed: %s", exc)
-        await _interruptible_sleep(state_dir, interval)
+            # Fallback sleep so a persistently-throwing iteration can't tight-loop.
+            await asyncio.sleep(min(interval, 60))
 
 
 async def _start_web_server(state_dir: Path) -> Optional[Any]:
