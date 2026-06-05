@@ -54,6 +54,9 @@ from deile.orchestration.pipeline.pipeline_logger import (
     log_decomposition_fanout,
     log_refinement_critique,
     log_refinement_refine,
+    log_routing_mention,
+    log_routing_pr_unified,
+    log_routing_dropped,
 )
 
 # Mention triggers that describe a STICKY state (they re-appear on every poll
@@ -524,6 +527,9 @@ async def _collect_mention_triggers(
         # trigger e dispararia trabalho redundante na próxima volta do loop.
         # A identidade do agente vem do .user.login do comentário, não do texto.
         if ref.author == gh_login:
+            _kind = "pr" if (ref.kind == "pr_review" or ref.is_pr_comment) else "issue"
+            _num = int(ref.issue_url.rstrip("/").rsplit("/", 1)[-1])
+            log_routing_dropped(target_kind=_kind, target=_num, reason="self_mention")
             continue
         if handle in ref.body.lower():
             triggers.append(
@@ -650,6 +656,7 @@ async def _dispatch_mention_group(
             # ``gh issue view --comments``), so defer — do NOT spawn a parallel
             # one-shot.
             logger.info("mention #%d ignorada p/ roteamento: já está no gate ativo (%s)", number, active)
+            log_routing_dropped(target_kind=kind, target=number, reason="deferred_active_gate")
             return
         if active == WORKFLOW_BLOCKED:
             # Blocked is human-gated → DEFER silently (drop). Do NOT one-shot (a
@@ -658,6 +665,7 @@ async def _dispatch_mention_group(
             # cada tick → status + one-shot → novo claude worker (incidente #446).
             # O humano vê o próprio comentário; remover ~workflow:bloqueada retoma.
             logger.info("mention #%d ignorada p/ roteamento: %s (human-gated, sem one-shot nem status)", number, WORKFLOW_BLOCKED)
+            log_routing_dropped(target_kind=kind, target=number, reason="issue_human_gated")
             return
         # Fall through to mode="comment" (one-shot) for: a TERMINAL state
         # (em_pr / decomposta), a CLOSED issue in any state, or no ~workflow:*
@@ -695,6 +703,7 @@ async def _dispatch_mention_group(
                     "pr_review (em_andamento/batch) — evita dispatch duplo",
                     dedup_key,
                 )
+                log_routing_dropped(target_kind=kind, target=number, reason="pr_in_review")
                 return
             if WORKFLOW_BLOCKED in pr_labels:
                 # Blocked PR is human-gated → DEFER silently (drop). pr_review já
@@ -703,8 +712,15 @@ async def _dispatch_mention_group(
                 # bloqueou). NÃO postar status — postar por tick loopa (a menção
                 # re-dispara a cada tick). O humano remove a label para retomar.
                 logger.info("mention %s ignorada p/ roteamento: PR em %s (human-gated, sem dispatch nem status)", dedup_key, WORKFLOW_BLOCKED)
+                log_routing_dropped(target_kind=kind, target=number, reason="pr_human_gated")
                 return
         mode = "pr_unified"
+        role = (
+            "requested_reviewer" if "reviewer" in has
+            else "assignee" if "assignee" in has
+            else "author"
+        )
+        log_routing_pr_unified(target=number, role=role, mode="pr_unified")
     else:
         mode = "comment"  # comment mention on an issue
 
@@ -717,6 +733,7 @@ async def _dispatch_mention_group(
                 "mention %s: attempt ceiling (%d) reached — marking done",
                 dedup_key, st.attempt,
             )
+            log_routing_dropped(target_kind=kind, target=number, reason="attempt_ceiling")
             await _comment_mention_gave_up(monitor, kind, number, st.attempt)
             await _mark_mention_done(monitor, kind, number)
             monitor._resume_tracker.clear(number)
@@ -724,6 +741,8 @@ async def _dispatch_mention_group(
         resume = st.attempt > 0
         monitor._resume_tracker.record_dispatch(number, mono)
 
+    if mode == "comment" and kind == "issue":
+        log_routing_mention(target_kind="issue", target=number, action="comment")
     try:
         outcome = await monitor.implementer.mention(
             monitor, primary,
@@ -812,6 +831,8 @@ async def _route_issue_to_pipeline(
     issue = next((t.issue for t in group if t.issue is not None), None)
     labels = set(issue.labels) if issue is not None else set()
     already_in_pipeline = any(lb.startswith("~workflow:") for lb in labels)
+    action = "already_in_pipeline" if already_in_pipeline else "inject_workflow_nova"
+    log_routing_mention(target_kind="issue", target=number, action=action)
     try:
         if not already_in_pipeline:
             await monitor.forge.add_labels("issue", number, [WORKFLOW_NEW])
