@@ -88,6 +88,7 @@ def _make_monitor_for_reaper(
     *,
     reaper_stale_seconds=2700,
     reaper_max_attempts=3,
+    reaper_arch_hard_seconds=7200,
 ):
     cfg = PipelineConfig(
         repo="owner/repo",
@@ -96,6 +97,7 @@ def _make_monitor_for_reaper(
         use_pid_lock=False,
         reaper_stale_seconds=reaper_stale_seconds,
         reaper_max_attempts=reaper_max_attempts,
+        reaper_arch_hard_seconds=reaper_arch_hard_seconds,
     )
     github = MagicMock()
     github.list_open_prs = AsyncMock(return_value=[])
@@ -357,21 +359,21 @@ async def test_reaper_skips_fresh_em_revisao():
 
 @pytest.mark.asyncio
 async def test_reaper_does_not_touch_em_arquitetura():
-    """REGRESSÃO-GUARD: issue em ~workflow:em_arquitetura (refine state de
-    descanso) com idade > threshold NÃO é tocada pelo reaper.
+    """REGRESSÃO-GUARD (reinterpretado — issue #427): issue em
+    ~workflow:em_arquitetura em descanso (sem dispatch em voo e dentro do
+    hard-TTL de 2h) NÃO é tocada pelo reaper.
 
-    Em_arquitetura é um estado de descanso entre passes de refine — a issue
-    aguarda o próximo tick de refine_one_issue — e NÃO é um lock transitório.
-    Reapeá-la seria regressão: a issue perderia o contexto de refinamento.
+    O ramo sem-ledger (#427) só dispara após arch_hard_seconds (2h default).
+    list_issues_with_label retorna [] para todos os estados, logo nenhuma
+    issue é processada, o que é equivalente a nenhuma issue de descanso real
+    atingindo o TTL curto (o TTL do descanso é 2h >> reaper_stale_seconds=60).
     """
     from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
     _make_issue(903, labels=[WORKFLOW_ARCHITECTURE, own, "refinar"])
-    # list_issues_with_label retorna a issue para WORKFLOW_REVIEWING somente
-    # se erroneamente invocado para esse estado — não deveria.
-    # Para WORKFLOW_IMPLEMENTING retorna [] (nenhuma stuck implement).
-    # Para WORKFLOW_REVIEWING retorna [] (em_arquitetura não está nesse bucket).
+    # Retorna [] para todos os estados — simula que não há issues zumbi
+    # na fila (o reaper não toca em issues inexistentes na lista).
     github.list_issues_with_label = AsyncMock(return_value=[])
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 9999)
 
@@ -383,8 +385,9 @@ async def test_reaper_does_not_touch_em_arquitetura():
 
 @pytest.mark.asyncio
 async def test_reaper_does_not_touch_em_refinamento():
-    """REGRESSÃO-GUARD: issue em ~workflow:em_refinamento (refine state de
-    descanso para intents) com idade > threshold NÃO é tocada pelo reaper."""
+    """REGRESSÃO-GUARD (reinterpretado — issue #427): issue em
+    ~workflow:em_refinamento em descanso com list_issues_with_label retornando
+    [] não é tocada pelo reaper (nenhuma issue na lista = nada a reapear)."""
     from deile.orchestration.pipeline.labels import WORKFLOW_REFINING
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
@@ -531,3 +534,243 @@ async def test_reaper_block_disabled_notifier_is_noop():
     added = list(github.add_labels.await_args_list[0].args[2])
     assert "~workflow:bloqueada" in added
     github.comment_on_pr.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Issue #427 — ramo sem-ledger: em_arquitetura / em_refinamento zumbi
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reaper_arch_no_refine_labels_routes_to_nova():
+    """AC1 + AC2: issue em ~workflow:em_arquitetura sem ledger entry (ledger
+    ausente) e sem labels ~refine:N, após arch_hard_seconds, volta para
+    ~workflow:nova."""
+    from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
+                                                     WORKFLOW_NEW)
+    # TTL curto para o teste; arch_hard = 100s.
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=2700,
+        reaper_arch_hard_seconds=100,
+    )
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(2001, labels=[WORKFLOW_ARCHITECTURE, own])
+    # Nenhum ledger no implementer.
+    monitor.implementer._ledger = None
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+    )
+    # Aplicada há 200s > arch_hard_seconds=100.
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    await reap_orphan_claims(monitor)
+
+    add_calls = github.add_labels.await_args_list
+    assert len(add_calls) >= 1
+    added = list(add_calls[0].args[2])
+    assert WORKFLOW_NEW in added
+    assert "~attempt:1" in added
+
+
+@pytest.mark.asyncio
+async def test_reaper_arch_with_refine_labels_routes_to_revisada():
+    """AC2: issue em ~workflow:em_arquitetura com ~refine:2 (já passou por ao
+    menos um pass de refino), após arch_hard_seconds, volta para
+    ~workflow:revisada."""
+    from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
+                                                     WORKFLOW_REVIEWED)
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=2700,
+        reaper_arch_hard_seconds=100,
+    )
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(2002, labels=[WORKFLOW_ARCHITECTURE, own, "~refine:2"])
+    monitor.implementer._ledger = None
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+    )
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    await reap_orphan_claims(monitor)
+
+    add_calls = github.add_labels.await_args_list
+    assert len(add_calls) >= 1
+    added = list(add_calls[0].args[2])
+    assert WORKFLOW_REVIEWED in added
+    assert "~attempt:1" in added
+
+
+@pytest.mark.asyncio
+async def test_reaper_refining_no_ledger_routes_to_nova():
+    """AC1 + AC2: issue em ~workflow:em_refinamento sem ledger entry, após
+    arch_hard_seconds, sempre volta para ~workflow:nova (roteamento fixo para
+    intents — heurística de refino não se aplica ao estado em_refinamento)."""
+    from deile.orchestration.pipeline.labels import (WORKFLOW_NEW,
+                                                     WORKFLOW_REFINING)
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=2700,
+        reaper_arch_hard_seconds=100,
+    )
+    own = monitor.identity.ownership_label()
+    # Mesmo com ~refine:3, em_refinamento sempre vai para nova.
+    issue = _make_issue(2003, labels=[WORKFLOW_REFINING, own, "~refine:3"])
+    monitor.implementer._ledger = None
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_REFINING else [],
+    )
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    await reap_orphan_claims(monitor)
+
+    add_calls = github.add_labels.await_args_list
+    assert len(add_calls) >= 1
+    added = list(add_calls[0].args[2])
+    assert WORKFLOW_NEW in added
+
+
+@pytest.mark.asyncio
+async def test_reaper_arquitetura_no_ledger_fires_when_ledger_is_none():
+    """AC1: ramo sem-ledger FORA do guard `if ledger is not None` — cobre o
+    caso em que ledger=None (modo sem DispatchLedger disponível)."""
+    from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
+                                                     WORKFLOW_NEW)
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=2700,
+        reaper_arch_hard_seconds=100,
+    )
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(2004, labels=[WORKFLOW_ARCHITECTURE, own])
+    # Garante ledger=None no implementer (explicitamente).
+    if hasattr(monitor.implementer, "_ledger"):
+        monitor.implementer._ledger = None
+    else:
+        monitor.implementer._ledger = None
+
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+    )
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    await reap_orphan_claims(monitor)
+
+    # Ramo sem-ledger DEVE ter disparado.
+    add_calls = github.add_labels.await_args_list
+    assert len(add_calls) >= 1
+    added = list(add_calls[0].args[2])
+    assert WORKFLOW_NEW in added
+
+
+@pytest.mark.asyncio
+async def test_reaper_arch_within_hard_ttl_not_reaped():
+    """AC5: issue em ~workflow:em_arquitetura em descanso (sem task_id no
+    ledger) com idade < arch_hard_seconds NÃO é tocada — invariante de
+    proteção do descanso entre passes."""
+    from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=2700,
+        reaper_arch_hard_seconds=7200,  # 2h
+    )
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(2005, labels=[WORKFLOW_ARCHITECTURE, own])
+    monitor.implementer._ledger = None
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+    )
+    # Aplicada há 60s — muito abaixo dos 7200s de hard-TTL.
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 60)
+
+    await reap_orphan_claims(monitor)
+
+    github.remove_labels.assert_not_awaited()
+    github.add_labels.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reaper_arch_with_task_id_in_ledger_not_touched_by_no_ledger_branch():
+    """AC1: issue em ~workflow:em_arquitetura COM task_id no ledger (dispatch
+    em voo sadio) NÃO é tratada pelo ramo sem-ledger — é do ramo com-ledger."""
+    from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=2700,
+        reaper_arch_hard_seconds=100,  # TTL curto — dispararia se fosse zumbi
+    )
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(2006, labels=[WORKFLOW_ARCHITECTURE, own])
+
+    # Ledger com task_id — indica dispatch em voo sadio.
+    from unittest.mock import MagicMock
+    mock_ledger = MagicMock()
+    mock_ledger.get.return_value = {"task_id": "task-abc-123"}
+    mock_ledger.clear = MagicMock()
+    monitor.implementer._ledger = mock_ledger
+
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+    )
+    # Aplicada há 200s > arch_hard_seconds=100 — seria reaped se fosse zumbi.
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    await reap_orphan_claims(monitor)
+
+    # O ramo sem-ledger NÃO deve ter disparado (task_id presente no ledger).
+    # O ramo com-ledger SIM tentaria reapear (threshold=2700 > 200 → não ativa).
+    # Portanto nada é reapado neste tick.
+    github.remove_labels.assert_not_awaited()
+    github.add_labels.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reaper_arch_branch_runs_when_pr_ttl_zero():
+    """AC8: quando reaper_stale_seconds=0 (PR-TTL desligado), o ramo
+    sem-ledger de em_arquitetura ainda deve disparar se arch_hard_seconds > 0.
+    Garante que desligar o PR-TTL não silencia o ramo de arquitetura."""
+    from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
+                                                     WORKFLOW_NEW)
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=0,     # PR-TTL desligado
+        reaper_arch_hard_seconds=100,
+    )
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(2007, labels=[WORKFLOW_ARCHITECTURE, own])
+    monitor.implementer._ledger = None
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+    )
+    # list_open_prs retorna lista vazia (PR-TTL=0 não deve nem ser chamado,
+    # mas garantimos que não há PRs para reapear de qualquer modo).
+    github.list_open_prs = AsyncMock(return_value=[])
+    # Aplicada há 200s > arch_hard_seconds=100.
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
+
+    await reap_orphan_claims(monitor)
+
+    # Ramo sem-ledger de arquitetura DEVE ter disparado mesmo com PR-TTL=0.
+    add_calls = github.add_labels.await_args_list
+    assert len(add_calls) >= 1
+    added = list(add_calls[0].args[2])
+    assert WORKFLOW_NEW in added
+
+
+@pytest.mark.asyncio
+async def test_reaper_arch_hard_zero_disables_no_ledger_branch():
+    """AC8 + AC3: quando reaper_arch_hard_seconds=0, o ramo sem-ledger é
+    desligado — issues em em_arquitetura zumbi NÃO são reaped."""
+    from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
+    monitor, github = _make_monitor_for_reaper(
+        reaper_stale_seconds=2700,
+        reaper_arch_hard_seconds=0,  # ramo sem-ledger desligado
+    )
+    own = monitor.identity.ownership_label()
+    issue = _make_issue(2008, labels=[WORKFLOW_ARCHITECTURE, own])
+    monitor.implementer._ledger = None
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+    )
+    github.label_applied_at = AsyncMock(return_value=int(time.time()) - 99999)
+
+    await reap_orphan_claims(monitor)
+
+    # Com arch_hard_seconds=0 o ramo está desligado — nada reaped.
+    # (O ramo com-ledger também não dispara pois ledger=None e threshold > 200s.)
+    github.remove_labels.assert_not_awaited()
+    github.add_labels.assert_not_awaited()

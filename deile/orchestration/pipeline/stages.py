@@ -3561,103 +3561,116 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
     NOTA: ``em_arquitetura`` e ``em_refinamento`` são AMBÍGUOS — podem ser
     estado de DESCANSO entre passes (a issue aguarda o próximo tick, SEM
     dispatch em voo) OU lock de um refino fire-and-forget travado (issue #373,
-    COM ledger entry + task_id). O reaper só os reapa quando há **ledger
-    entry com task_id** (dispatch em voo travado), distinguindo do descanso.
+    COM ledger entry + task_id). O reaper cobre dois casos:
+    1. Com ledger entry com task_id: ramo com-ledger (TTL = reaper_stale_seconds).
+    2. Sem ledger entry / ledger ausente: ramo sem-ledger (TTL =
+       reaper_arch_hard_seconds, 2h default, muito maior que poll_interval 60s)
+       — um item sadio em descanso é re-selecionado em ~1-2 ticks e grava
+       ledger entry, permanecendo abaixo do hard-ceiling. Permanecer 2h sem
+       ledger = zumbi real.
     ``em_revisao`` (crítica fire-and-forget) é sempre lock transitório.
+
+    AC8 (#427): cada ramo auto-pula quando seu TTL é <= 0 (sem early-return
+    global) para que desligar um TTL não silencia os demais ramos.
     """
     threshold = monitor.config.reaper_stale_seconds
     max_attempts = monitor.config.reaper_max_attempts
-    if threshold <= 0:
-        return
+    arch_hard_threshold = monitor.config.reaper_arch_hard_seconds
     now_ts = int(time.time())
     own_label = monitor.identity.ownership_label()
 
     # PRs com ~review:em_andamento (stuck no review).
-    try:
-        prs = await monitor.forge.list_open_prs()
-    except GhCommandError as exc:
-        await _record_forge_error(monitor, "reaper: list_open_prs failed", exc)
-        return
-    for pr in sort_by_priority(prs):
-        if REVIEW_IN_PROGRESS not in pr.labels:
-            continue
-        # Só re-claim PRs deste monitor (ownership).
-        if own_label not in pr.labels:
-            continue
-        applied_at = await monitor.forge.label_applied_at(
-            "pr", pr.number, REVIEW_IN_PROGRESS,
-        )
-        if applied_at is None:
-            continue  # forge sem suporte ou label sem timestamp
-        age = now_ts - applied_at
-        if age < threshold:
-            continue
-        await _reap_one(
-            monitor, kind="pr", number=pr.number, labels=pr.labels,
-            from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_PENDING,
-            max_attempts=max_attempts, age_seconds=age,
-            description=f"PR #{pr.number} review stuck há {age // 60}min",
-            url=pr.url,
-        )
+    # AC8 (#427): pula o ramo quando seu TTL específico é 0 (não early-return global).
+    if threshold > 0:
+        try:
+            prs = await monitor.forge.list_open_prs()
+        except GhCommandError as exc:
+            await _record_forge_error(monitor, "reaper: list_open_prs failed", exc)
+            return
+        for pr in sort_by_priority(prs):
+            if REVIEW_IN_PROGRESS not in pr.labels:
+                continue
+            # Só re-claim PRs deste monitor (ownership).
+            if own_label not in pr.labels:
+                continue
+            applied_at = await monitor.forge.label_applied_at(
+                "pr", pr.number, REVIEW_IN_PROGRESS,
+            )
+            if applied_at is None:
+                continue  # forge sem suporte ou label sem timestamp
+            age = now_ts - applied_at
+            if age < threshold:
+                continue
+            await _reap_one(
+                monitor, kind="pr", number=pr.number, labels=pr.labels,
+                from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_PENDING,
+                max_attempts=max_attempts, age_seconds=age,
+                description=f"PR #{pr.number} review stuck há {age // 60}min",
+                url=pr.url,
+            )
 
     # Issues com ~workflow:em_implementacao (stuck no implement).
-    try:
-        impl_issues = await monitor.forge.list_issues_with_label(
-            WORKFLOW_IMPLEMENTING,
-        )
-    except GhCommandError as exc:
-        await _record_forge_error(
-            monitor, "reaper: list_issues_with_label failed", exc,
-        )
-        return
-    for issue in sort_by_priority(impl_issues):
-        if own_label not in issue.labels:
-            continue
-        applied_at = await monitor.forge.label_applied_at(
-            "issue", issue.number, WORKFLOW_IMPLEMENTING,
-        )
-        if applied_at is None:
-            continue
-        age = now_ts - applied_at
-        if age < threshold:
-            continue
-        await _reap_one(
-            monitor, kind="issue", number=issue.number, labels=issue.labels,
-            from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_REVIEWED,
-            max_attempts=max_attempts, age_seconds=age,
-            description=f"issue #{issue.number} implement stuck há {age // 60}min",
-            url=issue.url,
-        )
+    # AC8 (#427): mesma política — pula ramo quando threshold <= 0.
+    if threshold > 0:
+        try:
+            impl_issues = await monitor.forge.list_issues_with_label(
+                WORKFLOW_IMPLEMENTING,
+            )
+        except GhCommandError as exc:
+            await _record_forge_error(
+                monitor, "reaper: list_issues_with_label failed", exc,
+            )
+            return
+        for issue in sort_by_priority(impl_issues):
+            if own_label not in issue.labels:
+                continue
+            applied_at = await monitor.forge.label_applied_at(
+                "issue", issue.number, WORKFLOW_IMPLEMENTING,
+            )
+            if applied_at is None:
+                continue
+            age = now_ts - applied_at
+            if age < threshold:
+                continue
+            await _reap_one(
+                monitor, kind="issue", number=issue.number, labels=issue.labels,
+                from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_REVIEWED,
+                max_attempts=max_attempts, age_seconds=age,
+                description=f"issue #{issue.number} implement stuck há {age // 60}min",
+                url=issue.url,
+            )
 
     # Issues com ~workflow:em_revisao (crítica de escopo interrompida por restart
     # de pod — lock transitório que nenhum stage reseleciona).
-    try:
-        reviewing_issues = await monitor.forge.list_issues_with_label(
-            WORKFLOW_REVIEWING,
-        )
-    except GhCommandError as exc:
-        await _record_forge_error(
-            monitor, "reaper: list_issues_with_label(em_revisao) failed", exc,
-        )
-        return
-    for issue in sort_by_priority(reviewing_issues):
-        if own_label not in issue.labels:
-            continue
-        applied_at = await monitor.forge.label_applied_at(
-            "issue", issue.number, WORKFLOW_REVIEWING,
-        )
-        if applied_at is None:
-            continue
-        age = now_ts - applied_at
-        if age < threshold:
-            continue
-        await _reap_one(
-            monitor, kind="issue", number=issue.number, labels=issue.labels,
-            from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_NEW,
-            max_attempts=max_attempts, age_seconds=age,
-            description=f"issue #{issue.number} em_revisao stuck há {age // 60}min",
-            url=issue.url,
-        )
+    # AC8 (#427): mesma política — pula ramo quando threshold <= 0.
+    if threshold > 0:
+        try:
+            reviewing_issues = await monitor.forge.list_issues_with_label(
+                WORKFLOW_REVIEWING,
+            )
+        except GhCommandError as exc:
+            await _record_forge_error(
+                monitor, "reaper: list_issues_with_label(em_revisao) failed", exc,
+            )
+            return
+        for issue in sort_by_priority(reviewing_issues):
+            if own_label not in issue.labels:
+                continue
+            applied_at = await monitor.forge.label_applied_at(
+                "issue", issue.number, WORKFLOW_REVIEWING,
+            )
+            if applied_at is None:
+                continue
+            age = now_ts - applied_at
+            if age < threshold:
+                continue
+            await _reap_one(
+                monitor, kind="issue", number=issue.number, labels=issue.labels,
+                from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_NEW,
+                max_attempts=max_attempts, age_seconds=age,
+                description=f"issue #{issue.number} em_revisao stuck há {age // 60}min",
+                url=issue.url,
+            )
 
     # Issues com ~workflow:em_refinamento / ~workflow:em_arquitetura travadas por
     # um refino fire-and-forget (issue #373). AMBÍGUOS: só reapa quando há ledger
@@ -3698,6 +3711,74 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
                 # Lock liberado → o dispatch em voo morreu; limpa o ledger pra
                 # não consultar resume-info de uma task abandonada.
                 ledger.clear(DispatchLedger.key_for_issue(issue.number))
+
+    # ----------------------------------------------------------------------- #
+    # Ramo sem-ledger: em_arquitetura / em_refinamento SEM task_id no ledger  #
+    # (AC1 + AC2 — issue #427)                                                #
+    # ----------------------------------------------------------------------- #
+    # Cobre dois sub-casos:
+    #   A) ledger is None  — modo sem worker (sem DispatchLedger disponível).
+    #   B) ledger is not None mas a entry está ausente ou sem task_id —
+    #      dispatch morreu antes de gravar no ledger (TOCTOU, restart, etc.).
+    #
+    # Um item sadio em "descanso entre passes" é re-selecionado em ~1-2
+    # poll_interval (60s) e a re-seleção grava ledger entry com task_id
+    # (stages.py:1270-1278), promovendo-o ao ramo com-ledger. Permanecer
+    # arch_hard_threshold (default 2h) SEM task_id ⇒ zumbi real.
+    #
+    # AC8 (#427): pula ramo inteiro quando arch_hard_threshold <= 0.
+    if arch_hard_threshold > 0:
+        for refine_state in (WORKFLOW_REFINING, WORKFLOW_ARCHITECTURE):
+            try:
+                refine_issues_no_ledger = await monitor.forge.list_issues_with_label(
+                    refine_state,
+                )
+            except GhCommandError as exc:
+                await _record_forge_error(
+                    monitor,
+                    f"reaper(no-ledger): list_issues_with_label({refine_state}) failed",
+                    exc,
+                )
+                continue
+            for issue in sort_by_priority(refine_issues_no_ledger):
+                if own_label not in issue.labels:
+                    continue
+                # Pula se o ramo com-ledger já tratou esta issue neste tick
+                # (ledger entry com task_id ⇒ o ramo com-ledger acima é o dono).
+                if ledger is not None:
+                    entry = ledger.get(DispatchLedger.key_for_issue(issue.number))
+                    if entry and entry.get("task_id"):
+                        continue  # item sadio com dispatch em voo — não é zumbi
+                applied_at = await monitor.forge.label_applied_at(
+                    "issue", issue.number, refine_state,
+                )
+                if applied_at is None:
+                    continue
+                age = now_ts - applied_at
+                if age < arch_hard_threshold:
+                    continue
+                # AC2: heurística de roteamento. Se a issue já passou por ao
+                # menos um pass de refino (current_refine_attempt > 0), volta
+                # para ~workflow:revisada (o contexto de refino está gravado nos
+                # labels ~refine:N — o próximo tick retoma do ponto). Caso
+                # contrário volta para ~workflow:nova (primeira tentativa).
+                if (
+                    refine_state == WORKFLOW_ARCHITECTURE
+                    and current_refine_attempt_from_labels(issue.labels) > 0
+                ):
+                    to_label = WORKFLOW_REVIEWED
+                else:
+                    to_label = WORKFLOW_NEW
+                await _reap_one(
+                    monitor, kind="issue", number=issue.number, labels=issue.labels,
+                    from_label=refine_state, to_label=to_label,
+                    max_attempts=max_attempts, age_seconds=age,
+                    description=(
+                        f"issue #{issue.number} {refine_state} zumbi "
+                        f"(sem task_id há {age // 60}min, hard-TTL={arch_hard_threshold // 60}min)"
+                    ),
+                    url=issue.url,
+                )
 
 
 async def _reap_one(

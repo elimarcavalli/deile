@@ -151,13 +151,24 @@ class PipelineConfig:
     # ``reaper_stale_seconds`` sem progresso são re-claimed (com
     # ``~attempt:N`` incrementado) para próximo tick retomar via resume.
     # Default 45min: > timeout máximo do claude-worker (2h) seria over-cauteloso;
-    # 45min cobre o timeout antigo de 30min com folga. 0 desliga o reaper.
+    # 45min cobre o timeout antigo de 30min com folga. 0 desliga apenas o ramo PR.
     reaper_stale_seconds: int = 45 * 60
     # Quando attempt >= reaper_max_attempts, o reaper bloqueia em vez de
     # liberar. Espelha resume_max_attempts mas separado pq são caminhos
     # distintos (resume = continuar trabalho parado; reaper = trabalho
     # presumido morto). Default 3 = 3 ciclos de 45min = 2h15m max stuck.
     reaper_max_attempts: int = 3
+    # Hard-ceiling TTL para issues em ~workflow:em_arquitetura ou
+    # ~workflow:em_refinamento SEM ledger entry com task_id (zumbi real:
+    # dispatch em voo morreu sem gravar no ledger, ou ledger ausente).
+    # Default 2h: >> poll_interval (60s) garante que um item sadio em descanso
+    # entre passes seja re-selecionado em ~1-2 ticks (cada tick grava ledger
+    # entry com task_id), permanecendo muito aquém do hard-ceiling.
+    # 0 desliga apenas este ramo (sem afetar os outros ramos do reaper).
+    # Depende de AC8: o guard em monitor.py e o early-return em stages.py
+    # agora operam sobre OR dos três TTLs; cada ramo auto-pula quando seu
+    # próprio TTL é <= 0.
+    reaper_arch_hard_seconds: int = 2 * 60 * 60  # 2h
     # The refinement gate (critique → refine loop → decompose) is worker-only:
     # it dispatches type-specific personas (analyst/architect/debugger) to the
     # deile-worker. On the legacy Claude path it is OFF, so ``review`` keeps its
@@ -690,7 +701,13 @@ class PipelineMonitor:
         # ~workflow:em_implementacao com idade > threshold sem progresso e
         # libera (próximo tick re-claim via resume). Best-effort: erros
         # no reaper NÃO derrubam o tick (catch + log).
-        if self.config.reaper_stale_seconds > 0:
+        # AC8 (#427): guard via OR dos três TTLs — desligar um TTL individual
+        # (valor 0) não silencia os demais ramos do reaper.
+        _reaper_any_active = (
+            self.config.reaper_stale_seconds > 0
+            or self.config.reaper_arch_hard_seconds > 0
+        )
+        if _reaper_any_active:
             try:
                 await stages.reap_orphan_claims(self)
             except Exception as exc:  # noqa: BLE001
