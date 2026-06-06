@@ -10,10 +10,12 @@ introduzido neste PR e o módulo helper ``_claude_creds_refresh``:
   5. ``try_refresh_claude_credentials`` rejeita lock concorrente (idempotência).
 
 Testes do refresh helper isolados também ficam aqui (lock-file, kubectl mocks).
+Testes de AC1/AC4/AC8/AC9/AC10 (grant real, lock cross-pod, durabilidade).
 """
 from __future__ import annotations
 
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -365,3 +367,649 @@ class TestDispatchIntegration:
         assert outcome.ok is True
         assert "OK no retry" in outcome.text
         assert client.dispatch.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# N3.4 — _do_oauth_token_refresh (AC1/AC5: grant real, timeout, invalid_grant)
+# ---------------------------------------------------------------------------
+
+
+class TestDoOauthTokenRefresh:
+    """Testes unitários do POST OAuth real (sem rede real)."""
+
+    @pytest.mark.unit
+    async def test_oauth_refresh_success(self, monkeypatch):
+        """POST retorna 200 com access_token + refresh_token → dict normalizado."""
+        new_at = "new-access-token-abc"
+        new_rt = "new-refresh-token-xyz"
+        expires_in = 3600
+
+        async def fake_post(token_url, client_id, refresh_token, *, timeout_s=30.0):
+            assert token_url == "https://example.com/oauth/token"
+            assert client_id == "my-client-id"
+            assert refresh_token == "old-refresh-token"
+            return {
+                "accessToken": new_at,
+                "refreshToken": new_rt,
+                "expiresAt": int((time.time() + expires_in) * 1000),
+            }
+
+        monkeypatch.setattr(crf, "_do_oauth_token_refresh", fake_post)
+
+        result = await crf._do_oauth_token_refresh(
+            "https://example.com/oauth/token",
+            "my-client-id",
+            "old-refresh-token",
+        )
+        assert result["accessToken"] == new_at
+        assert result["refreshToken"] == new_rt
+        assert result["expiresAt"] is not None
+        assert result["expiresAt"] > int(time.time() * 1000)
+
+    @pytest.mark.unit
+    async def test_oauth_refresh_invalid_grant_raises(self, monkeypatch):
+        """POST retorna invalid_grant → InvalidGrantError (não ok=False silencioso)."""
+        import io
+        import urllib.error
+        import urllib.request
+
+        body_bytes = b'{"error":"invalid_grant","error_description":"Refresh token expired"}'
+
+        def fake_urlopen(req, timeout=None):
+            exc = urllib.error.HTTPError(
+                url="https://example.com/oauth/token",
+                code=400,
+                msg="Bad Request",
+                hdrs={},  # type: ignore[arg-type]
+                fp=io.BytesIO(body_bytes),
+            )
+            raise exc
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        with pytest.raises(crf.InvalidGrantError, match="HTTP 400"):
+            await crf._do_oauth_token_refresh(
+                "https://example.com/oauth/token",
+                "client-id",
+                "expired-refresh-token",
+            )
+
+    @pytest.mark.unit
+    async def test_oauth_refresh_http_error_raises_runtime(self, monkeypatch):
+        """POST retorna erro HTTP não-invalid_grant → RuntimeError com detalhe."""
+        import io
+        import urllib.error
+        import urllib.request
+
+        body_bytes = b'{"error":"server_error"}'
+
+        def fake_urlopen(req, timeout=None):
+            exc = urllib.error.HTTPError(
+                url="https://example.com/oauth/token",
+                code=503,
+                msg="Service Unavailable",
+                hdrs={},  # type: ignore[arg-type]
+                fp=io.BytesIO(body_bytes),
+            )
+            raise exc
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            await crf._do_oauth_token_refresh(
+                "https://example.com/oauth/token",
+                "client-id",
+                "some-refresh-token",
+            )
+
+
+# ---------------------------------------------------------------------------
+# N3.5 — AC4: lock cross-pod (ConfigMap lease, TTL, contention)
+# ---------------------------------------------------------------------------
+
+
+class TestCrossPodLock:
+    @pytest.mark.unit
+    async def test_lock_acquired_when_no_configmap(self, monkeypatch):
+        """ConfigMap ausente (rc=1 no get) → lock adquirido sem erro."""
+        calls = []
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            calls.append(list(args))
+            if "get" in args and "configmap" in args:
+                return (1, "", "not found")
+            if "apply" in args:
+                return (0, "configmap/claude-credentials-lock configured", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+        result = await crf._acquire_cross_pod_lock("deile")
+        assert result is True
+        assert any("apply" in c for c in calls)
+
+    @pytest.mark.unit
+    async def test_lock_held_raises_lock_held_error(self, monkeypatch):
+        """ConfigMap existe com lease não-expirado de outro pod → LockHeldError."""
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            if "get" in args and "configmap" in args:
+                data = {
+                    "data": {
+                        "holder": "other-pod-abc",
+                        "expires": str(time.time() + 200),  # não expirou
+                    }
+                }
+                return (0, json.dumps(data), "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+        with pytest.raises(crf.LockHeldError, match="other-pod-abc"):
+            await crf._acquire_cross_pod_lock("deile", pod_name="my-pod")
+
+    @pytest.mark.unit
+    async def test_lock_acquirable_when_expired(self, monkeypatch):
+        """ConfigMap com lease EXPIRADO → lock pode ser adquirido."""
+        calls = []
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            calls.append(list(args))
+            if "get" in args and "configmap" in args:
+                data = {
+                    "data": {
+                        "holder": "dead-pod",
+                        "expires": str(time.time() - 10),  # expirou
+                    }
+                }
+                return (0, json.dumps(data), "")
+            if "apply" in args:
+                return (0, "configmap/claude-credentials-lock configured", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+        result = await crf._acquire_cross_pod_lock("deile", pod_name="new-pod")
+        assert result is True
+        assert any("apply" in c for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# N3.6 — AC9: durabilidade (PVC-write-fail pós-POST, Secret intocado)
+# ---------------------------------------------------------------------------
+
+
+class TestOauthGrantDurability:
+    @pytest.mark.unit
+    async def test_oauth_refresh_success_writes_pvc_then_secret(
+        self, tmp_path, monkeypatch,
+    ):
+        """Grant OK → PVC escrito ANTES do Secret (AC9). Ambos devem ser chamados."""
+        monkeypatch.setattr(crf, "_REFRESH_LOCK_PATH", str(tmp_path / "lock"))
+
+        now_ms = int(time.time() * 1000)
+        creds_with_refresh = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "old-access",
+                "refreshToken": "valid-refresh-token",
+                "expiresAt": now_ms - 100,  # expirado
+                "oauthUrl": "https://example.com/oauth/token",
+                "clientId": "test-client-id",
+            }
+        })
+
+        operations: list[str] = []
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            joined = " ".join(str(a) for a in args)
+            # Detect PVC write (sh -c with stdin) vs PVC read (cat without stdin)
+            is_pvc_write = (
+                "exec" in joined and "sh" in joined and input_data is not None
+            )
+            is_pvc_read = (
+                "exec" in joined and "cat" in joined and input_data is None
+            )
+            is_configmap = "configmap" in joined
+            is_secret_create = "create" in joined and "secret" in joined
+            is_apply = "apply" in joined
+
+            if "get" in joined and is_configmap:
+                return (1, "", "not found")
+            if is_configmap and "delete" in joined:
+                return (0, "", "")
+            if is_apply and input_data and b"ConfigMap" in input_data:
+                return (0, "configmap created", "")
+            if is_pvc_read:
+                return (0, creds_with_refresh, "")
+            if is_pvc_write:
+                operations.append("PVC_WRITE")
+                return (0, "", "")
+            if is_secret_create:
+                return (0, "apiVersion: v1\nkind: Secret\n", "")
+            if is_apply:
+                operations.append("SECRET_APPLY")
+                return (0, "secret configured", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+
+        new_access = "brand-new-access-token"
+        new_refresh = "brand-new-refresh-token"
+
+        async def fake_oauth_post(token_url, client_id, refresh_token, *, timeout_s=30.0):
+            return {
+                "accessToken": new_access,
+                "refreshToken": new_refresh,
+                "expiresAt": int((time.time() + 3600) * 1000),
+            }
+
+        monkeypatch.setattr(crf, "_do_oauth_token_refresh", fake_oauth_post)
+
+        result = await crf.try_refresh_claude_credentials(
+            min_expiry_window_s=0.0,
+            skip_lock=True,
+            skip_cross_pod_lock=True,
+        )
+        assert result.ok is True, result.error or result.message
+        assert result.strategy == "oauth_grant"
+        assert result.seconds_until_new_expiry is not None
+        assert result.seconds_until_new_expiry > 0
+
+        # Verifica que PVC foi escrito antes do Secret (AC9)
+        pvc_idx = next(
+            (i for i, op in enumerate(operations) if "PVC_WRITE" in op), None
+        )
+        secret_idx = next(
+            (i for i, op in enumerate(operations) if "SECRET_APPLY" in op), None
+        )
+        assert pvc_idx is not None, f"PVC não foi escrito. ops={operations}"
+        assert secret_idx is not None, f"Secret não foi aplicado. ops={operations}"
+        assert pvc_idx < secret_idx, "PVC deve ser escrito ANTES do Secret (AC9)"
+
+    @pytest.mark.unit
+    async def test_pvc_write_fail_after_grant_secret_untouched(
+        self, tmp_path, monkeypatch,
+    ):
+        """POST OAuth OK mas escrita no PVC falha → Secret NÃO é atualizado (AC9)."""
+        monkeypatch.setattr(crf, "_REFRESH_LOCK_PATH", str(tmp_path / "lock"))
+
+        now_ms = int(time.time() * 1000)
+        creds_with_refresh = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "old-access",
+                "refreshToken": "valid-refresh-token",
+                "expiresAt": now_ms - 100,
+                "oauthUrl": "https://example.com/oauth/token",
+                "clientId": "test-client-id",
+            }
+        })
+
+        secret_patched = {"count": 0}
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            joined = " ".join(str(a) for a in args)
+            is_pvc_write = (
+                "exec" in joined and "sh" in joined and input_data is not None
+            )
+            is_pvc_read = (
+                "exec" in joined and "cat" in joined and input_data is None
+            )
+            is_configmap = "configmap" in joined
+            is_secret_create = "create" in joined and "secret" in joined
+            is_apply = "apply" in joined
+
+            if "get" in joined and is_configmap:
+                return (1, "", "not found")
+            if "delete" in joined and is_configmap:
+                return (0, "", "")
+            if is_apply and input_data and b"ConfigMap" in input_data:
+                return (0, "configmap created", "")
+            if is_pvc_read:
+                return (0, creds_with_refresh, "")
+            if is_pvc_write:
+                # Simula falha na escrita do PVC
+                return (1, "", "no space left on device")
+            if is_secret_create:
+                secret_patched["count"] += 1
+                return (0, "apiVersion: v1\nkind: Secret\n", "")
+            if is_apply:
+                secret_patched["count"] += 1
+                return (0, "secret configured", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+
+        async def fake_oauth_post(token_url, client_id, refresh_token, *, timeout_s=30.0):
+            return {
+                "accessToken": "new-token",
+                "refreshToken": "new-refresh",
+                "expiresAt": int((time.time() + 3600) * 1000),
+            }
+
+        monkeypatch.setattr(crf, "_do_oauth_token_refresh", fake_oauth_post)
+
+        result = await crf.try_refresh_claude_credentials(
+            min_expiry_window_s=0.0,
+            skip_lock=True,
+            skip_cross_pod_lock=True,
+        )
+        assert result.ok is False
+        assert "pvc" in (result.error or "").lower() or "token rotacionado" in (result.error or "").lower()
+        # AC9: Secret NÃO deve ter sido tocado após falha do PVC
+        assert secret_patched["count"] == 0, (
+            f"Secret foi alterado após falha no PVC! count={secret_patched['count']}"
+        )
+
+    @pytest.mark.unit
+    async def test_invalid_grant_returns_human_fallback_error(
+        self, tmp_path, monkeypatch,
+    ):
+        """invalid_grant → ok=False com mensagem que pede re-login humano (AC1)."""
+        monkeypatch.setattr(crf, "_REFRESH_LOCK_PATH", str(tmp_path / "lock"))
+
+        now_ms = int(time.time() * 1000)
+        creds_with_refresh = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "old-access",
+                "refreshToken": "expired-refresh-token",
+                "expiresAt": now_ms - 3600_000,  # expirou 1h atrás
+                "oauthUrl": "https://example.com/oauth/token",
+                "clientId": "test-client-id",
+            }
+        })
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            joined = " ".join(str(a) for a in args)
+            if "get" in joined and "configmap" in joined:
+                return (1, "", "not found")
+            if "apply" in joined and input_data and b"ConfigMap" in input_data:
+                return (0, "configmap created", "")
+            if "exec" in joined and "cat" in joined:
+                return (0, creds_with_refresh, "")
+            if "delete" in joined and "configmap" in joined:
+                return (0, "", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+
+        async def fake_oauth_post(token_url, client_id, refresh_token, *, timeout_s=30.0):
+            raise crf.InvalidGrantError("Refresh token expired or revoked")
+
+        monkeypatch.setattr(crf, "_do_oauth_token_refresh", fake_oauth_post)
+
+        result = await crf.try_refresh_claude_credentials(
+            min_expiry_window_s=0.0,
+            skip_lock=True,
+            skip_cross_pod_lock=True,
+        )
+        assert result.ok is False
+        error_lower = (result.error or "").lower()
+        assert "invalid_grant" in error_lower or "refresh_token" in error_lower
+        assert "claude-login" in error_lower or "re-login" in error_lower or "switch" in error_lower
+
+    @pytest.mark.unit
+    async def test_missing_refresh_token_falls_back_to_resync(
+        self, tmp_path, monkeypatch,
+    ):
+        """Sem refreshToken em credentials → fallback para re-sync simples."""
+        monkeypatch.setattr(crf, "_REFRESH_LOCK_PATH", str(tmp_path / "lock"))
+
+        fresh_ms = int((time.time() + 3600) * 1000)
+        creds_no_refresh = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "valid-access-token",
+                "expiresAt": fresh_ms,
+                # sem refreshToken
+            }
+        })
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            joined = " ".join(str(a) for a in args)
+            if "exec" in joined and "cat" in joined:
+                return (0, creds_no_refresh, "")
+            if "create" in joined and "secret" in joined:
+                return (0, "apiVersion: v1\nkind: Secret\n", "")
+            if "apply" in joined:
+                return (0, "secret configured", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+
+        result = await crf.try_refresh_claude_credentials(
+            min_expiry_window_s=0.0,
+            skip_lock=True,
+            skip_cross_pod_lock=True,
+        )
+        assert result.ok is True
+        assert result.strategy == "exec_inplace"
+        assert "re-sync" in (result.message or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# N3.7 — AC10: refresh proativo (ramo 0 < remaining_s <= window)
+# ---------------------------------------------------------------------------
+
+
+class TestProactiveRefresh:
+    @pytest.mark.unit
+    async def test_proactive_refresh_within_window_calls_grant(
+        self, tmp_path, monkeypatch,
+    ):
+        """Token dentro da janela proativa → grant é chamado (AC10).
+
+        Verifica: 1 POST + seconds_until_new_expiry > remaining_s_entrada.
+        """
+        monkeypatch.setattr(crf, "_REFRESH_LOCK_PATH", str(tmp_path / "lock"))
+
+        # Token expira em 30 minutos (dentro da janela de 2h).
+        remaining_s_before = 1800
+        expires_ms = int((time.time() + remaining_s_before) * 1000)
+        creds_with_refresh = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "old-access",
+                "refreshToken": "valid-refresh-token",
+                "expiresAt": expires_ms,
+                "oauthUrl": "https://example.com/oauth/token",
+                "clientId": "test-client-id",
+            }
+        })
+
+        oauth_calls = {"count": 0}
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            joined = " ".join(str(a) for a in args)
+            if "get" in joined and "configmap" in joined:
+                return (1, "", "not found")
+            if "apply" in joined and input_data and b"ConfigMap" in input_data:
+                return (0, "configmap created", "")
+            if "exec" in joined and "cat" in joined:
+                return (0, creds_with_refresh, "")
+            if "exec" in joined and "sh" in joined:
+                return (0, "", "")
+            if "create" in joined and "secret" in joined:
+                return (0, "apiVersion: v1\nkind: Secret\n", "")
+            if "apply" in joined:
+                return (0, "secret configured", "")
+            if "delete" in joined and "configmap" in joined:
+                return (0, "", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+
+        async def fake_oauth_post(token_url, client_id, refresh_token, *, timeout_s=30.0):
+            oauth_calls["count"] += 1
+            return {
+                "accessToken": "new-access-token",
+                "refreshToken": "new-refresh-token",
+                "expiresAt": int((time.time() + 28800) * 1000),  # 8h
+            }
+
+        monkeypatch.setattr(crf, "_do_oauth_token_refresh", fake_oauth_post)
+
+        result = await crf.try_refresh_claude_credentials(
+            min_expiry_window_s=7200,  # janela de 2h
+            skip_lock=True,
+            skip_cross_pod_lock=True,
+        )
+        assert result.ok is True, result.error or result.message
+        assert oauth_calls["count"] == 1, "Exatamente 1 POST deve ser feito (AC10)"
+        assert result.seconds_until_new_expiry is not None
+        assert result.seconds_until_new_expiry > remaining_s_before, (
+            f"Novo expiry ({result.seconds_until_new_expiry:.0f}s) deve ser "
+            f"maior que o antigo ({remaining_s_before}s)"
+        )
+
+    @pytest.mark.unit
+    async def test_proactive_skip_outside_window_no_grant(
+        self, tmp_path, monkeypatch,
+    ):
+        """Token fora da janela proativa → 0 POSTs, ok=True (skip inteligente) (AC10)."""
+        monkeypatch.setattr(crf, "_REFRESH_LOCK_PATH", str(tmp_path / "lock"))
+
+        # Token expira em 5 horas (fora da janela de 2h).
+        expires_ms = int((time.time() + 5 * 3600) * 1000)
+        creds_with_refresh = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "valid-access",
+                "refreshToken": "valid-refresh-token",
+                "expiresAt": expires_ms,
+                "oauthUrl": "https://example.com/oauth/token",
+                "clientId": "test-client-id",
+            }
+        })
+
+        oauth_calls = {"count": 0}
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            joined = " ".join(str(a) for a in args)
+            if "exec" in joined and "cat" in joined:
+                return (0, creds_with_refresh, "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+
+        async def fake_oauth_post(token_url, client_id, refresh_token, *, timeout_s=30.0):
+            oauth_calls["count"] += 1
+            return {"accessToken": "new", "refreshToken": "new-r", "expiresAt": None}
+
+        monkeypatch.setattr(crf, "_do_oauth_token_refresh", fake_oauth_post)
+
+        result = await crf.try_refresh_claude_credentials(
+            min_expiry_window_s=7200,  # janela de 2h
+            skip_lock=True,
+            skip_cross_pod_lock=True,
+        )
+        assert result.ok is True
+        assert oauth_calls["count"] == 0, "Não deve fazer POST fora da janela (AC10)"
+        assert "skip" in " ".join(result.steps).lower()
+
+    @pytest.mark.unit
+    async def test_reactive_expired_calls_grant(self, tmp_path, monkeypatch):
+        """Token expirado (remaining <= 0) + refreshToken presente → grant chamado (AC1)."""
+        monkeypatch.setattr(crf, "_REFRESH_LOCK_PATH", str(tmp_path / "lock"))
+
+        # Token expirou 1h atrás.
+        expires_ms = int((time.time() - 3600) * 1000)
+        creds_with_refresh = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "stale-access",
+                "refreshToken": "still-valid-refresh",
+                "expiresAt": expires_ms,
+                "oauthUrl": "https://example.com/oauth/token",
+                "clientId": "test-client-id",
+            }
+        })
+
+        oauth_calls = {"count": 0}
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            joined = " ".join(str(a) for a in args)
+            if "get" in joined and "configmap" in joined:
+                return (1, "", "not found")
+            if "apply" in joined and input_data and b"ConfigMap" in input_data:
+                return (0, "configmap created", "")
+            if "exec" in joined and "cat" in joined:
+                return (0, creds_with_refresh, "")
+            if "exec" in joined and "sh" in joined:
+                return (0, "", "")
+            if "create" in joined and "secret" in joined:
+                return (0, "apiVersion: v1\nkind: Secret\n", "")
+            if "apply" in joined:
+                return (0, "secret configured", "")
+            if "delete" in joined and "configmap" in joined:
+                return (0, "", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+
+        async def fake_oauth_post(token_url, client_id, refresh_token, *, timeout_s=30.0):
+            oauth_calls["count"] += 1
+            return {
+                "accessToken": "fresh-access",
+                "refreshToken": "rotated-refresh",
+                "expiresAt": int((time.time() + 28800) * 1000),
+            }
+
+        monkeypatch.setattr(crf, "_do_oauth_token_refresh", fake_oauth_post)
+
+        result = await crf.try_refresh_claude_credentials(
+            min_expiry_window_s=0.0,  # reativo
+            skip_lock=True,
+            skip_cross_pod_lock=True,
+        )
+        assert result.ok is True, result.error or result.message
+        assert oauth_calls["count"] == 1, "Exatamente 1 POST deve ser feito (AC1)"
+        assert result.strategy == "oauth_grant"
+
+
+# ---------------------------------------------------------------------------
+# N3.8 — _extract_oauth_config (AC3: sem hardcode, leitura de config/env)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractOauthConfig:
+    @pytest.mark.unit
+    def test_reads_from_credentials_json(self):
+        creds = {
+            "claudeAiOauth": {
+                "refreshToken": "rt123",
+                "oauthUrl": "https://token.example.com",
+                "clientId": "cid-abc",
+            }
+        }
+        token_url, client_id, refresh_token = crf._extract_oauth_config(creds)
+        assert token_url == "https://token.example.com"
+        assert client_id == "cid-abc"
+        assert refresh_token == "rt123"
+
+    @pytest.mark.unit
+    def test_reads_from_env_when_missing_in_creds(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_OAUTH_TOKEN_URL", "https://env.example.com/tok")
+        monkeypatch.setenv("CLAUDE_OAUTH_CLIENT_ID", "env-client-id")
+        creds = {"claudeAiOauth": {"refreshToken": "rt-env"}}
+        token_url, client_id, refresh_token = crf._extract_oauth_config(creds)
+        assert token_url == "https://env.example.com/tok"
+        assert client_id == "env-client-id"
+        assert refresh_token == "rt-env"
+
+    @pytest.mark.unit
+    def test_returns_none_when_completely_absent(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_OAUTH_TOKEN_URL", raising=False)
+        monkeypatch.delenv("CLAUDE_OAUTH_CLIENT_ID", raising=False)
+        creds = {"claudeAiOauth": {"accessToken": "at-only"}}
+        token_url, client_id, refresh_token = crf._extract_oauth_config(creds)
+        assert token_url is None
+        assert client_id is None
+        assert refresh_token is None
+
+    @pytest.mark.unit
+    def test_creds_json_takes_precedence_over_env(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_OAUTH_TOKEN_URL", "https://env.example.com/tok")
+        monkeypatch.setenv("CLAUDE_OAUTH_CLIENT_ID", "env-client-id")
+        creds = {
+            "claudeAiOauth": {
+                "refreshToken": "rt",
+                "oauthUrl": "https://creds.example.com/tok",
+                "clientId": "creds-client-id",
+            }
+        }
+        token_url, client_id, _ = crf._extract_oauth_config(creds)
+        assert token_url == "https://creds.example.com/tok"
+        assert client_id == "creds-client-id"
