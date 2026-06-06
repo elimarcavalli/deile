@@ -71,11 +71,11 @@ _CANONICAL_FIXTURES = [
      "auth.skip", "worker-abc"),
     ("auth.recover target=worker-abc reason=renewed",
      "auth.recover", "worker-abc"),
-    ("routing.mention target_kind=issue target=42 action=injected_nova",
+    ("routing.mention target_kind=issue target=42 action=inject_workflow_nova",
      "routing.mention", "#42"),
     ("routing.pr_unified target=99 role=assignee",
      "routing.pr_unified", "PR#99"),
-    ("routing.dropped target_kind=issue target=42 reason=eco",
+    ("routing.dropped target_kind=issue target=42 reason=self_mention",
      "routing.dropped", "#42"),
 ]
 
@@ -279,7 +279,7 @@ class TestAC7Latency:
             "refinement.refine issue=42 round=1 persona=analyst body_chars=100 verdict=CLARO",
             "batch.claim sha=abc1234ef issues=[1,2] reason=shard",
             "auth.fail target=worker-1 attempts=3 thr=3 reason=expired",
-            "routing.mention target_kind=issue target=10 action=injected_nova",
+            "routing.mention target_kind=issue target=10 action=inject_workflow_nova",
         ]
         legacy = [
             "mention group issue:5: triggers=['nova']",
