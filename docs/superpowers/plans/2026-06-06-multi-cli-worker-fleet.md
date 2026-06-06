@@ -203,6 +203,41 @@ Espelha o contrato do `claude-worker` (já implementado) + 1 campo. **O `cli_wor
 - **`GET /v1/health`** → `{ ok, kind, auth_mode, ready }` (`ready=false` se faltar `auth_env_keys` ou cred OAuth).
 - **`GET /v1/progress/{task_id}`** → snapshot mid-flight (tail do log/JSONL no PVC), igual ao claude-worker, para o reconcile do ledger.
 
+### 1.13 Mapa de infra concreto (portas, egress, storage, réplicas)
+
+**Portas** (sem colisão com o que já existe — deile-worker 8766, claude-worker 8767, pipeline-status 8768, monitor 8769):
+
+| Worker | Service:porta | Endpoint env |
+|---|---|---|
+| opencode | `opencode-worker:8771` | `DEILE_OPENCODE_WORKER_ENDPOINT` |
+| codex | `codex-worker:8772` | `DEILE_CODEX_WORKER_ENDPOINT` |
+| qwen | `qwen-worker:8773` | `DEILE_QWEN_WORKER_ENDPOINT` |
+| aider | `aider-worker:8774` | `DEILE_AIDER_WORKER_ENDPOINT` |
+| goose | `goose-worker:8775` | `DEILE_GOOSE_WORKER_ENDPOINT` |
+| antigravity | `antigravity-worker:8776` | `DEILE_ANTIGRAVITY_WORKER_ENDPOINT` |
+
+**Egress da NetworkPolicy por worker** (gerado de `adapter.egress_hosts`; sempre + DNS:53 + forges github.com/gitlab.com:443; ingress só do `deile-pipeline`):
+
+| Worker | Hosts LLM (443) |
+|---|---|
+| opencode | `openrouter.ai`, `models.dev` (catálogo; ou fixar modelos e omitir), + provider direto se usado |
+| codex | `api.openai.com` (e/ou base_url do provider custom Responses-API) |
+| qwen | `dashscope.aliyuncs.com` / `openrouter.ai` / base_url configurado |
+| aider | `openrouter.ai` (+ `api.deepseek.com`/`generativelanguage.googleapis.com` se diretos) |
+| goose | `openrouter.ai` / `api.openai.com` / host configurado |
+| antigravity | Vertex (`*.googleapis.com`) ou Google OAuth hosts (gated) |
+
+> **Regra:** preferir **OpenRouter** reduz o egress a `openrouter.ai:443` para quase todos → NetworkPolicy mínima e uniforme. Hosts diretos só quando o operador escolher provider direto.
+
+**Storage por worker** (derivado de `auth_mode`+`supports_resume`):
+- **PVC `<kind>-worker-home`** (RWO) quando `auth_mode=oauth_file` (precisa persistir cred + refresh in-pod) **ou** `supports_resume=True` (session JSONL). → claude, codex(oauth), qwen, antigravity.
+- **`emptyDir`** (efêmero, mais barato) quando `auth_mode=env` **e** `supports_resume=False`. → opencode, aider, goose (e codex/qwen no modo env-only sem resume). O workdir do repo é sempre `emptyDir`/PVC gravável.
+- Cleanup CronJob genérico (reusa `_worker_core.startup_cleanup`) só para workers com PVC.
+
+**Réplicas / scale-to-zero (custo):** todo CLI worker novo nasce com **`replicas: 0`** no manifest. `k8s up` aplica todos, mas **só sobem quando o operador seleciona aquele worker num stage** (ou `k8s scale --<kind>-worker N`). Assim a frota inteira coexiste sem custo de CPU/RAM ociosa; só roda o que está em uso. O `dispatch_resolver` ao escolher um worker com 0 réplicas → o pipeline faz `scale 1` on-demand (ou avisa) — **task explícita** (ver D/F).
+
+**Imagem (base compartilhada):** `Dockerfile.cli-worker` = stage `base` (python server + `_worker_core` + adapters + git/gh/glab/kubectl) reaproveitado via cache; stage final por `WORKER_KIND` instala só o runtime+CLI daquele kind (node22 só no qwen; binário no opencode/goose/antigravity; pip no aider; etc.). Tag `deile-cli-worker-<kind>:local`.
+
 ---
 
 ## PARTE 2 — Specs por worker (o "como" literal)
@@ -287,6 +322,7 @@ Espelha o contrato do `claude-worker` (já implementado) + 1 campo. **O `cli_wor
 - [ ] **B2** `model_resolver.py`: `resolve_stage_cli_model(stage)` (string livre). `DispatchPayload`: campo `cli_model: str|None` (não quebra validator `provider:model`). **Teste:** payload aceita cli_model; deile-worker ignora; cli-worker usa.
 - [ ] **B3** `implementer.py`/`stages.py`: única ramificação nova no cliente HTTP — `claude-worker`→`preferred_model`; `*-worker` CLI→`cli_model=resolve_stage_cli_model(stage)`. Endpoint via `get_endpoint_for` (B1). **Teste:** mock HTTP confirma POST no endpoint certo com o campo de modelo certo (preferred_model vs cli_model) por dispatcher.
 - [ ] **B4** Brief neutro-de-CLI: variante em `briefs.py` reusando `cli_renderer.render_brief_cmds(forge)` (forge-agnóstico já existe), sem jargão claude/ultracode, instruindo commit+push (git_strategy=brief_driven) ou deixando o aider auto-commitar. **Teste:** o brief renderiza p/ GH e GL; não contém termos claude-specíficos; contém instrução de push quando brief_driven.
+- [ ] **B5 (scale-to-zero)** Workers nascem `replicas:0`. Antes de dispatchar, o `implementer` garante ≥1 réplica do worker-alvo (kubectl scale on-demand via SA do pipeline, OU health-probe + erro claro "worker escalado a 0; rode k8s scale"). Decidir entre auto-scale vs aviso — **default: auto-scale 1 com cooldown**, reusando RBAC do pipeline. **Teste:** mock — dispatcher com 0 réplicas → ação de scale disparada (ou erro instrutivo); cooldown evita flapping.
 
 ### Fase C — Imagem + um worker piloto (opencode) ponta-a-ponta
 - [ ] **C1** `infra/k8s/Dockerfile.cli-worker` com `ARG WORKER_KIND` (base comum + install condicional). Implementar bloco `opencode` (binário pinado). **Teste:** build `--build-arg WORKER_KIND=opencode` verde; `opencode --version` no container.
