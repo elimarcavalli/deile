@@ -920,6 +920,7 @@ class PipelineMonitor:
         # reviews em voo (por ground-truth: PR merged?) ANTES de despachar novas.
         if cfg.enable_pr_review and "pr_review" not in skip:
             await self._reconcile_review_prs()
+        await self._reconcile_closed_issues()
         await _scheduled(cfg.enable_pr_review, "pr_review", self._review_one_open_pr)
         if cfg.enable_pr_triage:
             await self._classify_new_prs()
@@ -974,6 +975,10 @@ class PipelineMonitor:
     async def _reconcile_review_prs(self) -> None:
         """Process the verdict of fire-and-forget PR reviews (issue #373)."""
         return await stages.reconcile_review_prs(self)
+
+    async def _reconcile_closed_issues(self) -> None:
+        """Run terminal GC on closed issues (issue #590)."""
+        return await stages.reconcile_closed_issues(self)
 
     async def _review_one_open_pr(self) -> None:
         return await stages.review_one_open_pr(self)

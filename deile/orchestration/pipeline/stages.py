@@ -54,6 +54,7 @@ from deile.orchestration.pipeline.labels import (
     is_attempt_label, is_batch_label, is_refine_attempt_label,
     issue_type_from_labels, make_attempt_label, make_refine_attempt_label,
     parse_priority_from_labels, persona_for_type, refine_workflow_state)
+from deile.orchestration.pipeline.gc import run_terminal_gc
 from deile.orchestration.pipeline.pipeline_logger import (
     log_decomposition_fanout,
     log_reaper_block,
@@ -2791,6 +2792,13 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
             ledger.clear(key)
             monitor._stats.prs_reviewed += 1
             await monitor.notifier.pr_reviewed(pr.number, pr.title, pr.url, merged=True)
+            try:
+                await run_terminal_gc(monitor.forge, "pr", pr.number, "merged")
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "reconcile_review_prs: GC failed for PR #%d: %s",
+                    pr.number, exc,
+                )
             await _post_merge_follow_ups(monitor, pr)
             continue
         last_full = info.get("last_result_full") or ""
@@ -3712,3 +3720,45 @@ async def _reap_one(
         target_kind=kind, target=number, attempts=next_attempt,
         reason=description, last_activity_s=age_seconds,
     )
+
+
+async def reconcile_closed_issues(monitor: "PipelineMonitor") -> None:
+    """Run terminal GC on issues in ~workflow:em_pr that GitHub closed (issue #590).
+
+    When a PR is merged and it references an issue (Closes #N), GitHub
+    automatically closes the issue. This reconcile pass detects those
+    closed issues and calls run_terminal_gc best-effort, which strips
+    transient pipeline labels and applies ~workflow:concluida.
+
+    Best-effort: any failure is logged but does NOT abort the tick.
+    Idempotent: run_terminal_gc returns 'noop' on already-clean issues.
+    """
+    try:
+        issues = await monitor.forge.list_issues_with_label(WORKFLOW_PR, limit=50)
+    except Exception as exc:  # noqa: BLE001 — best-effort; do not count toward forge_errors
+        logger.warning(
+            "reconcile_closed_issues: could not list em_pr issues: %s", exc,
+        )
+        return
+    for issue in issues:
+        try:
+            current = await monitor.forge.get_issue(issue.number)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "reconcile_closed_issues: get_issue #%d failed: %s",
+                issue.number, exc,
+            )
+            continue
+        if current is None or current.state != "closed":
+            continue
+        try:
+            result = await run_terminal_gc(monitor.forge, "issue", issue.number, "closed")
+            logger.debug(
+                "reconcile_closed_issues: GC %s for closed issue #%d",
+                result, issue.number,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "reconcile_closed_issues: GC failed for issue #%d: %s",
+                issue.number, exc,
+            )
