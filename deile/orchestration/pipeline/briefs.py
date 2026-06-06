@@ -95,6 +95,51 @@ def _default_forge_config(repo: str) -> ForgeConfig:
     )
 
 
+# Definition-of-Done evidence gate, injected as ``{dod_block}`` into the
+# implement / implement-resume briefs. Closes the structural hole that let a
+# worker open an issue-closing PR whose hard ACs were never executed (skipped
+# integration tests count as "green"): "a PR exists + impacted tests pass" is
+# NOT done when the issue declares empirical acceptance criteria. Pre-formatted
+# in :func:`_build_brief_params` (embeds the per-forge draft/comment commands).
+_DOD_EVIDENCE_BLOCK = (
+    "DEFINIÇÃO DE PRONTO — confronte ENTREGA vs os Critérios de Aceite (ACs) da issue. "
+    "\"Compila + PR existe\" NÃO é pronto:\n"
+    "   a) AC com número/condição testável (HTTP 200, custo %, p95, trigger %) só está PRONTO "
+    "com o AC EXECUTADO e o NÚMERO real anexado ao corpo da PR/relatório. Scaffolding/harness "
+    "escrito ≠ AC cumprido.\n"
+    "   b) Teste `@pytest.mark.integration` que PULA (skip por falta de credencial/env) NÃO "
+    "satisfaz o AC — rode-o com a credencial disponível no pod (ex.: `ANTHROPIC_AUTH_TOKEN` / "
+    "`~/.claude/credentials.json`) ou marque o AC como NÃO-VERIFICADO no corpo da PR.\n"
+    "   c) AC duro que você NÃO conseguiu provar (bloqueado): NÃO feche a issue. Abra a PR como "
+    "DRAFT (`{mark_draft_cmd}` após criar), use `Refs #{number}` (não `Closes`) no --body, "
+    "registre a causa do bloqueio e escale ao autor (`{comment_issue_cmd}`). Nunca uma PR "
+    "`Closes` com ACs vazios.\n"
+    "   d) SPIKE (entregável = evidência, não código de produção): o `create_pr_cmd` abaixo já "
+    "usa `Refs` (não fecha a issue). Abra DRAFT e só tire do draft — trocando para `Closes` — "
+    "quando TODOS os ACs estiverem verdes com números anexados."
+)
+
+
+def _is_spike(title: str, body: str) -> bool:
+    """True when the issue's deliverable is empirical evidence, not production code.
+
+    A spike's Definition-of-Done is measured ACs (numbers/verdict), so its PR must
+    reference (``Refs``) — never auto-close (``Closes``) — the issue, and should
+    stay draft until every AC is green. Detected by the conventional ``[SPIKE]``
+    title tag or a spike-style exit-condition section in the body. Conservative on
+    purpose: a missed spike (defaults to ``Closes``) is the dangerous direction, so
+    we only require an explicit, unambiguous signal.
+    """
+    t = (title or "").lower()
+    b = (body or "").lower()
+    if "[spike]" in t:
+        return True
+    return any(
+        marker in b
+        for marker in ("condição de saída", "critérios de aprovação do spike")
+    )
+
+
 def _build_brief_params(
     *,
     repo: str,
@@ -103,6 +148,7 @@ def _build_brief_params(
     number: int,
     forge: Optional[ForgeConfig],
     issue_template: str = "feature_request.md",
+    close_keyword: str = "Closes",
     extras: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Assemble the full ``{key: value}`` map for ``.format()`` on a template.
@@ -112,10 +158,17 @@ def _build_brief_params(
     per-forge CLI snippets from :func:`render_brief_cmds`. Extras override
     everything else so callers can inject brief-specific fields
     (``title``/``body``/``progress_block`` …) without surprises.
+
+    ``close_keyword`` flows down to :func:`render_brief_cmds` so spike briefs
+    render ``create_pr_cmd`` with ``Refs`` instead of ``Closes`` (a spike PR
+    must reference, never auto-close, its issue). The ``dod_block`` placeholder
+    (Definition-of-Done evidence gate) is pre-formatted here because it embeds
+    the per-forge ``mark_draft_cmd``/``comment_issue_cmd`` and the issue number.
     """
     cfg = forge or _default_forge_config(repo)
     cmds = render_brief_cmds(
-        cfg, number=number, branch=branch, main=main, issue_template=issue_template,
+        cfg, number=number, branch=branch, main=main,
+        issue_template=issue_template, close_keyword=close_keyword,
     )
     params: dict[str, Any] = dict(_BRIEF_CONSTANTS)
     params.update({
@@ -125,6 +178,11 @@ def _build_brief_params(
         "number": number,
     })
     params.update(cmds)
+    params["dod_block"] = _DOD_EVIDENCE_BLOCK.format(
+        number=number,
+        mark_draft_cmd=cmds["mark_draft_cmd"],
+        comment_issue_cmd=cmds["comment_issue_cmd"],
+    )
     if extras:
         params.update(extras)
     return params
@@ -147,10 +205,11 @@ Implemente a issue #{number} de {repo} e abra uma {pr_noun}. Execute de verdade 
 2. Crie branch `{branch}` a partir de `{main}`.
 3. Leia comentários da issue (`{view_issue_cmd}`) — decisões do stakeholder FAZEM PARTE do escopo. Implemente o pedido + testes. CHECKPOINT INCREMENTAL: grave `.deile-progress.md` (um nível acima de ./repo, NÃO commite, NÃO em ./repo) a cada milestone — o timeout mata o processo sem aviso (rc=124) e só o journal sobrevive pro próximo tick.
 4. {impact_test_strategy}
-5. Commit atômico + `git push -u origin {branch}`.
-6. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}`.
-7. Confirme: `{check_pr_cmd}` — se não retornar URL, volte ao passo 6.
-8. NÃO force-push. NÃO altere nada fora de ./repo. ÚLTIMA LINHA = URL da {pr_noun} (ex: {pr_url_pattern}).
+5. {dod_block}
+6. Commit atômico + `git push -u origin {branch}`.
+7. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}`. No --body, confronte ENTREGA vs cada AC (com números) — não um resumo genérico.
+8. Confirme: `{check_pr_cmd}` — se não retornar URL, volte ao passo 7.
+9. NÃO force-push. NÃO altere nada fora de ./repo. ÚLTIMA LINHA = URL da {pr_noun} (ex: {pr_url_pattern}).
 
 === Issue #{number}: {title} ===
 {body}
@@ -232,10 +291,11 @@ RETOMADA da issue #{number} de {repo}. Há trabalho parcial em ./repo — NÃO r
    `git diff {main}...HEAD` + `git diff HEAD` + `git status --porcelain` (leia cada arquivo listado).
 3. Continue de onde parou. Edite o que falta + testes.
 4. {impact_test_strategy}
-5. Commit + `git push -u origin {branch}`.
-6. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}` (ou confirme existente: `{check_pr_cmd}`).
-7. CHECKPOINT INCREMENTAL: atualize `.deile-progress.md` no diretório de trabalho (NÃO commite, NÃO em ./repo) **a cada milestone E antes de parar** — o timeout mata o processo sem aviso (rc=124), só o journal sobrevive pro próximo tick: feito, falta, decisões, bloqueios.
-8. Impedimento real → linha `{blocked_contract}`. Última linha = URL da {pr_noun} (ex: {pr_url_pattern}) OU `{blocked_contract}`.
+5. {dod_block}
+6. Commit + `git push -u origin {branch}`.
+7. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}` (ou confirme existente: `{check_pr_cmd}`). No --body, confronte ENTREGA vs cada AC (com números).
+8. CHECKPOINT INCREMENTAL: atualize `.deile-progress.md` no diretório de trabalho (NÃO commite, NÃO em ./repo) **a cada milestone E antes de parar** — o timeout mata o processo sem aviso (rc=124), só o journal sobrevive pro próximo tick: feito, falta, decisões, bloqueios.
+9. Impedimento real → linha `{blocked_contract}`. Última linha = URL da {pr_noun} (ex: {pr_url_pattern}) OU `{blocked_contract}`.
 
 === Issue #{number}: {title} ===
 {body}
@@ -481,6 +541,7 @@ def _render_worker_implement_brief(
 ) -> str:
     params = _build_brief_params(
         repo=repo, main=main, branch=branch, number=number, forge=forge,
+        close_keyword="Refs" if _is_spike(title, body) else "Closes",
         extras={
             "title": title,
             "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]
@@ -564,6 +625,7 @@ def _render_worker_implement_resume_brief(
 ) -> str:
     params = _build_brief_params(
         repo=repo, main=main, branch=branch, number=number, forge=forge,
+        close_keyword="Refs" if _is_spike(title, body) else "Closes",
         extras={
             "title": title,
             "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]
