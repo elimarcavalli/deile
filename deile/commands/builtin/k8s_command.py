@@ -61,6 +61,16 @@ _V2_SHORT_VERBS = frozenset({
     "claude-login", "claude-renew", "test", "clone",
 })
 
+# Verbs that are always destructive (no extra flags needed)
+_ALWAYS_DESTRUCTIVE = frozenset({"down"})
+# Verbs destructive only when certain flags are present
+_CONDITIONALLY_DESTRUCTIVE: dict = {
+    "build": "--restart",
+    "claude-login": "--switch",
+}
+# Interactive verbs that can't be piped via PIPE (block on stdin)
+_INTERACTIVE_NO_VARIANT = frozenset({"setup"})
+
 K8S_DEPLOYMENTS = [
     "deilebot",
     "deile-worker",
@@ -97,10 +107,13 @@ _V2_VERBS = [
 def _running_in_pod() -> bool:
     """Detecta se está rodando dentro de um pod Kubernetes.
 
-    A variável KUBERNETES_SERVICE_HOST é injetada automaticamente por todo
-    pod K8s; sua presença é a heurística canônica para "estou in-pod".
+    Dois sinais canônicos: a variável KUBERNETES_SERVICE_HOST (injetada
+    automaticamente em todo pod) ou o token de serviceaccount montado pelo
+    kubelet. Qualquer um verdadeiro → in-pod.
     """
-    return bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return True
+    return Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
 
 
 def _find_deploy_py() -> Optional[Path]:
@@ -453,19 +466,52 @@ async def _cmd_list(namespace: str) -> CommandResult:
 # ---------------------------------------------------------------------------
 
 
-async def _cmd_v2_delegate(verb: str, extra: str, namespace: str) -> CommandResult:
+def _is_destructive(verb: str, extra: str) -> bool:
+    """Retorna True se o verbo+extra forma uma operação destrutiva."""
+    if verb in _ALWAYS_DESTRUCTIVE:
+        return True
+    flag = _CONDITIONALLY_DESTRUCTIVE.get(verb)
+    if flag and flag in extra:
+        return True
+    return False
+
+
+async def _cmd_v2_delegate(
+    verb: str,
+    extra: str,
+    namespace: str,
+    *,
+    confirmed: bool = False,
+) -> CommandResult:
     """Delega verbos V2 para ``python3 infra/k8s/deploy.py k8s <verb>``.
 
     Host-only: retorna erro se detectar ambiente in-pod. Verbs longos
     (up/build/down) usam timeout de 1800s; demais usam 300s. Output é
     transmitido linha a linha via Rich Live (com reflow).
+
+    Verbos destrutivos (down, build --restart, claude-login --switch) exigem
+    ``confirmed=True`` — sem isso retorna erro com instrução de re-emissão.
+    ``setup`` é interativo (getpass, sem variante não-interativa) e retorna
+    erro apontando ``create-namespace`` como alternativa scriptável.
+    ``claude-login`` recebe ``--no-interactive`` automaticamente.
     """
+    from deile.security.audit_logger import AuditEventType, SeverityLevel, get_audit_logger
     from rich.console import Console
+
+    audit = get_audit_logger()
 
     if _running_in_pod():
         return CommandResult.error_result(
             f"verbo `{verb}` é host-only: requer `infra/k8s/deploy.py`, "
             "ausente na imagem. Detectado ambiente in-pod (KUBERNETES_SERVICE_HOST)."
+        )
+
+    # setup is interactive without a non-interactive variant — never pipe it
+    if verb in _INTERACTIVE_NO_VARIANT:
+        return CommandResult.error_result(
+            f"verbo `{verb}` é interativo (usa getpass) e não possui variante "
+            "não-interativa. Use `/k8s create-namespace` para provisionamento "
+            "scriptável (todos os parâmetros via CLI)."
         )
 
     deploy = _find_deploy_py()
@@ -474,18 +520,34 @@ async def _cmd_v2_delegate(verb: str, extra: str, namespace: str) -> CommandResu
             f"verbo `{verb}` é host-only: `infra/k8s/deploy.py` não localizado."
         )
 
-    timeout = _K8S_DELEGATE_TIMEOUT_LONG if verb in _V2_LONG_VERBS else _K8S_DELEGATE_TIMEOUT_SHORT
-
-    # Aviso para verbo destrutivo — REPL não tem confirmação interativa, então
-    # apenas emitimos o aviso no log de auditoria e prosseguimos.
-    if verb == "down":
-        logger.warning(
-            "Verbo destrutivo `down` solicitado via /k8s — namespace será removido. "
-            "Sem confirmação interativa disponível neste contexto."
+    # Destructive gating — must re-emit with --confirm
+    if _is_destructive(verb, extra) and not confirmed:
+        flag_hint = f"--confirm"
+        reissue = f"/k8s {verb} {extra} {flag_hint}".strip() if extra.strip() else f"/k8s {verb} {flag_hint}"
+        return CommandResult.error_result(
+            f"[!] `{verb}` APAGA dados de forma irreversível. "
+            f"Para confirmar, re-execute:\n  {reissue}"
         )
 
+    # claude-login: inject --no-interactive to avoid blocking on stdin
     extra_tokens = shlex.split(extra) if extra.strip() else []
+    if verb == "claude-login" and "--no-interactive" not in extra_tokens and "--from-env-only" not in extra_tokens:
+        extra_tokens = ["--no-interactive"] + extra_tokens
+
+    timeout = _K8S_DELEGATE_TIMEOUT_LONG if verb in _V2_LONG_VERBS else _K8S_DELEGATE_TIMEOUT_SHORT
+
     argv = ["python3", str(deploy), "k8s", verb, *extra_tokens]
+
+    # AuditEvent BEFORE exec (order: audit-antes-de-exec per spec)
+    audit.log_event(
+        event_type=AuditEventType.COMMAND_EXECUTED,
+        severity=SeverityLevel.WARNING if _is_destructive(verb, extra) else SeverityLevel.INFO,
+        actor="user",
+        resource="k8s",
+        action=f"v2_{verb}",
+        result="started",
+        details={"verb": verb, "namespace": namespace, "extra": extra, "confirmed": confirmed},
+    )
 
     console = Console()
     logger.info("k8s V2 delegate: %s", " ".join(argv))
@@ -616,11 +678,26 @@ class K8sCommand(DirectCommand):
 
     async def execute(self, context: CommandContext) -> CommandResult:
         args = context.args.strip() if context.args else ""
-        parts = args.split(None, 1)
+
+        # Extract --confirm and --save-namespace global flags before subcommand dispatch
+        confirmed = "--confirm" in args
+        save_namespace = "--save-namespace" in args
+        # Strip these meta-flags before further parsing
+        clean_args = args.replace("--confirm", "").replace("--save-namespace", "").strip()
+
+        parts = clean_args.split(None, 1)
         sub = parts[0].lower() if parts else ""
         tail = parts[1] if len(parts) > 1 else ""
 
         namespace = await _detect_namespace()
+
+        if save_namespace:
+            try:
+                from deile.commands.settings_manager import SettingsManager
+                mgr = SettingsManager()
+                mgr.set_setting("k8s.namespace", namespace)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to persist k8s_namespace: %s", exc)
 
         if not sub:
             return await _cmd_discovery(namespace)
@@ -629,7 +706,7 @@ class K8sCommand(DirectCommand):
             return await _cmd_panel(tail, namespace)
 
         if sub in _V2_LONG_VERBS | _V2_SHORT_VERBS:
-            return await _cmd_v2_delegate(sub, tail, namespace)
+            return await _cmd_v2_delegate(sub, tail, namespace, confirmed=confirmed)
 
         if sub == "restart":
             deployment = _parse_restart_args(tail)

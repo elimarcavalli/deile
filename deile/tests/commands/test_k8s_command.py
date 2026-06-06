@@ -13,6 +13,9 @@ from deile.commands.base import CommandContext, DirectCommand
 from deile.commands.builtin.k8s_command import (
     K8sCommand,
     K8S_DEPLOYMENTS,
+    _ALWAYS_DESTRUCTIVE,
+    _CONDITIONALLY_DESTRUCTIVE,
+    _INTERACTIVE_NO_VARIANT,
     _cmd_discovery,
     _cmd_list,
     _cmd_logs,
@@ -22,6 +25,7 @@ from deile.commands.builtin.k8s_command import (
     _cmd_v2_delegate,
     _detect_namespace,
     _find_deploy_py,
+    _is_destructive,
     _parse_logs_args,
     _parse_restart_args,
     _run_kubectl,
@@ -1060,7 +1064,7 @@ class TestK8sCommandV2Routing:
         ):
             await _cmd().execute(_ctx("up"))
 
-        mock_v2.assert_called_once_with("up", "", "deile")
+        mock_v2.assert_called_once_with("up", "", "deile", confirmed=False)
 
     async def test_down_verb_dispatched_to_v2_delegate(self):
         with (
@@ -1077,7 +1081,7 @@ class TestK8sCommandV2Routing:
         ):
             await _cmd().execute(_ctx("down"))
 
-        mock_v2.assert_called_once_with("down", "", "deile")
+        mock_v2.assert_called_once_with("down", "", "deile", confirmed=False)
 
     async def test_panel_verb_dispatched_to_cmd_panel(self):
         with (
@@ -1111,4 +1115,404 @@ class TestK8sCommandV2Routing:
         ):
             await _cmd().execute(_ctx("scale --worker 2"))
 
-        mock_v2.assert_called_once_with("scale", "--worker 2", "deile")
+        mock_v2.assert_called_once_with("scale", "--worker 2", "deile", confirmed=False)
+
+
+# ---------------------------------------------------------------------------
+# _running_in_pod — serviceaccount token file
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestRunningInPodExtended:
+    def test_in_pod_via_serviceaccount_token(self, tmp_path):
+        """Presença do arquivo de token serviceaccount → in-pod."""
+        token_path = tmp_path / "token"
+        token_path.write_text("fake-token")
+
+        import deile.commands.builtin.k8s_command as mod
+        from unittest.mock import patch as _patch
+        from pathlib import Path
+
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "KUBERNETES_SERVICE_HOST"}
+
+        with (
+            _patch.dict("os.environ", env, clear=True),
+            _patch.object(mod.Path, "exists", return_value=True),
+        ):
+            assert mod._running_in_pod() is True
+
+    def test_not_in_pod_without_env_or_token(self, tmp_path):
+        """Sem env nem token → não in-pod."""
+        import deile.commands.builtin.k8s_command as mod
+        from unittest.mock import patch as _patch
+
+        env = {k: v for k, v in __import__("os").environ.items()
+               if k != "KUBERNETES_SERVICE_HOST"}
+
+        with (
+            _patch.dict("os.environ", env, clear=True),
+            _patch.object(mod.Path, "exists", return_value=False),
+        ):
+            assert mod._running_in_pod() is False
+
+
+# ---------------------------------------------------------------------------
+# _is_destructive
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestIsDestructive:
+    def test_down_is_always_destructive(self):
+        assert _is_destructive("down", "") is True
+        assert _is_destructive("down", "--yes") is True
+
+    def test_build_without_restart_is_not_destructive(self):
+        assert _is_destructive("build", "") is False
+        assert _is_destructive("build", "--tag latest") is False
+
+    def test_build_with_restart_is_destructive(self):
+        assert _is_destructive("build", "--restart") is True
+        assert _is_destructive("build", "--restart --tag x") is True
+
+    def test_claude_login_without_switch_not_destructive(self):
+        assert _is_destructive("claude-login", "") is False
+        assert _is_destructive("claude-login", "--no-interactive") is False
+
+    def test_claude_login_with_switch_is_destructive(self):
+        assert _is_destructive("claude-login", "--switch") is True
+
+    def test_up_is_not_destructive(self):
+        assert _is_destructive("up", "") is False
+
+    def test_scale_is_not_destructive(self):
+        assert _is_destructive("scale", "--worker 2") is False
+
+
+# ---------------------------------------------------------------------------
+# _cmd_v2_delegate — new features (gating, audit, setup, claude-login)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestCmdV2DelegateNewFeatures:
+    def _fake_deploy(self):
+        d = MagicMock()
+        d.__str__ = lambda self: "/repo/infra/k8s/deploy.py"
+        return d
+
+    async def test_destructive_without_confirm_blocked(self):
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+        ):
+            result = await _cmd_v2_delegate("down", "", "deile", confirmed=False)
+        assert result.success is False
+        assert "--confirm" in result.content
+        assert "down" in result.content
+
+    async def test_destructive_without_confirm_no_subprocess(self):
+        """Subprocess não deve ser iniciado sem --confirm."""
+        stream_called = []
+
+        async def fake_stream(cmd, *, timeout, console):
+            stream_called.append(cmd)
+            return 0, []
+
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+        ):
+            await _cmd_v2_delegate("down", "", "deile", confirmed=False)
+
+        assert not stream_called, "Subprocess was started without --confirm"
+
+    async def test_destructive_with_confirm_proceeds(self):
+        async def fake_stream(cmd, *, timeout, console):
+            return 0, ["done"]
+
+        mock_audit = MagicMock()
+        mock_audit.log_event = MagicMock()
+
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+        ):
+            result = await _cmd_v2_delegate("down", "", "deile", confirmed=True)
+
+        assert result.success is True
+
+    async def test_build_restart_gated_without_confirm(self):
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+        ):
+            result = await _cmd_v2_delegate("build", "--restart", "deile", confirmed=False)
+        assert result.success is False
+        assert "--confirm" in result.content
+
+    async def test_build_without_restart_not_gated(self):
+        async def fake_stream(cmd, *, timeout, console):
+            return 0, ["built"]
+
+        mock_audit = MagicMock()
+        mock_audit.log_event = MagicMock()
+
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+        ):
+            result = await _cmd_v2_delegate("build", "", "deile", confirmed=False)
+        assert result.success is True
+
+    async def test_setup_returns_error_pointing_to_create_namespace(self):
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+        ):
+            result = await _cmd_v2_delegate("setup", "", "deile")
+        assert result.success is False
+        assert "create-namespace" in result.content
+
+    async def test_setup_no_subprocess_called(self):
+        stream_called = []
+
+        async def fake_stream(cmd, *, timeout, console):
+            stream_called.append(cmd)
+            return 0, []
+
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+        ):
+            await _cmd_v2_delegate("setup", "", "deile")
+
+        assert not stream_called, "setup must not invoke subprocess"
+
+    async def test_claude_login_injects_no_interactive(self):
+        captured = {}
+        mock_audit = MagicMock()
+        mock_audit.log_event = MagicMock()
+
+        async def fake_stream(cmd, *, timeout, console):
+            captured["cmd"] = cmd
+            return 0, []
+
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+        ):
+            await _cmd_v2_delegate("claude-login", "", "deile")
+
+        assert "--no-interactive" in captured["cmd"]
+
+    async def test_claude_login_does_not_duplicate_no_interactive(self):
+        captured = {}
+        mock_audit = MagicMock()
+        mock_audit.log_event = MagicMock()
+
+        async def fake_stream(cmd, *, timeout, console):
+            captured["cmd"] = cmd
+            return 0, []
+
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+        ):
+            await _cmd_v2_delegate("claude-login", "--no-interactive", "deile")
+
+        assert captured["cmd"].count("--no-interactive") == 1
+
+    async def test_audit_event_emitted_before_exec(self):
+        call_order = []
+        mock_audit = MagicMock()
+
+        def audit_side(**kwargs):
+            call_order.append("audit")
+
+        mock_audit.log_event = MagicMock(side_effect=audit_side)
+
+        async def fake_stream(cmd, *, timeout, console):
+            call_order.append("exec")
+            return 0, []
+
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+        ):
+            await _cmd_v2_delegate("start", "", "deile")
+
+        assert call_order.index("audit") < call_order.index("exec"), \
+            "AuditEvent must be emitted BEFORE subprocess exec"
+
+    async def test_audit_event_not_emitted_when_blocked_by_gating(self):
+        mock_audit = MagicMock()
+        mock_audit.log_event = MagicMock()
+
+        with (
+            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
+            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+        ):
+            await _cmd_v2_delegate("down", "", "deile", confirmed=False)
+
+        mock_audit.log_event.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# K8sCommand.execute — --confirm and --save-namespace routing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestK8sCommandConfirmAndSaveNamespace:
+    async def test_down_with_confirm_passes_confirmed_true(self):
+        with (
+            patch(
+                "deile.commands.builtin.k8s_command._detect_namespace",
+                new_callable=AsyncMock,
+                return_value="deile",
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._cmd_v2_delegate",
+                new_callable=AsyncMock,
+                return_value=MagicMock(success=True, content="ok", content_type="text"),
+            ) as mock_v2,
+        ):
+            await _cmd().execute(_ctx("down --confirm"))
+
+        mock_v2.assert_called_once_with("down", "", "deile", confirmed=True)
+
+    async def test_down_without_confirm_passes_confirmed_false(self):
+        with (
+            patch(
+                "deile.commands.builtin.k8s_command._detect_namespace",
+                new_callable=AsyncMock,
+                return_value="deile",
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._cmd_v2_delegate",
+                new_callable=AsyncMock,
+                return_value=MagicMock(success=True, content="ok", content_type="text"),
+            ) as mock_v2,
+        ):
+            await _cmd().execute(_ctx("down"))
+
+        mock_v2.assert_called_once_with("down", "", "deile", confirmed=False)
+
+    async def test_save_namespace_persists_to_settings(self):
+        saved = {}
+
+        class FakeMgr:
+            def set_setting(self, key_path, value):
+                saved[key_path] = value
+
+        with (
+            patch(
+                "deile.commands.builtin.k8s_command._detect_namespace",
+                new_callable=AsyncMock,
+                return_value="deile",
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._cmd_discovery",
+                new_callable=AsyncMock,
+                return_value=MagicMock(success=True, content="panel", content_type="rich"),
+            ),
+            patch(
+                "deile.commands.settings_manager.SettingsManager",
+                return_value=FakeMgr(),
+            ),
+        ):
+            await _cmd().execute(_ctx("--save-namespace"))
+
+        assert saved.get("k8s.namespace") == "deile"
+
+    async def test_save_namespace_failure_does_not_crash(self):
+        class BrokenMgr:
+            def set_setting(self, key_path, value):
+                raise RuntimeError("disk full")
+
+        with (
+            patch(
+                "deile.commands.builtin.k8s_command._detect_namespace",
+                new_callable=AsyncMock,
+                return_value="deile",
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._cmd_discovery",
+                new_callable=AsyncMock,
+                return_value=MagicMock(success=True, content="panel", content_type="rich"),
+            ),
+            patch(
+                "deile.commands.settings_manager.SettingsManager",
+                return_value=BrokenMgr(),
+            ),
+        ):
+            result = await _cmd().execute(_ctx("--save-namespace"))
+
+        # Should not crash even when settings persistence fails
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Class A verbs not delegated (status/logs must NOT call _cmd_v2_delegate)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestClassAVerbsNotDelegated:
+    async def test_status_does_not_call_v2_delegate(self):
+        with (
+            patch(
+                "deile.commands.builtin.k8s_command._detect_namespace",
+                new_callable=AsyncMock,
+                return_value="deile",
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._cmd_status",
+                new_callable=AsyncMock,
+                return_value=MagicMock(success=True, content="pods", content_type="text"),
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._cmd_v2_delegate",
+                new_callable=AsyncMock,
+            ) as mock_v2,
+        ):
+            await _cmd().execute(_ctx("status"))
+
+        mock_v2.assert_not_called()
+
+    async def test_logs_does_not_call_v2_delegate(self):
+        with (
+            patch(
+                "deile.commands.builtin.k8s_command._detect_namespace",
+                new_callable=AsyncMock,
+                return_value="deile",
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._cmd_logs",
+                new_callable=AsyncMock,
+                return_value=MagicMock(success=True, content="logs", content_type="text"),
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._cmd_v2_delegate",
+                new_callable=AsyncMock,
+            ) as mock_v2,
+        ):
+            await _cmd().execute(_ctx("logs"))
+
+        mock_v2.assert_not_called()
