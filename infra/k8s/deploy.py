@@ -1690,6 +1690,107 @@ def k8s_claude_renew(args: dict) -> int:
     return 0
 
 
+def _renew_daemon_paths():
+    """Pidfile + logfile do daemon de renew (sob DEILE_RUNTIME_DIR ou ~/.deile/run)."""
+    rundir = Path(os.path.expanduser(
+        os.environ.get("DEILE_RUNTIME_DIR", "~/.deile/run")))
+    rundir.mkdir(parents=True, exist_ok=True)
+    return rundir / "claude-renew-daemon.pid", rundir / "claude-renew-daemon.log"
+
+
+def _renew_daemon_pid():
+    """PID vivo do daemon, ou None."""
+    pidf, _ = _renew_daemon_paths()
+    if not pidf.exists():
+        return None
+    try:
+        pid = int(pidf.read_text().strip())
+        os.kill(pid, 0)  # signal 0 = só testa existência
+        return pid
+    except (ValueError, ProcessLookupError, PermissionError):
+        return None
+
+
+def k8s_renew_daemon(args: dict) -> int:
+    """k8s renew-daemon <start|stop|status> — paliativo de renovação OAuth no host.
+
+    Roda ``k8s claude-renew`` em loop a cada N horas (default 4h) num processo
+    detached (nohup-like, ``start_new_session``), enquanto a migração para
+    ``claude setup-token`` (token de 1 ano — ver issue [INTENT]) não é feita.
+
+    Sub-ações: ``start`` (inicia + renova já), ``stop`` (mata o daemon),
+    ``status`` (pid vivo + últimas linhas do log). Intervalo configurável via
+    ``DEILE_CLAUDE_RENEW_DAEMON_INTERVAL_S`` (segundos; default 14400 = 4h).
+    """
+    extras = args.get("extra") or []
+    sub = (extras[0] if extras else "status").lower()
+    ns = _ns(args)
+    interval = int(os.environ.get("DEILE_CLAUDE_RENEW_DAEMON_INTERVAL_S", "14400"))
+    pidf, logf = _renew_daemon_paths()
+    ui.section(f"k8s renew-daemon {sub}")
+
+    if sub == "status":
+        pid = _renew_daemon_pid()
+        if pid:
+            ui.ok(f"daemon ATIVO (pid={pid}, intervalo={interval}s, ns={ns})")
+        else:
+            ui.info("daemon PARADO")
+        if logf.exists():
+            tail = logf.read_text(errors="replace").splitlines()[-6:]
+            ui.info("últimas linhas do log:")
+            for ln in tail:
+                ui.info(f"  {ln}")
+        return 0
+
+    if sub == "stop":
+        pid = _renew_daemon_pid()
+        if not pid:
+            ui.info("daemon já estava parado.")
+            pidf.unlink(missing_ok=True)
+            return 0
+        import signal  # noqa: PLC0415
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        pidf.unlink(missing_ok=True)
+        ui.ok(f"daemon parado (pid={pid}).")
+        return 0
+
+    if sub == "start":
+        if _renew_daemon_pid():
+            ui.warn("daemon já está ativo — use `renew-daemon stop` antes de reiniciar.")
+            return 0
+        deploy_py = str(Path(__file__).resolve())
+        # Loop detached: renova JÁ, depois dorme N s. Cada renew herda o env atual
+        # (DEILE_K8S_NAMESPACE etc.). Log append-only com timestamp por ciclo.
+        loop = (
+            f'while true; do echo "=== renew $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="; '
+            f'"{sys.executable}" "{deploy_py}" -n "{ns}" k8s claude-renew; '
+            f'sleep {interval}; done'
+        )
+        log_fh = open(logf, "a")  # noqa: SIM115 — handle vive no processo filho
+        proc = subprocess.Popen(
+            ["bash", "-c", loop],
+            stdout=log_fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True,  # detacha (sobrevive ao shell pai)
+        )
+        pidf.write_text(str(proc.pid))
+        ui.ok(f"daemon iniciado (pid={proc.pid}, renova a cada {interval}s = "
+              f"{interval//3600}h, ns={ns}).")
+        ui.info(f"log: {logf}")
+        ui.info("pare com: deploy.py k8s renew-daemon stop")
+        ui.warn("PALIATIVO: substituir por `claude setup-token` (token 1 ano) "
+                "quando possível — ver issue [INTENT].")
+        return 0
+
+    ui.err(f"sub-ação inválida: {sub} (use start|stop|status)")
+    return 2
+
+
 def _k8s_state_label(ns: Optional[str] = None) -> str:
     """Rótulo curto do estado do k8s para o menu/diagnóstico."""
     ns = ns or NS_DEFAULT
@@ -2178,6 +2279,7 @@ _K8S = {
     "list": k8s_list, "panel": k8s_panel, "doctor": cmd_doctor,
     "setup": k8s_setup, "claude-login": k8s_claude_login,
     "claude-renew": k8s_claude_renew,
+    "renew-daemon": k8s_renew_daemon,
     "create-namespace": k8s_create_namespace,
     "scale": k8s_scale,
 }
