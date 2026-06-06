@@ -252,18 +252,18 @@ spec:
             - { name: DEILE_PIPELINE_RETRIES_PR_REVIEW,  value: "3" }
             - { name: DEILE_PIPELINE_RETRIES_FOLLOW_UPS, value: "5" }
             # Redireciona kubectl para o apiserver na porta nativa do k3s
-            # (6443) em vez do ClusterIP kube-proxy (10.43.0.1:443).
-            # Em Rancher Desktop / Lima, o kube-proxy iptables DNAT não
-            # funciona de dentro de pods — o ClusterIP retorna "connection
-            # refused". Usar o node IP direto na porta 6443 contorna isso.
-            # enableServiceLinks: false (acima) bloquearia a injeção automática
-            # de KUBERNETES_SERVICE_HOST/PORT; aqui re-injetamos via Downward
-            # API com o node IP real e a porta correta.
-            - name: KUBERNETES_SERVICE_HOST
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-            - { name: KUBERNETES_SERVICE_PORT, value: "6443" }
+            # ClusterIP do kubernetes service (10.43.0.1:443). enableServiceLinks
+            # false bloqueia a injeção automática, então re-injetamos aqui.
+            # ANTES usava o node IP via Downward API (status.hostIP:6443) porque
+            # o kube-proxy DNAT do ClusterIP não funcionava de dentro de pods em
+            # versões antigas do Rancher Desktop/Lima. Isso quebrou quando o IP
+            # da VM Lima drifou: o InternalIP do node (status.hostIP) divergiu do
+            # IP onde o API escuta (ExternalIP), deixando kubectl-de-pod com
+            # "connection refused" em 192.168.5.15:6443. O ClusterIP é estável
+            # (kube-proxy roteia para o endpoint corrente) e à prova de drift —
+            # verificado funcionando de dentro do pod no Rancher Desktop atual.
+            - { name: KUBERNETES_SERVICE_HOST, value: "10.43.0.1" }
+            - { name: KUBERNETES_SERVICE_PORT, value: "443" }
           ports:
             - { name: status-api, containerPort: 8768, protocol: TCP }
           readinessProbe:
