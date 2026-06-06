@@ -778,6 +778,17 @@ async def _dispatch_mention_group(
         return
 
     monitor._stats.mentions_processed += 1
+
+    # Issue #568: se a menção one-shot sobre uma issue produziu derivadas
+    # (DECOMPOSTO: #n1 #n2...), aplica o handshake de decomposição — idêntico ao
+    # que `decompose_one_reviewed_intent` executa — para garantir idempotência e
+    # liberar o slot de in_flight. Sem isso, a issue fica em `em_arquitetura` e
+    # a próxima passagem do refino re-decompõe gerando duplicatas.
+    if kind == "issue" and mode == "comment":
+        derived_from_mention = parse_decompose_result(outcome.text)
+        if derived_from_mention:
+            await _apply_decompose_handshake_from_mention(monitor, number, derived_from_mention)
+
     if sticky:
         # Após a refactor "PR é o quadro", todo dispatch sticky de sucesso é
         # marcado com ``~mention:processado``. O brief unificado já comenta o
@@ -802,6 +813,56 @@ async def _mark_mention_done(monitor: "PipelineMonitor", kind: str, number: int)
         await monitor.forge.add_labels(kind, number, [MENTION_DONE])
     except Exception as exc:  # noqa: BLE001 — marker is best-effort
         logger.warning("could not mark %s #%d as %s: %s", kind, number, MENTION_DONE, exc)
+
+
+async def _apply_decompose_handshake_from_mention(
+    monitor: "PipelineMonitor", number: int, derived: list[int]
+) -> None:
+    """Issue #568: aplica o handshake de decomposição após uma menção one-shot que
+    criou issues derivadas.
+
+    Idempotente: relê o estado atual da issue antes de transicionar para evitar
+    re-aplicar o handshake se outra path já o fez (race no tick). Se a issue já
+    está em ``~workflow:decomposta``, nada acontece. Caso contrário, transiciona
+    do estado atual para ``WORKFLOW_DECOMPOSED`` e limpa labels de refino.
+    """
+    try:
+        fresh = await monitor.forge.get_issue(number)
+    except Exception as exc:  # noqa: BLE001 — best-effort; não bloqueia o flow
+        logger.warning("decompose handshake #%d: get_issue falhou: %s", number, exc)
+        return
+
+    current_labels = set(fresh.labels)
+    if WORKFLOW_DECOMPOSED in current_labels:
+        logger.info("decompose handshake #%d: já decomposta, skip", number)
+        return
+
+    # Encontra o estado atual de workflow para transicionar a partir dele.
+    refine_state = next(
+        (lb for lb in current_labels if lb in set(REFINE_WORKFLOW_STATES)), None
+    )
+    try:
+        if refine_state:
+            await monitor.forge.transition_issue(
+                number, from_label=refine_state, to_label=WORKFLOW_DECOMPOSED
+            )
+        else:
+            await monitor.forge.add_labels("issue", number, [WORKFLOW_DECOMPOSED])
+        # Limpa labels de refino residuais (best-effort).
+        cleanup = [REFINAR] + [lb for lb in current_labels if is_refine_attempt_label(lb)]
+        cleanup = [lb for lb in cleanup if lb in current_labels]
+        if cleanup:
+            await monitor.forge.remove_labels("issue", number, cleanup)
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor,
+            f"decompose handshake via menção: could not mark #{number} decomposed",
+            exc,
+        )
+        return
+    monitor._resume_tracker.clear(number)
+    log_decomposition_fanout(intent=number, derivadas=derived, complexity=[])
+    logger.info("mention/decompose #%d → derivadas %s (handshake aplicado)", number, derived)
 
 
 async def _comment_mention_gave_up(
@@ -1428,6 +1489,35 @@ async def _apply_refine_verdict(
             "refine #%d concluiu com erro (passe %d) — deixa pro próximo tick",
             number, monitor._resume_tracker.refine_attempt(number),
         )
+        return
+
+    # Issue #568: se o architect criou derivadas (DECOMPOSTO: #n1 #n2...) em vez de
+    # refinar o escopo, aplica o handshake de decomposição em vez de tratar como
+    # veredito de refino. Isso garante idempotência (issue vira terminal) e libera
+    # o slot de in_flight que `em_arquitetura` consumia indevidamente.
+    derived_from_refine = parse_decompose_result(verdict_text)
+    if derived_from_refine:
+        refine_state_for_decompose = next(
+            (s for s in REFINE_WORKFLOW_STATES if s in target.labels),
+            refine_workflow_state(issue_type),
+        )
+        cleanup_labels = [REFINAR] + [lb for lb in target.labels if is_refine_attempt_label(lb)]
+        try:
+            await monitor.forge.transition_issue(
+                number,
+                from_label=refine_state_for_decompose,
+                to_label=WORKFLOW_DECOMPOSED,
+            )
+            await monitor.forge.remove_labels("issue", number, cleanup_labels)
+        except GhCommandError as exc:
+            await _record_forge_error(
+                monitor,
+                f"could not mark #{number} decomposed after refine",
+                exc,
+            )
+        monitor._resume_tracker.clear(number)
+        log_decomposition_fanout(intent=number, derivadas=derived_from_refine, complexity=[])
+        logger.info("refine/decompose #%d → derivadas %s (handshake via refine)", number, derived_from_refine)
         return
 
     verdict = parse_refine_verdict(verdict_text)
