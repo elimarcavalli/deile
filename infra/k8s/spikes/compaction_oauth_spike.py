@@ -161,6 +161,14 @@ def make_oauth_client(token: Optional[str] = None) -> anthropic.Anthropic:
     return anthropic.Anthropic(auth_token=resolved)
 
 
+def get_context_window(model: str) -> int:
+    """Retorna o context window do modelo em tokens.
+
+    Usado por replay_pr527_session.py para calcular o trigger de compaction.
+    """
+    return _CONTEXT_WINDOWS.get(model, 200_000)
+
+
 def refresh_oauth_token(
     client_ref: list[anthropic.Anthropic],
     creds_path: Optional[Path] = None,
