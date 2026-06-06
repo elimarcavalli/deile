@@ -1400,14 +1400,86 @@ def _estimate_context_tokens(session_id: str, workspace: Path) -> int:
     return peak
 
 
-async def _git_fast_forward_workdir(workspace: Path, branch: Optional[str]) -> None:
+async def _ensure_repo_cloned(workspace: Path, repo: str) -> bool:
+    """Clone ``repo`` into ``<workspace>/repo`` via ``gh repo clone`` if absent.
+
+    Called when a resume dispatch finds that the workdir exists (lease, progress
+    files, etc.) but the ``./repo`` checkout was lost (e.g. the workdir was
+    partially cleaned up, or the PVC was remounted on a different node that had
+    only the metadata files).
+
+    Args:
+        workspace: the task workdir (parent of ``./repo``).
+        repo: GitHub ``owner/repo`` slug used as the clone target.
+
+    Returns:
+        True  — ``<workspace>/repo/.git`` now exists (either already did or
+                was freshly cloned).
+        False — clone failed; caller should log + continue (best-effort).
+
+    Never raises.
+    """
+    repo_dir = workspace / "repo"
+    if (repo_dir / ".git").exists():
+        return True  # already present
+    if not repo:
+        logger.warning(
+            "ensure_repo_cloned: repo slug ausente, não consigo re-clonar %s",
+            workspace,
+        )
+        return False
+    logger.warning(
+        "ensure_repo_cloned: ./repo ausente em %s — re-clonando %s",
+        workspace, repo,
+    )
+    gh_bin = shutil.which("gh") or "gh"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            gh_bin, "repo", "clone", repo, "repo",
+            cwd=str(workspace),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _out, err = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.warning(
+                "ensure_repo_cloned: timeout ao clonar %s em %s", repo, workspace,
+            )
+            return False
+        if proc.returncode != 0:
+            logger.warning(
+                "ensure_repo_cloned: gh repo clone %s falhou (rc=%d): %s",
+                repo, proc.returncode,
+                (err or b"").decode("utf-8", "replace")[:300],
+            )
+            return False
+        logger.info(
+            "ensure_repo_cloned: re-clone OK — %s/repo restaurado", workspace.name,
+        )
+        return True
+    except (FileNotFoundError, OSError) as exc:
+        logger.warning(
+            "ensure_repo_cloned: erro ao clonar %s: %s", repo, exc,
+        )
+        return False
+
+
+async def _git_fast_forward_workdir(
+    workspace: Path,
+    branch: Optional[str],
+    repo: str = "",
+) -> None:
     """Best-effort git fetch + reset --hard origin/<branch> dentro do
     workdir reaproveitado. Permite ao claude (em resume) ver commits
     novos pushados pelo operador entre revisions.
 
     Procura ``<workspace>/repo/.git`` (estrutura padrão criada pelo
-    primeiro dispatch via ``gh repo clone repo``). Se não existir,
-    no-op (claude pode fazer pull no próprio shell).
+    primeiro dispatch via ``gh repo clone repo``). Se não existir E
+    ``repo`` for fornecido, tenta re-clonar via :func:`_ensure_repo_cloned`
+    antes de fazer o fast-forward. Caso contrário, no-op.
 
     Erros viram ``logger.warning`` e função retorna — NUNCA levanta.
     """
@@ -1415,8 +1487,17 @@ async def _git_fast_forward_workdir(workspace: Path, branch: Optional[str]) -> N
         return
     repo_dir = workspace / "repo"
     if not (repo_dir / ".git").exists():
-        logger.debug("git ff: no .git in %s/repo — skipping", workspace)
-        return
+        # Tenta re-clonar se tivermos o slug do repositório.
+        if repo:
+            cloned = await _ensure_repo_cloned(workspace, repo)
+            if not cloned:
+                logger.warning(
+                    "git ff: re-clone falhou em %s — skipping fast-forward", workspace,
+                )
+                return
+        else:
+            logger.debug("git ff: no .git in %s/repo — skipping", workspace)
+            return
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", "-C", str(repo_dir), "fetch", "--quiet", "origin", branch,
@@ -1678,6 +1759,26 @@ def _workspace_is_stale(
     return (now - hb) >= threshold_s
 
 
+def _has_active_lease(workspace: Path) -> bool:
+    """True se ``<workspace>/.lease.json`` está presente e com heartbeat dentro
+    do TTL. Usado como guarda de segurança imediatamente antes de remover um
+    workdir (fix #520 — TOCTOU: um dispatch pode adquirir lease entre o stale
+    scan e o rmtree).
+
+    Conservador: qualquer erro de I/O → False (não bloqueia remoção de lixo
+    que não conseguimos ler; a função é uma camada extra, não a única).
+    """
+    lease_path = workspace / ".lease.json"
+    if not lease_path.exists():
+        return False
+    try:
+        data = json.loads(lease_path.read_text(encoding="utf-8"))
+        age = time.time() - float(data.get("heartbeat_at", 0))
+        return age < _LEASE_TTL_S
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+
+
 def _presence_dir(root: Path) -> Path:
     """Subdiretório dos arquivos de presença de pod (``<root>/.pods``)."""
     return root / ".pods"
@@ -1821,6 +1922,15 @@ def _cleanup_stale_workspaces(
             continue
         summary["inspected"] += 1
         if not _workspace_is_stale(child, threshold_s=threshold_s, now=now, alive_pods=alive_pods):
+            continue
+        # Fix #520 — re-verifica o lease imediatamente antes do rmtree para
+        # evitar TOCTOU: um dispatch pode ter adquirido o lease entre o scan
+        # acima e este ponto (latência de I/O, preempção de thread, etc.).
+        if _has_active_lease(child):
+            logger.info(
+                "workspace cleanup skipped task_id=%s — lease ativo adquirido "
+                "após scan stale (TOCTOU guard, fix #520)", child.name,
+            )
             continue
         bytes_freed = _remove_workspace_tree(child)
         summary["removed"] += 1
@@ -2198,6 +2308,12 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     model_slug = payload.get("preferred_model")
     resume_session_id = payload.get("resume_session_id")
     prev_task_id = payload.get("prev_task_id")
+    # Repo slug (``owner/repo``) extraído do bloco ``resume`` enviado pelo
+    # pipeline. Usado para garantir que ``./repo`` está clonado antes do
+    # spawn do claude (fix #520: worktree com só .lease.json). Fail-open:
+    # ausente → string vazia → _ensure_repo_cloned não é chamado.
+    _resume_block = payload.get("resume") or {}
+    _repo_slug: str = str(_resume_block.get("repo") or "").strip()
     # Modo fire-and-forget: quando False, retorna 202+task_id imediatamente e
     # executa o subprocess em background (asyncio.create_task). Comportamento
     # padrão (True ou ausente) = bloqueante, compatível com clientes legados.
@@ -2382,7 +2498,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         # claude veja os commits novos do operador. Best-effort: se falhar
         # (sem .git, sem origin, conflito), log warning e continua —
         # claude pode dar pull no próprio (tem `gh`/`git` no shell).
-        await _git_fast_forward_workdir(workspace, branch)
+        # Fix #520: passa _repo_slug para que, se ./repo sumiu, o ff
+        # re-clone antes de tentar o fetch/reset.
+        await _git_fast_forward_workdir(workspace, branch, repo=_repo_slug)
     else:
         # Defense-in-depth contra DUP fresh dispatch (dedup por channel): se já
         # existe um claude VIVO para o mesmo channel (ex.: pipeline-issue-N), NÃO
@@ -2528,6 +2646,28 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         "last_total_cost_usd": 0.0,
     }
     await asyncio.to_thread(_save_session_meta, task_id, meta_pre)
+
+    # Fix #520 — garante que <workspace>/repo existe antes de spawnar o claude.
+    # O brief instrui o agente a clonar se preciso, mas se o checkout sumiu
+    # (workdir com só .lease.json — pod recreado, cleanup parcial, PVC remontado
+    # em node diferente), o claude roda sem repositório e não consegue trabalhar.
+    # Verificamos aqui (no servidor, com todas as credenciais já carregadas via
+    # _refresh_oauth_with_lock) e re-clonamos com gh se _repo_slug estiver
+    # disponível. Best-effort: se falhar, o claude ainda pode tentar pelo próprio
+    # shell conforme instruído no brief.
+    _repo_dir_check = workspace / "repo"
+    if not (_repo_dir_check / ".git").exists() and _repo_slug:
+        logger.warning(
+            "pre-spawn: ./repo ausente em workspace %s — re-clonando %s "
+            "(fix #520)",
+            workspace, _repo_slug,
+        )
+        _clone_ok = await _ensure_repo_cloned(workspace, _repo_slug)
+        if not _clone_ok:
+            logger.warning(
+                "pre-spawn: re-clone falhou para %s — claude tentará "
+                "clonar via shell conforme o brief", _repo_slug,
+            )
 
     claude_bin = shutil.which("claude") or "claude"
     cmd = [
@@ -3945,6 +4085,17 @@ def _do_cleanup(
             continue
         try:
             p = Path(workdir_str)
+            # Fix #520 — TOCTOU guard: re-verifica o lease imediatamente
+            # antes do rmtree. O scan pode ter ocorrido segundos atrás; um
+            # dispatch em concorrência pode ter adquirido o lease nesse intervalo.
+            # Nunca remove um workdir com lease ativo, mesmo que o scan o tenha
+            # marcado como candidato.
+            if _has_active_lease(p):
+                logger.info(
+                    "cleanup: skipping workdir %s — lease ativo adquirido "
+                    "após scan (TOCTOU guard, fix #520)", workdir_str,
+                )
+                continue
             size = _dir_size(p)
             shutil.rmtree(p, ignore_errors=True)
             if not p.exists():
