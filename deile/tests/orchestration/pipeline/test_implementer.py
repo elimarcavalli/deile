@@ -509,3 +509,49 @@ class TestCritiqueRefineNowait:
         # Caminho wait=True: retorna summary do response, não task_id nowait.
         assert out.ok is True
         assert client.last_wait is True
+
+
+# ---------------------------------------------------------------------------
+# Fix #8 (issue #521) — WorkerImplementer.address_review
+# ---------------------------------------------------------------------------
+
+class TestAddressReviewDispatch:
+    """address_review() deve despachar fire-and-forget com stage=implement e
+    persona=developer — NÃO usa stage=pr_review como a review normal.
+
+    O brief enviado instrui o worker a LER a última review REQUEST_CHANGES e
+    APLICAR o fix + push; nunca revisar, comentar veredito ou mergear.
+    """
+
+    async def test_address_review_e_nowait(self):
+        """address_review() deve ser fire-and-forget (nowait=True)."""
+        client = _FakeClient({"task_id": "addr-t1", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        out = await impl.address_review(_make_monitor_with_forge(), _pr(number=42))
+        assert out.ok is True
+        assert out.task_id == "addr-t1"
+        assert client.last_wait is False
+
+    async def test_address_review_usa_stage_implement(self):
+        """address_review() usa stage='implement', não 'pr_review'."""
+        client = _FakeClient({"task_id": "addr-t2", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        await impl.address_review(_make_monitor_with_forge(), _pr(number=42))
+        assert client.last_payload["stage"] == "implement"
+
+    async def test_address_review_usa_persona_developer(self):
+        """address_review() usa persona='developer' (implement, não review)."""
+        client = _FakeClient({"task_id": "addr-t3", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        await impl.address_review(_make_monitor_with_forge(), _pr(number=42))
+        assert client.last_payload["persona"] == "developer"
+
+    async def test_address_review_brief_instrui_aplique(self):
+        """O brief de address deve conter 'APLIQUE' e proibir revisar/mergear."""
+        client = _FakeClient({"task_id": "addr-t4", "status": "running"})
+        impl = WorkerImplementer(client=client)
+        await impl.address_review(_make_monitor_with_forge(), _pr(number=42))
+        brief = client.last_payload.get("brief", "")
+        assert "APLIQUE" in brief
+        assert "NÃO revise" in brief
+        assert "NÃO mergeie" in brief

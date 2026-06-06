@@ -11,7 +11,8 @@ from deile.orchestration.pipeline.briefs import (
     _classify_mention_action, _render_claude_mention_prompt,
     _render_trigger_details, _render_worker_implement_brief,
     _render_worker_implement_resume_brief, _render_worker_mention_brief,
-    _render_worker_pr_unified_brief, _summarize_trigger_types)
+    _render_worker_pr_address_brief, _render_worker_pr_unified_brief,
+    _summarize_trigger_types)
 from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
 from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
                                                         MentionTrigger, PrRef)
@@ -333,3 +334,64 @@ class TestMentionRenderers:
         claude = _render_claude_mention_prompt("o/r", t, ["assignee"], [t])
         assert "ASSIGNED TO PR" in worker
         assert "ASSIGNED TO PR" in claude
+
+
+class TestAddressReviewBrief:
+    """Fix #8 (issue #521) — brief de address-review-feedback.
+
+    Quando a review da PRÓPRIA PR conclui REQUEST_CHANGES com HEAD inalterado,
+    o pipeline despacha UMA task de address (implement + push). O brief deve:
+    - Renderizar todos os placeholders (sem ``{snake_case}`` sobrando).
+    - Instruir o worker a APLICAR o fix (não revisar, comentar veredito, nem mergear).
+    - Exigir o push (PUSH é OBRIGATÓRIO — sem push o HEAD não muda).
+    - Usar análise de impacto (não rodar a suíte completa — tarefa do revisor).
+    - Terminar com SHA do novo HEAD OU BLOQUEADO (não URL de PR).
+    """
+
+    FULL_SUITE = "pytest deile/tests/"
+
+    def _render(self):
+        return _render_worker_pr_address_brief(
+            "o/r", "main", "auto/issue-42", 42
+        )
+
+    def test_renders_all_placeholders(self):
+        import re
+        out = self._render()
+        assert "#42" in out and "o/r" in out
+        # Nenhum placeholder snake_case deve sobrar não-renderizado.
+        unrendered = re.findall(r"\{[a-z_]+\}", out)
+        assert unrendered == [], f"placeholders não renderizados: {unrendered}"
+
+    def test_instrui_aplicar_nao_revisar_nem_mergear(self):
+        out = self._render()
+        # Instrução central: APLIQUE o fix.
+        assert "APLIQUE" in out
+        # Proibições explícitas: não revisar, não comentar veredito, não mergear.
+        assert "NÃO revise" in out
+        assert "NÃO mergeie" in out
+
+    def test_push_e_obrigatorio(self):
+        out = self._render()
+        # O push deve ser explicitamente obrigatório — sem push o HEAD não muda.
+        assert "PUSH é OBRIGATÓRIO" in out
+
+    def test_le_progress_md(self):
+        out = self._render()
+        assert ".deile-progress.md" in out
+
+    def test_usa_analise_de_impacto_nao_suite_completa(self):
+        """Address-review é um IMPLEMENT — usa análise de impacto, não a suíte inteira."""
+        out = self._render()
+        assert "análise de impacto" in out
+        # Menciona full suite apenas no contexto proibitivo ("NUNCA rode").
+        assert self.FULL_SUITE in out
+        assert "NUNCA rode" in out
+        # NÃO exige suíte completa como gate positivo (essa é a regra do revisor).
+        assert "SUÍTE COMPLETA" not in out
+
+    def test_ultima_linha_e_sha_ou_bloqueado(self):
+        out = self._render()
+        # A última linha deve ser SHA do HEAD após push OU BLOQUEADO.
+        assert "git rev-parse HEAD" in out
+        assert "BLOQUEADO" in out
