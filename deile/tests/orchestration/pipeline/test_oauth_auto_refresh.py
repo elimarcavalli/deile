@@ -559,9 +559,9 @@ class TestOauthGrantDurability:
 
         async def fake_kubectl(args, timeout_s=30.0, input_data=None):
             joined = " ".join(str(a) for a in args)
-            # Detect PVC write (sh -c with stdin) vs PVC read (cat without stdin)
+            # AC8: PVC write usa python3 com fcntl.flock (não mais sh/cat).
             is_pvc_write = (
-                "exec" in joined and "sh" in joined and input_data is not None
+                "exec" in joined and "python3" in joined and input_data is not None
             )
             is_pvc_read = (
                 "exec" in joined and "cat" in joined and input_data is None
@@ -645,8 +645,9 @@ class TestOauthGrantDurability:
 
         async def fake_kubectl(args, timeout_s=30.0, input_data=None):
             joined = " ".join(str(a) for a in args)
+            # AC8: PVC write usa python3 com fcntl.flock (não mais sh/cat).
             is_pvc_write = (
-                "exec" in joined and "sh" in joined and input_data is not None
+                "exec" in joined and "python3" in joined and input_data is not None
             )
             is_pvc_read = (
                 "exec" in joined and "cat" in joined and input_data is None
@@ -1013,3 +1014,128 @@ class TestExtractOauthConfig:
         token_url, client_id, _ = crf._extract_oauth_config(creds)
         assert token_url == "https://creds.example.com/tok"
         assert client_id == "creds-client-id"
+
+
+# ---------------------------------------------------------------------------
+# N3.9 — AC7: sem vazamento de token em logs
+# ---------------------------------------------------------------------------
+
+
+class TestNoTokenLeak:
+    """Garante que valores de accessToken/refreshToken não aparecem nos logs (AC7)."""
+
+    @pytest.mark.unit
+    async def test_token_values_not_in_steps_or_logs(
+        self, tmp_path, monkeypatch, caplog,
+    ):
+        """AccessToken e refreshToken novos NÃO devem aparecer em result.steps nem em caplog (AC7)."""
+        import logging
+        monkeypatch.setattr(crf, "_REFRESH_LOCK_PATH", str(tmp_path / "lock"))
+
+        now_ms = int(time.time() * 1000)
+        secret_access = "super-secret-access-token-value-xyz"
+        secret_refresh = "super-secret-refresh-token-value-abc"
+        creds_json = json.dumps({
+            "claudeAiOauth": {
+                "accessToken": "old-expired-token",
+                "refreshToken": secret_refresh,
+                "expiresAt": now_ms - 1000,
+                "oauthUrl": "https://example.com/oauth/token",
+                "clientId": "test-client",
+            }
+        })
+
+        async def fake_kubectl(args, timeout_s=30.0, input_data=None):
+            joined = " ".join(str(a) for a in args)
+            if "cat" in joined and "exec" in joined and input_data is None:
+                return (0, creds_json, "")
+            if "python3" in joined and "exec" in joined and input_data is not None:
+                return (0, "", "")
+            if "configmap" in joined and "get" in joined:
+                return (1, "", "not found")
+            if "configmap" in joined:
+                return (0, "", "")
+            if "create" in joined and "secret" in joined:
+                return (0, "apiVersion: v1\nkind: Secret\n", "")
+            if "apply" in joined:
+                return (0, "secret configured", "")
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", fake_kubectl)
+
+        async def fake_oauth_post(token_url, client_id, refresh_token, *, timeout_s=30.0):
+            return {
+                "accessToken": secret_access,
+                "refreshToken": "rotated-" + secret_refresh,
+                "expiresAt": int((time.time() + 3600) * 1000),
+            }
+
+        monkeypatch.setattr(crf, "_do_oauth_token_refresh", fake_oauth_post)
+
+        with caplog.at_level(logging.DEBUG, logger="deile.orchestration.pipeline._claude_creds_refresh"):
+            result = await crf.try_refresh_claude_credentials(
+                min_expiry_window_s=0.0,
+                skip_lock=True,
+                skip_cross_pod_lock=True,
+            )
+
+        assert result.ok is True, result.error or result.message
+
+        # AC7: token cru NÃO deve aparecer em steps
+        steps_str = " ".join(result.steps)
+        assert secret_access not in steps_str, (
+            f"accessToken cru vazou nos steps: {steps_str!r}"
+        )
+        assert secret_refresh not in steps_str, (
+            f"refreshToken cru vazou nos steps: {steps_str!r}"
+        )
+
+        # AC7: token cru NÃO deve aparecer em caplog
+        all_log = " ".join(r.getMessage() for r in caplog.records)
+        assert secret_access not in all_log, (
+            f"accessToken cru vazou em logs: {all_log!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# N3.10 — AC8: write-back via fcntl.flock (coordenação com worker server)
+# ---------------------------------------------------------------------------
+
+
+class TestPvcWriteUsesFlock:
+    """Garante que _write_creds_to_pod_pvc usa fcntl.flock via python3, não cat puro (AC8)."""
+
+    @pytest.mark.unit
+    async def test_write_back_uses_python3_flock_command(self, monkeypatch):
+        """O comando de write-back deve invocar python3 com fcntl.flock, não sh/cat (AC8)."""
+        kubectl_calls = []
+
+        async def capturing_kubectl(args, timeout_s=30.0, input_data=None):
+            kubectl_calls.append(list(args))
+            return (0, "", "")
+
+        monkeypatch.setattr(crf, "_kubectl_async", capturing_kubectl)
+
+        creds = {"claudeAiOauth": {"accessToken": "tok", "refreshToken": "rt"}}
+        ok, msg = await crf._write_creds_to_pod_pvc("deile", creds)
+
+        assert ok is True, msg
+        assert kubectl_calls, "kubectl não foi chamado"
+
+        call_args = kubectl_calls[0]
+        joined = " ".join(str(a) for a in call_args)
+
+        # AC8: deve usar python3 (não sh/cat) para coordenar flock com worker server
+        assert "python3" in joined, (
+            f"_write_creds_to_pod_pvc deve usar python3 para flock (AC8), "
+            f"mas chamou: {joined!r}"
+        )
+        assert "fcntl" in joined, (
+            f"O script de write deve usar fcntl para flock (AC8), "
+            f"mas o comando foi: {joined!r}"
+        )
+        assert "LOCK_EX" in joined, (
+            f"O flock deve ser LOCK_EX (AC8), mas o comando foi: {joined!r}"
+        )
+        # Garantia: token cru não aparece no comando kubectl (AC7)
+        assert "tok" not in joined, "accessToken cru não deve aparecer nos args kubectl"

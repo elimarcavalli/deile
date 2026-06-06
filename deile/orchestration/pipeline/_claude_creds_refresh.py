@@ -439,12 +439,21 @@ async def _write_creds_to_pod_pvc(
     Retorna ``(ok, message)``.
     """
     creds_json = json.dumps(creds, separators=(",", ":"))
-    # Usa `tee` para escrever o stdin no arquivo destino.
+    # AC8: usa fcntl.flock(LOCK_EX) para coordenar com o worker server,
+    # que também usa flock ao ler credentials.json (claude_worker_server.py:154).
+    _creds_path = "/home/claude/.claude/credentials.json"
+    _flock_script = (
+        "import fcntl,os,sys; "
+        f"p={_creds_path!r}; "
+        "m='r+' if os.path.exists(p) else 'w'; "
+        "f=open(p,m); fcntl.flock(f,fcntl.LOCK_EX); "
+        "f.seek(0); f.truncate(); f.write(sys.stdin.read()); f.flush(); "
+        "fcntl.flock(f,fcntl.LOCK_UN); f.close()"
+    )
     args = [
         "-n", namespace, "exec", "deploy/claude-worker",
         "-c", "claude-worker", "--",
-        "sh", "-c",
-        "cat > /home/claude/.claude/credentials.json",
+        "python3", "-c", _flock_script,
     ]
     rc, _out, stderr = await _kubectl_async(
         args, timeout_s=timeout_s,
