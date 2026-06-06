@@ -240,21 +240,24 @@ class TestPipelineClassifier:
         return pd.LogLine(ts=datetime(2026, 5, 23, 14, 0, tzinfo=timezone.utc),
                           body=body)
 
-    def test_mention_issue(self):
+    def test_mention_group_legacy_stages_fallback(self):
+        # Legacy "mention group" log lines are no longer emitted by stages.py
+        # (_MENTION_RE was retired). A line with the full module prefix still
+        # matches _STAGES_RE and returns action="stages".
         ev = pd._classify_pipeline_line(self._line(
             "deile.orchestration.pipeline.stages mention group issue:278: "
             "triggers=['assignee']"
         ))
         assert ev is not None
-        assert ev.action == "mention"
-        assert ev.target == "#278"
-        assert "assignee" in ev.detail
+        assert ev.action == "stages"
 
-    def test_mention_pr(self):
+    def test_mention_pr_legacy_returns_none(self):
+        # Legacy "mention group pr:..." without the full module prefix no longer
+        # matches any pattern and returns None.
         ev = pd._classify_pipeline_line(self._line(
             "stages mention group pr:291: triggers=['reviewer']"
         ))
-        assert ev is not None and ev.target == "PR291"
+        assert ev is None
 
     def test_dispatch_starting(self):
         ev = pd._classify_pipeline_line(self._line(
@@ -462,23 +465,21 @@ class TestPipelineClassifierCanonical:
         assert "backoff_s=120" in ev.detail
         assert "until=2026-05-31T11:00:00Z" in ev.detail
 
-    # ── AC10: zero regression on 6 legacy patterns ────────────────────────
-    def test_legacy_mention_issue(self):
+    # ── AC10: legacy patterns (mention retired, others unchanged) ─────────
+    def test_legacy_mention_issue_stages_fallback(self):
+        # _MENTION_RE retired — line with full module prefix matches _STAGES_RE.
         ev = pd._classify_pipeline_line(self._line(
             "deile.orchestration.pipeline.stages mention group issue:278: triggers=['assignee']"
         ))
         assert ev is not None
-        assert ev.action == "mention"
-        assert ev.target == "#278"
-        assert "assignee" in ev.detail
+        assert ev.action == "stages"
 
-    def test_legacy_mention_pr(self):
+    def test_legacy_mention_pr_returns_none(self):
+        # _MENTION_RE retired — short form without module prefix returns None.
         ev = pd._classify_pipeline_line(self._line(
             "stages mention group pr:291: triggers=['reviewer']"
         ))
-        assert ev is not None
-        assert ev.action == "mention"
-        assert ev.target == "PR291"
+        assert ev is None
 
     def test_legacy_dispatch_starting(self):
         ev = pd._classify_pipeline_line(self._line(

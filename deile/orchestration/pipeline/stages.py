@@ -626,7 +626,6 @@ async def _dispatch_mention_group(
     number = primary.target_number
     has = set(trigger_types)
     sticky = bool(has & _STICKY_TRIGGER_TYPES)
-    logger.info("mention group %s: triggers=%s", dedup_key, trigger_types)
 
     # Issue work → inject into the pipeline (handles its own dispatch).
     if kind == "issue" and ("assignee" in has or "body" in has):

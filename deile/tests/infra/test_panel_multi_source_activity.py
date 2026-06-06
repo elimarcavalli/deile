@@ -162,12 +162,18 @@ class TestClassifySourceLine:
         assert ev.action == "dispatch"
 
     def test_legacy_actor_overridden_with_role(self):
+        # _MENTION_RE was removed in issue #485. Short-form "mention group"
+        # lines (without the full module prefix) no longer match any pattern.
+        # A line with the full deile.orchestration.pipeline.stages prefix still
+        # matches _STAGES_RE and the actor is overridden with the supplied role.
         ll = _make_logline(
-            "mention group issue:360: triggers=[implement,review]"
+            "deile.orchestration.pipeline.stages mention group issue:360: "
+            "triggers=[implement,review]"
         )
         ev = pd._classify_source_line(ll, "bot")
         assert ev is not None
         assert ev.actor == "bot"
+        assert ev.action == "stages"
 
     def test_returns_none_when_no_parser_matches(self):
         ll = _make_logline("INFO arbitrary unstructured line with no pattern")

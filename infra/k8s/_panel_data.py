@@ -875,9 +875,6 @@ _DISPATCH_DONE_RE = re.compile(r"worker dispatch completed", re.IGNORECASE)
 _HTTP_POST_RE = re.compile(
     r'HTTP Request: POST .*?/v1/dispatch.*?"HTTP/[\d.]+ (\d+)', re.IGNORECASE
 )
-_MENTION_RE = re.compile(
-    r"mention group (issue|pr):(\d+): triggers=\[(.*?)\]", re.IGNORECASE
-)
 _STAGES_RE = re.compile(
     r"deile\.orchestration\.pipeline\.stages\s+(.*)$", re.IGNORECASE
 )
@@ -1138,16 +1135,6 @@ def _classify_pipeline_line(ll: LogLine) -> Optional[ActivityEvent]:
         )
     # --- legacy vocabulary ---
 
-    m = _MENTION_RE.search(body)
-    if m:
-        kind = m.group(1).lower()
-        num = m.group(2)
-        triggers = m.group(3).replace("'", "").replace('"', "")
-        target = f"{'PR' if kind == 'pr' else '#'}{num}"
-        return ActivityEvent(
-            ts=ll.ts, actor="pipeline", action="mention",
-            target=target, detail=f"triggers={triggers}",
-        )
     if _DISPATCH_START_RE.search(body):
         return ActivityEvent(
             ts=ll.ts, actor="pipeline", action="dispatch", target="",
