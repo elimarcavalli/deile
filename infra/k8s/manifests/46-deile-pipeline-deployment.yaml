@@ -105,13 +105,6 @@ spec:
               echo "bootstrap-repo OK"
           env:
             - { name: DEILE_PIPELINE_REPO,  value: "elimarcavalli/deile" }
-            # OAuth refresh real do claude-worker (issue #519): o retry reativo
-            # do implementer.py roda neste pod e faz o POST grant_type=refresh_token.
-            # Endpoint e client_id são constantes PÚBLICAS da aplicação Claude
-            # Code (PKCE, sem client_secret) — não são credencial de operador.
-            # Os tokens (access/refresh) vivem só no Secret/PVC, nunca aqui.
-            - { name: CLAUDE_OAUTH_TOKEN_URL, value: "https://platform.claude.com/v1/oauth/token" }
-            - { name: CLAUDE_OAUTH_CLIENT_ID, value: "9d1c250a-e61b-44d9-88ed-5944d1962f5e" }
             # Issue #355 — lê do mesmo ConfigMap que o main container para
             # que operadores GitLab configurem forge.kind=gitlab em um lugar
             # só. optional: true preserva o comportamento legado: se a chave
@@ -264,6 +257,14 @@ spec:
             # verificado funcionando de dentro do pod no Rancher Desktop atual.
             - { name: KUBERNETES_SERVICE_HOST, value: "10.43.0.1" }
             - { name: KUBERNETES_SERVICE_PORT, value: "443" }
+            # OAuth refresh real do claude-worker (issue #519): o retry reativo
+            # do implementer.py roda neste container e faz o POST
+            # grant_type=refresh_token. Endpoint e client_id são constantes
+            # PÚBLICAS da aplicação Claude Code (PKCE, sem client_secret) — não
+            # são credencial de operador. Os tokens (access/refresh) vivem só no
+            # Secret claude-credentials / PVC, nunca aqui.
+            - { name: CLAUDE_OAUTH_TOKEN_URL, value: "https://platform.claude.com/v1/oauth/token" }
+            - { name: CLAUDE_OAUTH_CLIENT_ID, value: "9d1c250a-e61b-44d9-88ed-5944d1962f5e" }
           ports:
             - { name: status-api, containerPort: 8768, protocol: TCP }
           readinessProbe:
