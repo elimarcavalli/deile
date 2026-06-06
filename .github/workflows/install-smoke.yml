@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        extra: ["", "bot"]
+        extra: ["", "test", "bot"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,10 +34,18 @@ jobs:
           /tmp/v/bin/pip install --upgrade pip
           if [ "${{ matrix.extra }}" = "" ]; then
             /tmp/v/bin/pip install -e .
+          elif [ "${{ matrix.extra }}" = "test" ]; then
+            /tmp/v/bin/pip install -e ".[test]"
           else
             /tmp/v/bin/pip install -e ".[${{ matrix.extra }}]"
           fi
           /tmp/v/bin/python -c "import deile; print(deile.__file__)"
+          if [ "${{ matrix.extra }}" = "" ]; then
+            /tmp/v/bin/python -c "import deile; from deile.tools.registry import ToolRegistry; r=ToolRegistry(); r.auto_discover(); bad=[t.name for t in r if t.name.startswith(('discord_','whatsapp_'))]; assert not bad, f'messaging tools leaked without deilebot: {bad}'; print('no-bot OK')"
+          fi
+          if [ "${{ matrix.extra }}" = "test" ]; then
+            /tmp/v/bin/pytest --collect-only -q tests/
+          fi
           if [ "${{ matrix.extra }}" = "bot" ]; then
             /tmp/v/bin/python -c "import deilebot; print(deilebot.__file__)"
             /tmp/v/bin/python -c "import deilebot_client; print(deilebot_client.__file__)"
