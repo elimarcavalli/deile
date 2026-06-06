@@ -590,6 +590,7 @@ GATE DE CRÍTICA da issue #{number} (tipo: {type}) de {repo}. NÃO implemente. A
 2. CLARO só se TODOS:
    a) Segue template, sem placeholder vazio.
    b) Critérios de aceite MENSURÁVEIS (número/condição testável; "bem/robusto/performático" = vago).
+   b2) Feature de INTEGRAÇÃO (liga/registra/despacha algo no fluxo — novo call-site, wiring em tick/loop, registro em registry, endpoint) EXIGE ≥1 AC de teste de INTEGRAÇÃO provando a FIAÇÃO (o caminho real chama/usa o código), não só unit da função isolada. "Função implementada e testada" sem call-site exercitado NÃO é aceitável (lei de Goodhart — caso GC #596).
    c) Sem promessas vazias ("trivial X depois") sem mecanismo concreto (teste/lint/schema/sub-issue de follow-ups).
    d) Sem lacunas arquiteturais óbvias (idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model, schema migration, SLO, dependências externas).
    e) V1 vs roadmap EXPLÍCITO — o que entra agora vs item em UMA sub-issue agregada (anti-flood).
@@ -613,7 +614,7 @@ REFINE a issue #{number} (tipo: {type}) de {repo}. Reescreva título + body. NÃ
    b) Lacunas arquiteturais (idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model, SLO, schema migration, dependências externas) → resolva, marque N/A com motivo, ou jogue na sub-issue de follow-ups.
    c) V1 vs roadmap: o que adia vira skeleton/DISABLED no código OU item em UMA sub-issue agregada de follow-ups (`- [ ]` por item).
    d) Spinoffs laterais entram no checklist da MESMA sub-issue (não vira sub-issue separada).
-   e) ACs DUROS — número, percentual, condição testável. Cobre comportamento + falhas de 2b + decisões de 2c.
+   e) ACs DUROS — número, percentual, condição testável. Cobre comportamento + falhas de 2b + decisões de 2c. Para feature de INTEGRAÇÃO (liga/registra/despacha algo no fluxo — novo call-site, wiring em tick/loop, registro em registry, endpoint) inclua ≥1 AC de teste de INTEGRAÇÃO que prove a FIAÇÃO (o caminho real chama/usa o código), não só unit da função isolada — "função implementada e testada" sem call-site exercitado NÃO basta (lei de Goodhart — caso GC #596).
    f) Testes: paths concretos + o que cada um prova.
 
 3. APLIQUE — REGRA ANTI-FLOOD: MÁXIMO UMA sub-issue agregada de follow-ups por issue-mãe. Split só com JUSTIFICATIVA explícita (módulos disjuntos, testes diferentes, ordem livre). Default: agregar.
@@ -648,7 +649,7 @@ Algoritmo:
 2. Liste items de escopo → DEFAULT: UMA derivada com checklist. Split só com prova de independência.
 3. Cada derivada nasce no padrão (sem refino depois):
    - título com prefixo do tipo; body conforme template (`.github/ISSUE_TEMPLATE/*` ou `.gitlab/issue_templates/*`).
-   - alvo técnico, contrato, ACs MENSURÁVEIS, paths de teste.
+   - alvo técnico, contrato, ACs MENSURÁVEIS, paths de teste. Derivada de INTEGRAÇÃO (novo call-site, wiring em tick/loop, registro em registry, endpoint) carrega ≥1 AC de teste de INTEGRAÇÃO provando a FIAÇÃO — não só unit isolado (lei de Goodhart — caso GC #596).
    - checklist `- [ ]` por item; lacunas arquiteturais pertinentes endereçadas; V1 vs roadmap explícito.
    - linha `Originada de #{number}`. Comando: `{create_issue_cmd}`.
 4. Audit na intent: `{comment_issue_cmd}` com derivadas criadas, ordem de dependência, justificativa do split se houver.
