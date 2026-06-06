@@ -389,18 +389,24 @@ def _image_build_cmd() -> Optional[List[str]]:
     ``worker_server.py`` / ``claude_worker_server.py`` / etc.
     """
     dockerfile = str(ROOT / "Dockerfile")
+    # O stack roda um pod deilebot, então a imagem precisa carregar o bot
+    # sempre que a subárvore deilebot/ está presente no contexto (setup do
+    # operador, ver CLAUDE.md). Em clone sem deilebot/ (CI minimal), WITH_BOT=0
+    # e a injeção de package-data do bot é pulada no Dockerfile.
+    with_bot = "1" if (ROOT / "deilebot").is_dir() else "0"
+    build_arg = ["--build-arg", f"WITH_BOT={with_bot}"]
     nerdctl = _resolve("nerdctl")
     if nerdctl:
         # Rancher Desktop / containerd — k3s lê o namespace k8s.io.
-        return [nerdctl, "--namespace", "k8s.io", "build",
+        return [nerdctl, "--namespace", "k8s.io", "build", *build_arg,
                 "-f", dockerfile, "-t", IMAGE, str(ROOT)]
     if which("colima"):
         return ["colima", "nerdctl", "--", "--namespace", "k8s.io", "build",
-                "-f", dockerfile, "-t", IMAGE, str(ROOT)]
+                *build_arg, "-f", dockerfile, "-t", IMAGE, str(ROOT)]
     if which("docker"):
         ui.warn("usando `docker build` — num cluster k3s a imagem pode "
                 "precisar de import manual no containerd.")
-        return ["docker", "build", "-f", dockerfile, "-t", IMAGE, str(ROOT)]
+        return ["docker", "build", *build_arg, "-f", dockerfile, "-t", IMAGE, str(ROOT)]
     return None
 
 

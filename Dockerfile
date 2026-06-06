@@ -44,13 +44,17 @@ COPY pyproject.toml requirements.txt README.md ./
 COPY deile ./deile
 
 # Install packages into a venv we'll copy into the final stage.
-# With WITH_BOT=1: the deilebot subtree is bind-mounted from the build
-#   context (required=false so the build never fails when the dir is absent),
-#   copied to /build/deilebot, then installed as deilebot[discord,client].
+# The deilebot subtree is bind-mounted from the build context (so it never
+#   lands in the final image) and only installed when WITH_BOT=1, copied to
+#   /build/deilebot then installed as deilebot[discord,client].
 # With WITH_BOT=0 (default): only deile is installed; messaging tools
 #   degrade silently (auto_discover.py:38-40 skips them when deilebot is
 #   absent — BOT_CLIENT_AVAILABLE=False path).
-RUN --mount=type=bind,source=deilebot,target=/tmp/deilebot-ctx,required=false \
+# NOTE: the bind mount requires the deilebot/ dir to be present in the build
+#   context (it is, in the operator dev setup per CLAUDE.md). Making the build
+#   tolerate an absent deilebot/ is a separate follow-up — BuildKit has no
+#   valid `required=false` for type=bind, which silently broke the build.
+RUN --mount=type=bind,source=deilebot,target=/tmp/deilebot-ctx \
     python -m venv /venv \
     && /venv/bin/pip install --upgrade pip wheel \
     && /venv/bin/pip install -r requirements.txt \
@@ -83,8 +87,10 @@ RUN /venv/bin/pip install \
 # correct when PYTHON_VERSION is overridden at build time.
 RUN set -eux \
     && SITE_PACKAGES=$(/venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))") \
-    && mkdir -p "${SITE_PACKAGES}/deilebot/foundation/sql" \
-    && cp /build/deilebot/deilebot/foundation/sql/*.sql "${SITE_PACKAGES}/deilebot/foundation/sql/" \
+    && if [ -d /build/deilebot ]; then \
+           mkdir -p "${SITE_PACKAGES}/deilebot/foundation/sql" \
+           && cp /build/deilebot/deilebot/foundation/sql/*.sql "${SITE_PACKAGES}/deilebot/foundation/sql/"; \
+       fi \
     && mkdir -p "${SITE_PACKAGES}/deile/personas/instructions/core" \
     && cp /build/deile/personas/instructions/*.md         "${SITE_PACKAGES}/deile/personas/instructions/" \
     && cp /build/deile/personas/instructions/core/*.md    "${SITE_PACKAGES}/deile/personas/instructions/core/" \
@@ -93,7 +99,7 @@ RUN set -eux \
     && mkdir -p "${SITE_PACKAGES}/deile/config/profiles" \
     && cp /build/deile/config/*.yaml                      "${SITE_PACKAGES}/deile/config/" \
     && cp /build/deile/config/profiles/*.yaml             "${SITE_PACKAGES}/deile/config/profiles/" \
-    && ls "${SITE_PACKAGES}/deilebot/foundation/sql/" "${SITE_PACKAGES}/deile/personas/instructions/" \
+    && ls "${SITE_PACKAGES}/deile/personas/instructions/" \
     && echo "package-data injection complete"
 
 # ---- final -----------------------------------------------------------
