@@ -3735,14 +3735,9 @@ async def reconcile_closed_issues(monitor: "PipelineMonitor") -> None:
     """
     try:
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_PR, limit=50)
-    except GhCommandError as exc:
-        await _record_forge_error(
-            monitor, "reconcile_closed_issues: could not list em_pr issues", exc,
-        )
-        return
-    except Exception as exc:  # noqa: BLE001 — best-effort
+    except Exception as exc:  # noqa: BLE001 — best-effort; do not count toward forge_errors
         logger.warning(
-            "reconcile_closed_issues: list_issues_with_label failed: %s", exc,
+            "reconcile_closed_issues: could not list em_pr issues: %s", exc,
         )
         return
     for issue in issues:
