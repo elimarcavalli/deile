@@ -84,7 +84,7 @@ Extrai do `claude_worker_server.py` o **core agnóstico** (lease, heartbeat, ses
 class CliAdapter(Protocol):
     # ---- metadados (dirigem registro/painel/manifests/netpol — single source of truth) ----
     kind: str                       # "opencode" | "codex" | ...
-    default_port: int               # 8771..8776 (tabela 1.9)
+    default_port: int               # 8771..8776 (tabela 1.13)
     auth_mode: Literal["env", "oauth_file"]   # env=API key; oauth_file=cred mountado (claude/codex/antigravity)
     supports_resume: bool           # False → sempre fresh (aider/goose/opencode/antigravity)
     supports_reasoning: bool        # False → painel desabilita coluna Reasoning (aider/goose)
@@ -403,3 +403,32 @@ Só o claude-worker tem cap nativo de orçamento. Para os CLIs, o controle de cu
 7. **Fase G** (validação full + commits por fase).
 
 **Claude-worker:** intocado funcionalmente (só ganha o `_worker_core.py` por baixo); segue como worker premium para tarefas específicas.
+
+---
+
+## PARTE 7 — Definition of Done + confiança de 1ª implementação
+
+**Por que vai funcionar de primeira (cada risco → mitigação que já é task):**
+| Risco de "não funcionar de primeira" | Mitigação (task) |
+|---|---|
+| Flags do CLI diferentes da doc | Pré-flight de smoke por CLI na versão pinada (C/D/E `.0`) — adapter escrito contra `--help` real |
+| Quebrar o claude-worker ao extrair o core | A1/A2 com suíte do claude verde antes de seguir |
+| Pipeline não enxergar o worker | B1 (resolver derivado do registro) + teste de regressão A5 |
+| Modelo não chegar no CLI | 1.12 contrato + B2/B3 (campo `cli_model`, ramificação única) + teste de roteamento |
+| Worker não autenticar | 1.11 dois modos + `/v1/health ready` + readiness probe; E2E só após health ok |
+| FS read-only quebrar o CLI | 1.7/1.13 `writable_dirs` por adapter + teste de container que escreve |
+| Push/commit não acontecer | Gate pós-run (Parte 4) por `git_strategy` + identidade/token git no env |
+| Custo explodir | timeout + max-turns + modelo barato + scale-to-zero |
+| Worker novo exigir editar o core | Registry auto-discovery (A5) + teste anti-hardcode |
+
+**Definition of Done do plano inteiro:**
+- [ ] `_worker_core.py` extraído; claude-worker importa dele e **continua verde** (suíte + `/v1/health`).
+- [ ] **opencode-worker** (piloto) abre PR real via OpenRouter→DeepSeek num E2E (Fase C).
+- [ ] aider, goose, qwen, codex: cada um com E2E verde (Fase D).
+- [ ] antigravity: spike decidido (entrou OU registrado como bloqueado com alternativa).
+- [ ] Painel troca worker×model×reasoning por stage; `/v1/models` popula o picker.
+- [ ] OpenRouter registrado no DEILE (deile-worker + CLI) — Parte 3.
+- [ ] **Escalabilidade provada:** um 7º worker hipotético entra com adapter + `gen-worker` + bloco Dockerfile + 1 registro, **zero edição** em core/resolver/painel (teste de regressão verde).
+- [ ] Suíte completa verde + multi-seed; docs + `DECISOES.md` atualizados.
+
+**Confiança atual de 1ª implementação:** **alta para opencode/aider/goose/qwen** (flags/auth/dirs confirmados na pesquisa, modo env API-key robusto); **média para codex** (OAuth ok, mas `wire_api=responses` limita provider — usar OpenAI direto); **baixa/gated para antigravity** (auth headless não-resolvida no consumer — spike decide). O piloto opencode (Fase C) valida 90% do framework antes de replicar.
