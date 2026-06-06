@@ -309,6 +309,17 @@ Espelha o contrato do `claude-worker` (já implementado) + 1 campo. **O `cli_wor
 
 ## PARTE 4 — Task breakdown (TDD, bite-sized, fases)
 
+> **Regra de ouro p/ "funcionar de primeira" (a pesquisa mostrou que docs divergem dos binários):** ANTES de escrever cada adapter/manifest, rodar um **pré-flight de smoke** num container descartável com a **versão pinada** do CLI: `<cli> --help` + `<cli> <subcomando-headless> --help` + um one-shot trivial ("escreva hello.txt") confirmando os flags exatos (ex.: opencode `--dangerously-skip-permissions` existe? qwen aceita `-m` ou só `--model`/`OPENAI_MODEL`? antigravity `agy --help` real?). O adapter é escrito **contra o `--help` observado**, não contra a doc. Cada Fase C/D/E começa por esse pré-flight (sub-passo `.0`).
+
+### Gate de sucesso pós-run (no core — vale p/ todos, exit-code não basta)
+`WorkResult.ok = adapter.parse_output(...).ok AND wrapper_gate()`, onde `wrapper_gate()` checa, na ordem do `git_strategy`:
+- **brief_driven:** houve **commit novo desde o início do dispatch** (`git rev-list <base>..HEAD` > 0) **E** o branch foi **pushado** (`git ls-remote` confirma) — senão `ok=false, error_code=NO_PUSH`. Fallback opcional: wrapper commita+pusha o working tree sujo e marca `error_code=WRAPPER_COMMITTED` (degradado mas não perdido).
+- **cli_autocommit (aider):** há commit local (aider fez) → wrapper só **pusha** + (se brief pediu) roda `test_cmd`; gate falha se push falhar ou teste vermelho.
+- Em ambos: se o brief exigiu suíte verde (implement/pr_review), roda o `test_cmd` e exige rc=0. (Espelha o quality-gate do pipeline.)
+
+### Controle de custo (CLIs não têm `--max-budget-usd` como o claude)
+Só o claude-worker tem cap nativo de orçamento. Para os CLIs, o controle de custo é: **(a)** `timeout_s` do pod (`DEILE_<KIND>_WORKER_TASK_TIMEOUT_S`), **(b)** teto de turns onde existe (`goose --max-turns`, `qwen` retry capado), **(c)** escolha de modelo barato por stage (DeepSeek/Qwen via OpenRouter), **(d)** OpenRouter dá teto/visibilidade de gasto por chave. Documentar que **não há cap por-task em USD** nesses CLIs → confiar em timeout + modelo barato. Task: `_worker_core` aplica `timeout_s` matando o subprocess (igual claude-worker rc=124).
+
 ### Fase A — Core compartilhado (fundação; sem isto nada funciona)
 - [ ] **A1** Criar `infra/k8s/_worker_core.py` extraindo do `claude_worker_server.py`: lease/heartbeat, session-meta, workspace, `startup_cleanup`, helpers HTTP (auth bearer, health). **Teste:** mover/duplicar os testes existentes do claude-worker que cobrem essas funções, apontando p/ o core. Suíte verde.
 - [ ] **A2** Refatorar `claude_worker_server.py` p/ importar do `_worker_core.py` (sem mudança de comportamento). **Teste:** suíte do claude-worker continua verde; smoke `/v1/health`.
@@ -371,6 +382,12 @@ Espelha o contrato do `claude-worker` (já implementado) + 1 campo. **O `cli_wor
 13. **Resume/threading** → só claude/codex/qwen têm resume real; aider/goose/opencode/antigravity → **fresh sempre** (adapter declara `supports_resume=False`); o brief lê `.deile-progress.md` (já existe) p/ contexto natural. Antigravity #7 (sem conv-id) reforça fresh-only.
 14. **DispatchPayload tem duas formas hoje** (deile-worker Pydantic vs claude-worker request) → o cli_worker adota o contrato claude-worker-style (brief/stage/branch/cli_model/...). Unificação total fica como FU; não bloquear.
 15. **Reasoning** só p/ claude/codex(`model_reasoning_effort`)/qwen(parcial) → coluna do painel desabilita onde não há; `reasoning_resolver` retorna mas adapter ignora se não suporta.
+16. **Doc ≠ binário** (confirmado: opencode flag, antigravity flags JS-only, qwen `-m`) → **pré-flight de smoke obrigatório** por CLI na versão pinada antes de escrever adapter (Regra de ouro, Parte 4). Adapter escrito contra `--help` real.
+17. **Sem cap de custo por-task** nos CLIs (só claude tem `--max-budget-usd`) → mitigado por timeout do pod + max-turns + modelo barato + teto OpenRouter; documentado, não há solução nativa.
+18. **Scale-to-zero race:** dispatcher escolhe worker com 0 réplicas → B5 garante scale 1 on-demand + cooldown; risco de cold-start (pull de imagem) na 1ª chamada → readiness probe + retry do reconcile cobre.
+19. **Codex OAuth × `wire_api=responses`:** OAuth ChatGPT do codex fala Responses API (ok); mas provider custom/OpenRouter no codex só serve se falar Responses → codex+OpenRouter continua arriscado mesmo com OAuth. OAuth do codex resolve auth, não o limite de provider. Documentado em 2.2.
+20. **`gen-worker` template precisa cobrir os 2 storage modes + 2 auth modes** → o template é condicional (PVC vs emptyDir; env vs oauth_file initContainer). Risco: template complexo → testar `gen-worker` p/ cada combinação (parse/kubeval) em A5.
+21. **Dois servers (claude com OAuth + cli genérico) podem divergir** do core ao longo do tempo → A1/A2 extraem o core e fazem o claude IMPORTAR dele (não duplicar); teste garante claude-worker verde pós-extração.
 
 **Inconsistência corrigida no texto:** a Parte 2 dizia "tudo via OpenRouter"; o item 4/2.2 deixa claro que **codex é exceção** (OpenAI direto). E **antigravity não é via OpenRouter** (Google-locked) — corrigido para Vertex-SA-gated.
 
