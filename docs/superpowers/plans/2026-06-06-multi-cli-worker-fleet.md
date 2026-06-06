@@ -175,6 +175,34 @@ Cada adapter declara `auth_mode`. O core/`deploy.py` tratam os dois de forma uni
 
 O **selector de auth por worker** é env: `DEILE_<KIND>_AUTH=env|oauth` (default `env`). `auth_mode` efetivo = o que o adapter suporta ∩ a escolha do operador.
 
+### 1.12 Contrato HTTP unificado (o que o `implementer` envia / o que o worker responde)
+
+Espelha o contrato do `claude-worker` (já implementado) + 1 campo. **O `cli_worker_server` aceita exatamente isto** (assim o `implementer.py` não precisa de caminho especial além de escolher o endpoint e o campo de modelo):
+
+**`POST /v1/dispatch`** (Bearer auth) — request:
+```jsonc
+{
+  "brief": "string (obrigatório, ≤ ~8 KiB; truncado/sentinela acima)",
+  "stage": "classify|refine|implement|pr_review|follow_ups",
+  "branch": "auto/issue-N | <branch> | null",
+  "cli_model": "model-id NATIVO do CLI | null",   // NOVO: string livre (ex. openrouter/deepseek/deepseek-chat)
+  "preferred_reasoning": "low|medium|high|... | null", // ignorado se adapter.supports_reasoning=False
+  "resume_session_id": "uuid | null",            // usado só se adapter.supports_resume
+  "prev_task_id": "hex16 | null",
+  "wait_for_result": false,                       // fire-and-forget (default do pipeline) + reconcile
+  "timeout_s": 1800,                              // resolve_stage_timeout_s
+  "max_retries": 3,
+  "channel_id": "string",
+  "issue_number": 0
+}
+```
+**Response** (igual ao claude-worker): `{ ok, task_id(hex16), session_id|null, returncode, stdout(≤50KiB), stderr(≤10KiB), duration_seconds, is_error, result, total_cost_usd|null, error_code|null }`.
+
+- **Roteamento de campo de modelo no `implementer`:** se `dispatcher == "claude-worker"` → envia `preferred_model` (anthropic-only, como hoje); se `dispatcher` é um `*-worker` CLI → envia `cli_model = resolve_stage_cli_model(stage)` (string livre). **Única ramificação nova** no cliente HTTP. Isto evita relaxar/quebrar o validator `provider:model` do deile-worker.
+- **`GET /v1/models`** → `{ "models": [{ "id": "string", "label": "string", "provider": "string|null", "context": int|null, "notes": "string|null" }], "source": "dynamic|catalog", "fetched_at": "iso8601" }`. Cacheado (TTL ~10min) quando `source=dynamic`.
+- **`GET /v1/health`** → `{ ok, kind, auth_mode, ready }` (`ready=false` se faltar `auth_env_keys` ou cred OAuth).
+- **`GET /v1/progress/{task_id}`** → snapshot mid-flight (tail do log/JSONL no PVC), igual ao claude-worker, para o reconcile do ledger.
+
 ---
 
 ## PARTE 2 — Specs por worker (o "como" literal)
@@ -257,7 +285,8 @@ O **selector de auth por worker** é env: `DEILE_<KIND>_AUTH=env|oauth` (default
 ### Fase B — Integração de roteamento (pipeline enxerga os novos workers)
 - [ ] **B1** `dispatch_resolver.py`: estender `VALID_DISPATCHERS` + aliases + endpoints (`<kind>-worker:<porta>`, env `DEILE_<KIND>_WORKER_ENDPOINT`). **Teste:** `resolve_stage_dispatcher` aceita cada novo kind; endpoint resolve.
 - [ ] **B2** `model_resolver.py`: `resolve_stage_cli_model(stage)` (string livre). `DispatchPayload`: campo `cli_model: str|None` (não quebra validator `provider:model`). **Teste:** payload aceita cli_model; deile-worker ignora; cli-worker usa.
-- [ ] **B3** `implementer.py`/`stages.py`: ao dispatchar p/ um `*-worker` CLI, enviar `cli_model`/reasoning/brief no payload p/ o endpoint certo. **Teste:** mock HTTP confirma POST no endpoint do worker certo com cli_model.
+- [ ] **B3** `implementer.py`/`stages.py`: única ramificação nova no cliente HTTP — `claude-worker`→`preferred_model`; `*-worker` CLI→`cli_model=resolve_stage_cli_model(stage)`. Endpoint via `get_endpoint_for` (B1). **Teste:** mock HTTP confirma POST no endpoint certo com o campo de modelo certo (preferred_model vs cli_model) por dispatcher.
+- [ ] **B4** Brief neutro-de-CLI: variante em `briefs.py` reusando `cli_renderer.render_brief_cmds(forge)` (forge-agnóstico já existe), sem jargão claude/ultracode, instruindo commit+push (git_strategy=brief_driven) ou deixando o aider auto-commitar. **Teste:** o brief renderiza p/ GH e GL; não contém termos claude-specíficos; contém instrução de push quando brief_driven.
 
 ### Fase C — Imagem + um worker piloto (opencode) ponta-a-ponta
 - [ ] **C1** `infra/k8s/Dockerfile.cli-worker` com `ARG WORKER_KIND` (base comum + install condicional). Implementar bloco `opencode` (binário pinado). **Teste:** build `--build-arg WORKER_KIND=opencode` verde; `opencode --version` no container.
