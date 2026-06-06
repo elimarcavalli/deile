@@ -148,6 +148,14 @@ spec:
             # Knob SEPARADO do workdir (CLEANUP_RETENTION_DAYS, mais curto).
             # Editável pelo painel [d] (kubectl set env + rollout, sem rebuild).
             - { name: DEILE_CLAUDE_JSONL_RETENTION_DAYS, value: "30" }
+            # OAuth refresh real (issue #519). Endpoint e client_id são
+            # constantes PÚBLICAS da aplicação Claude Code (fluxo PKCE, sem
+            # client_secret) — idênticas em toda instalação; NÃO são credencial
+            # de operador. Os tokens (access/refresh) vivem só no Secret
+            # claude-credentials / PVC, nunca aqui. Sem estas, o auto-renew cai
+            # no fallback humano (a frota expira a cada ~8h).
+            - { name: CLAUDE_OAUTH_TOKEN_URL, value: "https://platform.claude.com/v1/oauth/token" }
+            - { name: CLAUDE_OAUTH_CLIENT_ID, value: "9d1c250a-e61b-44d9-88ed-5944d1962f5e" }
           ports:
             - { name: claude-api, containerPort: 8767, protocol: TCP }
           volumeMounts:
