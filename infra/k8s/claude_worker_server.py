@@ -49,6 +49,11 @@ from aiohttp import web
 
 import dispatch_logger as dlog
 
+# Núcleo agnóstico-de-CLI (lease/heartbeat, subprocess, HTTP helpers) — sibling
+# stdlib-puro no mesmo dir, no sys.path in-pod como dispatch_logger. Compartilhado
+# com o servidor genérico cli_worker_server.py (multi-CLI worker fleet, Fase A1).
+import _worker_core as _core
+
 try:
     # Sibling stdlib-puro (mesmo dir, no sys.path in-pod como dispatch_logger).
     # Fonte única da agregação de custo, usada pelo harvester do ledger (#445).
@@ -66,9 +71,9 @@ logger = logging.getLogger("deile.claude_worker_server")
 
 #: ``secrets.token_hex(8)`` gera exatamente 16 chars hex; qualquer outra
 #: forma é rejeitada para não permitir path traversal pela URL nem leitura
-#: de arquivos arbitrários no PVC. Definida aqui (antes de qualquer uso)
-#: porque os mecanismos de lease (seção abaixo) referenciam este padrão.
-_TASK_ID_RE = re.compile(r"[0-9a-f]{16}")
+#: de arquivos arbitrários no PVC. Definida no ``_worker_core`` (compartilhada
+#: com o cli-worker genérico) e re-exposta aqui sob o nome legado.
+_TASK_ID_RE = _core.TASK_ID_RE
 
 
 # --------------------------------------------------------------------------- #
@@ -275,131 +280,27 @@ def _try_capture_quota_from_output(stdout: str, stderr: str) -> None:
                 pass
 
 
-def _validate_task_id_for_path(task_id: str) -> bool:
-    """Defesa contra path traversal: task_id deve ser hex 16-char."""
-    return bool(_TASK_ID_RE.fullmatch(task_id)) if task_id else False
+#: Validação de task_id e a maquinaria de lease vivem no ``_worker_core``
+#: (compartilhadas com o cli-worker genérico). Aqui re-exportamos sob os nomes
+#: legados; os wrappers ``_acquire_lease``/``_heartbeat_loop`` repassam as
+#: constantes ``_LEASE_TTL_S``/``_LEASE_HEARTBEAT_S`` deste módulo (que os testes
+#: monkeypatcham) ao core, preservando o comportamento observável.
+_validate_task_id_for_path = _core.validate_task_id_for_path
+_release_lease = _core.release_lease
+_update_lease_claude_pid = _core.update_lease_subprocess_pid
 
 
 async def _acquire_lease(
     workspace: Path, *, channel: str = "", session_id: str = "",
 ) -> Optional[dict]:
-    """Tenta adquirir o lease do workspace.
+    """Adquire o lease do workspace (delegado a :func:`_worker_core.acquire_lease`).
 
-    Algoritmo:
-    1. Se ``.lease.json`` existir e ``heartbeat_at`` for recente (< TTL),
-       outro pod está ativo → retorna None.
-    2. JSON inválido / ausente / heartbeat expirado → considera morto,
-       adquire sobrescrevendo.
-    3. Write atomic: escreve em ``.lease.tmp.<pod>`` e faz rename pra
-       ``.lease.json``. POSIX garante que o rename é atômico.
-    4. Re-lê o arquivo para confirmar que nosso pod ganhou a corrida
-       (se outro pod fez rename simultaneamente, o arquivo conterá o pod
-       dele, e retornamos None).
-
-    Returns:
-        dict com o conteúdo do lease quando adquirido; None quando falhou.
+    Wrapper que injeta ``_LEASE_TTL_S`` (constante deste módulo, monkeypatchável
+    nos testes) no core. Assinatura preservada para os call sites do dispatch.
     """
-    lease_path = workspace / ".lease.json"
-    pod_id = os.environ.get("HOSTNAME", f"local-{os.getpid()}")
-    now = time.time()
-
-    # Passo 1: verifica lease existente (I/O bloqueante → thread).
-    def _check_existing() -> bool:
-        """True se lease existente está dentro do TTL (ativo por outro pod)."""
-        if not lease_path.exists():
-            return False
-        try:
-            current = json.loads(lease_path.read_text(encoding="utf-8"))
-            heartbeat_age = now - float(current.get("heartbeat_at", 0))
-            return heartbeat_age < _LEASE_TTL_S
-        except (OSError, json.JSONDecodeError, ValueError):
-            return False  # corrupto → trata como morto
-
-    if await asyncio.to_thread(_check_existing):
-        return None  # workspace em uso por outro pod ativo
-
-    # Passo 2: escreve candidato atômico.
-    lease = {
-        "pod": pod_id,
-        "pid": os.getpid(),
-        "started_at": now,
-        "heartbeat_at": now,
-    }
-    # Channel + session_id habilitam o dedup cross-workdir de fresh dispatches
-    # (:func:`_find_live_task_for_channel`): uma 2ª dispatch fresca para o mesmo
-    # channel é recusada enquanto o 1º claude ainda está vivo. Gravados no
-    # acquire (antes do spawn) para existirem cedo o bastante para o scan.
-    if channel:
-        lease["channel"] = channel
-    if session_id:
-        lease["session_id"] = session_id
-
-    def _write_and_confirm() -> Optional[dict]:
-        tmp = workspace / f".lease.tmp.{pod_id}"
-        try:
-            tmp.write_text(json.dumps(lease), encoding="utf-8")
-            tmp.rename(lease_path)
-            # Passo 3: re-lê para confirmar vitória na corrida.
-            confirmed = json.loads(lease_path.read_text(encoding="utf-8"))
-            if confirmed.get("pod") != pod_id:
-                # Outro pod ganhou a corrida atomicamente — não somos o dono.
-                return None
-            return confirmed
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("lease write/confirm falhou para %s: %s", workspace, exc)
-            # Cleanup do tmp se sobrou (best-effort).
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return None
-
-    return await asyncio.to_thread(_write_and_confirm)
-
-
-async def _update_lease_claude_pid(lease_path: Path, claude_pid: Optional[int]) -> None:
-    """Set/clear ``claude_pid`` on the lease — the PID of the spawned ``claude -p``
-    subprocess (NOT the wrapper server process, which lives in ``pid``).
-
-    Without this field, ``mtime`` of ``.lease.json`` is whatever the heartbeat
-    task last wrote (always recent while the server is up) and the ``pid`` is
-    just the wrapper — an observer cannot tell whether a real ``claude``
-    workload is still running. With it, ``claude_pid is not None and pid_alive
-    (claude_pid)`` is the ground truth for "claude is actively working on this
-    workdir". Best-effort: a missing/unwritable lease is logged and ignored —
-    the dispatch is the source of truth, the lease is just an observability
-    aid.
-    """
-    def _update() -> None:
-        try:
-            content = json.loads(lease_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-        if claude_pid is None:
-            content.pop("claude_pid", None)
-        else:
-            content["claude_pid"] = int(claude_pid)
-        try:
-            tmp = lease_path.with_suffix(".json.pid_tmp")
-            tmp.write_text(json.dumps(content), encoding="utf-8")
-            tmp.rename(lease_path)
-        except OSError as exc:
-            logger.warning("lease claude_pid update failed for %s: %s", lease_path, exc)
-
-    await asyncio.to_thread(_update)
-
-
-async def _release_lease(lease_path: Path) -> None:
-    """Remove o arquivo de lease. Idempotente: FileNotFoundError é ignorado."""
-    def _unlink() -> None:
-        try:
-            lease_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logger.warning("falha ao remover lease %s: %s", lease_path, exc)
-
-    await asyncio.to_thread(_unlink)
+    return await _core.acquire_lease(
+        workspace, ttl_s=_LEASE_TTL_S, channel=channel, session_id=session_id,
+    )
 
 
 def _find_live_task_for_channel(root: Path, channel: str) -> Optional[str]:
@@ -438,33 +339,14 @@ def _find_live_task_for_channel(root: Path, channel: str) -> Optional[str]:
 async def _heartbeat_loop(lease_path: Path, stop_event: asyncio.Event) -> None:
     """Atualiza ``heartbeat_at`` no lease a cada ``_LEASE_HEARTBEAT_S`` segundos.
 
-    Best-effort: erros de I/O são logados e ignorados — o heartbeat pode
-    deixar de ser atualizado sem derrubar o dispatch. Se o pod perder acesso
-    ao PVC (improvável em k3s single-node), o pipeline detectará o TTL
-    expirado e tentará adquirir o lease no próximo tick.
-
-    A task é cancelada (ou ``stop_event`` é setado) quando o dispatch terminar.
+    Wrapper que injeta ``_LEASE_HEARTBEAT_S`` (constante deste módulo,
+    monkeypatchável nos testes) na implementação compartilhada
+    :func:`_worker_core.heartbeat_loop`. Assinatura preservada para os call
+    sites do dispatch.
     """
-    while not stop_event.is_set():
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=float(_LEASE_HEARTBEAT_S))
-        except asyncio.TimeoutError:
-            pass
-        if stop_event.is_set():
-            break
-        def _update() -> None:
-            try:
-                content = json.loads(lease_path.read_text(encoding="utf-8"))
-                content["heartbeat_at"] = time.time()
-                # Write atômico para não corromper o lease se o processo
-                # for interrompido no meio da escrita.
-                tmp = lease_path.with_suffix(".json.hb_tmp")
-                tmp.write_text(json.dumps(content), encoding="utf-8")
-                tmp.rename(lease_path)
-            except (OSError, json.JSONDecodeError) as exc:
-                logger.warning("heartbeat update falhou em %s: %s", lease_path, exc)
-
-        await asyncio.to_thread(_update)
+    await _core.heartbeat_loop(
+        lease_path, stop_event, heartbeat_s=_LEASE_HEARTBEAT_S,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -525,13 +407,8 @@ _CLEANUP_RETENTION_DAYS: int = int(
 )
 
 
-def _pid_alive(pid: int) -> bool:
-    """True se o PID ainda está vivo neste sistema (POSIX)."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+#: ``_pid_alive`` é genérico — re-exposto do core sob o nome legado.
+_pid_alive = _core.pid_alive
 
 
 def _lease_is_stale(
@@ -539,30 +416,14 @@ def _lease_is_stale(
 ) -> bool:
     """True se o lease expirou E o PID proprietário não está mais vivo.
 
-    Quando ``alive_pods`` é fornecido (registro de presença, issue #495),
-    também retorna True imediatamente se o pod dono não constar no conjunto
-    de vivos — fechando a janela de recuperação de 30 min para ~60 s.
-
-    Conservador: se não conseguir ler o lease, assume que NÃO é stale
-    (fail-safe — evita apagar workdirs em uso quando o FS está lento).
+    Wrapper que injeta ``_LEASE_TTL_S`` (constante deste módulo) na
+    implementação compartilhada :func:`_worker_core.lease_is_stale`. Assinatura
+    posicional preservada (``alive_pods`` segundo argumento) para os call sites
+    de cleanup/presença.
     """
-    try:
-        data = json.loads(lease_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    # Verificação proativa via presença: se o conjunto está disponível e o
-    # pod dono não aparece nele, o lease é stale independente do heartbeat.
-    if alive_pods is not None:
-        pod = data.get("pod", "")
-        if pod and pod not in alive_pods:
-            return True
-    heartbeat_at = data.get("heartbeat_at", 0)
-    if (time.time() - float(heartbeat_at)) < _LEASE_TTL_S:
-        return False  # heartbeat recente → ativo
-    pid = data.get("pid")
-    if pid and _pid_alive(int(pid)):
-        return False  # TTL expirado mas PID ainda vivo → conservador
-    return True
+    return _core.lease_is_stale(
+        lease_path, ttl_s=_LEASE_TTL_S, alive_pods=alive_pods,
+    )
 
 
 def _workdir_has_session(workdir: Path) -> bool:
@@ -583,19 +444,8 @@ def _workdir_has_session(workdir: Path) -> bool:
         return False
 
 
-def _dir_bytes(path: Path) -> int:
-    """Soma recursiva dos tamanhos dos arquivos em *path*."""
-    total = 0
-    try:
-        for f in path.rglob("*"):
-            if f.is_file():
-                try:
-                    total += f.stat().st_size
-                except OSError:
-                    pass
-    except OSError:
-        pass
-    return total
+#: ``_dir_bytes`` é genérico — re-exposto do core sob o nome legado.
+_dir_bytes = _core.dir_bytes
 
 
 def startup_cleanup(root: Optional[Path] = None) -> dict:
@@ -769,56 +619,22 @@ def _read_admin_token() -> Optional[str]:
 
 # --------------------------------------------------------------------------- #
 # Per-actor rate limiter for admin raw-prompt access (issue #507 #13b).
-# In-memory, per-actor sliding window: max 10 requests per 60 s.
+# In-memory, per-actor sliding window: max 10 requests per 60 s. A maquinaria é
+# genérica (:class:`_worker_core.RateLimiter`); aqui só instanciamos com os
+# limites deste endpoint e expomos ``_check_raw_prompt_rate_limit`` como o
+# método ``check`` ligado.
 # --------------------------------------------------------------------------- #
 
-_RAW_PROMPT_RATE_LIMIT_MAX: int = 10
-_RAW_PROMPT_RATE_LIMIT_WINDOW_S: float = 60.0
-
-# {actor: [timestamp, ...]} — monotonic times of recent requests.
-_raw_prompt_rate_buckets: dict = {}
-_raw_prompt_rate_lock = threading.Lock()
+_raw_prompt_rate_limiter = _core.RateLimiter(max_requests=10, window_s=60.0)
+_check_raw_prompt_rate_limit = _raw_prompt_rate_limiter.check
 
 
-def _check_raw_prompt_rate_limit(actor: str) -> bool:
-    """Return True if the actor is within rate limit, False if exceeded.
-
-    Slides a 60-second window over recent request timestamps.  Thread-safe
-    (the lock is held only for dict mutation, not for the comparison).
-    """
-    now = time.monotonic()
-    cutoff = now - _RAW_PROMPT_RATE_LIMIT_WINDOW_S
-    with _raw_prompt_rate_lock:
-        bucket = _raw_prompt_rate_buckets.get(actor, [])
-        # Prune timestamps outside the window.
-        bucket = [t for t in bucket if t > cutoff]
-        if len(bucket) >= _RAW_PROMPT_RATE_LIMIT_MAX:
-            _raw_prompt_rate_buckets[actor] = bucket
-            return False
-        bucket.append(now)
-        _raw_prompt_rate_buckets[actor] = bucket
-        return True
-
-
-@web.middleware
-async def _bearer_auth_mw(request: web.Request, handler):
-    """Bearer auth middleware (paridade com ``worker_server._bearer_auth_mw``).
-
-    Whitelist ``/v1/health`` (readiness probe sem token). Demais paths
-    exigem ``Authorization: Bearer <token>`` comparado em constant-time
-    (``hmac.compare_digest``) para evitar timing-attack na descoberta.
-    """
-    if request.path in ("/v1/health", "/v1/auth/start", "/v1/auth/status"):
-        return await handler(request)
-    expected = request.app["auth_token"]
-    got = request.headers.get("Authorization", "")
-    if not got.startswith("Bearer ") or not hmac.compare_digest(
-            got[len("Bearer "):], expected):
-        return web.json_response(
-            {"error": {"code": "UNAUTHORIZED", "message": "bad bearer"}},
-            status=401,
-        )
-    return await handler(request)
+# Bearer auth middleware — whitelist com os endpoints abertos do claude-worker
+# (readiness probe + handshake OAuth). A lógica de comparação constant-time é
+# compartilhada via :func:`_worker_core.make_bearer_auth_mw`.
+_bearer_auth_mw = _core.make_bearer_auth_mw(
+    ("/v1/health", "/v1/auth/start", "/v1/auth/status")
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -826,19 +642,13 @@ async def _bearer_auth_mw(request: web.Request, handler):
 # --------------------------------------------------------------------------- #
 
 
-@dataclass
-class SubprocessResult:
-    """Resultado de :func:`run_subprocess_with_progress`.
-
-    Encapsula o que o handler precisa devolver na resposta JSON. ``stdout`` e
-    ``stderr`` aqui são as strings completas (não truncadas); a truncagem por
-    bytes vive no handler, próxima do contrato de resposta.
-    """
-
-    returncode: int
-    stdout: str
-    stderr: str
-    duration_seconds: float
+#: ``SubprocessResult`` e ``run_subprocess_with_progress`` são genéricos —
+#: re-expostos do core sob os nomes legados. O claude-worker passa o argv do
+#: ``claude -p`` montado em :func:`dispatch_handler`; o core só spawna e persiste
+#: o progresso. ``run_subprocess_with_progress`` honra ``DEILE_CLAUDE_WORKER_ROOT``
+#: por default (fallback interno do core) preservando o comportamento atual.
+SubprocessResult = _core.SubprocessResult
+run_subprocess_with_progress = _core.run_subprocess_with_progress
 
 
 #: Preambles por stage. Cada um descreve identidade + contrato de output, com
@@ -906,89 +716,6 @@ def _render_preamble(stage: str, branch: Optional[str], task_id: str) -> str:
         .replace("$BRANCH", branch or "(no branch)")
         .replace("$PWD", "")
         .replace("$TASK_ID", task_id)
-    )
-
-
-async def run_subprocess_with_progress(
-    args: list,
-    *,
-    cwd: Path,
-    task_id: str,
-    timeout: int,
-    lease_path: Optional[Path] = None,
-) -> SubprocessResult:
-    """Spawn de ``claude -p`` com persistência de stdout/stderr para o PVC.
-
-    Os arquivos ``<task_id>.stdout.log``/``<task_id>.stderr.log`` ficam em
-    ``DEILE_CLAUDE_WORKER_ROOT/.progress/`` e serão consumidos pelo
-    ``/v1/progress/{task_id}`` (Task 14) para snapshot mid-flight no painel
-    TUI. Em timeout, devolvemos ``returncode=124`` (convenção do ``coreutils
-    timeout``) com mensagem em ``stderr``.
-
-    Quando ``lease_path`` é informado, gravamos ``claude_pid`` no lease assim
-    que o subprocess é spawnado e limpamos ao terminar — isso permite que um
-    observador (painel, ``kubectl exec``) distinga "lease vivo por heartbeat"
-    de "claude rodando agora" sem ter que varrer ``/proc`` (gotcha do
-    Mistério #3 — o lease é mantido vivo pela heartbeat task do servidor
-    mesmo quando o subprocess do claude já terminou).
-    """
-    start = time.monotonic()
-
-    # Persistir progress files em DEILE_CLAUDE_WORKER_ROOT/.progress/.
-    root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
-    progress_dir = root / ".progress"
-    progress_dir.mkdir(parents=True, exist_ok=True)
-    stdout_path = progress_dir / f"{task_id}.stdout.log"
-    stderr_path = progress_dir / f"{task_id}.stderr.log"
-
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    if lease_path is not None:
-        await _update_lease_claude_pid(lease_path, proc.pid)
-
-    try:
-        stdout_b, stderr_b = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout,
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        if lease_path is not None:
-            await _update_lease_claude_pid(lease_path, None)
-        duration = time.monotonic() - start
-        return SubprocessResult(
-            returncode=124, stdout="",
-            stderr=f"claude -p timed out after {timeout}s",
-            duration_seconds=duration,
-        )
-
-    duration = time.monotonic() - start
-    stdout = stdout_b.decode("utf-8", "replace")
-    stderr = stderr_b.decode("utf-8", "replace")
-
-    if lease_path is not None:
-        await _update_lease_claude_pid(lease_path, None)
-
-    # Persiste para o ``/v1/progress`` (Task 14) — best-effort; falha em
-    # escrita NÃO derruba o dispatch (o cliente já recebeu o resultado).
-    try:
-        await asyncio.to_thread(stdout_path.write_text, stdout)
-        await asyncio.to_thread(stderr_path.write_text, stderr)
-    except OSError as exc:
-        logger.warning(
-            "failed to persist progress logs for task_id=%s: %s", task_id, exc,
-        )
-
-    return SubprocessResult(
-        returncode=proc.returncode or 0,
-        stdout=stdout,
-        stderr=stderr,
-        duration_seconds=duration,
     )
 
 
@@ -3296,8 +3023,8 @@ async def sessions_command_handler(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": {"code": "RATE_LIMITED",
                            "message": f"raw prompt access rate limit exceeded "
-                                      f"({_RAW_PROMPT_RATE_LIMIT_MAX} req / "
-                                      f"{int(_RAW_PROMPT_RATE_LIMIT_WINDOW_S)}s per actor)"}},
+                                      f"({_raw_prompt_rate_limiter.max_requests} req / "
+                                      f"{int(_raw_prompt_rate_limiter.window_s)}s per actor)"}},
                 status=429,
             )
         # Audit the raw access before returning.
