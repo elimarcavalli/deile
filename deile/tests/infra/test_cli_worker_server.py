@@ -54,6 +54,11 @@ def mock_adapter(tmp_path, monkeypatch):
             def parse_output(self, *, stdout, stderr, rc):
                 return WorkResult(ok=(rc == 0), result_text=stdout.strip()[:80])
 
+            def env_overlay(self, *, home):
+                # Declara um dir gravável sob o home — o server deve criá-lo
+                # antes de rodar (regressão CODEX_HOME, fix #23).
+                return {"MOCK_WRITABLE": f"{home}/mock-writable"}
+
             def list_models(self):
                 return [
                     ModelInfo(id="openrouter/deepseek/deepseek-chat",
@@ -63,6 +68,7 @@ def mock_adapter(tmp_path, monkeypatch):
 
         ADAPTER = MockAdapter(
             kind="mock", default_port=8799, auth_env_keys=["MOCK_API_KEY"],
+            writable_dirs=["HOME", "MOCK_WRITABLE"],
         )
     '''), encoding="utf-8")
     cli_adapters.reload_adapters()
@@ -315,6 +321,28 @@ async def test_resume_info_returns_persisted_verdict_when_done(mock_adapter):
         assert body["last_completed_at"] is not None    # → reconcile lê DONE
         assert body["last_is_error"] is False
         assert "CLARO" in body["last_result_full"]      # → parse_critique_verdict
+
+
+async def test_dispatch_creates_adapter_writable_dirs(
+    mock_adapter, monkeypatch, tmp_path,
+):
+    """Regressão #23 (CODEX_HOME): o server cria os ``writable_dirs`` do adapter
+    (resolvidos do env_overlay) ANTES de rodar — senão o CLI aborta (ex.: codex
+    "CODEX_HOME ... does not exist"). O dir é criado mesmo que o gate de git
+    reprove depois."""
+    import os
+    monkeypatch.setenv("MOCK_API_KEY", "secret")
+    # Home gravável (no pod é o volume /home/<kind>; no teste, um tmp).
+    monkeypatch.setenv("DEILE_CLI_WORKER_HOME", str(tmp_path / "home"))
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "x", "wait_for_result": True},
+        )
+        assert resp.status == 200  # 200 mesmo em NO_PUSH (contrato do worker)
+    mw = os.environ.get("MOCK_WRITABLE", "")
+    assert mw and Path(mw).is_dir(), f"writable dir não criado: {mw!r}"
 
 
 def test_resolve_adapter_requires_kind(monkeypatch):

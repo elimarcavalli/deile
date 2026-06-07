@@ -592,6 +592,20 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     # já vêm do Secret no Deployment; o overlay não as inclui (contrato base).
     for k, v in overlay.items():
         os.environ[k] = v
+    # Cria os diretórios graváveis declarados pelo adapter (``writable_dirs`` é a
+    # lista de NOMES de env var cujo valor é um path, ex.: CODEX_HOME, HOME,
+    # XDG_CONFIG_HOME). Com ``readOnlyRootFilesystem``, esses dirs vivem sob o
+    # volume ``worker-home`` (gravável) mas o subdir pode não existir — o codex
+    # aborta com "CODEX_HOME ... does not exist" se não pré-criado (homologação
+    # E2E). Best-effort: falha de mkdir não derruba o dispatch (o CLI reporta).
+    for _dir_var in getattr(adapter, "writable_dirs", None) or []:
+        _dir_path = os.environ.get(_dir_var, "").strip()
+        if _dir_path:
+            try:
+                Path(_dir_path).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning("não criei writable dir %s=%s: %s",
+                               _dir_var, _dir_path, exc)
 
     logger.info(
         "dispatch kind=%s task_id=%s stage=%s model=%s resume=%s repo=%s (%s)",
