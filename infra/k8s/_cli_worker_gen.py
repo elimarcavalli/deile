@@ -34,10 +34,11 @@ Isso o torna trivialmente testável.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from string import Template
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 _HERE = Path(__file__).resolve().parent
 TEMPLATE_PATH = _HERE / "manifests" / "templates" / "cli-worker.yaml.tmpl"
@@ -46,6 +47,10 @@ GENERATED_DIR = _HERE / "manifests" / "generated"
 
 #: Forges sempre permitidas no egress (qualquer worker que faz push precisa).
 _FORGE_HOSTS = ("github.com", "gitlab.com")
+
+#: Sufixos que marcam uma var de provider como SENSÍVEL (vai pro Secret, nunca
+#: literal no manifest). Complementa o casamento com ``auth_env_keys``.
+_SENSITIVE_SUFFIXES = ("_API_KEY", "_TOKEN")
 
 #: Timeout default do subprocess de um CLI worker (s). CLIs não têm cap de
 #: orçamento nativo (só o claude tem ``--max-budget-usd``); o controle de custo
@@ -73,6 +78,96 @@ def available_kinds() -> List[str]:
     import cli_adapters  # noqa: PLC0415
 
     return sorted(cli_adapters.ADAPTERS)
+
+
+def _provider_env_prefix(kind: str) -> str:
+    """Prefixo da convenção de provider-env de um *kind* (UPPERCASE)."""
+    return f"DEILE_CLI_{kind.upper()}_ENV_"
+
+
+def parse_provider_env(kind: str, env_source: Dict[str, str]) -> Dict[str, str]:
+    """Extrai as vars de provider de *env_source* para o worker *kind* (função pura).
+
+    Convenção: ``DEILE_CLI_<KIND>_ENV_<VARNAME>=<valor>`` vira ``<VARNAME>=<valor>``
+    na env do Deployment do worker. Só considera chaves com valor não-vazio; o
+    ``<VARNAME>`` precisa ser não-vazio (``DEILE_CLI_QWEN_ENV_=x`` é ignorado).
+    Não lê ``os.environ`` — recebe a fonte explicitamente (testável).
+    """
+    prefix = _provider_env_prefix(kind)
+    out: Dict[str, str] = {}
+    for key, val in env_source.items():
+        if not key.startswith(prefix):
+            continue
+        varname = key[len(prefix):].strip()
+        value = (val or "").strip()
+        if varname and value:
+            out[varname] = value
+    return out
+
+
+def _is_sensitive_provider_var(varname: str, adapter) -> bool:
+    """True se a var de provider é sensível (vai pro Secret, não literal).
+
+    Sensível = casa com uma ``auth_env_key`` do adapter OU termina em
+    ``_API_KEY``/``_TOKEN``. Conservador por desenho: na dúvida, trata como
+    segredo (não materializa no manifest).
+    """
+    if varname in set(getattr(adapter, "auth_env_keys", []) or []):
+        return True
+    return varname.upper().endswith(_SENSITIVE_SUFFIXES)
+
+
+def split_provider_env(
+    provider_env: Dict[str, str], adapter,
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Particiona as vars de provider em ``(literais, sensíveis)`` (função pura).
+
+    Literais → valor direto no manifest (ex.: ``OPENAI_BASE_URL``).
+    Sensíveis → ``secretKeyRef`` no manifest + valor no Secret ``cli-worker-keys``.
+    """
+    literals: Dict[str, str] = {}
+    secrets: Dict[str, str] = {}
+    for varname, value in provider_env.items():
+        if _is_sensitive_provider_var(varname, adapter):
+            secrets[varname] = value
+        else:
+            literals[varname] = value
+    return literals, secrets
+
+
+def read_env_sources() -> Dict[str, str]:
+    """Une ``.env`` da raiz do repo + ``os.environ`` (``os.environ`` prevalece).
+
+    Parse simples KEY=VALUE (sem ``python-dotenv`` — infra/k8s roda standalone),
+    tolerante a ausência. ``os.environ`` sobrepõe o ``.env`` (operador que
+    exportou a var na sessão tem prioridade).
+    """
+    merged: Dict[str, str] = {}
+    env_file = _HERE.parent.parent / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            merged[key.strip()] = val.strip().strip('"').strip("'")
+    for key, val in os.environ.items():
+        if key.startswith("DEILE_CLI_"):
+            merged[key] = val
+    return merged
+
+
+def resolve_provider_env(
+    kind: str, adapter, *, env_source: Optional[Dict[str, str]] = None,
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Resolve as vars de provider do *kind* particionadas em ``(literais, sensíveis)``.
+
+    Lê de *env_source* quando dado (testes), senão de :func:`read_env_sources`
+    (``.env`` + ``os.environ``).
+    """
+    source = read_env_sources() if env_source is None else env_source
+    provider_env = parse_provider_env(kind, source)
+    return split_provider_env(provider_env, adapter)
 
 
 def _yaml_env_entry(name: str, value: str, indent: str) -> str:
@@ -125,6 +220,50 @@ def _overlay_env_block(adapter, *, kind: str, indent: str = "            ") -> s
     if not entries:
         return f"{indent}# (adapter sem env_overlay adicional)"
     return "\n".join(entries)
+
+
+def _secret_ref_env_entry(name: str, indent: str) -> str:
+    """Entrada ``env`` que lê *name* do Secret ``cli-worker-keys`` (``optional``)."""
+    return (
+        f"{indent}- name: {name}\n"
+        f"{indent}  valueFrom:\n"
+        f"{indent}    secretKeyRef:\n"
+        f"{indent}      name: cli-worker-keys\n"
+        f"{indent}      key: {name}\n"
+        f"{indent}      optional: true"
+    )
+
+
+def _provider_env_block(
+    adapter,
+    *,
+    kind: str,
+    env_source: Optional[Dict[str, str]] = None,
+    indent: str = "            ",
+) -> str:
+    """Bloco ``env`` da config de provider por worker (convenção ``DEILE_CLI_*_ENV_*``).
+
+    Não-sensíveis (ex.: ``OPENAI_BASE_URL``/``OPENAI_MODEL``) entram como valor
+    literal; sensíveis (casam ``auth_env_keys`` ou terminam em ``_API_KEY``/
+    ``_TOKEN``) entram via ``secretKeyRef`` no Secret ``cli-worker-keys`` — o
+    valor NUNCA é materializado no manifest. Ausência total de
+    ``DEILE_CLI_<KIND>_ENV_*`` → comentário no-op (comportamento atual inalterado).
+    """
+    literals, secrets = resolve_provider_env(
+        kind, adapter, env_source=env_source,
+    )
+    # ``auth_env_keys`` já saem como ``secretKeyRef`` no AUTH_ENV_BLOCK; não
+    # duplicar a entrada (env name repetido vira ruído no Deployment).
+    auth_keys = set(getattr(adapter, "auth_env_keys", []) or [])
+    secrets = {k: v for k, v in secrets.items() if k not in auth_keys}
+    if not literals and not secrets:
+        return f"{indent}# (sem provider-env DEILE_CLI_{kind.upper()}_ENV_*)"
+    lines: List[str] = []
+    for name in sorted(literals):
+        lines.append(_yaml_env_entry(name, literals[name], indent))
+    for name in sorted(secrets):
+        lines.append(_secret_ref_env_entry(name, indent))
+    return "\n".join(lines)
 
 
 def _needs_pvc(adapter) -> bool:
@@ -334,6 +473,7 @@ def render_manifests(
         "TIMEOUT_S": str(timeout_s or _DEFAULT_TIMEOUT_S),
         "AUTH_ENV_BLOCK": _auth_env_block(adapter),
         "OVERLAY_ENV_BLOCK": _overlay_env_block(adapter, kind=kind),
+        "PROVIDER_ENV_BLOCK": _provider_env_block(adapter, kind=kind),
         "HOME_VOLUME_BLOCK": _home_volume_block(adapter, worker=worker),
         "EGRESS_HOST_RULES": _egress_host_rules(adapter, port=port),
         "EGRESS_HOSTS_CSV": ", ".join(egress_hosts(adapter)),
@@ -376,6 +516,10 @@ __all__ = [
     "available_kinds",
     "load_adapter",
     "egress_hosts",
+    "parse_provider_env",
+    "split_provider_env",
+    "read_env_sources",
+    "resolve_provider_env",
     "render_manifests",
     "manifest_path",
     "write_manifests",

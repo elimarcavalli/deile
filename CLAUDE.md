@@ -255,6 +255,26 @@ The 6 core deployments are namespace-agnostic; **caveat:** some auxiliary manife
 
 **Threat model:** ingress to `:8767` restricted to `deile-pipeline` only. **Egress is NOT host-whitelisted at L3/L4** — NetworkPolicy allows generic TCP 443 anywhere (`to: []`) + DNS (k3s has no FQDN-aware CNI). The host/repo allowlist (`api.anthropic.com`, `github.com`, `gitlab.com`, per-repo) is enforced **only in `wrapper.py`** via ConfigMap `claude-worker-allowed-repos` (a `git` guard). Known gap (spec §7): prompt injection could exfiltrate creds via legitimate channels (`docs/superpowers/specs/2026-05-26-claude-worker-design.md`). *(Decisão #43 mislabels this an L3/L4 whitelist — the real control is application-level.)*
 
+#### Configurar provider de workers OpenAI-compatible (qwen etc.)
+Workers OpenAI-compatible (qwen e afins) escolhem o **provider** pela tríade `OPENAI_BASE_URL` + `OPENAI_API_KEY` + `OPENAI_MODEL`. Em vez de `kubectl set env` manual (não reproduzível), declare-a no **`.env`** com a convenção `DEILE_CLI_<KIND>_ENV_<VARNAME>=<valor>` — `_cli_worker_gen.py` injeta cada uma como env var `<VARNAME>` no Deployment do worker `<kind>` ao renderizar o manifest, e `_cli_worker_install.py` propaga as sensíveis ao Secret. Sensível (casa `auth_env_keys` **ou** termina em `_API_KEY`/`_TOKEN`) → `secretKeyRef` no Secret `cli-worker-keys`, **nunca** literal no manifest; não-sensível (ex.: `OPENAI_BASE_URL`, `OPENAI_MODEL`) → valor literal. Ausência total das vars → comportamento atual inalterado (sem override). Aplica-se via `deploy.py k8s cli-worker-install <kind>` (ou re-render do manifest).
+
+Três rotas (`<KIND>` = `QWEN`):
+```dotenv
+# Dashscope nativo
+DEILE_CLI_QWEN_ENV_OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DEILE_CLI_QWEN_ENV_OPENAI_API_KEY=<key Dashscope>     # → Secret cli-worker-keys
+DEILE_CLI_QWEN_ENV_OPENAI_MODEL=qwen3-coder-plus
+
+# OpenRouter (barato)
+DEILE_CLI_QWEN_ENV_OPENAI_BASE_URL=https://openrouter.ai/api/v1
+DEILE_CLI_QWEN_ENV_OPENAI_API_KEY=<key OpenRouter>    # → Secret cli-worker-keys
+DEILE_CLI_QWEN_ENV_OPENAI_MODEL=qwen/qwen3-coder
+
+# OpenAI direto (sem base_url → default do CLI)
+DEILE_CLI_QWEN_ENV_OPENAI_API_KEY=<key OpenAI>        # → Secret cli-worker-keys
+DEILE_CLI_QWEN_ENV_OPENAI_MODEL=<modelo OpenAI>
+```
+
 ### 5.5 deile-monitor — the 24/7 cluster supervisor (6th pod)
 Two-phase deterministic tick (PR #504): **Phase A** = mechanical sweep, **zero LLM** — 8 "vigias" (OAuth health, error pods, orphan issues, `auto/*` PR attempt N/3, awaiting-stakeholder, failed Jobs, pipeline-pod health, follow-ups); **Phase B** invokes the `monitor` persona **only** when Phase-A candidates survive (via state file). Steady state = **no tokens** (was ~3.5M/tick as a tool-loop — #504 fix). Tick 30 min; RBAC `deile-monitor-sa` (read pods/jobs + `pods/exec` for OAuth renew). Persona-driven (`personas/instructions/monitor.md`, hot-reload). Main process `monitor_command_server.py` (`args:`, tini-wrapped) runs the tick as a subprocess AND serves a Bearer control plane on `:8769` (status, `pause`/`resume`/`ack`/`force-tick`, read-only Q&A via `monitor_qa` in-pod — the only pod seeing kubectl + forge + `/state`). `deilebot` `/monitor` cog + cluster-question auto-route consume it; `/v1/health` 503 on stale tick → restart.
 

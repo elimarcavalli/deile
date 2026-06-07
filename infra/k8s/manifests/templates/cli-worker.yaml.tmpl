@@ -15,6 +15,8 @@
 #   $$TIMEOUT_S     timeout do subprocess (DEILE_CLI_WORKER_TASK_TIMEOUT_S)
 #   $$AUTH_ENV_BLOCK   linhas ``- {name: KEY, valueFrom: secretKeyRef...}`` (env)
 #   $$OVERLAY_ENV_BLOCK linhas de env extras declaradas pelo adapter (env_overlay)
+#   $$PROVIDER_ENV_BLOCK env de provider por worker (DEILE_CLI_<KIND>_ENV_<VAR>):
+#                       não-sensíveis como valor literal, sensíveis via secretKeyRef
 #   $$HOME_VOLUME_BLOCK volume do HOME (PVC ou emptyDir, por storage mode)
 #   $$EGRESS_HOST_RULES regras de egress (uma por host) da NetworkPolicy
 #
@@ -84,6 +86,7 @@ spec:
                 value: "/etc/cli-worker/allowed_repos.regex" }
 $AUTH_ENV_BLOCK
 $OVERLAY_ENV_BLOCK
+$PROVIDER_ENV_BLOCK
           ports:
             - { name: cli-api, containerPort: $PORT, protocol: TCP }
           volumeMounts:

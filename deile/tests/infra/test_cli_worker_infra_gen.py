@@ -404,6 +404,131 @@ class TestPanelCliWorkerModels:
         assert any(":" in o for o in opts[1:])
 
 
+# ===== provider-env por worker (convenção DEILE_CLI_<KIND>_ENV_<VAR>) ==========
+
+
+def _qwen_env_doc(rendered: str) -> dict:
+    """Extrai a lista ``env`` do container do Deployment renderizado."""
+    docs = [d for d in yaml.safe_load_all(rendered) if d]
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    return {
+        e["name"]: e
+        for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+
+
+class TestProviderEnvOverride:
+    """``DEILE_CLI_<KIND>_ENV_<VAR>`` injeta env de provider por worker.
+
+    Não-sensível → valor literal no Deployment; sensível (``_API_KEY``/
+    ``_TOKEN`` ou ``auth_env_keys``) → ``secretKeyRef``, nunca literal. Ausência
+    da convenção → manifest inalterado (comportamento atual).
+    """
+
+    def test_no_provider_env_leaves_manifest_unchanged(self, monkeypatch):
+        monkeypatch.setattr(gen, "read_env_sources", lambda: {})
+        rendered = gen.render_manifests("qwen")
+        # YAML válido e sem nenhuma var de provider injetada.
+        docs = [d for d in yaml.safe_load_all(rendered) if d]
+        assert len(docs) >= 5
+        env = _qwen_env_doc(rendered)
+        assert "OPENAI_BASE_URL" not in env
+        assert "OPENAI_MODEL" not in env
+        # Comentário no-op presente no bloco.
+        assert "sem provider-env DEILE_CLI_QWEN_ENV_" in rendered
+
+    def test_non_sensitive_var_becomes_literal_env(self, monkeypatch):
+        monkeypatch.setattr(
+            gen, "read_env_sources",
+            lambda: {
+                "DEILE_CLI_QWEN_ENV_OPENAI_BASE_URL":
+                    "https://openrouter.ai/api/v1",
+                "DEILE_CLI_QWEN_ENV_OPENAI_MODEL": "qwen/qwen3-coder",
+            },
+        )
+        rendered = gen.render_manifests("qwen")
+        env = _qwen_env_doc(rendered)
+        assert env["OPENAI_BASE_URL"]["value"] == "https://openrouter.ai/api/v1"
+        assert env["OPENAI_MODEL"]["value"] == "qwen/qwen3-coder"
+        # Não-sensível não vira secretKeyRef.
+        assert "valueFrom" not in env["OPENAI_BASE_URL"]
+        assert "valueFrom" not in env["OPENAI_MODEL"]
+
+    def test_sensitive_var_becomes_secret_ref_not_literal(self, monkeypatch):
+        secret_value = "sk-super-secret-do-not-leak"
+        monkeypatch.setattr(
+            gen, "read_env_sources",
+            lambda: {
+                "DEILE_CLI_QWEN_ENV_OPENAI_API_KEY": secret_value,
+                "DEILE_CLI_QWEN_ENV_OPENROUTER_TOKEN": secret_value,
+            },
+        )
+        rendered = gen.render_manifests("qwen")
+        # O valor sensível NUNCA aparece materializado no manifest.
+        assert secret_value not in rendered
+        env = _qwen_env_doc(rendered)
+        # OPENROUTER_TOKEN (sufixo _TOKEN) → secretKeyRef no cli-worker-keys.
+        ref = env["OPENROUTER_TOKEN"]["valueFrom"]["secretKeyRef"]
+        assert ref["name"] == "cli-worker-keys"
+        assert ref["key"] == "OPENROUTER_TOKEN"
+        # OPENAI_API_KEY já sai pelo AUTH_ENV_BLOCK (auth_env_key do qwen) —
+        # presente exatamente uma vez (sem duplicata pelo provider-env).
+        docs = [d for d in yaml.safe_load_all(rendered) if d]
+        dep = next(d for d in docs if d["kind"] == "Deployment")
+        all_names = [
+            e["name"]
+            for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
+        ]
+        assert all_names.count("OPENAI_API_KEY") == 1
+
+    def test_parse_provider_env_is_pure(self):
+        source = {
+            "DEILE_CLI_QWEN_ENV_OPENAI_BASE_URL": "https://x/v1",
+            "DEILE_CLI_QWEN_ENV_": "ignored-empty-varname",
+            "DEILE_CLI_AIDER_ENV_OPENAI_MODEL": "other-worker",
+            "UNRELATED": "nope",
+        }
+        parsed = gen.parse_provider_env("qwen", source)
+        assert parsed == {"OPENAI_BASE_URL": "https://x/v1"}
+
+    def test_split_provider_env_partitions_by_sensitivity(self):
+        adapter = cli_adapters.ADAPTERS["qwen"]
+        provider_env = {
+            "OPENAI_BASE_URL": "https://x/v1",
+            "OPENAI_MODEL": "qwen/qwen3-coder",
+            "OPENAI_API_KEY": "sk-x",
+            "SOME_TOKEN": "tok",
+        }
+        literals, secrets = gen.split_provider_env(provider_env, adapter)
+        assert literals == {
+            "OPENAI_BASE_URL": "https://x/v1",
+            "OPENAI_MODEL": "qwen/qwen3-coder",
+        }
+        assert secrets == {"OPENAI_API_KEY": "sk-x", "SOME_TOKEN": "tok"}
+
+    def test_install_merges_sensitive_provider_keys_into_secret(self, monkeypatch):
+        import _cli_worker_install as inst  # noqa: PLC0415
+
+        secret_value = "sk-provider-secret"
+        applied_literals: list = []
+
+        def fake_apply(values, *, namespace):
+            applied_literals.append(values)
+            return True
+
+        monkeypatch.setattr(inst, "_read_env_file", lambda: {})
+        # auth_env_key plain ausente; só a var sensível da convenção existe.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            gen, "read_env_sources",
+            lambda: {"DEILE_CLI_QWEN_ENV_OPENAI_API_KEY": secret_value},
+        )
+        resolved = inst._resolve_auth_keys(
+            cli_adapters.ADAPTERS["qwen"], kind="qwen",
+        )
+        assert resolved.get("OPENAI_API_KEY") == secret_value
+
+
 # ===== install_cli_worker — on-demand (padrão claude-login generalizado) ======
 
 

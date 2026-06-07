@@ -79,8 +79,16 @@ def _read_env_file() -> Dict[str, str]:
     return env
 
 
-def _resolve_auth_keys(adapter) -> Dict[str, str]:
-    """Resolve os valores das ``auth_env_keys`` do adapter (env file > os.environ).
+def _resolve_auth_keys(adapter, *, kind: str) -> Dict[str, str]:
+    """Resolve os segredos do worker para o Secret ``cli-worker-keys``.
+
+    Une duas fontes (env file > ``os.environ`` por chave):
+
+    * as ``auth_env_keys`` declaradas pelo adapter (ex.: ``OPENAI_API_KEY``);
+    * as vars SENSÍVEIS da convenção ``DEILE_CLI_<KIND>_ENV_<VAR>`` (ex.:
+      ``DEILE_CLI_QWEN_ENV_OPENAI_API_KEY``) — derivadas em
+      ``_cli_worker_gen.resolve_provider_env``, mesma fonte que o manifest usa
+      para emitir o ``secretKeyRef``.
 
     Retorna só as chaves COM valor — chaves ausentes ficam de fora (o Secret é
     populado parcialmente; o ``/v1/health`` reporta ``ready=false`` até a chave
@@ -90,6 +98,16 @@ def _resolve_auth_keys(adapter) -> Dict[str, str]:
     resolved: Dict[str, str] = {}
     for key in getattr(adapter, "auth_env_keys", []) or []:
         val = (env_file.get(key) or os.environ.get(key, "")).strip()
+        if val:
+            resolved[key] = val
+
+    # Vars sensíveis da convenção de provider-env (merge, não overwrite das
+    # auth_env_keys já resolvidas acima).
+    _ensure_on_path()
+    from _cli_worker_gen import resolve_provider_env  # noqa: PLC0415
+
+    _, provider_secrets = resolve_provider_env(kind, adapter)
+    for key, val in provider_secrets.items():
         if val:
             resolved[key] = val
     return resolved
@@ -299,7 +317,7 @@ def install_cli_worker(
     result = CliWorkerInstallResult(ok=False, kind=kind)
 
     # 2. chaves de API → Secret compartilhado.
-    auth_values = _resolve_auth_keys(adapter)
+    auth_values = _resolve_auth_keys(adapter, kind=kind)
     declared = list(getattr(adapter, "auth_env_keys", []) or [])
     result.missing_keys = [k for k in declared if k not in auth_values]
     if not _kubectl_apply_keys_secret(auth_values, namespace=namespace):
