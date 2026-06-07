@@ -57,6 +57,10 @@ from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
 
 logger = logging.getLogger("deile.cli_adapters.qwen")
 
+#: Teto do ``result_text`` preservando o FIM (onde o veredito de pr_review/refine
+#: conclui). Truncar o início cortaria o veredito; mantém os últimos N chars.
+_VERDICT_CAP = 12000
+
 #: Catálogo estático curado (Qwen não tem ``list-models`` confiável — §2.3).
 #:
 #: Fonte: modelos Qwen-Coder do Dashscope + os equivalentes servidos pelo
@@ -115,19 +119,20 @@ class QwenAdapter(BaseCliAdapter):
         (``OPENAI_BASE_URL``/``OPENAI_API_KEY``/``OPENAI_MODEL``) apontando para
         OpenRouter/Dashscope/OpenAI — todos sob o backend ``openai``.
 
-        O modelo NÃO entra no argv — viaja por ``OPENAI_MODEL`` no env. ``model``
-        aqui é aceito por compat de assinatura mas não emite flag; o servidor
-        injeta ``OPENAI_MODEL``. ``reasoning`` e ``resume`` são ignorados (sem
-        suporte). O ``workdir`` é o cwd do subprocess (definido pelo core).
+        O modelo entra via ``-m <model>`` (o qwen-code TEM a flag). A injeção por
+        ``OPENAI_MODEL`` no env era a intenção original mas nunca foi wirada pelo
+        servidor — sem ``-m`` o qwen caía no default ``qwen3.5-plus``, que o
+        OpenRouter rejeita (``400 ... is not a valid model ID``), derrubando a
+        homologação E2E do pr_review. ``None`` deixa o qwen usar seu default.
+        ``reasoning`` e ``resume`` são ignorados (sem suporte). O ``workdir`` é o
+        cwd do subprocess (definido pelo core).
         """
         brief_text = self._read_brief(brief_path)
-        return [
-            "qwen",
-            "-p", brief_text,
-            "--yolo",
-            "--auth-type", "openai",
-            "--output-format", "json",
-        ]
+        argv = ["qwen", "-p", brief_text, "--yolo", "--auth-type", "openai"]
+        if model:
+            argv += ["-m", model]
+        argv += ["--output-format", "json"]
+        return argv
 
     @staticmethod
     def _read_brief(brief_path: str) -> str:
@@ -183,6 +188,20 @@ class QwenAdapter(BaseCliAdapter):
             if isinstance(obj, dict):
                 return self._from_obj(obj, stdout, stderr, rc)
 
+        # Shape atual de ``qwen -p --output-format json``: uma LISTA de eventos
+        # ``[{type:system}, {type:assistant}, ..., {type:result}]``. O veredito
+        # final está no event ``type=result`` campo ``result``; ``is_error`` (ou
+        # um texto "API Error ...") sinaliza falha. Sem isto o parser caía no
+        # NO_OUTPUT (o stdout começa com ``[``, não casava nem o dict nem o JSONL)
+        # — homologação E2E do pr_review.
+        if whole.startswith("["):
+            try:
+                events = json.loads(whole)
+            except (ValueError, TypeError):
+                events = None
+            if isinstance(events, list):
+                return self._from_events(events)
+
         # Fallback: JSONL linha-a-linha.
         last_text = ""
         error_text = ""
@@ -223,6 +242,40 @@ class QwenAdapter(BaseCliAdapter):
             ok=False,
             result_text=tail or f"qwen sem saída parseável (rc={rc})",
             error_code="NO_OUTPUT",
+        )
+
+    def _from_events(self, events: list) -> WorkResult:
+        """Deriva o :class:`WorkResult` da LISTA de eventos do ``qwen -p``.
+
+        O event ``type=result`` carrega o veredito final em ``result`` e a flag
+        ``is_error``. Um ``is_error=True`` OU um texto começando com ``[API
+        Error`` / ``API Error`` reprova (ex.: model-id inválido). Sem o event
+        ``result`` cai no último texto de ``assistant`` (content[].text).
+        """
+        result_ev = next(
+            (e for e in reversed(events)
+             if isinstance(e, dict) and e.get("type") == "result"),
+            None,
+        )
+        if isinstance(result_ev, dict):
+            text = str(result_ev.get("result") or "").strip()
+            is_err = bool(result_ev.get("is_error")) or text[:20].lower().lstrip(
+                "[ "
+            ).startswith("api error")
+            if text:
+                return WorkResult(
+                    ok=not is_err,
+                    result_text=text[-_VERDICT_CAP:],
+                    error_code="CLI_REPORTED_ERROR" if is_err else None,
+                )
+        # Sem result event útil → último texto de assistant.
+        for ev in reversed(events):
+            if isinstance(ev, dict) and ev.get("type") in ("assistant", "message"):
+                txt = self._extract_text(ev)
+                if txt:
+                    return WorkResult(ok=True, result_text=txt[-_VERDICT_CAP:])
+        return WorkResult(
+            ok=True, result_text="qwen concluiu sem veredito textual explícito",
         )
 
     def _from_obj(

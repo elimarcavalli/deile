@@ -76,10 +76,9 @@ def test_build_argv_form(adapter, brief):
     # pr_review — sem ele o qwen-code aborta "No auth type is selected").
     assert argv[argv.index("--auth-type") + 1] == "openai"
     assert argv[argv.index("--output-format") + 1] == "json"  # §1.6
-    # Modelo viaja por OPENAI_MODEL no env — não há -m/--model no argv.
-    assert "-m" not in argv
-    assert "--model" not in argv
-    assert "ignored-in-argv" not in argv
+    # Modelo via -m (o qwen-code TEM a flag; o OPENAI_MODEL-via-env nunca foi
+    # wirado e o qwen caía no default qwen3.5-plus rejeitado pelo OpenRouter).
+    assert argv[argv.index("-m") + 1] == "ignored-in-argv"
 
 
 @pytest.mark.unit
