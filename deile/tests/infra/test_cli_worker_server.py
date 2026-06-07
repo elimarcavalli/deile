@@ -221,6 +221,77 @@ async def test_progress_400_for_invalid_task_id(mock_adapter):
         assert resp.status in (400, 404)  # traversal barrado
 
 
+# --------------------------------------------------------------------------- #
+# /v1/dispatches/{task_id}/resume-info — LIVENESS (anti-double-dispatch)
+# --------------------------------------------------------------------------- #
+
+
+async def test_resume_info_400_invalid_task_id(mock_adapter):
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/dispatches/NOThex/resume-info", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 400
+
+
+async def test_resume_info_404_when_no_workspace(mock_adapter):
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/dispatches/0123456789abcdef/resume-info", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 404
+
+
+async def test_resume_info_alive_true_when_lease_fresh(mock_adapter):
+    """Lease com heartbeat fresco → ``claude_alive=True`` → o pipeline NÃO
+    re-despacha (impede o double-dispatch enquanto o subprocess roda)."""
+    import json
+    import os
+    import time
+
+    task_id = "0123456789abcdef"
+    ws = cws._worker_root() / task_id
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / ".lease.json").write_text(json.dumps({
+        "pid": os.getpid(), "heartbeat_at": time.time(), "pod": "test",
+    }))
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["workdir_exists"] is True
+        assert body["claude_alive"] is True
+        assert body["session_id"] == ""  # cli workers não retomam sessão
+
+
+async def test_resume_info_alive_false_when_no_lease(mock_adapter):
+    """Workspace existe mas sem lease (task terminou) → ``claude_alive=False``
+    → o pipeline cai em fresh (retry limitado pelo teto)."""
+    task_id = "fedcba9876543210"
+    ws = cws._worker_root() / task_id
+    ws.mkdir(parents=True, exist_ok=True)
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["claude_alive"] is False
+
+
+async def test_resume_info_requires_bearer(mock_adapter):
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/dispatches/0123456789abcdef/resume-info")
+        assert resp.status == 401
+
+
 def test_resolve_adapter_requires_kind(monkeypatch):
     monkeypatch.delenv("DEILE_CLI_WORKER_KIND", raising=False)
     with pytest.raises(RuntimeError):

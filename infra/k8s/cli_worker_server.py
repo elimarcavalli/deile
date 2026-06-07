@@ -362,6 +362,68 @@ async def progress_handler(request: web.Request) -> web.Response:
     })
 
 
+async def resume_info_handler(request: web.Request) -> web.Response:
+    """``GET /v1/dispatches/{task_id}/resume-info`` — LIVENESS da task.
+
+    Espelha o contrato do ``claude_worker_server`` que o pipeline
+    (``DeileWorkerImplementer._resolve_resume_meta``) consome para decidir
+    *resume vs fresh vs skip*. O campo decisivo é ``claude_alive``: quando
+    ``True``, o pipeline NÃO re-despacha (mantém em andamento) — é o que impede
+    o **double-dispatch** de um CLI worker cujo subprocess ainda está rodando.
+
+    Por que isto é essencial: os CLI workers da frota têm
+    ``supports_resume=False`` (não há sessão a retomar) e o server ANTES não
+    expunha este endpoint. O pipeline recebia 404 (rota inexistente), o
+    interpretava como "ledger stale → fresh dispatch" e disparava uma SEGUNDA
+    execução enquanto a primeira (fire-and-forget) ainda processava — abrindo PR
+    duplicada / falso ``NO_PUSH``. Expor a liveness fecha esse buraco para
+    qualquer worker, com ou sem resume de sessão.
+
+    Liveness = o ``.lease.json`` do workspace existe e NÃO está stale
+    (heartbeat fresco OU PID do subprocess vivo — ver ``_core.lease_is_stale``).
+    ``session_id`` é vazio de propósito: estes workers não retomam sessão, então
+    quando a task termina (``claude_alive=False``) o pipeline cai em fresh
+    (retry limitado pelo teto), que é o comportamento correto.
+
+    Respostas:
+      - ``400`` task_id fora de ``[0-9a-f]{16}`` (guard de path traversal).
+      - ``404`` workspace inexistente (task nunca rodou aqui / GCed) → o pipeline
+        limpa o ledger e segue fresh.
+      - ``200`` ``{task_id, workdir, workdir_exists, session_id, claude_alive,
+        last_result_summary, last_completed_at}``.
+    """
+    task_id = request.match_info["task_id"]
+    if not _core.validate_task_id_for_path(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+    workspace = _worker_root() / task_id
+    if not await asyncio.to_thread(workspace.is_dir):
+        return web.json_response(
+            {"error": f"task_id {task_id} not found"}, status=404,
+        )
+    lease_path = workspace / ".lease.json"
+
+    def _alive() -> bool:
+        if not lease_path.exists():
+            return False
+        return not _core.lease_is_stale(lease_path, ttl_s=_LEASE_TTL_S)
+
+    alive = await asyncio.to_thread(_alive)
+    return web.json_response({
+        "task_id": task_id,
+        "workdir": str(workspace),
+        "workdir_exists": True,
+        # CLI workers não retomam sessão (supports_resume=False) — sem session_id
+        # o pipeline cai em fresh quando a task NÃO está mais viva (retry limitado).
+        "session_id": "",
+        "claude_alive": alive,
+        "last_result_summary": "",
+        "last_completed_at": None,
+    })
+
+
 async def dispatch_handler(request: web.Request) -> web.Response:
     """``POST /v1/dispatch`` — executa o CLI do adapter num workdir isolado.
 
@@ -755,6 +817,10 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
     app.router.add_get("/v1/models", models_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
     app.router.add_get("/v1/progress/{task_id}", progress_handler)
+    # Liveness pro pipeline decidir resume/fresh/skip (anti-double-dispatch).
+    app.router.add_get(
+        "/v1/dispatches/{task_id}/resume-info", resume_info_handler,
+    )
 
     async def _on_startup(_app: web.Application) -> None:
         # Varredura síncrona no boot (reaproveita workdirs órfãos de pod morto).

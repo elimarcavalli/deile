@@ -2260,6 +2260,25 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     if target is None:
         return
 
+    # Ground-truth guard (anti-double-dispatch): se uma PR aberta já implementa
+    # esta issue, o worker concluiu — NÃO re-despacha. O ``reconcile`` (que roda
+    # antes do resume no tick) normalmente já a teria promovido a ``em_pr``; este
+    # check cobre a corrida em que o PR surgiu entre o reconcile e este ponto, ou
+    # uma falha transiente do reconcile. Deixa a issue para o próximo reconcile
+    # transicionar — não bloqueia, não duplica.
+    try:
+        if await monitor.forge.has_open_pr_for_issue(target.number):
+            logger.info(
+                "resume #%d: PR aberta já existe (ground truth) — skip re-dispatch",
+                target.number,
+            )
+            return
+    except Exception as exc:  # noqa: BLE001 — best-effort; segue para o fluxo normal
+        logger.warning(
+            "resume #%d: has_open_pr_for_issue falhou (%s) — segue fluxo normal",
+            target.number, exc,
+        )
+
     state = monitor._resume_tracker.get(target.number)
     # Attempt ceiling — block before spending another dispatch.
     # Per-stage max_retries (issue #391) takes priority over global resume_max_attempts.

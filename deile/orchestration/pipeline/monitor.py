@@ -897,16 +897,21 @@ class PipelineMonitor:
         if cfg.enable_refinement_gate:
             await self._reconcile_refine_issues()
             await self._refine_one_issue()
-        # Resume parked, continuable work BEFORE claiming new issues
-        # (issue #254) so a freshly-claimed issue is not re-dispatched in
-        # the same tick; its first resume lands on the next tick.
-        if cfg.enable_resume:
-            await self._resume_in_progress_issues()
-        # Issue #373: reconcile fire-and-forget implementing issues BEFORE
-        # claiming new ones — completed issues free up capacity for new
-        # dispatches in the same tick.
+        # Issue #373: reconcile fire-and-forget implementing issues FIRST —
+        # completed issues (PR exists via ground truth) move to ``em_pr`` BEFORE
+        # both resume and implement run. Ordem crítica (anti-double-dispatch):
+        # reconcile precede o resume para que uma issue cujo worker acabou de
+        # concluir (PR aberta) seja promovida a ``em_pr`` ANTES de o resume
+        # cogitar re-despachá-la — fecha a janela de corrida de 1 tick na
+        # conclusão. Também libera capacidade para novos dispatches no mesmo tick.
         if cfg.enable_implement:
             await self._reconcile_implementing_issues()
+        # Resume parked, continuable work BEFORE claiming new issues
+        # (issue #254) so a freshly-claimed issue is not re-dispatched in
+        # the same tick; its first resume lands on the next tick. Roda DEPOIS do
+        # reconcile (acima) e ANTES do implement (abaixo).
+        if cfg.enable_resume:
+            await self._resume_in_progress_issues()
         # PR #380 follow-up (non-blocking review suggestion): fetch the
         # ``~workflow:revisada`` snapshot ONCE and ensure ownership ONCE, then
         # share it with both the implement and decompose stages — halving the
