@@ -61,6 +61,20 @@ logger = logging.getLogger("deile.cli_adapters.goose")
 #: Teto default de turns headless (capa custo; o server pode sobrepor por env).
 _DEFAULT_MAX_TURNS = 40
 
+#: Teto do ``result_text`` preservando o FIM do texto. Os veredictos das fases
+#: de julgamento (crítica CLARO/VAGO, refine REFINO:OK, pr_review APPROVE) são
+#: conclusivos — vivem no FIM de uma análise potencialmente longa. Truncar o
+#: início (``[:N]``) cortava o veredito e ``parse_critique_verdict`` caía em
+#: "veredito ausente" (homologação E2E do stage refine). Mantém os últimos N
+#: chars; folga p/ uma crítica longa + o marcador final.
+_VERDICT_CAP = 12000
+
+
+def _cap_verdict(text: str) -> str:
+    """Trunca preservando o FIM (onde o veredito conclui), não o início."""
+    t = (text or "").strip()
+    return t[-_VERDICT_CAP:]
+
 #: Catálogo estático curado (Goose não tem ``list-models`` confiável — §2.5).
 #:
 #: Fonte: modelos OpenRouter/OpenAI de uso recorrente. Os IDs nativos dependem do
@@ -213,7 +227,7 @@ class GooseAdapter(BaseCliAdapter):
                 error_code="CLI_REPORTED_ERROR",
             )
         if last_text:
-            return WorkResult(ok=True, result_text=last_text[:2000])
+            return WorkResult(ok=True, result_text=_cap_verdict(last_text))
         if saw_event:
             return WorkResult(
                 ok=True,
@@ -239,14 +253,44 @@ class GooseAdapter(BaseCliAdapter):
             )
         txt = self._extract_text(obj)
         if txt:
-            return WorkResult(ok=True, result_text=txt[:2000])
+            return WorkResult(ok=True, result_text=_cap_verdict(txt))
         return WorkResult(
             ok=True, result_text="goose concluiu sem veredito textual explícito",
         )
 
     @staticmethod
     def _extract_text(obj: dict) -> str:
-        """Extrai o texto de resposta, tolerante ao shape por versão do Goose."""
+        """Extrai o texto de resposta, tolerante ao shape por versão do Goose.
+
+        Shape atual de ``goose run --output-format json`` (>=1.3x):
+        ``{"messages": [...], "metadata": {...}}`` — o veredito está na ÚLTIMA
+        mensagem ``role=assistant``, em ``content[].text`` dos blocos
+        ``type=="text"`` (há também blocos ``type=="thinking"`` que ignoramos).
+        Sem isto o parser caía no fallback "sem veredito textual" e o
+        ``parse_critique_verdict`` do pipeline nunca via CLARO/VAGO (homologação
+        E2E do stage refine). Mantém o fallback para chaves top-level de versões
+        antigas.
+        """
+        msgs = obj.get("messages")
+        if isinstance(msgs, list) and msgs:
+            for msg in reversed(msgs):
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content")
+                if isinstance(content, list):
+                    parts = [
+                        c.get("text", "")
+                        for c in content
+                        if isinstance(c, dict)
+                        and c.get("type") == "text"
+                        and isinstance(c.get("text"), str)
+                        and c.get("text").strip()
+                    ]
+                    if parts:
+                        return "\n".join(parts).strip()
+                elif isinstance(content, str) and content.strip():
+                    return content.strip()
+        # Fallback — shapes antigos com o texto numa chave top-level.
         for key in ("response", "result", "text", "message", "content", "output"):
             val = obj.get(key)
             if isinstance(val, str) and val.strip():

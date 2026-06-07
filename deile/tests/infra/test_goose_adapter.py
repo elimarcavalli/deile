@@ -184,3 +184,28 @@ def test_list_models_returns_copy(adapter):
     a = adapter.list_models()
     a.clear()
     assert len(adapter.list_models()) == len(go_mod._MODELS)
+
+
+@pytest.mark.unit
+def test_parse_output_messages_shape_extracts_verdict_at_end(adapter):
+    """Regressão (homologação E2E refine): goose run --output-format json emite
+    ``{"messages":[...],"metadata":{...}}``; o veredito conclui no FIM da última
+    msg assistant (content[].text). O parser deve extraí-lo e NÃO truncar o fim."""
+    import json as _json
+    long_analysis = "Análise detalhada. " * 800  # >>2000 chars
+    out = _json.dumps({
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "critique"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "pensando..."},
+                    {"type": "text", "text": long_analysis + "\n\nVEREDITO: CLARO"},
+                ],
+            },
+        ],
+        "metadata": {"total_tokens": 81823, "status": "completed"},
+    })
+    res = adapter.parse_output(stdout=out, stderr="", rc=0)
+    assert res.ok is True
+    assert "VEREDITO: CLARO" in res.result_text  # fim preservado (não [:2000])
