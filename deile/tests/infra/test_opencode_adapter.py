@@ -87,10 +87,15 @@ def test_build_argv_full(adapter):
     assert "-m" in argv and argv[argv.index("-m") + 1] == "openrouter/deepseek/deepseek-chat"
     assert "--dangerously-skip-permissions" in argv  # §1.4 autonomia
     assert argv[argv.index("--format") + 1] == "json"  # §1.6 saída estruturada
-    assert argv[argv.index("-f") + 1] == "/work/abc/.brief.md"  # brief anexado
-    # Instrução posicional é o último token (não uma flag).
-    assert not argv[-1].startswith("-")
-    assert "brief" in argv[-1].lower()
+    # ``-f``/``--file`` é [array] no opencode (>=1.16) e o yargs é GULOSO: o
+    # brief DEVE ser o ÚLTIMO token e a instrução posicional vem ANTES de ``-f``,
+    # senão o array engole a instrução como arquivo (File not found) — regressão
+    # da homologação E2E. Trava ambas as condições:
+    assert argv[-2] == "-f" and argv[-1] == "/work/abc/.brief.md"  # brief é o último
+    msg_idx = argv.index("--format") + 2  # token logo após "json"
+    assert not argv[msg_idx].startswith("-")  # instrução posicional, não flag
+    assert "brief" in argv[msg_idx].lower()
+    assert msg_idx < argv.index("-f")  # mensagem ANTES do -f (anti-greedy)
 
 
 @pytest.mark.unit

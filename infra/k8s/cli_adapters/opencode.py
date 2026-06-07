@@ -133,12 +133,20 @@ class OpenCodeAdapter(BaseCliAdapter):
         """Monta o argv headless do ``opencode run``.
 
         Forma: ``opencode run --dir <workdir> [-m <model>] [--variant <r>]
-        --dangerously-skip-permissions --format json -f <brief_path>
-        "<instrução posicional>"``.
+        --dangerously-skip-permissions --format json "<instrução posicional>"
+        -f <brief_path>``.
 
         ``resume`` é ignorado (``supports_resume=False`` → o server sempre passa
         ``None``). A instrução posicional é curta e neutra-de-CLI; o conteúdo
         real vem do anexo ``-f``.
+
+        ORDEM CRÍTICA (homologação E2E): ``-f``/``--file`` é declarado como
+        ``[array]`` no opencode (>=1.16); o parser yargs é GULOSO e consome todos
+        os tokens não-flag seguintes para dentro do array. Se ``-f`` viesse antes
+        da instrução posicional, o array engoliria a instrução como se fosse mais
+        um arquivo (``File not found: "Implemente..."``) e ``message`` ficaria
+        vazio. Por isso a mensagem posicional vem ANTES e ``-f <brief_path>`` é o
+        ÚLTIMO token — assim o array captura apenas o brief.
         """
         argv: List[str] = ["opencode", "run", "--dir", workdir]
         if model:
@@ -149,9 +157,9 @@ class OpenCodeAdapter(BaseCliAdapter):
         argv += [
             "--dangerously-skip-permissions",
             "--format", "json",
-            "-f", brief_path,
             "Implemente exatamente o que o brief anexado descreve. "
             "Faça git add/commit/push das mudanças ao terminar.",
+            "-f", brief_path,
         ]
         return argv
 
