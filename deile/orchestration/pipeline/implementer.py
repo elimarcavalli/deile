@@ -45,12 +45,13 @@ from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
 from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.dispatch_resolver import (
-    get_endpoint_for, resolve_stage_dispatcher, resolve_stage_max_retries,
-    resolve_stage_timeout_s)
+    BUILTIN_DISPATCHERS, get_endpoint_for, resolve_stage_dispatcher,
+    resolve_stage_max_retries, resolve_stage_timeout_s)
 from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  persona_for_type,
                                                  template_for_type)
-from deile.orchestration.pipeline.model_resolver import resolve_stage_model
+from deile.orchestration.pipeline.model_resolver import (
+    resolve_stage_cli_model, resolve_stage_model)
 from deile.orchestration.pipeline.reasoning_resolver import \
     resolve_stage_reasoning
 
@@ -891,12 +892,23 @@ class WorkerImplementer(PipelineImplementer):
                     "resume_block truncado por cap de tamanho — "
                     "channel_id=%s stage=%s", channel_id, stage,
                 )
-        # Per-stage model override (issue #305). ``stage`` is the canonical
-        # pipeline-stage name (see :data:`PIPELINE_STAGES`); when set, the
-        # resolver returns ``None`` if no override is configured (the worker
-        # then falls back to its own ``DEILE_PREFERRED_MODEL``), or a
-        # ``provider:model`` slug to pin THIS turn only.
-        preferred_model = resolve_stage_model(stage) if stage else None
+        # Roteamento do campo de modelo pelo dispatcher do stage. ``stage`` é o
+        # nome canônico (ver :data:`PIPELINE_STAGES`); sem override configurado,
+        # os resolvers devolvem ``None`` (o worker usa seu próprio default).
+        #   - ``deile-worker``/``claude-worker`` (núcleo) consomem
+        #     ``preferred_model`` no formato ``provider:model`` (issue #305).
+        #   - workers da frota CLI (``*-worker``) consomem ``cli_model`` — id
+        #     nativo do CLI, string livre.
+        # Esta é a ÚNICA ramificação nova no cliente HTTP: escolher qual campo de
+        # modelo preencher conforme o destino, sem relaxar o validator
+        # ``provider:model`` do deile-worker.
+        is_cli_worker = bool(stage) and resolve_stage_dispatcher(stage) not in BUILTIN_DISPATCHERS
+        if is_cli_worker:
+            preferred_model = None
+            cli_model = resolve_stage_cli_model(stage)
+        else:
+            preferred_model = resolve_stage_model(stage) if stage else None
+            cli_model = None
         # Per-stage reasoning effort (espelha o per-stage model). ``None`` quando
         # nem a etapa nem o global têm override — o worker/provider usa o default.
         preferred_reasoning = resolve_stage_reasoning(stage) if stage else None
@@ -946,7 +958,8 @@ class WorkerImplementer(PipelineImplementer):
         # para dar ao operator controle granular sem editar manifests.
         payload_kwargs: Dict[str, Any] = dict(
             brief=brief, channel_id=channel_id, persona=persona, wait=not nowait,
-            preferred_model=preferred_model, stage=stage, branch=branch,
+            preferred_model=preferred_model, cli_model=cli_model,
+            stage=stage, branch=branch,
             preferred_reasoning=preferred_reasoning,
             timeout_s=resolve_stage_timeout_s(stage) if stage else None,
             max_retries=resolve_stage_max_retries(stage) if stage else None,

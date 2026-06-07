@@ -16,8 +16,8 @@ from __future__ import annotations
 import pytest
 
 from deile.config.settings import reset_settings
-from deile.orchestration.pipeline.model_resolver import (PIPELINE_STAGES,
-                                                         resolve_stage_model)
+from deile.orchestration.pipeline.model_resolver import (
+    PIPELINE_STAGES, resolve_stage_cli_model, resolve_stage_model)
 
 
 @pytest.fixture(autouse=True)
@@ -92,3 +92,47 @@ class TestResolveStageModel:
             resolve_stage_model("garbage")
         assert "garbage" in str(exc_info.value)
         assert "classify" in str(exc_info.value)  # lists valid options
+
+
+class TestResolveStageCliModel:
+    """CLI workers consomem ``cli_model`` (string livre via env), não slug."""
+
+    def test_unset_returns_none(self):
+        assert resolve_stage_cli_model("implement") is None
+
+    def test_free_string_via_env_is_returned_verbatim(self, monkeypatch):
+        # Id nativo de CLI que o regex provider:model REJEITARIA — deve passar
+        # intacto porque o CLI resolver lê a env var como string livre.
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_IMPLEMENT", "openrouter/deepseek/deepseek-chat"
+        )
+        reset_settings()
+        assert (
+            resolve_stage_cli_model("implement")
+            == "openrouter/deepseek/deepseek-chat"
+        )
+        # Per-stage: outras etapas continuam None.
+        assert resolve_stage_cli_model("classify") is None
+
+    def test_global_preferred_is_used_as_fallback(self, monkeypatch):
+        # Sem override por etapa, cai no DEILE_PREFERRED_MODEL global (livre).
+        monkeypatch.setenv("DEILE_PREFERRED_MODEL", "qwen3-coder-plus")
+        reset_settings()
+        assert resolve_stage_cli_model("implement") == "qwen3-coder-plus"
+
+    def test_per_stage_overrides_global(self, monkeypatch):
+        monkeypatch.setenv("DEILE_PREFERRED_MODEL", "qwen3-coder-plus")
+        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT", "gpt-5.5-codex")
+        reset_settings()
+        assert resolve_stage_cli_model("implement") == "gpt-5.5-codex"
+        # Etapa sem override usa o global.
+        assert resolve_stage_cli_model("classify") == "qwen3-coder-plus"
+
+    def test_whitespace_only_collapses_to_none(self, monkeypatch):
+        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT", "   ")
+        reset_settings()
+        assert resolve_stage_cli_model("implement") is None
+
+    def test_unknown_stage_raises_value_error(self):
+        with pytest.raises(ValueError, match="garbage"):
+            resolve_stage_cli_model("garbage")

@@ -32,6 +32,7 @@ Design choices:
 
 from __future__ import annotations
 
+import os
 from typing import Optional, Tuple
 
 from deile.config.settings import get_settings
@@ -79,3 +80,49 @@ def resolve_stage_model(stage: str) -> Optional[str]:
     if isinstance(raw, str) and not raw.strip():
         return None
     return raw or None
+
+
+def resolve_stage_cli_model(stage: str) -> Optional[str]:
+    """Return the per-stage **CLI** model override for *stage*, or ``None``.
+
+    Espelha :func:`resolve_stage_model`, mas para os **workers da frota CLI**
+    (``opencode-worker``, ``codex-worker``, ...): o valor é o **model-id NATIVO
+    do CLI** — uma *string livre* (ex.: ``openrouter/deepseek/deepseek-chat``,
+    ``qwen3-coder-plus``, ``gpt-5.5-codex``), NÃO o formato ``provider:model``
+    do deile-worker.
+
+    **Por que lê env direto (e não ``settings.pipeline_model_<stage>``):** a
+    camada de settings valida ``DEILE_PIPELINE_MODEL_<STAGE>`` /
+    ``pipeline.models.<stage>`` pelo regex ``provider:model``
+    (``_to_optional_model_slug``) e DESCARTA qualquer string que não case — o que
+    aniquilaria um id de CLI livre como ``openrouter/deepseek/deepseek-chat``.
+    Portanto o id nativo do CLI viaja **sempre pela env var**
+    ``DEILE_PIPELINE_MODEL_<STAGE>`` (per-stage) → fallback ``DEILE_PREFERRED_MODEL``
+    (global), lidas como string livre — exatamente o que o plano §1.3 especifica.
+    Isto espelha o caminho de cluster: o painel grava
+    ``DEILE_PIPELINE_MODEL_<STAGE>`` no Deployment, e o worker CLI consome o id
+    cru. O eixo de configuração ("modelo") continua único — o que muda é apenas
+    como o valor é *interpretado* no destino (provider:model × id nativo). O
+    ``implementer`` escolhe qual resolver chamar pelo dispatcher do stage
+    (deile/claude-worker → :func:`resolve_stage_model`; ``*-worker`` CLI → este).
+
+    ``None`` é load-bearing — significa "sem override; deixe o CLI worker usar
+    o modelo default do adapter / da imagem".
+
+    Raises:
+        ValueError: if *stage* is not in :data:`PIPELINE_STAGES` (programming bug).
+    """
+    if stage not in PIPELINE_STAGES:
+        raise ValueError(
+            f"unknown pipeline stage: {stage!r} "
+            f"(expected one of {PIPELINE_STAGES})"
+        )
+    # Per-stage env var (string livre — id nativo do CLI).
+    raw = os.environ.get(f"DEILE_PIPELINE_MODEL_{stage.upper()}")
+    if raw and raw.strip():
+        return raw.strip()
+    # Global fallback (string livre também — não passa pelo slug regex).
+    global_raw = os.environ.get("DEILE_PREFERRED_MODEL")
+    if global_raw and global_raw.strip():
+        return global_raw.strip()
+    return None

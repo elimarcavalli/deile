@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from decimal import Decimal, InvalidOperation
-from typing import FrozenSet, Optional, Tuple
+from pathlib import Path
+from typing import Dict, FrozenSet, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +43,32 @@ PIPELINE_STAGES: Tuple[str, ...] = (
     "follow_ups",
 )
 
-#: Valores aceitos. Frozen para evitar mutação acidental.
-VALID_DISPATCHERS: FrozenSet[str] = frozenset({"deile-worker", "claude-worker"})
+# ---------------------------------------------------------------------------
+# Frota escalável — workers derivados do registro de adapters (issue multi-CLI)
+# ---------------------------------------------------------------------------
+#
+# Os dois workers "núcleo" (``deile-worker`` in-process e ``claude-worker`` com
+# OAuth) têm servers dedicados e existem independentemente da frota de CLIs. Os
+# demais workers (``opencode-worker``, ``codex-worker``, ...) são plugados pelo
+# **registro de adapters** ``cli_adapters.ADAPTERS`` (``infra/k8s/cli_adapters/``):
+# cada adapter declara ``kind`` + ``default_port`` e, ao ser descoberto, vira um
+# dispatcher válido ``<kind>-worker`` SEM editar este módulo.
+#
+# **Single source of truth (anti-hardcode):** ``VALID_DISPATCHERS``, os aliases e
+# os endpoints são DERIVADOS do registro a cada resolução — nunca uma lista
+# fixa. O teste de regressão ``test_worker_registry_drives_everything.py`` falha
+# se alguém re-hardcodar uma lista de workers em qualquer consumidor.
 
-#: Aliases legacy de PR #330 que canonicalizam para os 2 valores válidos.
+#: Workers núcleo — têm server dedicado (deile-worker in-process; claude-worker
+#: com OAuth). Existem fora do registro de adapters da frota CLI.
+BUILTIN_DISPATCHERS: FrozenSet[str] = frozenset({"deile-worker", "claude-worker"})
+
+#: Aliases legacy de PR #330 que canonicalizam para os 2 workers núcleo.
 #: Necessário para compat com deployments existentes que tenham
 #: ``DEILE_PIPELINE_DISPATCH_MODE`` no formato underscore ou abreviado.
 #: Mantém em paridade com ``WORKER_ALIASES`` / ``CLAUDE_ALIASES`` de
 #: :mod:`deile.orchestration.pipeline.implementer`.
-_DISPATCHER_ALIASES: dict[str, str] = {
+_BUILTIN_DISPATCHER_ALIASES: Dict[str, str] = {
     "deile_worker": "deile-worker",
     "worker": "deile-worker",
     "deile": "deile-worker",
@@ -60,7 +79,133 @@ _DISPATCHER_ALIASES: dict[str, str] = {
     "claude-worker": "claude-worker",
 }
 
+#: Default endpoints dos workers núcleo. Env vars sobrescrevem (dev local).
+_BUILTIN_ENDPOINT_DEFAULTS: Dict[str, str] = {
+    "deile-worker": "http://deile-worker:8766",
+    "claude-worker": "http://claude-worker:8767",
+}
+_BUILTIN_ENDPOINT_ENV_VARS: Dict[str, str] = {
+    "deile-worker": "DEILE_WORKER_ENDPOINT",
+    "claude-worker": "DEILE_CLAUDE_WORKER_ENDPOINT",
+}
+
 _DEFAULT_DISPATCHER = "deile-worker"
+
+
+def _load_cli_adapter_registry() -> Dict[str, object]:
+    """Importa ``cli_adapters.ADAPTERS`` de forma robusta; ``{}`` se ausente.
+
+    O pacote ``cli_adapters`` vive em ``infra/k8s/`` (fora do pacote ``deile``):
+    no cluster ele é COPiado plano para ``/app/cli_adapters`` (WORKDIR ``/app``,
+    já em ``sys.path``); em dev/local insere-se ``infra/k8s`` no path. Quando o
+    pacote não está disponível (ex.: instalação só do ``deile`` sem a frota CLI),
+    a função degrada para ``{}`` — os dois workers núcleo continuam válidos.
+
+    Tolerante a falha por desenho: um erro de import NUNCA derruba o resolver
+    (o pipeline tem de resolver ao menos ``deile-worker``/``claude-worker``).
+    """
+    try:
+        import cli_adapters  # noqa: PLC0415 — import lazy (pacote opcional fora de deile/)
+    except ImportError:
+        # Tenta inserir ``infra/k8s`` no path (layout de repo/dev) e re-importar.
+        repo_root = Path(__file__).resolve().parents[3]
+        infra_k8s = repo_root / "infra" / "k8s"
+        if infra_k8s.is_dir() and str(infra_k8s) not in sys.path:
+            sys.path.insert(0, str(infra_k8s))
+        try:
+            import cli_adapters  # noqa: PLC0415
+        except Exception as exc:  # noqa: BLE001 — frota CLI é opcional; degrada
+            logger.debug("cli_adapters indisponível (%s) — só workers núcleo", exc)
+            return {}
+    except Exception as exc:  # noqa: BLE001 — adapter quebrado não derruba o resolver
+        logger.warning("falha ao carregar cli_adapters (%s) — só workers núcleo", exc)
+        return {}
+    return dict(getattr(cli_adapters, "ADAPTERS", {}) or {})
+
+
+def _cli_dispatcher_ports() -> Dict[str, int]:
+    """Mapa ``{<kind>-worker: default_port}`` derivado do registro de adapters.
+
+    Cada adapter contribui um dispatcher ``<kind>-worker``; um ``kind`` que
+    colida com um worker núcleo (``deile``/``claude``) é ignorado (o núcleo
+    prevalece). Adapter sem ``default_port`` plausível (> 0) é pulado com
+    warning — não dá pra montar endpoint sem porta.
+    """
+    ports: Dict[str, int] = {}
+    for kind, adapter in _load_cli_adapter_registry().items():
+        if not kind or not isinstance(kind, str):
+            continue
+        dispatcher = f"{kind}-worker"
+        if dispatcher in BUILTIN_DISPATCHERS:
+            # Núcleo prevalece — não deixa um adapter sequestrar deile/claude.
+            continue
+        port = getattr(adapter, "default_port", 0)
+        if not isinstance(port, int) or port <= 0:
+            logger.warning(
+                "adapter %r sem default_port válido (%r) — dispatcher %r ignorado",
+                kind, port, dispatcher,
+            )
+            continue
+        ports[dispatcher] = port
+    return ports
+
+
+def get_valid_dispatchers() -> FrozenSet[str]:
+    """Conjunto de dispatchers válidos = núcleo ∪ frota do registro de adapters.
+
+    Re-derivado a cada chamada para refletir adapters registrados em runtime
+    (hot-reload em testes via ``cli_adapters.reload_adapters()``). É a fonte
+    única — qualquer consumidor que precise da lista de workers deve chamar
+    esta função em vez de hardcodar.
+    """
+    return BUILTIN_DISPATCHERS | frozenset(_cli_dispatcher_ports())
+
+
+def _dispatcher_aliases() -> Dict[str, str]:
+    """Mapa alias→canônico = aliases dos workers núcleo + identidade da frota.
+
+    Cada CLI dispatcher ``<kind>-worker`` aceita tanto a forma canônica quanto a
+    forma curta ``<kind>`` (paridade com os aliases ``deile``/``claude`` do
+    núcleo). Derivado a cada chamada do registro.
+    """
+    aliases = dict(_BUILTIN_DISPATCHER_ALIASES)
+    for dispatcher in _cli_dispatcher_ports():
+        aliases[dispatcher] = dispatcher
+        short = dispatcher[: -len("-worker")]
+        # Não sobrescreve um alias de núcleo já mapeado (defensivo).
+        aliases.setdefault(short, dispatcher)
+    return aliases
+
+
+def _endpoint_for_dispatcher(canonical: str) -> Tuple[str, Optional[str]]:
+    """Retorna ``(default_url, env_var)`` para um dispatcher canônico.
+
+    Workers núcleo usam os endpoints fixos + env vars dedicadas; workers da
+    frota CLI derivam ``http://<kind>-worker:<default_port>`` do adapter e a env
+    var ``DEILE_<KIND>_WORKER_ENDPOINT``.
+    """
+    if canonical in _BUILTIN_ENDPOINT_DEFAULTS:
+        return _BUILTIN_ENDPOINT_DEFAULTS[canonical], _BUILTIN_ENDPOINT_ENV_VARS[canonical]
+    ports = _cli_dispatcher_ports()
+    port = ports.get(canonical)
+    if port is None:
+        raise ValueError(f"unknown dispatcher {canonical!r}")
+    kind = canonical[: -len("-worker")]
+    env_var = f"DEILE_{kind.upper().replace('-', '_')}_WORKER_ENDPOINT"
+    return f"http://{canonical}:{port}", env_var
+
+
+#: Snapshot de import dos dispatchers válidos. Mantido por compat com
+#: importadores que esperam uma constante (ex.: testes que checam pertinência).
+#: Para a verdade em runtime — que reflete adapters hot-reloaded — use
+#: :func:`get_valid_dispatchers`. O snapshot reflete a frota descoberta no
+#: import do módulo (núcleo + adapters já presentes no pacote).
+VALID_DISPATCHERS: FrozenSet[str] = get_valid_dispatchers()
+
+#: Snapshot de import do mapa alias→canônico. Mantido por compat com
+#: importadores externos (``_panel_data.py`` lê ``_DISPATCHER_ALIASES`` lazy).
+#: A verdade em runtime vem de :func:`_dispatcher_aliases` (re-derivada).
+_DISPATCHER_ALIASES: Dict[str, str] = _dispatcher_aliases()
 
 #: Built-in timeout defaults (seconds) when no per-stage or global override is set.
 #: claude-worker runs ``claude -p`` subprocesses that take longer; deile-worker
@@ -73,42 +218,37 @@ BUILT_IN_TIMEOUT_S_DEILE: int = 900
 #: Extracted here (issue #391) so it can be overridden per-stage or globally.
 BUILT_IN_MAX_RETRIES: int = 3
 
-# Default endpoints. Env vars sobrescrevem (útil pra dev local fora do cluster).
-_ENDPOINT_DEFAULTS = {
-    "deile-worker": "http://deile-worker:8766",
-    "claude-worker": "http://claude-worker:8767",
-}
-_ENDPOINT_ENV_VARS = {
-    "deile-worker": "DEILE_WORKER_ENDPOINT",
-    "claude-worker": "DEILE_CLAUDE_WORKER_ENDPOINT",
-}
-
 
 def is_valid_dispatcher(value: Optional[str]) -> bool:
     """Returns True se *value* é dispatcher válido (canônico OU legacy alias).
 
-    Case-insensitive; whitespace stripped. Falsy / não-string → False.
+    Case-insensitive; whitespace stripped. Falsy / não-string → False. Os
+    workers da frota CLI (``<kind>-worker`` + forma curta ``<kind>``) são
+    aceitos automaticamente assim que o adapter é registrado.
     """
     if not value or not isinstance(value, str):
         return False
-    return value.strip().lower() in _DISPATCHER_ALIASES
+    return value.strip().lower() in _dispatcher_aliases()
 
 
 def _canonicalize(value: Optional[str]) -> Optional[str]:
-    """Normaliza para forma canônica em VALID_DISPATCHERS; None se vazio.
+    """Normaliza para forma canônica em :func:`get_valid_dispatchers`; None se vazio.
 
-    Aceita aliases legacy (PR #330) e canonicaliza para os 2 valores válidos.
-    Valor não reconhecido → ValueError fail-fast (típico typo).
+    Aceita aliases legacy (PR #330) + a frota CLI do registro de adapters e
+    canonicaliza para a forma ``<x>-worker``. Valor não reconhecido → ValueError
+    fail-fast (típico typo).
     """
     if not value or not value.strip():
         return None
     normalized = value.strip().lower()
-    canonical = _DISPATCHER_ALIASES.get(normalized)
+    aliases = _dispatcher_aliases()
+    canonical = aliases.get(normalized)
     if canonical is None:
+        valid = get_valid_dispatchers()
         raise ValueError(
             f"unknown dispatcher {value!r}; expected one of "
-            f"{sorted(VALID_DISPATCHERS)} (or aliases "
-            f"{sorted(set(_DISPATCHER_ALIASES) - VALID_DISPATCHERS)})"
+            f"{sorted(valid)} (or aliases "
+            f"{sorted(set(aliases) - valid)})"
         )
     return canonical
 
@@ -129,7 +269,7 @@ def _canonicalize_settings(value: Optional[str], context: str) -> Optional[str]:
             "ignoring — expected one of %s",
             value,
             context,
-            sorted(VALID_DISPATCHERS),
+            sorted(get_valid_dispatchers()),
         )
         return None
 
@@ -385,15 +525,20 @@ def resolve_stage_cost_cap_usd(stage: str) -> Optional[Decimal]:
 def get_endpoint_for(dispatcher: str) -> str:
     """Resolve a URL HTTP do worker pod *dispatcher*.
 
-    Env var (``DEILE_WORKER_ENDPOINT`` ou ``DEILE_CLAUDE_WORKER_ENDPOINT``)
-    sobrescreve o default — útil para dev local que aponta para localhost
-    em vez do Service DNS do cluster.
+    A env var de endpoint do worker sobrescreve o default — útil para dev local
+    que aponta para localhost em vez do Service DNS do cluster. Workers núcleo
+    usam ``DEILE_WORKER_ENDPOINT`` / ``DEILE_CLAUDE_WORKER_ENDPOINT``; cada worker
+    da frota CLI usa ``DEILE_<KIND>_WORKER_ENDPOINT`` e tem o default
+    ``http://<kind>-worker:<default_port>`` DERIVADO do registro de adapters
+    (porta nunca hardcodada aqui).
 
     Raises:
-        ValueError: dispatcher fora de :data:`VALID_DISPATCHERS`.
+        ValueError: dispatcher fora de :func:`get_valid_dispatchers`.
     """
     canonical = _canonicalize(dispatcher)
     if canonical is None:
         raise ValueError(f"unknown dispatcher {dispatcher!r}")
-    env_var = _ENDPOINT_ENV_VARS[canonical]
-    return os.environ.get(env_var) or _ENDPOINT_DEFAULTS[canonical]
+    default_url, env_var = _endpoint_for_dispatcher(canonical)
+    if env_var:
+        return os.environ.get(env_var) or default_url
+    return default_url

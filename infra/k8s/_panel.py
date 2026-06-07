@@ -5916,12 +5916,37 @@ class DispatchMatrixView(View):
 
     # --- picker option builders (Task 19) -------------------------------
 
+    #: Fallback estático dos workers núcleo — usado só quando o lazy import de
+    #: ``dispatch_resolver`` falha (ex.: ``deile`` fora do path, erro de import).
+    #: A frota CLI extra (``opencode-worker``, ...) só aparece com o resolver
+    #: importável; o painel NUNCA crasha por causa disso.
+    _WORKERS_FALLBACK = ("deile-worker", "claude-worker")
+
+    @staticmethod
+    def _canonical_workers() -> List[str]:
+        """Lista canônica de workers DERIVADA do registro de adapters.
+
+        Single source of truth: :func:`dispatch_resolver.get_valid_dispatchers`
+        (que une os dois workers núcleo com a frota CLI descoberta em
+        ``cli_adapters.ADAPTERS``). Registrar um adapter novo faz o worker
+        aparecer aqui SEM editar o painel. Ordem determinística: núcleo primeiro
+        (``deile-worker``, ``claude-worker``), depois o resto em ordem alfabética.
+        """
+        try:
+            from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+                BUILTIN_DISPATCHERS, get_valid_dispatchers)
+            valid = get_valid_dispatchers()
+            core = [w for w in ("deile-worker", "claude-worker") if w in valid]
+            extra = sorted(valid - BUILTIN_DISPATCHERS)
+            return [*core, *extra]
+        except Exception:  # noqa: BLE001 — provider nunca crasha o painel
+            return list(DispatchMatrixView._WORKERS_FALLBACK)
+
     def _worker_picker_options(self) -> List[str]:
-        """Opções do picker de worker (3 itens fixos)."""
+        """Opções do picker de worker — derivadas do registro de adapters."""
         return [
             self._CLEAR_SENTINEL_WORKER,  # primeiro = "limpar override"
-            "deile-worker",
-            "claude-worker",
+            *self._canonical_workers(),
         ]
 
     def _model_picker_options(self, *, worker: str) -> List[str]:
@@ -6580,8 +6605,9 @@ class DispatchMatrixView(View):
     def _open_global_worker_picker(self) -> ActionResult:
         """Abre picker global de worker (DEILE_PIPELINE_DISPATCH_MODE)."""
         # Global picker NÃO oferece "(global default)" (que é ele mesmo).
-        # Em vez disso, oferece "(clear override)" + os 2 valores válidos.
-        opts = ["(clear override)", "deile-worker", "claude-worker"]
+        # Em vez disso, oferece "(clear override)" + os workers válidos
+        # DERIVADOS do registro de adapters (núcleo + frota CLI).
+        opts = ["(clear override)", *self._canonical_workers()]
         self.mode = ("global_worker", None, opts)
         self.picker_cursor = 0
         return ActionResult.refresh()
