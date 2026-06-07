@@ -32,6 +32,7 @@ modelo barato), sem ultracode/effort-jargon claude.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import secrets
@@ -411,6 +412,11 @@ async def resume_info_handler(request: web.Request) -> web.Response:
         return not _core.lease_is_stale(lease_path, ttl_s=_LEASE_TTL_S)
 
     alive = await asyncio.to_thread(_alive)
+    # Veredito persistido por ``_save_task_result`` quando a task concluiu. Enquanto
+    # roda (fire-and-forget), o meta ainda não existe → ``last_completed_at=None``
+    # (o reconcile lê isso como RUNNING). Concluída → meta traz ``last_completed_at``
+    # + ``last_result_full`` (que o ``parse_critique_verdict`` consome).
+    meta = await asyncio.to_thread(_load_task_result, task_id) or {}
     return web.json_response({
         "task_id": task_id,
         "workdir": str(workspace),
@@ -419,8 +425,11 @@ async def resume_info_handler(request: web.Request) -> web.Response:
         # o pipeline cai em fresh quando a task NÃO está mais viva (retry limitado).
         "session_id": "",
         "claude_alive": alive,
-        "last_result_summary": "",
-        "last_completed_at": None,
+        "last_completed_at": meta.get("last_completed_at"),
+        "last_is_error": meta.get("last_is_error"),
+        "last_result_full": meta.get("last_result_full", ""),
+        "last_result_summary": meta.get("last_result_summary", ""),
+        "last_error_code": meta.get("last_error_code", ""),
     })
 
 
@@ -619,6 +628,11 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             work = await _post_run_gate(
                 adapter, work, workdir=workspace, base_sha=base_sha, branch=branch,
             )
+            # Persiste o veredito ANTES de retornar — no caminho fire-and-forget a
+            # resposta é descartada (202), então sem isto o ``resume-info`` ficaria
+            # sem ``last_completed_at``/``last_result_full`` e o reconcile trataria
+            # a task como RUNNING eternamente (crítica/refine presas).
+            await asyncio.to_thread(_save_task_result, task_id, work)
             return _build_response(task_id, result, work)
         finally:
             stop_hb.set()
@@ -700,6 +714,59 @@ async def _finalize_git(
             error_code=error_code, cost_usd=work.cost_usd,
         )
     return work
+
+
+#: Subdir do PVC/root onde o resultado de cada task é persistido (lido pelo
+#: ``resume-info`` para o reconcile do pipeline ler o veredito de crítica/refine
+#: e detectar a conclusão de dispatches fire-and-forget).
+_RESULT_SUBDIR = ".sessions"
+
+
+def _result_meta_path(task_id: str) -> Path:
+    return _worker_root() / _RESULT_SUBDIR / f"{task_id}.json"
+
+
+def _save_task_result(task_id: str, work: WorkResult) -> None:
+    """Persiste o veredito da task para o ``resume-info`` (write-tmp + replace).
+
+    Sem isto, um dispatch fire-and-forget computa o ``WorkResult`` e descarta a
+    resposta (202), deixando o ``resume-info`` sem ``last_result_full`` nem
+    ``last_completed_at`` — o reconcile do pipeline trataria a task como RUNNING
+    para sempre (crítica/refine presas em ``em_revisao``). Persistir o veredito
+    fecha o ciclo: ``last_completed_at`` set → reconcile detecta DONE;
+    ``last_result_full`` → ``parse_critique_verdict`` lê CLARO/VAGO/REFINO.
+    Best-effort: falha de I/O vira warning, não derruba o dispatch.
+    """
+    full = work.result_text or ""
+    meta = {
+        "task_id": task_id,
+        "last_completed_at": int(time.time()),
+        "last_is_error": not work.ok,
+        "last_result_full": full,
+        "last_result_summary": full[:300],
+        "last_error_code": work.error_code or "",
+        "last_total_cost_usd": work.cost_usd,
+    }
+    path = _result_meta_path(task_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.warning("failed to persist task result %s: %s", task_id, exc)
+
+
+def _load_task_result(task_id: str) -> Optional[dict]:
+    """Carrega o meta de resultado da task. ``None`` se ausente/ilegível."""
+    path = _result_meta_path(task_id)
+    try:
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("failed to read task result %s: %s", task_id, exc)
+        return None
 
 
 def _build_response(

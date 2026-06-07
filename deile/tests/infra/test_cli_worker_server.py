@@ -292,6 +292,31 @@ async def test_resume_info_requires_bearer(mock_adapter):
         assert resp.status == 401
 
 
+async def test_resume_info_returns_persisted_verdict_when_done(mock_adapter):
+    """Task concluída → resume-info traz ``last_completed_at`` + ``last_result_full``
+    (sem lease vivo). É o que o reconcile do pipeline lê para detectar DONE e
+    parsear o veredito de crítica/refine — sem isto a issue ficaria RUNNING eterno."""
+    from cli_adapters.base import WorkResult
+
+    task_id = "abcabcabc1234567"
+    ws = cws._worker_root() / task_id
+    ws.mkdir(parents=True, exist_ok=True)  # workdir existe, sem lease (concluída)
+    cws._save_task_result(
+        task_id, WorkResult(ok=True, result_text="VEREDITO: CLARO\nescopo nítido"),
+    )
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["claude_alive"] is False          # lease ausente → não-vivo
+        assert body["last_completed_at"] is not None    # → reconcile lê DONE
+        assert body["last_is_error"] is False
+        assert "CLARO" in body["last_result_full"]      # → parse_critique_verdict
+
+
 def test_resolve_adapter_requires_kind(monkeypatch):
     monkeypatch.delenv("DEILE_CLI_WORKER_KIND", raising=False)
     with pytest.raises(RuntimeError):
