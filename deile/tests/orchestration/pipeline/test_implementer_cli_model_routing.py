@@ -67,6 +67,18 @@ def cli_worker_adapter(monkeypatch):
     monkeypatch.setenv(
         f"DEILE_{_CLI_KIND.upper()}_WORKER_ENDPOINT", "http://localhost:18796"
     )
+    # Ensure-replica (scale-to-zero, plano B5) corre antes do POST para workers
+    # CLI. Aqui o foco é o roteamento do modelo/endpoint, não o scaling — então
+    # forçamos READY (worker "já no ar") para o dispatch chegar ao client fake.
+    from deile.orchestration.pipeline.cli_worker_scaler import (
+        EnsureReplicaOutcome, ScaleResult)
+
+    async def _ready(_dispatcher):
+        return EnsureReplicaOutcome(ScaleResult.READY, "test: ready")
+
+    monkeypatch.setattr(
+        "deile.orchestration.pipeline.cli_worker_scaler.ensure_replica", _ready,
+    )
     try:
         yield
     finally:

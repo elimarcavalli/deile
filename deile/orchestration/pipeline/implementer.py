@@ -1025,6 +1025,38 @@ class WorkerImplementer(PipelineImplementer):
                     stage, _cap_exc,
                 )
 
+        # Scale-to-zero on-demand (plano B5): os CLI workers da frota nascem
+        # ``replicas: 0``. Antes de despachar para um deles, garantimos ≥1
+        # réplica (kubectl scale via SA do pipeline, com cooldown anti-flapping).
+        # Workers núcleo (deile/claude) nascem com 1 réplica → NOT_APPLICABLE.
+        # Falha de scale (sem kubectl/RBAC) vira erro tipado WORKER_SCALED_TO_ZERO
+        # instruindo o scale manual — em vez do connection-refused genérico.
+        if is_cli_worker:
+            from deile.orchestration.pipeline.cli_worker_scaler import \
+                ensure_replica  # noqa: PLC0415
+            dispatcher = resolve_stage_dispatcher(stage)
+            scale_outcome = await ensure_replica(dispatcher)
+            if not scale_outcome.ok_to_dispatch:
+                logger.warning(
+                    "dispatch bloqueado — %s sem réplica e scale falhou: %s",
+                    dispatcher, scale_outcome.detail,
+                )
+                return WorkOutcome(
+                    ok=False, text="",
+                    error=f"WORKER_SCALED_TO_ZERO: {scale_outcome.detail}"[:500],
+                )
+            if scale_outcome.result.value in ("scaled", "cooldown"):
+                # Pod subindo (cold-start): pula este tick; o reconcile do
+                # próximo tick redispatcha quando o readinessProbe liberar.
+                logger.info(
+                    "dispatch adiado — %s subindo on-demand: %s",
+                    dispatcher, scale_outcome.detail,
+                )
+                return WorkOutcome(
+                    ok=False, text="",
+                    error=f"DISPATCH_DEFERRED_WORKER_STARTING: {scale_outcome.detail}",
+                )
+
         # Issue #373: ``nowait`` dispatches the task fire-and-forget — the
         # worker returns 202 + task_id immediately and processes the task
         # in the background. The pipeline does NOT block on the result;

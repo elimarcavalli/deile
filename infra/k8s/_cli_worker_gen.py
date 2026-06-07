@@ -149,6 +149,124 @@ def _home_volume_block(adapter, *, worker: str, indent: str = "        ") -> str
     )
 
 
+def _pvc_doc_block(adapter, *, worker: str, namespace: str) -> str:
+    """Objeto ``PersistentVolumeClaim`` quando o worker persiste estado.
+
+    O ``_home_volume_block`` referencia ``persistentVolumeClaim.claimName:
+    <worker>-home`` para workers ``oauth_file``/``supports_resume``; sem este
+    objeto a PVC ficaria *unbound* e o Pod travaria em ``Pending`` (plano §1.13).
+    Workers ``emptyDir`` (env-only, sem resume) não geram PVC — devolve "".
+    """
+    if not _needs_pvc(adapter):
+        return ""
+    return (
+        "---\n"
+        "apiVersion: v1\n"
+        "kind: PersistentVolumeClaim\n"
+        "metadata:\n"
+        f"  name: {worker}-home\n"
+        f"  namespace: {namespace}\n"
+        "  labels:\n"
+        f"    app: {worker}\n"
+        "spec:\n"
+        "  accessModes: [ReadWriteOnce]\n"
+        "  resources:\n"
+        "    requests:\n"
+        "      storage: 10Gi\n"
+    )
+
+
+def _cleanup_cronjob_block(
+    adapter, *, kind: str, worker: str, namespace: str,
+) -> str:
+    """CronJob de cleanup do PVC quando o worker tem PVC (plano §1.13).
+
+    Reusa ``_worker_core.startup_cleanup`` (via ``cli_worker_server.run_cleanup``)
+    montando o PVC ``<worker>-home``. Workers ``emptyDir`` não precisam — o
+    filesystem some com o pod, e o server já faz cleanup periódico in-process;
+    devolve "" para eles.
+    """
+    if not _needs_pvc(adapter):
+        return ""
+    return (
+        "---\n"
+        "# CronJob de GC do PVC (issue #445) — monta o PVC e roda o cleanup do\n"
+        "# core. Só gerado para workers com PVC (oauth_file/supports_resume).\n"
+        "apiVersion: batch/v1\n"
+        "kind: CronJob\n"
+        "metadata:\n"
+        f"  name: {worker}-cleanup\n"
+        f"  namespace: {namespace}\n"
+        "  labels:\n"
+        f"    app: {worker}-cleanup\n"
+        "    role: deile\n"
+        "spec:\n"
+        '  schedule: "0 3 * * *"\n'
+        "  successfulJobsHistoryLimit: 3\n"
+        "  failedJobsHistoryLimit: 3\n"
+        "  concurrencyPolicy: Forbid\n"
+        "  jobTemplate:\n"
+        "    spec:\n"
+        "      ttlSecondsAfterFinished: 86400\n"
+        "      template:\n"
+        "        metadata:\n"
+        "          labels:\n"
+        f"            app: {worker}-cleanup\n"
+        "            role: deile\n"
+        "        spec:\n"
+        "          restartPolicy: OnFailure\n"
+        "          automountServiceAccountToken: false\n"
+        "          enableServiceLinks: false\n"
+        "          securityContext:\n"
+        "            runAsNonRoot: true\n"
+        "            runAsUser: 10001\n"
+        "            runAsGroup: 10001\n"
+        "            fsGroup: 10001\n"
+        '            fsGroupChangePolicy: "OnRootMismatch"\n'
+        "            seccompProfile: { type: RuntimeDefault }\n"
+        "          containers:\n"
+        "            - name: cleanup\n"
+        f"              image: deile-cli-worker-{kind}:local\n"
+        "              imagePullPolicy: Never\n"
+        '              command: ["python3", "-c"]\n'
+        "              args:\n"
+        "                - |\n"
+        "                  import sys, logging\n"
+        '                  sys.path.insert(0, "/app/infra/k8s")\n'
+        '                  sys.path.insert(0, "/app")\n'
+        "                  logging.basicConfig(\n"
+        '                      level="INFO",\n'
+        '                      format="%(asctime)s %(levelname)s %(name)s: %(message)s",\n'
+        "                      stream=sys.stdout,\n"
+        "                  )\n"
+        "                  from cli_worker_server import run_cleanup\n"
+        "                  r = run_cleanup()\n"
+        '                  print(f"cleanup: {r}")\n'
+        "                  sys.exit(1 if r['errors'] else 0)\n"
+        "              env:\n"
+        f'                - {{ name: DEILE_CLI_WORKER_KIND, value: "{kind}" }}\n'
+        f'                - {{ name: DEILE_CLI_WORKER_ROOT, value: "/home/{kind}/work" }}\n'
+        f'                - {{ name: HOME, value: "/home/{kind}" }}\n'
+        "              volumeMounts:\n"
+        f"                - {{ name: worker-home, mountPath: /home/{kind} }}\n"
+        "              resources:\n"
+        '                requests: { cpu: "50m", memory: "64Mi" }\n'
+        '                limits:   { cpu: "500m", memory: "256Mi" }\n'
+        "              securityContext:\n"
+        "                allowPrivilegeEscalation: false\n"
+        "                readOnlyRootFilesystem: true\n"
+        "                runAsNonRoot: true\n"
+        "                runAsUser: 10001\n"
+        "                runAsGroup: 10001\n"
+        '                capabilities: { drop: ["ALL"] }\n'
+        "                seccompProfile: { type: RuntimeDefault }\n"
+        "          volumes:\n"
+        "            - name: worker-home\n"
+        "              persistentVolumeClaim:\n"
+        f"                claimName: {worker}-home\n"
+    )
+
+
 def egress_hosts(adapter) -> List[str]:
     """Hosts de egress do worker = LLM (adapter) ∪ forges, deduplicados/ordenados."""
     llm = [h for h in (getattr(adapter, "egress_hosts", []) or []) if h]
@@ -219,6 +337,12 @@ def render_manifests(
         "HOME_VOLUME_BLOCK": _home_volume_block(adapter, worker=worker),
         "EGRESS_HOST_RULES": _egress_host_rules(adapter, port=port),
         "EGRESS_HOSTS_CSV": ", ".join(egress_hosts(adapter)),
+        "PVC_DOC_BLOCK": _pvc_doc_block(
+            adapter, worker=worker, namespace=namespace,
+        ),
+        "CLEANUP_CRONJOB_BLOCK": _cleanup_cronjob_block(
+            adapter, kind=kind, worker=worker, namespace=namespace,
+        ),
     }
     return tmpl.substitute(mapping)
 

@@ -90,14 +90,30 @@ class TestKsUpNeverReferencesCliWorkers:
 # ===== gen-worker — manifest derivado do template + metadados do adapter ======
 
 
+def _needs_pvc(adapter) -> bool:
+    return adapter.auth_mode == "oauth_file" or adapter.supports_resume
+
+
 class TestGenWorkerRender:
     @pytest.mark.parametrize("kind", _FLEET_KINDS)
-    def test_renders_four_valid_docs(self, kind):
+    def test_renders_core_docs(self, kind):
+        """Os 4 docs base sempre saem, na ordem; PVC workers ganham +2 (PVC+Cron).
+
+        Workers ``emptyDir`` (env-only, sem resume) = 4 docs; workers com PVC
+        (``oauth_file``/``supports_resume``) = 6 (acrescentam ``PersistentVolume-
+        Claim`` + ``CronJob`` de cleanup, sem os quais a PVC ficaria unbound).
+        """
         rendered = gen.render_manifests(kind, namespace="deile")
-        docs = [d for d in yaml.safe_load_all(rendered) if d]
-        assert [d["kind"] for d in docs] == [
-            "Deployment", "Service", "Secret", "NetworkPolicy",
-        ]
+        kinds = [d["kind"] for d in yaml.safe_load_all(rendered) if d]
+        assert kinds[:4] == ["Deployment", "Service", "Secret", "NetworkPolicy"]
+        adapter = cli_adapters.ADAPTERS[kind]
+        if _needs_pvc(adapter):
+            assert kinds == [
+                "Deployment", "Service", "Secret", "NetworkPolicy",
+                "PersistentVolumeClaim", "CronJob",
+            ]
+        else:
+            assert kinds == ["Deployment", "Service", "Secret", "NetworkPolicy"]
 
     @pytest.mark.parametrize("kind", _FLEET_KINDS)
     def test_deployment_is_scale_to_zero(self, kind):
@@ -150,7 +166,77 @@ class TestGenWorkerRender:
         out = gen.write_manifests(kind, namespace="deile")
         assert out.is_file()
         docs = [d for d in yaml.safe_load_all(out.read_text()) if d]
-        assert len(docs) == 4
+        # _FLEET_KINDS[0] é env-only (4 docs); o caso PVC tem teste dedicado.
+        assert len(docs) >= 4
+
+
+class TestPvcWorkerGeneratesPvcAndCron:
+    """Finding 4 (regressão): worker com PVC gera o objeto PVC + CronJob de GC.
+
+    Um worker ``oauth_file``/``supports_resume`` referencia
+    ``persistentVolumeClaim.claimName: <worker>-home`` no Deployment; sem emitir
+    o objeto PVC a claim ficaria unbound e o Pod travaria em ``Pending``. O
+    template tem de emitir a PVC (e o CronJob de cleanup que a monta).
+    """
+
+    @pytest.fixture
+    def pvc_kind(self):
+        from cli_adapters.base import BaseCliAdapter, ModelInfo, WorkResult
+
+        class _PvcAdapter(BaseCliAdapter):
+            def build_argv(self, **_kw):
+                return ["true"]
+
+            def parse_output(self, **_kw):
+                return WorkResult(ok=True)
+
+            def list_models(self):
+                return [ModelInfo(id="x")]
+
+        kind = "pvcprobe"
+        cli_adapters.ADAPTERS[kind] = _PvcAdapter(
+            kind=kind, default_port=8798, auth_mode="oauth_file",
+            supports_resume=True,
+        )
+        try:
+            yield kind
+        finally:
+            cli_adapters.ADAPTERS.pop(kind, None)
+
+    def test_pvc_object_emitted_and_matches_claim(self, pvc_kind):
+        docs = [d for d in yaml.safe_load_all(gen.render_manifests(pvc_kind)) if d]
+        dep = next(d for d in docs if d["kind"] == "Deployment")
+        home = next(
+            v for v in dep["spec"]["template"]["spec"]["volumes"]
+            if v["name"] == "worker-home"
+        )
+        claim = home["persistentVolumeClaim"]["claimName"]
+        pvc = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
+        assert pvc["metadata"]["name"] == claim, (
+            "o claimName referenciado no Deployment deve ter um objeto PVC gerado"
+        )
+        assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+
+    def test_cleanup_cronjob_emitted_for_pvc_worker(self, pvc_kind):
+        docs = [d for d in yaml.safe_load_all(gen.render_manifests(pvc_kind)) if d]
+        cron = next(d for d in docs if d["kind"] == "CronJob")
+        spec = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+        vol = next(v for v in spec["volumes"] if v["name"] == "worker-home")
+        assert vol["persistentVolumeClaim"]["claimName"] == f"{pvc_kind}-worker-home"
+        # O CronJob chama o cleanup do core via cli_worker_server.run_cleanup.
+        args = spec["containers"][0]["args"][0]
+        assert "run_cleanup" in args
+
+    def test_env_only_worker_has_no_pvc_no_cron(self):
+        # Sanity: um worker env-only não emite PVC nem CronJob.
+        env_kind = next(
+            k for k in _FLEET_KINDS if not _needs_pvc(cli_adapters.ADAPTERS[k])
+        )
+        kinds = [
+            d["kind"] for d in yaml.safe_load_all(gen.render_manifests(env_kind)) if d
+        ]
+        assert "PersistentVolumeClaim" not in kinds
+        assert "CronJob" not in kinds
 
 
 # ===== NetworkPolicy gerada dos egress_hosts do adapter =======================

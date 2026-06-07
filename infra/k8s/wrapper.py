@@ -1075,6 +1075,74 @@ def _run_claude_worker(passthrough: List[str]) -> int:
     return server_main(passthrough) if passthrough else server_main()
 
 
+def _run_cli_worker(passthrough: List[str]) -> int:
+    """cli-worker mode: servidor genérico da frota multi-CLI (opencode/aider/...).
+
+    Espelha :func:`_run_claude_worker` SEM o OAuth do claude (os CLI workers usam
+    API key via env, montada do Secret ``cli-worker-keys`` direto no Deployment).
+    Faz, antes de subir o ``cli_worker_server``:
+
+      - ``_harden_runtime_dirs``;
+      - carrega a allowlist de repositórios (fail-fast) + instala o guard de git
+        (mesma defesa do claude-worker contra push para repo arbitrário);
+      - lê o Bearer do Secret ``cli-worker`` e o exporta como
+        ``DEILE_CLI_WORKER_AUTH_TOKEN`` (o server o lê via ``_read_auth_token``);
+      - carrega ``/run/secrets/deile/*`` e wira ``GITHUB_TOKEN``/``GITLAB_TOKEN``
+        + a **identidade git global** (``user.name``/``user.email`` +
+        ``credential.helper=store``) via :func:`_setup_forge_credentials` — sem
+        isto o ciclo de repo do server (clone/commit/push) falha em
+        "unable to auto-detect email address" e o push fica sem credencial.
+
+    O server escolhe o adapter por ``DEILE_CLI_WORKER_KIND`` e clona o repo +
+    faz checkout do branch por dispatch (ver ``cli_worker_server``).
+    """
+    _harden_runtime_dirs()
+    # Allowlist de repositórios — fail-fast se ausente (mesma defesa do claude).
+    patterns = _load_allowed_repo_patterns()
+    _install_git_repo_guard(patterns)
+
+    # Bearer do cli-worker. Montado pelo manifest gerado em
+    # ``/run/secrets/cli-worker/CLI_WORKER_BEARER_TOKEN``. O server lê o arquivo
+    # direto via ``_read_auth_token``; exportamos a env var como fallback.
+    bearer = Path("/run/secrets/cli-worker/CLI_WORKER_BEARER_TOKEN")
+    if bearer.is_file():
+        try:
+            token = bearer.read_text(encoding="utf-8").strip()
+            if token:
+                os.environ["DEILE_CLI_WORKER_AUTH_TOKEN"] = token
+        except OSError as exc:
+            print(
+                f"wrapper(cli-worker): cannot read cli-worker bearer: {exc}",
+                file=sys.stderr,
+            )
+            return 78
+    else:
+        print(
+            "wrapper(cli-worker): bearer not mounted at "
+            "/run/secrets/cli-worker/CLI_WORKER_BEARER_TOKEN — "
+            "rode `deploy.py k8s cli-worker-install <kind>` para popular o Secret",
+            file=sys.stderr,
+        )
+        return 78
+
+    # GITHUB_TOKEN / GITLAB_TOKEN para clone/commit/push + identidade git global.
+    # As *_API_KEY do LLM vêm do Secret ``cli-worker-keys`` direto como env no
+    # Deployment (o adapter as declara em ``auth_env_keys``); NÃO as carregamos
+    # aqui (não passam por ``/run/secrets/deile``).
+    _load_secret_files(Path("/run/secrets/deile"))
+    _setup_forge_credentials()
+
+    sys.path.insert(0, str(Path("/app")))
+    try:
+        from cli_worker_server import main as server_main  # type: ignore[import-not-found]
+    except ImportError as exc:
+        sys.exit(
+            "FATAL: cli_worker_server module not found in /app/ — "
+            f"ImportError: {exc}"
+        )
+    return server_main(passthrough) if passthrough else server_main()
+
+
 def _run_pipeline(passthrough: List[str]) -> int:
     """deile-pipeline mode: run the autonomous issue → PR → merge loop.
 
@@ -1545,7 +1613,8 @@ def _run_monitor_qa(passthrough: List[str]) -> int:
 def main(argv: List[str]) -> int:
     if len(argv) < 2:
         print(
-            "usage: wrapper.py {deile|bot|worker|claude-worker|pipeline|monitor|monitor-qa} <args ...>",
+            "usage: wrapper.py {deile|bot|worker|claude-worker|cli-worker|"
+            "pipeline|monitor|monitor-qa} <args ...>",
             file=sys.stderr,
         )
         return 64  # EX_USAGE
@@ -1558,6 +1627,8 @@ def main(argv: List[str]) -> int:
         return _run_worker(rest)
     if role == "claude-worker":
         return _run_claude_worker(rest)
+    if role == "cli-worker":
+        return _run_cli_worker(rest)
     if role == "pipeline":
         return _run_pipeline(rest)
     if role == "monitor":
@@ -1566,8 +1637,8 @@ def main(argv: List[str]) -> int:
         return _run_monitor_qa(rest)
     print(
         f"wrapper: unknown role {role!r} "
-        "(expected 'deile' | 'bot' | 'worker' | 'claude-worker' | 'pipeline' | "
-        "'monitor' | 'monitor-qa')",
+        "(expected 'deile' | 'bot' | 'worker' | 'claude-worker' | 'cli-worker' | "
+        "'pipeline' | 'monitor' | 'monitor-qa')",
         file=sys.stderr,
     )
     return 64

@@ -68,6 +68,17 @@ _models_cache: dict = {}
 _STDOUT_TAIL = 50_000
 _STDERR_TAIL = 10_000
 
+#: Retenção de workdirs (dias) — workdir mais velho que isto é removido pelo
+#: cleanup (startup hook + task periódica + CronJob). Paridade com o claude.
+_CLEANUP_RETENTION_DAYS: int = int(
+    os.environ.get("DEILE_CLI_WORKER_CLEANUP_RETENTION_DAYS", "7")
+)
+
+#: Intervalo (s) entre execuções periódicas do cleanup (default 1 h).
+_CLEANUP_INTERVAL_S: float = float(
+    os.environ.get("DEILE_CLI_WORKER_CLEANUP_INTERVAL_S", "3600")
+)
+
 
 # --------------------------------------------------------------------------- #
 # Lease wrappers — finos, repassam as constantes monkeypatcháveis ao core.
@@ -177,45 +188,19 @@ def _worker_home(adapter: CliAdapter) -> str:
 # --------------------------------------------------------------------------- #
 
 
+# Os helpers de git são GENÉRICOS e vivem no ``_worker_core``; expomos wrappers
+# de módulo (mesmos nomes) para que os testes possam monkeypatchá-los e para
+# manter o handler legível. Cada wrapper apenas delega ao core.
+
+
 async def _git_head(workdir: Path) -> Optional[str]:
     """SHA do HEAD do repo em ``workdir/repo`` (ou ``workdir``), ou ``None``."""
-    repo = workdir / "repo"
-    cwd = repo if (repo / ".git").exists() else workdir
-    if not (cwd / ".git").exists():
-        return None
-    proc = await asyncio.create_subprocess_exec(
-        "git", "rev-parse", "HEAD",
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, _ = await proc.communicate()
-    if proc.returncode != 0:
-        return None
-    return out.decode("utf-8", "replace").strip() or None
+    return await _core.git_head(workdir)
 
 
 async def _git_branch_pushed(workdir: Path, branch: Optional[str]) -> bool:
-    """True se ``branch`` existe no remote ``origin`` (push confirmado).
-
-    Sem branch → não dá pra confirmar push → False (gate falha, conservador).
-    """
-    if not branch:
-        return False
-    repo = workdir / "repo"
-    cwd = repo if (repo / ".git").exists() else workdir
-    if not (cwd / ".git").exists():
-        return False
-    proc = await asyncio.create_subprocess_exec(
-        "git", "ls-remote", "--heads", "origin", branch,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, _ = await proc.communicate()
-    if proc.returncode != 0:
-        return False
-    return bool(out.decode("utf-8", "replace").strip())
+    """True se ``branch`` existe no remote ``origin`` (push confirmado)."""
+    return await _core.git_branch_pushed(workdir, branch)
 
 
 async def _post_run_gate(
@@ -418,6 +403,14 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     wait_for_result: bool = bool(payload.get("wait_for_result", True))
     _channel_id = str(payload.get("channel_id") or "").strip()
 
+    # Repo slug + branch base viajam no bloco ``resume`` (mesma fonte que o
+    # claude-worker — ``_build_resume_block`` no pipeline). Necessários para o
+    # ciclo de repo (clone + checkout do branch) que o CLI worker faz ANTES de
+    # rodar o subprocess — sem isso o CLI roda contra um diretório sem repo.
+    _resume_block = payload.get("resume") or {}
+    repo_slug = str(_resume_block.get("repo") or "").strip()
+    base_branch = str(_resume_block.get("main_branch") or "").strip()
+
     dispatch_timeout_s: Optional[int] = None
     _raw_timeout = payload.get("timeout_s")
     if _raw_timeout is not None:
@@ -489,6 +482,29 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             "task_id": task_id,
         }, status=409)
 
+    # Ciclo de repo (plano §1.5): clona o repo e faz checkout/criação do branch
+    # ANTES de rodar o CLI — o subprocess precisa de um checkout real em ``cwd``.
+    # A identidade git + token já estão wirados no env do pod (wrapper.py modo
+    # cli-worker). Quando há repo, o CLI roda em ``<workspace>/repo``; sem slug
+    # (testes/uso degradado) cai no próprio ``workspace`` (o brief ainda pode
+    # clonar via shell, e o gate reprova se nada for pushado).
+    repo_ok = True
+    repo_detail = "sem repo slug — CLI roda no workspace cru"
+    if repo_slug:
+        repo_ok, repo_detail = await _ensure_repo(
+            workspace, repo=repo_slug, branch=branch, base_branch=base_branch,
+        )
+        if not repo_ok:
+            await _release_lease(workspace / ".lease.json")
+            return web.json_response({
+                "ok": False,
+                "error_code": "REPO_SETUP_FAILED",
+                "error": repo_detail[:500],
+                "task_id": task_id,
+            }, status=200)
+    repo_workdir = _core.repo_dir_for(workspace)
+    run_cwd = repo_workdir if (repo_workdir / ".git").exists() else workspace
+
     timeout = dispatch_timeout_s if dispatch_timeout_s is not None else int(
         os.environ.get("DEILE_CLI_WORKER_TASK_TIMEOUT_S", "1800")
     )
@@ -497,7 +513,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         brief_path=str(brief_path),
         model=cli_model,
         reasoning=reasoning,
-        workdir=str(workspace),
+        workdir=str(run_cwd),
         resume=resume_ctx,
     )
     overlay = adapter.env_overlay(home=home)
@@ -507,8 +523,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         os.environ[k] = v
 
     logger.info(
-        "dispatch kind=%s task_id=%s stage=%s model=%s resume=%s",
+        "dispatch kind=%s task_id=%s stage=%s model=%s resume=%s repo=%s (%s)",
         adapter.kind, task_id, stage, cli_model, resume_ctx is not None,
+        repo_slug or "-", repo_detail,
     )
 
     base_sha = await _git_head(workspace)
@@ -521,11 +538,21 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         )
         try:
             result = await run_subprocess_with_progress(
-                argv, cwd=workspace, task_id=task_id, timeout=timeout,
+                argv, cwd=run_cwd, task_id=task_id, timeout=timeout,
                 lease_path=workspace / ".lease.json", root=root,
             )
             work = adapter.parse_output(
                 stdout=result.stdout, stderr=result.stderr, rc=result.returncode,
+            )
+            # Etapa de git pós-run, ramificada por ``git_strategy`` (plano §1.5/§4):
+            #   * brief_driven: se o agente não commitou, o wrapper faz fallback
+            #     commit do working tree sujo (error_code WRAPPER_COMMITTED).
+            #   * ambos: o wrapper faz ``git push`` do branch (o aider commita
+            #     local mas não pusha; o brief_driven pode ter commitado sem push).
+            # Só roda quando o adapter aprovou a saída — saída reprovada já é falha.
+            work = await _finalize_git(
+                adapter, work, workspace=workspace, branch=branch,
+                base_sha=base_sha, task_id=task_id,
             )
             work = await _post_run_gate(
                 adapter, work, workdir=workspace, base_sha=base_sha, branch=branch,
@@ -545,6 +572,72 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 
     response = await _run_and_finalize()
     return web.json_response(response)
+
+
+async def _ensure_repo(
+    workspace: Path, *, repo: str, branch: Optional[str], base_branch: str,
+) -> tuple:
+    """Wrapper de módulo para o ciclo de repo do core (monkeypatchável nos testes)."""
+    return await _core.ensure_repo_and_branch(
+        workspace, repo=repo, branch=branch, base_branch=base_branch,
+    )
+
+
+async def _finalize_git(
+    adapter: CliAdapter,
+    work: WorkResult,
+    *,
+    workspace: Path,
+    branch: Optional[str],
+    base_sha: Optional[str],
+    task_id: str,
+) -> WorkResult:
+    """Commit (fallback) + push pós-run, ramificado por ``adapter.git_strategy``.
+
+    Plano §1.5/§4:
+      * **brief_driven** — o brief instrui o agente a commitar. Se NÃO houve
+        commit novo desde ``base_sha``, o wrapper faz fallback commit do working
+        tree sujo e marca ``error_code=WRAPPER_COMMITTED`` (degradado, não
+        perdido). Em seguida faz push.
+      * **cli_autocommit** (aider) — o CLI commita sozinho; o wrapper só pusha.
+
+    Só atua quando ``work.ok`` (saída aprovada pelo adapter). O gate pós-run
+    (``_post_run_gate``) confirma commit-novo + push depois desta etapa e é quem
+    reprova com ``NO_PUSH`` se algo faltou. Best-effort: falha de push vira
+    ``error_code`` mas deixa o gate dar o veredito final.
+    """
+    if not work.ok or not branch:
+        return work
+
+    error_code = work.error_code
+    if adapter.git_strategy == "brief_driven":
+        head = await _git_head(workspace)
+        has_new_commit = bool(head and (base_sha is None or head != base_sha))
+        if not has_new_commit:
+            committed = await _core.git_fallback_commit(
+                workspace, branch,
+                message=(
+                    f"chore(cli-worker): fallback commit do {adapter.kind}-worker "
+                    f"(task {task_id})"
+                ),
+            )
+            if committed:
+                error_code = "WRAPPER_COMMITTED"
+                logger.info(
+                    "fallback commit aplicado (brief_driven sem commit do agente)"
+                    " task_id=%s branch=%s", task_id, branch,
+                )
+
+    pushed, push_detail = await _core.git_push(workspace, branch)
+    if not pushed:
+        logger.warning("push pós-run falhou task_id=%s: %s", task_id, push_detail)
+
+    if error_code != work.error_code:
+        return WorkResult(
+            ok=work.ok, result_text=work.result_text,
+            error_code=error_code, cost_usd=work.cost_usd,
+        )
+    return work
 
 
 def _build_response(
@@ -572,6 +665,10 @@ def _build_response(
         response["error"] = _build_failure_reason(
             result.returncode, result.stderr, result.stdout, work.result_text,
         )[:500]
+    elif work.error_code:
+        # Sucesso degradado (ex.: WRAPPER_COMMITTED) — propaga o code sem marcar
+        # is_error, para o pipeline saber que houve fallback do wrapper.
+        response["error_code"] = work.error_code
     return response
 
 
@@ -605,12 +702,48 @@ def _build_failure_reason(
 _bearer_auth_mw = _core.make_bearer_auth_mw(("/v1/health",))
 
 
+def run_cleanup() -> dict:
+    """Executa um ciclo de cleanup dos workdirs stale (síncrono, idempotente).
+
+    Reusa ``_worker_core.startup_cleanup`` com o root deste worker. Workers da
+    frota CLI são fresh-only (``supports_resume=False``) — sem sessão JSONL a
+    preservar —, então ``has_session=None``: o critério de remoção é só lease-
+    morto + idade (``_CLEANUP_RETENTION_DAYS``). Isto evita o mesmo incidente do
+    claude-worker (issue #445) em que workdirs acumulavam indefinidamente.
+    """
+    return _core.startup_cleanup(
+        _worker_root(), retention_days=_CLEANUP_RETENTION_DAYS, has_session=None,
+    )
+
+
+async def _cleanup_loop(stop_event: asyncio.Event) -> None:
+    """Task periódica de cleanup: roda ``run_cleanup`` a cada intervalo.
+
+    Best-effort — uma falha é logada e a task continua. Encerra quando
+    ``stop_event`` é setado (on_cleanup do app).
+    """
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(), timeout=_CLEANUP_INTERVAL_S,
+            )
+        except asyncio.TimeoutError:
+            pass
+        if stop_event.is_set():
+            break
+        try:
+            await asyncio.to_thread(run_cleanup)
+        except Exception as exc:  # noqa: BLE001 — cleanup nunca derruba o server
+            logger.warning("cleanup periódico falhou: %s", exc)
+
+
 def build_app(auth_token: Optional[str] = None) -> web.Application:
     """Monta a ``aiohttp.web.Application`` do CLI worker genérico.
 
     Bearer middleware ativo por default; ``auth_token`` opcional permite testes
-    in-process. Startup hook varre workdirs stale do PVC (reusa o cleanup do
-    core via ``startup_cleanup``-equivalente: aqui só registramos o root).
+    in-process. Registra o cleanup de workdirs stale (issue #445): um varredura
+    no startup + uma task periódica (intervalo ``_CLEANUP_INTERVAL_S``), ambas
+    reusando :func:`_worker_core.startup_cleanup`.
     """
     app = web.Application(
         middlewares=[_bearer_auth_mw],
@@ -622,6 +755,33 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
     app.router.add_get("/v1/models", models_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
     app.router.add_get("/v1/progress/{task_id}", progress_handler)
+
+    async def _on_startup(_app: web.Application) -> None:
+        # Varredura síncrona no boot (reaproveita workdirs órfãos de pod morto).
+        try:
+            res = await asyncio.to_thread(run_cleanup)
+            logger.info("startup cleanup: %s", res)
+        except Exception as exc:  # noqa: BLE001 — boot nunca falha por cleanup
+            logger.warning("startup cleanup falhou: %s", exc)
+        stop = asyncio.Event()
+        _app["_cleanup_stop"] = stop
+        _app["_cleanup_task"] = asyncio.create_task(
+            _cleanup_loop(stop), name="cli-worker-cleanup",
+        )
+
+    async def _on_cleanup(_app: web.Application) -> None:
+        stop = _app.get("_cleanup_stop")
+        if stop is not None:
+            stop.set()
+        task = _app.get("_cleanup_task")
+        if task is not None:
+            try:
+                await task
+            except Exception:  # noqa: BLE001
+                pass
+
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
     return app
 
 

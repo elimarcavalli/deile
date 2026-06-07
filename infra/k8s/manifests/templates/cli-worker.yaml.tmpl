@@ -63,7 +63,12 @@ spec:
           image: deile-cli-worker-$KIND:local
           imagePullPolicy: Never
           workingDir: /home/$KIND
-          args: ["python3", "/app/cli_worker_server.py"]
+          # Sobe via wrapper.py (modo cli-worker): carrega secrets, wira o
+          # GITHUB_TOKEN/GITLAB_TOKEN + identidade git global, valida a allowlist
+          # de repos e SÓ ENTÃO delega ao cli_worker_server. Rodar o server
+          # direto pularia esse setup (clone/commit/push falhariam sem credencial
+          # nem identidade git).
+          args: ["python3", "/app/wrapper.py", "cli-worker"]
           env:
             - { name: DEILE_CLI_WORKER_KIND, value: "$KIND" }
             - { name: HOME, value: /home/$KIND }
@@ -201,3 +206,4 @@ spec:
           port: 53
     # HTTPS :443 — LLM ($EGRESS_HOSTS_CSV) + forges (github.com/gitlab.com).
 $EGRESS_HOST_RULES
+$PVC_DOC_BLOCK$CLEANUP_CRONJOB_BLOCK
