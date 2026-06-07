@@ -5949,18 +5949,61 @@ class DispatchMatrixView(View):
             *self._canonical_workers(),
         ]
 
+    @staticmethod
+    def _cli_worker_model_ids(worker: str) -> List[str]:
+        """Model-ids que um CLI worker da frota suporta (alimenta o picker).
+
+        É a MESMA fonte que o endpoint ``GET /v1/models`` daquele worker serve:
+        ``adapter.list_models()`` do registro de adapters (``cli_adapters``).
+        Derivar do registro (em vez de uma lista hardcoded no painel) mantém o
+        single-source-of-truth — registrar um adapter novo já popula o picker —
+        e funciona mesmo com o worker escalado a zero (não exige HTTP/pod up).
+
+        Retorna ``[]`` se ``worker`` não é um CLI worker da frota ou o registro
+        está indisponível — o caller então cai no catálogo ``provider:model``.
+        """
+        if not worker or not worker.endswith("-worker"):
+            return []
+        kind = worker[: -len("-worker")]
+        try:
+            import cli_adapters  # noqa: PLC0415 — pacote em infra/k8s
+        except Exception:  # noqa: BLE001 — frota opcional; painel nunca crasha
+            return []
+        adapter = cli_adapters.ADAPTERS.get(kind)
+        if adapter is None:
+            return []
+        try:
+            models = adapter.list_models() or []
+        except Exception:  # noqa: BLE001 — list_models é best-effort
+            return []
+        ids: List[str] = []
+        for m in models:
+            mid = getattr(m, "id", None)
+            if isinstance(mid, str) and mid:
+                ids.append(mid)
+        return ids
+
     def _model_picker_options(self, *, worker: str) -> List[str]:
         """Opções do picker de model, contextualizadas por ``worker``.
 
-        ``worker == "claude-worker"`` restringe o catálogo a ``anthropic:*``
-        (único provider que o claude binary aceita). Qualquer outro worker
-        (``deile-worker`` é o padrão) mostra o catálogo completo.
+        Três caminhos, conforme o worker selecionado na MESMA linha:
+
+        * ``claude-worker`` → catálogo ``provider:model`` restrito a
+          ``anthropic:*`` (único provider que o claude binary aceita).
+        * CLI worker da frota (``<kind>-worker``) → model-ids NATIVOS do CLI,
+          servidos pela mesma fonte do ``GET /v1/models`` daquele worker
+          (``adapter.list_models()`` do registro). Satisfaz o requisito
+          "cada worker mostra os modelos que suporta".
+        * ``deile-worker`` (default) → catálogo ``provider:model`` completo.
         """
-        all_models = self._load_all_models()
         if worker == "claude-worker":
+            all_models = self._load_all_models()
             filtered = [m for m in all_models if m.startswith("anthropic:")]
             return [self._CLEAR_SENTINEL_MODEL, *filtered]
-        return [self._CLEAR_SENTINEL_MODEL, *all_models]
+        cli_ids = self._cli_worker_model_ids(worker)
+        if cli_ids:
+            return [self._CLEAR_SENTINEL_MODEL, *cli_ids]
+        return [self._CLEAR_SENTINEL_MODEL, *self._load_all_models()]
 
     def _claude_status(self):
         """Status do Deployment ``claude-worker``. Demo → não instalado."""
@@ -7455,6 +7498,23 @@ class DispatchMatrixView(View):
                     self.last_ok = False
                     return
 
+        # CLI worker da frota (``<kind>-worker``) escolhido → instala
+        # ON-DEMAND (padrão claude-login generalizado): propaga a chave de API
+        # do .env → Secret cli-worker-keys, gera+aplica o manifest e escala a 1.
+        # Só dispara o install se o worker ainda NÃO está no cluster (idempotente
+        # de qualquer forma). Mantém o single-source-of-truth: o kind sai do
+        # nome do worker que veio do registro de adapters.
+        elif (choice not in (self._CLEAR_SENTINEL_WORKER, "deile-worker")
+              and isinstance(choice, str) and choice.endswith("-worker")):
+            cli_kind = choice[: -len("-worker")]
+            if self._is_cli_fleet_worker(cli_kind) and not self._cli_worker_installed(
+                choice, namespace=ns,
+            ):
+                ok = self._install_cli_worker_blocking(cli_kind, namespace=ns)
+                if not ok:
+                    # last_msg/last_ok já setados pelo helper; não persiste.
+                    return
+
         # Persistir override per-stage.
         if choice == self._CLEAR_SENTINEL_WORKER:
             ok, msg = pd_set_pipeline_dispatch_stage(
@@ -7466,6 +7526,79 @@ class DispatchMatrixView(View):
             )
         self.last_ok = ok
         self.last_msg = msg
+
+    # --- CLI fleet on-demand install (padrão claude-login generalizado) -----
+
+    @staticmethod
+    def _is_cli_fleet_worker(kind: str) -> bool:
+        """True se ``kind`` é um adapter da frota CLI (registro de adapters)."""
+        if not kind:
+            return False
+        try:
+            import cli_adapters  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 — frota opcional
+            return False
+        return kind in cli_adapters.ADAPTERS
+
+    def _cli_worker_installed(self, worker: str, *, namespace: str) -> bool:
+        """True se o Deployment ``<worker>`` já existe no cluster.
+
+        Demo (``data=None``) → False (sem cluster, install é no-op informativo).
+        """
+        if self.data is None:
+            return False
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            return False
+        check = subprocess.run(
+            [kubectl, "-n", namespace, "get", "deployment", worker],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return check.returncode == 0
+
+    def _install_cli_worker_blocking(self, kind: str, *, namespace: str) -> bool:
+        """Instala um CLI worker da frota inline (mesmo caminho do deploy.py).
+
+        ON-DEMAND: propaga a chave de API → Secret, gera+aplica o manifest e
+        escala a 1 réplica via :func:`_cli_worker_install.install_cli_worker`.
+        Publica resultado em ``last_msg``/``last_ok``. Retorna ``ok``.
+
+        Demo (``data=None``) → não toca o cluster; informa e retorna False
+        (sem persistir o override de um worker que não foi instalado de fato).
+        """
+        if self.data is None:
+            self.last_msg = (
+                f"[demo] instalaria {kind}-worker on-demand (sem cluster, no-op)"
+            )
+            self.last_ok = False
+            return False
+        try:
+            from _cli_worker_install import install_cli_worker  # noqa: PLC0415
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = f"instalador da frota CLI indisponível: {exc}"
+            self.last_ok = False
+            return False
+        try:
+            res = install_cli_worker(kind, namespace=namespace)
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = (
+                f"falha ao instalar {kind}-worker: {type(exc).__name__}: {exc}"
+            )
+            self.last_ok = False
+            return False
+        if getattr(res, "ok", False):
+            missing = getattr(res, "missing_keys", None) or []
+            suffix = (f" (chaves ausentes: {', '.join(missing)} — not-ready até"
+                      " existirem)") if missing else ""
+            self.last_msg = f"{kind}-worker instalado on-demand{suffix}"
+            self.last_ok = True
+            return True
+        self.last_msg = (
+            f"install de {kind}-worker falhou: "
+            f"{getattr(res, 'error', None) or '(sem detalhe)'}"
+        )
+        self.last_ok = False
+        return False
 
     # --- picker key handler ---------------------------------------------
 

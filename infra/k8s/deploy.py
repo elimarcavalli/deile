@@ -2277,6 +2277,257 @@ def k8s_scale(args: dict) -> int:
     return do_scale(cfg)
 
 
+# ===== k8s: frota multi-CLI (gen-worker / build-cli-workers) =================
+#
+# Geração e build de CLI workers ON-DEMAND. Nenhum dos dois é tocado por
+# ``k8s up`` — a frota é 100%% opt-in (invariante do plano §1.0). Adicionar um
+# worker = adapter (Fase 5) + ``gen-worker`` (gera manifest do template) +
+# bloco no Dockerfile.cli-worker + ``build-cli-workers`` + o operador escala.
+
+def _parse_kind_flag(extra: List[str]) -> Optional[str]:
+    """Extrai ``--kind <k>`` (ou ``<k>`` posicional) de ``args["extra"]``."""
+    i = 0
+    positional: Optional[str] = None
+    while i < len(extra):
+        tok = extra[i]
+        if tok == "--kind" and i + 1 < len(extra):
+            return extra[i + 1]
+        if not tok.startswith("-") and positional is None:
+            positional = tok
+        i += 1
+    return positional
+
+
+def _cli_worker_kinds() -> List[str]:
+    """Kinds de CLI worker descobertos no registro de adapters (ordenados).
+
+    Degrada para ``[]`` se o pacote ``cli_adapters`` não estiver disponível —
+    a frota é opcional e o ``deploy.py`` continua operando os workers núcleo.
+    """
+    try:
+        from _cli_worker_gen import available_kinds  # noqa: PLC0415
+        return available_kinds()
+    except Exception as exc:  # noqa: BLE001 — frota opcional
+        ui.warn(f"registro de adapters CLI indisponível: {exc}")
+        return []
+
+
+def k8s_gen_worker(args: dict) -> int:
+    """``k8s gen-worker <kind>`` — gera o manifest de um CLI worker do template.
+
+    Renderiza ``manifests/templates/cli-worker.yaml.tmpl`` preenchendo porta,
+    env de auth, dirs graváveis, storage e egress hosts a partir dos METADADOS
+    do adapter ``cli_adapters/<kind>.py`` — NUNCA YAML à mão. Escreve em
+    ``manifests/generated/<kind>-worker.yaml``. Idempotente; sem efeito no
+    cluster (só gera o arquivo).
+    """
+    ns = _ns(args)
+    extra = args.get("extra") or []
+    kind = _parse_kind_flag(extra)
+    kinds = _cli_worker_kinds()
+    if not kind:
+        ui.err("uso: k8s gen-worker <kind> (ou --kind <kind>)")
+        if kinds:
+            ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+    if kinds and kind not in kinds:
+        ui.err(f"kind desconhecido: {kind!r}")
+        ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+
+    try:
+        from _cli_worker_gen import manifest_path, render_manifests, write_manifests  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o gerador de manifests: {exc}")
+        return 1
+
+    out = manifest_path(kind)
+    if not announce_plan(
+        args, "k8s gen-worker", f"CLI worker `{kind}` (namespace `{ns}`)",
+        [
+            f"renderiza o template a partir dos metadados do adapter {kind!r}",
+            f"escreve o manifest em {out}",
+            "NÃO aplica no cluster (use o painel/`k8s scale` para instalar)",
+        ],
+    ):
+        # dry-run: ainda mostra o YAML renderizado para inspeção.
+        try:
+            rendered = render_manifests(kind, namespace=ns)
+        except Exception as exc:  # noqa: BLE001
+            ui.err(f"falha ao renderizar manifest de {kind!r}: {exc}")
+            return 1
+        ui.section(f"manifest renderizado (dry-run) — {kind}-worker")
+        ui.plain(rendered)
+        return 0
+
+    try:
+        written = write_manifests(kind, namespace=ns)
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"falha ao gerar manifest de {kind!r}: {exc}")
+        return 1
+    ui.ok(f"manifest gerado: {written}")
+    ui.info(
+        f"para instalar: `k8s build-cli-workers --kind {kind}` + "
+        f"kubectl apply -f {written} + escalar via painel/`k8s scale`."
+    )
+    return 0
+
+
+def _cli_worker_build_cmd(kind: str) -> Optional[List[str]]:
+    """Monta o comando de build da imagem ``deile-cli-worker-<kind>:local``.
+
+    Espelha :func:`_image_build_cmd` mas usa o ``Dockerfile.cli-worker`` com
+    ``--build-arg WORKER_KIND=<kind>``. Tag por kind (runtimes divergem, §1.8).
+    """
+    dockerfile = str(HERE / "Dockerfile.cli-worker")
+    image = f"deile-cli-worker-{kind}:local"
+    build_arg = ["--build-arg", f"WORKER_KIND={kind}"]
+    nerdctl = _resolve("nerdctl")
+    if nerdctl:
+        return [nerdctl, "--namespace", "k8s.io", "build", *build_arg,
+                "-f", dockerfile, "-t", image, str(ROOT)]
+    if which("colima"):
+        return ["colima", "nerdctl", "--", "--namespace", "k8s.io", "build",
+                *build_arg, "-f", dockerfile, "-t", image, str(ROOT)]
+    if which("docker"):
+        ui.warn("usando `docker build` — num cluster k3s a imagem pode "
+                "precisar de import manual no containerd.")
+        return ["docker", "build", *build_arg, "-f", dockerfile, "-t", image, str(ROOT)]
+    return None
+
+
+def k8s_build_cli_workers(args: dict) -> int:
+    """``k8s build-cli-workers [--kind <k>]`` — builda imagem(ns) per-tool.
+
+    Sem ``--kind``, builda TODOS os kinds registrados. Com ``--kind <k>``, só
+    aquele. Cada build produz ``deile-cli-worker-<kind>:local`` via
+    ``Dockerfile.cli-worker`` (build-arg ``WORKER_KIND``). ON-DEMAND — nunca
+    chamado por ``k8s up``.
+    """
+    extra = args.get("extra") or []
+    requested = _parse_kind_flag(extra)
+    kinds = _cli_worker_kinds()
+    if not kinds:
+        ui.err("nenhum adapter CLI registrado — nada a buildar.")
+        return 1
+    if requested:
+        if requested not in kinds:
+            ui.err(f"kind desconhecido: {requested!r}")
+            ui.info("kinds disponíveis: " + ", ".join(kinds))
+            return 64
+        targets = [requested]
+    else:
+        targets = kinds
+
+    steps = [f"build de deile-cli-worker-{k}:local" for k in targets]
+    if not announce_plan(
+        args, "k8s build-cli-workers",
+        ", ".join(f"{k}-worker" for k in targets), steps,
+    ):
+        return 0
+    if not ensure_container_prereqs(args["yes"]):
+        return 1
+
+    rc = 0
+    for kind in targets:
+        cmd = _cli_worker_build_cmd(kind)
+        if cmd is None:
+            ui.err("nenhum runtime de container encontrado (nerdctl/colima/docker).")
+            return 1
+        ui.info(f"buildando deile-cli-worker-{kind}:local")
+        if _run(cmd) != 0:
+            ui.err(f"build de {kind}-worker falhou.")
+            rc = 1
+            continue
+        ui.ok(f"imagem deile-cli-worker-{kind}:local construída.")
+    if rc == 0:
+        ui.info("imagens prontas; gere manifests com `k8s gen-worker <kind>` e "
+                "escale via painel/`k8s scale`.")
+    return rc
+
+
+def k8s_cli_worker_install(args: dict) -> int:
+    """``k8s cli-worker-install <kind>`` — instala um CLI worker ON-DEMAND.
+
+    Generaliza ``claude-login`` para os workers ``env``: propaga as chaves de
+    API do ``.env`` ao Secret ``cli-worker-keys``, sincroniza o bearer, gera +
+    aplica o manifest e escala a 1 réplica. Mesmo caminho usado pelo painel
+    quando o operador seleciona o worker. ON-DEMAND — nunca chamado por ``k8s up``.
+    """
+    ns = _ns(args)
+    extra = args.get("extra") or []
+    kind = _parse_kind_flag(extra)
+    kinds = _cli_worker_kinds()
+    if not kind:
+        ui.err("uso: k8s cli-worker-install <kind> (ou --kind <kind>)")
+        if kinds:
+            ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+    if kinds and kind not in kinds:
+        ui.err(f"kind desconhecido: {kind!r}")
+        ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+
+    if not announce_plan(
+        args, "k8s cli-worker-install", f"{kind}-worker (namespace `{ns}`)",
+        [
+            "propaga as chaves de API do .env → Secret cli-worker-keys",
+            f"sincroniza o bearer {kind}-worker-bearer (reusa worker-bearer)",
+            "gera + aplica o manifest (Deployment/Service/NetworkPolicy)",
+            "escala o worker a 1 réplica",
+        ],
+    ):
+        return 0
+
+    try:
+        from _cli_worker_install import install_cli_worker  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o instalador: {exc}")
+        return 1
+    res = install_cli_worker(kind, namespace=ns)
+    if res.missing_keys:
+        ui.warn(
+            f"chaves de API ausentes no .env: {', '.join(res.missing_keys)} — "
+            f"o worker subirá not-ready até elas existirem"
+        )
+    if res.ok:
+        ui.ok(f"{kind}-worker instalado e escalado a 1 réplica.")
+        ui.info("acompanhe o rollout: "
+                f"kubectl -n {ns} rollout status deployment/{kind}-worker")
+        return 0
+    ui.err(f"install de {kind}-worker falhou: {res.error}")
+    return 1
+
+
+def k8s_cli_worker_uninstall(args: dict) -> int:
+    """``k8s cli-worker-uninstall <kind>`` — remove um CLI worker (idempotente)."""
+    ns = _ns(args)
+    extra = args.get("extra") or []
+    kind = _parse_kind_flag(extra)
+    if not kind:
+        ui.err("uso: k8s cli-worker-uninstall <kind> (ou --kind <kind>)")
+        return 64
+    if not announce_plan(
+        args, "k8s cli-worker-uninstall", f"{kind}-worker (namespace `{ns}`)",
+        [
+            "deleta Deployment + Service + NetworkPolicy + bearer Secret",
+            "NÃO toca em cli-worker-keys (compartilhado) nem allowed-repos",
+        ],
+    ):
+        return 0
+    try:
+        from _cli_worker_install import uninstall_cli_worker  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o instalador: {exc}")
+        return 1
+    res = uninstall_cli_worker(kind, namespace=ns)
+    if res.ok:
+        ui.ok(f"{kind}-worker desinstalado.")
+        return 0
+    ui.err(f"uninstall de {kind}-worker falhou: {res.error}")
+    return 1
+
+
 _K8S = {
     "up": k8s_up, "down": k8s_down, "start": k8s_start, "stop": k8s_stop,
     "restart": k8s_restart, "status": k8s_status, "logs": k8s_logs,
@@ -2287,6 +2538,10 @@ _K8S = {
     "renew-daemon": k8s_renew_daemon,
     "create-namespace": k8s_create_namespace,
     "scale": k8s_scale,
+    "gen-worker": k8s_gen_worker,
+    "build-cli-workers": k8s_build_cli_workers,
+    "cli-worker-install": k8s_cli_worker_install,
+    "cli-worker-uninstall": k8s_cli_worker_uninstall,
 }
 _LOCAL = {
     "start": local_start, "stop": local_stop, "restart": local_restart,
@@ -2315,6 +2570,14 @@ _K8S_ACTIONS = [
      " --from-env-only, --in-pod)"),
     ("claude-renew",
      "renovar OAuth do claude-worker (lightweight: Secret + restart, sem manifests)"),
+    ("gen-worker",
+     "gerar manifest de um CLI worker do template (gen-worker <kind>) — opt-in"),
+    ("build-cli-workers",
+     "buildar imagem(ns) per-tool da frota CLI (--kind <k> ou todos) — opt-in"),
+    ("cli-worker-install",
+     "instalar um CLI worker on-demand (cli-worker-install <kind>) — opt-in"),
+    ("cli-worker-uninstall",
+     "remover um CLI worker do cluster (cli-worker-uninstall <kind>)"),
     ("down", "APAGAR o namespace e TODOS os dados"),
 ]
 _LOCAL_ACTIONS = [

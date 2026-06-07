@@ -83,3 +83,6 @@ costs_export_*.json
 EXPORTS/
 opendeile/
 audit-out/
+# CLI worker fleet — manifests gerados sob demanda por `deploy.py k8s gen-worker`
+# (build artifacts; o template canônico em manifests/templates/ é versionado).
+infra/k8s/manifests/generated/
