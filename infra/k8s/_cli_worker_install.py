@@ -15,9 +15,10 @@ no manifest gerado e só sobem quando instalados aqui (ou via ``k8s scale``).
 Diferença essencial vs claude-login: workers ``env`` NÃO têm login OAuth no
 host — não abrem browser, não capturam credencial de arquivo. A "credencial" é
 a chave de API que já vive no ``.env`` do operador; o install só a propaga ao
-Secret. Workers ``oauth_file`` (futuro: codex OAuth) reusariam o mecanismo de
-captura de cred do ``_claude_install`` via ``adapter.oauth`` — fora do escopo
-deste módulo (env-only), registrado como caminho declarado no adapter.
+Secret. Workers ``oauth_file`` (ex.: codex OAuth) têm fluxo dedicado em
+``_cli_worker_login`` (verb ``deploy.py k8s cli-worker-login <kind>``), que
+captura a credencial OAuth do host via ``adapter.oauth`` e reusa as etapas de
+bearer/keys/manifest/scale deste módulo. Este módulo cobre só o caminho env-auth.
 """
 from __future__ import annotations
 
@@ -309,7 +310,7 @@ def install_cli_worker(
             error=(
                 f"adapter {kind!r} usa auth_mode={adapter.auth_mode!r}; "
                 "install on-demand cobre só workers env-auth. Para OAuth use "
-                f"o fluxo `<kind>-login` (captura de cred do host)."
+                f"`deploy.py k8s cli-worker-login {kind}` (captura de cred do host)."
             ),
         )
 

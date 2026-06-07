@@ -246,6 +246,117 @@ class TestPvcWorkerGeneratesPvcAndCron:
         assert "CronJob" not in kinds
 
 
+# ===== OAuth bootstrap-creds initContainer (workers oauth_file) ================
+
+
+class TestOauthInitContainerGeneration:
+    """Workers ``auth_mode="oauth_file"`` ganham o initContainer ``bootstrap-creds``
+    (espelha o claude-worker manifest 50) + o volume do Secret de credencial.
+
+    Workers ``env`` NÃO geram initContainer (no-op, sem regressão). O bloco é
+    gerado condicionalmente, exatamente como o PVC já é.
+    """
+
+    @pytest.fixture
+    def oauth_kind(self):
+        from cli_adapters.base import (BaseCliAdapter, ModelInfo, OAuthSpec,
+                                       WorkResult)
+
+        class _OauthAdapter(BaseCliAdapter):
+            def build_argv(self, **_kw):
+                return ["true"]
+
+            def parse_output(self, **_kw):
+                return WorkResult(ok=True)
+
+            def list_models(self):
+                return [ModelInfo(id="x")]
+
+        kind = "oauthprobe"
+        cli_adapters.ADAPTERS[kind] = _OauthAdapter(
+            kind=kind, default_port=8799, auth_mode="oauth_file",
+            oauth=OAuthSpec(
+                cred_path="~/.oauthprobe/auth.json",
+                login_cmd=["oauthprobe", "login", "--device-auth"],
+                secret_name="oauthprobe-credentials",
+            ),
+        )
+        try:
+            yield kind
+        finally:
+            cli_adapters.ADAPTERS.pop(kind, None)
+
+    def test_yaml_is_valid_with_init_block(self, oauth_kind):
+        # safe_load_all estoura se o block-scalar do script ficar mal indentado.
+        docs = [d for d in yaml.safe_load_all(gen.render_manifests(oauth_kind)) if d]
+        assert any(d["kind"] == "Deployment" for d in docs)
+
+    def test_initcontainer_bootstrap_creds_emitted(self, oauth_kind):
+        docs = [d for d in yaml.safe_load_all(gen.render_manifests(oauth_kind)) if d]
+        dep = next(d for d in docs if d["kind"] == "Deployment")
+        inits = dep["spec"]["template"]["spec"].get("initContainers") or []
+        names = [c["name"] for c in inits]
+        assert "bootstrap-creds" in names
+        ic = next(c for c in inits if c["name"] == "bootstrap-creds")
+        assert ic["image"] == f"deile-cli-worker-{oauth_kind}:local"
+        # Copia para mode 0600 (paridade com claude-worker).
+        assert "0600" in ic["args"][0]
+
+    def test_initcontainer_mounts_secret_and_pvc(self, oauth_kind):
+        docs = [d for d in yaml.safe_load_all(gen.render_manifests(oauth_kind)) if d]
+        dep = next(d for d in docs if d["kind"] == "Deployment")
+        ic = next(
+            c for c in dep["spec"]["template"]["spec"]["initContainers"]
+            if c["name"] == "bootstrap-creds"
+        )
+        mounts = {m["name"]: m["mountPath"] for m in ic["volumeMounts"]}
+        assert mounts["oauth-cred"] == f"/run/secrets/{oauth_kind}-oauth"
+        assert mounts["worker-home"] == f"/home/{oauth_kind}"
+
+    def test_oauth_cred_secret_volume_present(self, oauth_kind):
+        docs = [d for d in yaml.safe_load_all(gen.render_manifests(oauth_kind)) if d]
+        dep = next(d for d in docs if d["kind"] == "Deployment")
+        vols = {
+            v["name"]: v for v in dep["spec"]["template"]["spec"]["volumes"]
+        }
+        assert "oauth-cred" in vols
+        # O nome do Secret vem do OAuthSpec.secret_name do adapter.
+        assert vols["oauth-cred"]["secret"]["secretName"] == "oauthprobe-credentials"
+
+    def test_resolve_pod_cred_path_expands_home(self, oauth_kind):
+        adapter = cli_adapters.ADAPTERS[oauth_kind]
+        path = gen.resolve_pod_cred_path(adapter, kind=oauth_kind)
+        assert path == f"/home/{oauth_kind}/.oauthprobe/auth.json"
+
+    def test_cred_secret_name_falls_back_when_undeclared(self):
+        from cli_adapters.base import BaseCliAdapter, OAuthSpec
+
+        class _A(BaseCliAdapter):
+            pass
+
+        adapter = _A(
+            kind="nosecret", default_port=1, auth_mode="oauth_file",
+            oauth=OAuthSpec(
+                cred_path="~/.nosecret/auth.json",
+                login_cmd=["x"], secret_name="",
+            ),
+        )
+        assert gen.cred_secret_name(adapter, kind="nosecret") == (
+            "nosecret-worker-credentials"
+        )
+
+    @pytest.mark.parametrize("kind", _FLEET_KINDS)
+    def test_env_workers_have_no_initcontainer(self, kind):
+        adapter = cli_adapters.ADAPTERS[kind]
+        if adapter.auth_mode == "oauth_file":
+            pytest.skip("kind oauth_file — coberto pelos testes dedicados")
+        docs = [d for d in yaml.safe_load_all(gen.render_manifests(kind)) if d]
+        dep = next(d for d in docs if d["kind"] == "Deployment")
+        assert dep["spec"]["template"]["spec"].get("initContainers") in (None, [])
+        vols = [v["name"] for v in dep["spec"]["template"]["spec"]["volumes"]]
+        assert "oauth-cred" not in vols
+
+
 # ===== NetworkPolicy gerada dos egress_hosts do adapter =======================
 
 

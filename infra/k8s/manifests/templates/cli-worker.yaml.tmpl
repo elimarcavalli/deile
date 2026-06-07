@@ -18,6 +18,8 @@
 #   $$PROVIDER_ENV_BLOCK env de provider por worker (DEILE_CLI_<KIND>_ENV_<VAR>):
 #                       não-sensíveis como valor literal, sensíveis via secretKeyRef
 #   $$HOME_VOLUME_BLOCK volume do HOME (PVC ou emptyDir, por storage mode)
+#   $$OAUTH_INIT_BLOCK  initContainer ``bootstrap-creds`` (workers oauth_file) ou ""
+#   $$OAUTH_VOLUME_BLOCK volume do Secret de credencial OAuth (oauth_file) ou ""
 #   $$EGRESS_HOST_RULES regras de egress (uma por host) da NetworkPolicy
 #
 # INVARIANTE: workers nascem ``replicas: 0`` (scale-to-zero, opt-in). ``k8s up``
@@ -60,6 +62,7 @@ spec:
         fsGroup: 10001
         fsGroupChangePolicy: "OnRootMismatch"
         seccompProfile: { type: RuntimeDefault }
+$OAUTH_INIT_BLOCK
       containers:
         - name: $WORKER
           image: deile-cli-worker-$KIND:local
@@ -128,6 +131,7 @@ $PROVIDER_ENV_BLOCK
             secretName: deile-secrets
             defaultMode: 0o400
 $HOME_VOLUME_BLOCK
+$OAUTH_VOLUME_BLOCK
         - name: tmp
           emptyDir: { sizeLimit: "5Gi" }
         - name: allowed-repos

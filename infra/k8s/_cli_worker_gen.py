@@ -274,6 +274,139 @@ def _needs_pvc(adapter) -> bool:
     )
 
 
+def _is_oauth_file(adapter) -> bool:
+    """True se o adapter autentica por credencial em arquivo (OAuth)."""
+    return getattr(adapter, "auth_mode", "env") == "oauth_file"
+
+
+def resolve_pod_cred_path(adapter, *, kind: str) -> str:
+    """Caminho ABSOLUTO da credencial OAuth dentro do pod (função pura).
+
+    Expande o ``~`` declarado em ``adapter.oauth.cred_path`` para o HOME do pod
+    deste worker (``/home/<kind>``), que é onde o PVC ``worker-home`` monta. Um
+    ``cred_path`` já absoluto é devolvido como veio. Sem ``oauth`` declarado,
+    cai no default ``<home>/.<kind>/auth.json`` (conservador; o adapter deveria
+    declarar o path).
+    """
+    home = f"/home/{kind}"
+    oauth = getattr(adapter, "oauth", None)
+    cred_path = getattr(oauth, "cred_path", None) if oauth else None
+    if not cred_path:
+        return f"{home}/.{kind}/auth.json"
+    cred_path = cred_path.strip()
+    if cred_path.startswith("~/"):
+        return f"{home}/{cred_path[2:]}"
+    if cred_path == "~":
+        return home
+    if cred_path.startswith("/"):
+        return cred_path
+    return f"{home}/{cred_path}"
+
+
+def cred_secret_name(adapter, *, kind: str) -> str:
+    """Nome do Secret que carrega a credencial OAuth capturada do host.
+
+    Reusa o ``secret_name`` declarado no :class:`OAuthSpec` do adapter quando
+    presente; senão deriva ``<kind>-worker-credentials`` (convenção da frota).
+    """
+    oauth = getattr(adapter, "oauth", None)
+    declared = getattr(oauth, "secret_name", None) if oauth else None
+    if declared and str(declared).strip():
+        return str(declared).strip()
+    return f"{kind}-worker-credentials"
+
+
+def _oauth_init_block(adapter, *, kind: str, indent: str = "      ") -> str:
+    """``initContainers`` ``bootstrap-creds`` para workers ``oauth_file``.
+
+    Espelha o initContainer do claude-worker (manifest 50): copia a credencial
+    OAuth do Secret montado em ``/run/secrets/<kind>-oauth/<basename>`` para o
+    PVC no path que o CLI espera (``resolve_pod_cred_path``), mode ``0600``,
+    rodando como uid 10001 (PSS restricted). Idempotência por ``expiresAt``:
+    preserva o token do PVC quando ele é >= o do Secret (refresh in-pod),
+    copiando só quando o PVC não tem credencial OU o Secret é mais recente.
+
+    Workers ``env`` NÃO geram initContainer — devolve "" (no-op, sem regressão).
+    """
+    if not _is_oauth_file(adapter):
+        return ""
+    cred_pod = resolve_pod_cred_path(adapter, kind=kind)
+    basename = cred_pod.rsplit("/", 1)[-1]
+    cred_dir = cred_pod.rsplit("/", 1)[0] if "/" in cred_pod else f"/home/{kind}"
+    secret_mount = f"/run/secrets/{kind}-oauth"
+    cred_secret = f"{secret_mount}/{basename}"
+    py_read_exp = (
+        'import json,sys;d=json.load(open(sys.argv[1]));'
+        'o=d.get("claudeAiOauth") or d.get("tokens") or {};'
+        'print(int(o.get("expiresAt") or o.get("expires_at") '
+        'or d.get("expiresAt") or 0))'
+    )
+    script = "\n".join(
+        f"{indent}        {ln}"
+        for ln in (
+            "set -eu",
+            f'mkdir -p "{cred_dir}"',
+            f'CREDS_PVC="{cred_pod}"',
+            f'CREDS_SECRET="{cred_secret}"',
+            f"PY_READ_EXP='{py_read_exp}'",
+            'if [ ! -f "$CREDS_PVC" ]; then',
+            '  echo "bootstrap-creds: PVC sem credencial - copiando do Secret"',
+            '  cp "$CREDS_SECRET" "$CREDS_PVC"',
+            '  chmod 0600 "$CREDS_PVC"',
+            "else",
+            '  PVC_EXP=$(python3 -c "$PY_READ_EXP" "$CREDS_PVC" 2>/dev/null || echo 0)',
+            '  SECRET_EXP=$(python3 -c "$PY_READ_EXP" "$CREDS_SECRET" 2>/dev/null || echo 0)',
+            '  if [ "${SECRET_EXP:-0}" -gt "${PVC_EXP:-0}" ]; then',
+            '    echo "bootstrap-creds: Secret mais recente - copiando"',
+            '    cp "$CREDS_SECRET" "$CREDS_PVC"',
+            '    chmod 0600 "$CREDS_PVC"',
+            "  else",
+            '    echo "bootstrap-creds: PVC preservado (refresh in-pod)"',
+            "  fi",
+            "fi",
+            'ls -la "$CREDS_PVC"',
+        )
+    )
+    return "\n".join((
+        f"{indent}initContainers:",
+        f"{indent}  - name: bootstrap-creds",
+        f"{indent}    image: deile-cli-worker-{kind}:local",
+        f"{indent}    imagePullPolicy: Never",
+        f'{indent}    command: ["/bin/sh", "-c"]',
+        f"{indent}    args:",
+        f"{indent}      - |",
+        script,
+        f"{indent}    volumeMounts:",
+        f"{indent}      - {{ name: oauth-cred, mountPath: {secret_mount}, readOnly: true }}",
+        f"{indent}      - {{ name: worker-home, mountPath: /home/{kind} }}",
+        f"{indent}    securityContext:",
+        f"{indent}      runAsNonRoot: true",
+        f"{indent}      runAsUser: 10001",
+        f"{indent}      runAsGroup: 10001",
+        f"{indent}      allowPrivilegeEscalation: false",
+        f"{indent}      readOnlyRootFilesystem: true",
+        f'{indent}      capabilities: {{ drop: ["ALL"] }}',
+        f"{indent}      seccompProfile: {{ type: RuntimeDefault }}",
+    ))
+
+
+def _oauth_volume_block(adapter, *, kind: str, indent: str = "        ") -> str:
+    """Volume do Secret de credencial OAuth (workers ``oauth_file``) ou "".
+
+    O Secret é montado read-only no initContainer; o nome do Secret é resolvido
+    de :func:`cred_secret_name`. Workers ``env`` não geram volume — devolve "".
+    """
+    if not _is_oauth_file(adapter):
+        return ""
+    secret = cred_secret_name(adapter, kind=kind)
+    return (
+        f"{indent}- name: oauth-cred\n"
+        f"{indent}  secret:\n"
+        f"{indent}    secretName: {secret}\n"
+        f"{indent}    defaultMode: 0o400"
+    )
+
+
 def _home_volume_block(adapter, *, worker: str, indent: str = "        ") -> str:
     """Volume do HOME: PVC quando persiste estado, senão ``emptyDir`` efêmero."""
     if _needs_pvc(adapter):
@@ -475,6 +608,8 @@ def render_manifests(
         "OVERLAY_ENV_BLOCK": _overlay_env_block(adapter, kind=kind),
         "PROVIDER_ENV_BLOCK": _provider_env_block(adapter, kind=kind),
         "HOME_VOLUME_BLOCK": _home_volume_block(adapter, worker=worker),
+        "OAUTH_INIT_BLOCK": _oauth_init_block(adapter, kind=kind),
+        "OAUTH_VOLUME_BLOCK": _oauth_volume_block(adapter, kind=kind),
         "EGRESS_HOST_RULES": _egress_host_rules(adapter, port=port),
         "EGRESS_HOSTS_CSV": ", ".join(egress_hosts(adapter)),
         "PVC_DOC_BLOCK": _pvc_doc_block(
@@ -516,6 +651,8 @@ __all__ = [
     "available_kinds",
     "load_adapter",
     "egress_hosts",
+    "resolve_pod_cred_path",
+    "cred_secret_name",
     "parse_provider_env",
     "split_provider_env",
     "read_env_sources",

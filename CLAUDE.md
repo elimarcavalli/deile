@@ -275,6 +275,17 @@ DEILE_CLI_QWEN_ENV_OPENAI_API_KEY=<key OpenAI>        # → Secret cli-worker-ke
 DEILE_CLI_QWEN_ENV_OPENAI_MODEL=<modelo OpenAI>
 ```
 
+#### Instalar um CLI worker OAuth — `k8s cli-worker-login <kind>`
+A maioria dos workers da frota autentica por chave de API (env) e sobe via `cli-worker-install <kind>`. Workers cujo adapter declara `auth_mode="oauth_file"` + um `OAuthSpec` (hoje: **codex** no caminho opt-in `DEILE_CODEX_AUTH=oauth`) usam OAuth/device-auth em vez de chave — e sobem via `cli-worker-login`, o espelho genérico do `claude-login`:
+
+```bash
+python3 infra/k8s/deploy.py k8s cli-worker-login codex            # instala o codex-worker via OAuth
+python3 infra/k8s/deploy.py k8s cli-worker-login codex --switch   # força novo device-auth (trocar conta)
+python3 infra/k8s/deploy.py k8s cli-worker-login codex --no-interactive  # CI: falha se a credencial não estiver no host
+```
+
+O verb: detecta a credencial OAuth no host no path declarado pelo `OAuthSpec` (`~/.codex/auth.json`, ou `$CODEX_HOME/auth.json`); **se ausente E interativo, roda o `login_cmd` do adapter (ex.: `codex login --device-auth`) — o operador completa o device-auth no browser**; captura a credencial, cria o Secret `<kind>-worker-credentials`, sincroniza o bearer, gera+aplica o manifest (PVC + initContainer `bootstrap-creds` que copia a credencial pro PVC mode `0600` — paridade exata com o claude-worker), seta `DEILE_<KIND>_AUTH=oauth` no Deployment e escala a 1. Idempotente; nunca loga o conteúdo da credencial (só o comprimento). **Quando usar OAuth vs env:** OAuth para consumir a assinatura ChatGPT do codex; env (`OPENAI_API_KEY` via `cli-worker-install`) para automação robusta sem expiração. Módulo: `infra/k8s/_cli_worker_login.py`.
+
 ### 5.5 deile-monitor — the 24/7 cluster supervisor (6th pod)
 Two-phase deterministic tick (PR #504): **Phase A** = mechanical sweep, **zero LLM** — 8 "vigias" (OAuth health, error pods, orphan issues, `auto/*` PR attempt N/3, awaiting-stakeholder, failed Jobs, pipeline-pod health, follow-ups); **Phase B** invokes the `monitor` persona **only** when Phase-A candidates survive (via state file). Steady state = **no tokens** (was ~3.5M/tick as a tool-loop — #504 fix). Tick 30 min; RBAC `deile-monitor-sa` (read pods/jobs + `pods/exec` for OAuth renew). Persona-driven (`personas/instructions/monitor.md`, hot-reload). Main process `monitor_command_server.py` (`args:`, tini-wrapped) runs the tick as a subprocess AND serves a Bearer control plane on `:8769` (status, `pause`/`resume`/`ack`/`force-tick`, read-only Q&A via `monitor_qa` in-pod — the only pod seeing kubectl + forge + `/state`). `deilebot` `/monitor` cog + cluster-question auto-route consume it; `/v1/health` 503 on stale tick → restart.
 

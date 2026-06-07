@@ -2499,6 +2499,101 @@ def k8s_cli_worker_install(args: dict) -> int:
     return 1
 
 
+def _parse_cli_worker_login_flags(extra: List[str]) -> Dict[str, object]:
+    """Decodifica flags de ``k8s cli-worker-login`` (sem o ``<kind>`` posicional).
+
+    Reconhece ``--switch``/``--force-relogin`` e ``--no-interactive`` (espelha o
+    ``claude-login``). Devolve ``{"_error": msg}`` em flag desconhecida. O kind
+    e o ``--namespace`` são resolvidos fora daqui.
+    """
+    parsed: Dict[str, object] = {"force_relogin": False, "interactive": True}
+    for token in extra:
+        if token in ("--switch", "--force-relogin"):
+            parsed["force_relogin"] = True
+            continue
+        if token == "--no-interactive":
+            parsed["interactive"] = False
+            continue
+        if token == "--kind":
+            continue  # consumido por _parse_kind_flag
+        if token.startswith("-"):
+            return {"_error": f"flag desconhecido: `{token}`"}
+    return parsed
+
+
+def k8s_cli_worker_login(args: dict) -> int:
+    """``k8s cli-worker-login <kind>`` — captura credencial OAuth + instala worker.
+
+    Espelha ``claude-login`` para os workers da frota com ``auth_mode="oauth_file"``
+    (hoje: ``codex`` no caminho opt-in ``DEILE_CODEX_AUTH=oauth``). O OPERADOR
+    completa o device-auth do CLI no host (ex.: ``codex login --device-auth``);
+    este verb captura a credencial gravada, cria o Secret, gera+aplica o manifest
+    (PVC + initContainer ``bootstrap-creds`` + mount), seta ``DEILE_<KIND>_AUTH=oauth``
+    e escala a 1 réplica. Idempotente.
+
+    Flags: ``--switch`` (força novo login) e ``--no-interactive`` (CI: falha se a
+    credencial estiver ausente, não roda o device-auth). Para workers env-auth
+    use ``cli-worker-install``.
+    """
+    ns = _ns(args)
+    extra = args.get("extra") or []
+    kind = _parse_kind_flag(extra)
+    kinds = _cli_worker_kinds()
+    if not kind:
+        ui.err("uso: k8s cli-worker-login <kind> (flags: --switch, --no-interactive)")
+        if kinds:
+            ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+    if kinds and kind not in kinds:
+        ui.err(f"kind desconhecido: {kind!r}")
+        ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+
+    flags = _parse_cli_worker_login_flags(extra)
+    if "_error" in flags:
+        ui.err(str(flags["_error"]))
+        ui.info("flags válidos: --switch (--force-relogin), --no-interactive")
+        return 64
+    force_relogin = bool(flags["force_relogin"])
+    interactive = bool(flags["interactive"])
+
+    if not announce_plan(
+        args, "k8s cli-worker-login", f"{kind}-worker (namespace `{ns}`)",
+        [
+            f"detecta a credencial OAuth de {kind!r} no host (ou roda o device-auth)",
+            "cria/atualiza o Secret de credencial OAuth do worker",
+            "sincroniza o bearer + propaga chaves env ao Secret cli-worker-keys",
+            "gera + aplica o manifest (PVC + initContainer bootstrap-creds + mount)",
+            f"seta DEILE_{kind.upper()}_AUTH=oauth no Deployment e escala a 1 réplica",
+        ],
+    ):
+        return 0
+
+    try:
+        from _cli_worker_login import bootstrap_cli_worker_oauth  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o fluxo de login OAuth: {exc}")
+        return 1
+
+    ui.section(f"k8s cli-worker-login {kind}")
+    ui.info(f"namespace={ns}, switch={force_relogin}, interactive={interactive}")
+    res = bootstrap_cli_worker_oauth(
+        kind, namespace=ns, force_relogin=force_relogin, interactive=interactive,
+    )
+    if res.missing_keys:
+        ui.warn(
+            f"chaves env ausentes no .env: {', '.join(res.missing_keys)} — "
+            "o worker subirá not-ready até elas existirem (se exigidas)"
+        )
+    if res.ok:
+        ui.ok(f"{kind}-worker instalado (OAuth) e escalado a 1 réplica.")
+        ui.info("acompanhe o rollout: "
+                f"kubectl -n {ns} rollout status deployment/{kind}-worker")
+        return 0
+    ui.err(f"cli-worker-login de {kind} falhou: {res.error}")
+    return 1
+
+
 def k8s_cli_worker_uninstall(args: dict) -> int:
     """``k8s cli-worker-uninstall <kind>`` — remove um CLI worker (idempotente)."""
     ns = _ns(args)
@@ -2541,6 +2636,7 @@ _K8S = {
     "gen-worker": k8s_gen_worker,
     "build-cli-workers": k8s_build_cli_workers,
     "cli-worker-install": k8s_cli_worker_install,
+    "cli-worker-login": k8s_cli_worker_login,
     "cli-worker-uninstall": k8s_cli_worker_uninstall,
 }
 _LOCAL = {
@@ -2576,6 +2672,9 @@ _K8S_ACTIONS = [
      "buildar imagem(ns) per-tool da frota CLI (--kind <k> ou todos) — opt-in"),
     ("cli-worker-install",
      "instalar um CLI worker on-demand (cli-worker-install <kind>) — opt-in"),
+    ("cli-worker-login",
+     "instalar CLI worker OAuth via device-auth (cli-worker-login <kind>;"
+     " flags: --switch, --no-interactive) — opt-in"),
     ("cli-worker-uninstall",
      "remover um CLI worker do cluster (cli-worker-uninstall <kind>)"),
     ("down", "APAGAR o namespace e TODOS os dados"),
