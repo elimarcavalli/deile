@@ -21,6 +21,7 @@ _PROVIDER_CLASSES = {
     "openai": "deile.core.models.openai_provider.OpenAIProvider",
     "deepseek": "deile.core.models.deepseek_provider.DeepSeekProvider",
     "gemini": "deile.core.models.gemini_provider.GeminiProvider",
+    "openrouter": "deile.core.models.openrouter_provider.OpenRouterProvider",
 }
 
 

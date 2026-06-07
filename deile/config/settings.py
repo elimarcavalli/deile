@@ -179,7 +179,11 @@ def _to_pos_int_or_auto(value: Any) -> Any:
 # Per-stage pipeline model slug (issue #305): ``provider:model``. Mirrors
 # `_MODEL_SLUG_RE` in `deile/infrastructure/deile_worker_client.py` — keep in
 # sync (both validate the same wire/JSON format).
-_MODEL_SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]*:[a-z0-9._-]+$")
+#
+# The ``/`` in the model side is REQUIRED for OpenRouter (gateway), whose model
+# ids carry the upstream vendor: ``openrouter:anthropic/claude-sonnet-4.6``.
+# Without it, ``_to_optional_model_slug`` would silently drop the override.
+_MODEL_SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]*:[a-z0-9._/-]+$")
 
 
 def _to_optional_model_slug(value: Any) -> Optional[str]:

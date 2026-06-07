@@ -157,8 +157,9 @@ class OpenAIProvider(ModelProvider):
 
         # Reasoning effort → reasoning_effort / thinking via extra_body (best-effort).
         _extra_reasoning = self._pop_reasoning_extra_body(kwargs)
-        if _extra_reasoning:
-            kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), **_extra_reasoning}
+        _merged_extra = {**self._provider_extra_body(), **_extra_reasoning}
+        if _merged_extra:
+            kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), **_merged_extra}
         # Issue #303 fase 4 — span deile.llm.call.
         with self._llm_span() as _span:
             try:
@@ -183,6 +184,7 @@ class OpenAIProvider(ModelProvider):
                 cached_tokens=cached,
                 request_time=time.time() - start,
             )
+            self._stamp_reported_cost(usage, response)
             usage.cost_estimate = self.estimate_cost(usage)
             self._update_stats(usage)
             self._set_llm_span_usage(_span, usage, latency_ms=int((time.time() - start) * 1000))
@@ -212,6 +214,8 @@ class OpenAIProvider(ModelProvider):
         oai_tools = [t.to_openai_function() for t in tools] if tools else []
 
         total_prompt = total_completion = total_cached = 0
+        total_reported_cost = 0.0  # sum of usage.cost reported by OpenRouter (OR5)
+        has_reported_cost = False
         tool_results: List[Any] = []
         final_text = ""
         last_reasoning_content: Optional[str] = None
@@ -229,6 +233,7 @@ class OpenAIProvider(ModelProvider):
             if oai_tools:
                 create_kwargs["tools"] = oai_tools
                 create_kwargs["tool_choice"] = "auto"
+            self._apply_reasoning_extra_body(create_kwargs, self._provider_extra_body())
             self._apply_reasoning_extra_body(create_kwargs, _reasoning_extra)
 
             # Issue #303 fase 4 — 1 iteração = 1 deile.llm.call span.
@@ -259,6 +264,7 @@ class OpenAIProvider(ModelProvider):
                         total_tokens=_iter_in + _iter_out,
                         cached_tokens=_iter_cached,
                     )
+                    self._stamp_reported_cost(_iter_usage, response)
                     _iter_usage.cost_estimate = self.estimate_cost(_iter_usage)
                     self._set_llm_span_usage(
                         _it_span, _iter_usage,
@@ -267,6 +273,10 @@ class OpenAIProvider(ModelProvider):
                     total_prompt += _iter_in
                     total_completion += _iter_out
                     total_cached += _iter_cached
+                    _rc = _iter_usage.extra.get("reported_cost_usd")
+                    if _rc is not None:
+                        has_reported_cost = True
+                        total_reported_cost += float(_rc)
 
             msg = response.choices[0].message
             if msg.content:
@@ -340,6 +350,8 @@ class OpenAIProvider(ModelProvider):
         )
         if last_reasoning_content:
             usage.extra["reasoning_content"] = last_reasoning_content
+        if has_reported_cost:
+            usage.extra["reported_cost_usd"] = total_reported_cost
         usage.cost_estimate = self.estimate_cost(usage)
         self._update_stats(usage)
         latency_ms = int((time.time() - start) * 1000)
@@ -376,6 +388,7 @@ class OpenAIProvider(ModelProvider):
             create_kwargs["tools"] = [t.to_openai_function() for t in tools]
             create_kwargs["tool_choice"] = "auto"
         # Reasoning effort → reasoning_effort / thinking via extra_body (best-effort).
+        self._apply_reasoning_extra_body(create_kwargs, self._provider_extra_body())
         self._apply_reasoning_extra_body(
             create_kwargs, self._pop_reasoning_extra_body(kwargs)
         )
@@ -456,17 +469,17 @@ class OpenAIProvider(ModelProvider):
                     accumulated_reasoning = ""
 
             if final_usage is not None:
+                _final_mu = ModelUsage(
+                    prompt_tokens=final_usage.prompt_tokens,
+                    completion_tokens=final_usage.completion_tokens,
+                    cached_tokens=final_cached,
+                )
+                self._stamp_reported_cost(_final_mu, final_usage)
                 snap = ModelUsageSnapshot(
                     input_tokens=final_usage.prompt_tokens,
                     output_tokens=final_usage.completion_tokens,
                     cached_tokens=final_cached,
-                    cost_usd=self.estimate_cost(
-                        ModelUsage(
-                            prompt_tokens=final_usage.prompt_tokens,
-                            completion_tokens=final_usage.completion_tokens,
-                            cached_tokens=final_cached,
-                        )
-                    ),
+                    cost_usd=self.estimate_cost(_final_mu),
                     model=f"{self.provider_id}:{self.model_name}",
                 )
                 yield UnifiedStreamEvent(
@@ -548,6 +561,26 @@ class OpenAIProvider(ModelProvider):
             return int(value)
         except (TypeError, ValueError):
             return 0
+
+    def _provider_extra_body(self) -> Dict[str, Any]:
+        """Provider-specific fields merged into every ``create`` call's extra_body.
+
+        Empty for plain OpenAI/DeepSeek. OpenRouter overrides this to request
+        ``{"usage": {"include": true}}`` so the response carries the billed
+        ``usage.cost`` (consumed by :meth:`_stamp_reported_cost`).
+        """
+        return {}
+
+    def _stamp_reported_cost(self, usage: ModelUsage, response: Any) -> None:
+        """Stamp a provider-reported cost into ``usage.extra['reported_cost_usd']``.
+
+        No-op for plain OpenAI/DeepSeek (their responses carry no cost field).
+        OpenRouter overrides this to surface ``usage.cost`` from the response as
+        the authoritative billed cost (see :class:`OpenRouterProvider`). Keeping
+        the seam here means all three code paths (generate / chat_with_tools /
+        generate_stream) feed the same hook before ``estimate_cost`` runs.
+        """
+        return None
 
     def estimate_cost(self, usage: ModelUsage) -> float:
         """OpenAI/DeepSeek-aware cost.
