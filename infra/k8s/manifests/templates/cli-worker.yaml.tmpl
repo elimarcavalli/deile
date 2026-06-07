@@ -206,4 +206,34 @@ spec:
           port: 53
     # HTTPS :443 — LLM ($EGRESS_HOSTS_CSV) + forges (github.com/gitlab.com).
 $EGRESS_HOST_RULES
+---
+# NetworkPolicy do lado do PIPELINE — abre o egress do deile-pipeline para ESTE
+# worker. NetworkPolicy é aplicada nas DUAS pontas: a netpol do worker (acima)
+# permite ingress vindo do pipeline, mas o pipeline tem egress restritivo
+# (default-deny-all + regras estáticas só para claude-worker/deile-worker), então
+# sem esta regra o pacote nunca sai. Espelha ``pipeline-egress-to-claude-worker``.
+# Gerada por worker (idempotente: nome único ``pipeline-egress-to-$WORKER``), de
+# modo que instalar um CLI worker num cluster limpo já libera a rota ponta-a-ponta.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pipeline-egress-to-$WORKER
+  namespace: $NAMESPACE
+  labels:
+    app: deile-pipeline
+    deile.io/cli-worker: "$KIND"
+spec:
+  podSelector:
+    matchLabels:
+      app: deile-pipeline
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: $WORKER
+      ports:
+        - protocol: TCP
+          port: $PORT
 $PVC_DOC_BLOCK$CLEANUP_CRONJOB_BLOCK

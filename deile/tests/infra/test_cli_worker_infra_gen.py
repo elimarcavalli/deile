@@ -97,23 +97,30 @@ def _needs_pvc(adapter) -> bool:
 class TestGenWorkerRender:
     @pytest.mark.parametrize("kind", _FLEET_KINDS)
     def test_renders_core_docs(self, kind):
-        """Os 4 docs base sempre saem, na ordem; PVC workers ganham +2 (PVC+Cron).
+        """Os 5 docs base sempre saem, na ordem; PVC workers ganham +2 (PVC+Cron).
 
-        Workers ``emptyDir`` (env-only, sem resume) = 4 docs; workers com PVC
-        (``oauth_file``/``supports_resume``) = 6 (acrescentam ``PersistentVolume-
-        Claim`` + ``CronJob`` de cleanup, sem os quais a PVC ficaria unbound).
+        São DUAS NetworkPolicies: a do worker (ingress do pipeline + egress
+        LLM/forge) e a ``pipeline-egress-to-<worker>`` (abre o egress do pipeline
+        para este worker — netpol é aplicada nas duas pontas e o pipeline tem
+        egress restritivo por default-deny). Workers ``emptyDir`` (env-only) = 5
+        docs; workers com PVC (``oauth_file``/``supports_resume``) = 7 (acrescentam
+        ``PersistentVolumeClaim`` + ``CronJob`` de cleanup).
         """
         rendered = gen.render_manifests(kind, namespace="deile")
         kinds = [d["kind"] for d in yaml.safe_load_all(rendered) if d]
-        assert kinds[:4] == ["Deployment", "Service", "Secret", "NetworkPolicy"]
+        assert kinds[:5] == [
+            "Deployment", "Service", "Secret", "NetworkPolicy", "NetworkPolicy",
+        ]
         adapter = cli_adapters.ADAPTERS[kind]
         if _needs_pvc(adapter):
             assert kinds == [
-                "Deployment", "Service", "Secret", "NetworkPolicy",
+                "Deployment", "Service", "Secret", "NetworkPolicy", "NetworkPolicy",
                 "PersistentVolumeClaim", "CronJob",
             ]
         else:
-            assert kinds == ["Deployment", "Service", "Secret", "NetworkPolicy"]
+            assert kinds == [
+                "Deployment", "Service", "Secret", "NetworkPolicy", "NetworkPolicy",
+            ]
 
     @pytest.mark.parametrize("kind", _FLEET_KINDS)
     def test_deployment_is_scale_to_zero(self, kind):
@@ -268,6 +275,35 @@ class TestNetworkPolicyGeneration:
         ann = np["metadata"]["annotations"]["deile.io/egress-llm-hosts"]
         for h in adapter.egress_hosts:
             assert h in ann
+
+    @pytest.mark.parametrize("kind", _FLEET_KINDS)
+    def test_pipeline_egress_netpol_opens_route_to_worker(self, kind):
+        """Regressão (homologação E2E): o template DEVE gerar a netpol do lado do
+        pipeline abrindo egress para este worker.
+
+        Sem ela, o ``default-deny-all`` + as regras estáticas de egress do pipeline
+        (só claude-worker/deile-worker) bloqueiam o pacote na origem — a ingress do
+        worker sozinha não basta (netpol é aplicada nas DUAS pontas). Foi o blocker
+        real do opencode na homologação: pod 1/1 Running, server escutando 0.0.0.0,
+        /v1/health 200 in-pod, mas pipeline→worker falhava em 0ms.
+        """
+        worker = f"{kind}-worker"
+        docs = [d for d in yaml.safe_load_all(gen.render_manifests(kind)) if d]
+        nps = [d for d in docs if d["kind"] == "NetworkPolicy"]
+        egress_np = next(
+            (d for d in nps if d["metadata"]["name"] == f"pipeline-egress-to-{worker}"),
+            None,
+        )
+        assert egress_np is not None, (
+            f"faltou a netpol pipeline-egress-to-{worker} — pipeline não alcança o worker"
+        )
+        spec = egress_np["spec"]
+        assert spec["podSelector"]["matchLabels"]["app"] == "deile-pipeline"
+        assert spec["policyTypes"] == ["Egress"]
+        rule = spec["egress"][0]
+        assert rule["to"] == [{"podSelector": {"matchLabels": {"app": worker}}}]
+        adapter = cli_adapters.ADAPTERS[kind]
+        assert rule["ports"][0]["port"] == adapter.default_port
 
 
 # ===== build-cli-workers — Dockerfile.cli-worker + build-arg WORKER_KIND ======
