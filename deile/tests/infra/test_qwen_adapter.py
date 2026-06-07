@@ -103,6 +103,9 @@ def test_env_overlay(adapter):
     ov = adapter.env_overlay(home="/home/qwen")
     assert ov["HOME"] == "/home/qwen"
     assert ov["QWEN_CODE_UNATTENDED_RETRY"] == "1"
+    # Suprime o aviso de yolo headless que senão polui o stdout e derruba o
+    # dispatch com NO_OUTPUT (regressão da homologação E2E do stage pr_review).
+    assert ov["QWEN_CODE_SUPPRESS_YOLO_WARNING"] == "1"
     # A tríade de provider vem do Secret/ConfigMap, não do overlay.
     assert "OPENAI_API_KEY" not in ov
     assert "OPENAI_BASE_URL" not in ov

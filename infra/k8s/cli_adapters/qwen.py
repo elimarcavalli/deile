@@ -134,17 +134,23 @@ class QwenAdapter(BaseCliAdapter):
             )
 
     def env_overlay(self, *, home: str) -> dict:
-        """Env do subprocess: HOME gravável + retry desatendido.
+        """Env do subprocess: HOME gravável + retry desatendido + supressão do
+        aviso de yolo.
 
         ``QWEN_CODE_UNATTENDED_RETRY=1`` evita travas em retries que pediriam
-        confirmação sem TTY. O ``~/.qwen`` (config/cache) fica abaixo de ``home``.
-        NÃO inclui ``OPENAI_API_KEY``/``OPENAI_BASE_URL``/``OPENAI_MODEL`` — essas
-        vêm do Secret/ConfigMap montados no Deployment (a tríade é configuração de
-        provider, não overlay do adapter).
+        confirmação sem TTY. ``QWEN_CODE_SUPPRESS_YOLO_WARNING=1`` silencia o
+        aviso que o qwen-code imprime em modo headless/yolo ("running headless
+        with --yolo ... no sandbox") — sem isso o aviso polui o stdout/stderr e o
+        parser o lê como veredito, derrubando o dispatch com ``NO_OUTPUT``
+        (homologação E2E do stage pr_review). O ``~/.qwen`` (config/cache) fica
+        abaixo de ``home``. NÃO inclui ``OPENAI_API_KEY``/``OPENAI_BASE_URL``/
+        ``OPENAI_MODEL`` — essas vêm do Secret/ConfigMap montados no Deployment
+        (a tríade é configuração de provider, não overlay do adapter).
         """
         return {
             "HOME": home,
             "QWEN_CODE_UNATTENDED_RETRY": "1",
+            "QWEN_CODE_SUPPRESS_YOLO_WARNING": "1",
         }
 
     def parse_output(
