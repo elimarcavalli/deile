@@ -82,14 +82,22 @@ COPY --from=builder /venv /venv
 # -----------------------------------------------------------------------------
 
 # opencode — binário standalone (Tier 1). Pin de versão; ``upgrade`` proibido.
-ARG OPENCODE_VERSION=0.4.45
+# Download direto do tarball oficial → /usr/local/bin (PATH de TODOS os users; o
+# install script curl|bash instalava no HOME do build/root e o runtime roda como
+# user `cliworker`, deixando o binário inacessível). fail-loud: sem `|| true`.
+ARG OPENCODE_VERSION=1.16.2
 RUN if [ "$WORKER_KIND" = "opencode" ]; then \
-        curl -fsSL https://opencode.ai/install | VERSION="${OPENCODE_VERSION}" bash \
-        && (opencode --version || /root/.opencode/bin/opencode --version || true) ; \
+        arch="$(uname -m)"; \
+        case "$arch" in x86_64) t=linux-x64 ;; aarch64|arm64) t=linux-arm64 ;; *) echo "arch nao suportada: $arch" && exit 1 ;; esac; \
+        curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-${t}.tar.gz" -o /tmp/oc.tgz \
+        && tar -xzf /tmp/oc.tgz -C /usr/local/bin opencode \
+        && chmod 0555 /usr/local/bin/opencode \
+        && rm -f /tmp/oc.tgz \
+        && opencode --version ; \
     fi
 
 # aider — pip (Tier 1, cli_autocommit). Precisa de git (já instalado).
-ARG AIDER_VERSION=0.86.1
+ARG AIDER_VERSION=0.86.2
 RUN if [ "$WORKER_KIND" = "aider" ]; then \
         /venv/bin/pip install "aider-chat==${AIDER_VERSION}" \
         && aider --version ; \
@@ -97,7 +105,7 @@ RUN if [ "$WORKER_KIND" = "aider" ]; then \
 
 # goose — binário (Tier 1). CONFIGURE=false evita o wizard interativo no
 # install; GOOSE_DISABLE_KEYRING é setado em runtime (env_overlay do adapter).
-ARG GOOSE_VERSION=1.0.30
+ARG GOOSE_VERSION=1.37.0
 RUN if [ "$WORKER_KIND" = "goose" ]; then \
         curl -fsSL https://github.com/block/goose/releases/download/v${GOOSE_VERSION}/download_cli.sh \
             | CONFIGURE=false bash \
@@ -106,7 +114,7 @@ RUN if [ "$WORKER_KIND" = "goose" ]; then \
 
 # qwen — node>=22 + npm (Tier 2). Runtime node22 PRÓPRIO desta imagem (conflito
 # com o node20 do claude-stack → o per-tool image resolve, plano §1.8).
-ARG QWEN_VERSION=0.0.14
+ARG QWEN_VERSION=0.17.1
 RUN if [ "$WORKER_KIND" = "qwen" ]; then \
         curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
@@ -116,7 +124,7 @@ RUN if [ "$WORKER_KIND" = "qwen" ]; then \
     fi
 
 # codex — npm (Tier 2; OpenAI direto, ver caveat wire_api=responses no adapter).
-ARG CODEX_VERSION=0.41.0
+ARG CODEX_VERSION=0.137.0
 RUN if [ "$WORKER_KIND" = "codex" ]; then \
         curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
