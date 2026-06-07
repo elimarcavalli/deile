@@ -94,16 +94,16 @@ _FALLBACK_MODELS: List[ModelInfo] = [
         notes="barato; legado (v4-flash o substitui)",
     ),
     ModelInfo(
-        id="openrouter/anthropic/claude-3.7-sonnet",
-        label="Claude 3.7 Sonnet (OpenRouter)",
+        id="openrouter/anthropic/claude-sonnet-4.6",
+        label="Claude Sonnet 4.6 (OpenRouter)",
         provider="openrouter",
-        notes="premium; review crítico / arquitetura",
+        notes="premium; review crítico / arquitetura ($3/$15 por 1M)",
     ),
     ModelInfo(
         id="openrouter/qwen/qwen3-coder",
-        label="Qwen3 Coder (OpenRouter)",
+        label="Qwen3 Coder 480B (OpenRouter)",
         provider="openrouter",
-        notes="bom custo-benefício p/ implementação",
+        notes="bom custo-benefício p/ implementação ($0.22/$1.80, ctx 1M)",
     ),
     ModelInfo(
         id="openrouter/google/gemini-2.5-pro",
@@ -111,9 +111,13 @@ _FALLBACK_MODELS: List[ModelInfo] = [
         provider="openrouter",
     ),
     ModelInfo(
-        id="openrouter/openai/gpt-4.1",
-        label="GPT-4.1 (OpenRouter)",
+        # gpt-4.1 saiu das versões datadas do OpenRouter (deprecação OpenAI
+        # out/2026); gpt-5.5 é o substituto premium de coding. Fonte:
+        # https://openrouter.ai/openai/gpt-5.5 (verif. 2026-06-07)
+        id="openrouter/openai/gpt-5.5",
+        label="GPT-5.5 (OpenRouter)",
         provider="openrouter",
+        notes="premium; tarefas complexas / review crítico",
     ),
 ]
 

@@ -68,27 +68,27 @@ _DEFAULT_MAX_TURNS = 40
 #: recomendada (OpenRouter). Garante picker não-vazio no painel.
 _MODELS: List[ModelInfo] = [
     ModelInfo(
-        id="anthropic/claude-sonnet-4",
-        label="Claude Sonnet 4 (OpenRouter)",
+        id="anthropic/claude-sonnet-4.6",
+        label="Claude Sonnet 4.6 (OpenRouter)",
         provider="openrouter",
-        notes="rota recomendada GOOSE_PROVIDER=openrouter",
+        notes="rota recomendada GOOSE_PROVIDER=openrouter ($3/$15 por 1M)",
     ),
     ModelInfo(
-        id="deepseek/deepseek-chat",
-        label="DeepSeek Chat (OpenRouter)",
+        id="deepseek/deepseek-v4-flash",
+        label="DeepSeek V4 Flash (OpenRouter)",
         provider="openrouter",
-        notes="barato; default recomendado p/ o grosso do trabalho",
+        notes="barato; default recomendado; deepseek-chat (alias) deprecado 2026-07-24",
     ),
     ModelInfo(
         id="qwen/qwen3-coder",
-        label="Qwen3 Coder (OpenRouter)",
+        label="Qwen3 Coder 480B (OpenRouter)",
         provider="openrouter",
     ),
     ModelInfo(
-        id="gpt-4o",
-        label="GPT-4o (OpenAI)",
+        id="gpt-5.4",
+        label="GPT-5.4 (OpenAI)",
         provider="openai",
-        notes="rota GOOSE_PROVIDER=openai",
+        notes="rota GOOSE_PROVIDER=openai ($2.50/$15 por 1M); gpt-4o é geração anterior",
     ),
 ]
 

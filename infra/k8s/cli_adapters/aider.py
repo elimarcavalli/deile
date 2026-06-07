@@ -85,25 +85,27 @@ _ERROR_MARKERS = (
 #: prevalece quando disponível; este catálogo só garante picker não-vazio.
 _FALLBACK_MODELS: List[ModelInfo] = [
     ModelInfo(
-        id="deepseek/deepseek-chat",
-        label="DeepSeek Chat (direto)",
+        id="deepseek/deepseek-v4-flash",
+        label="DeepSeek V4 Flash (direto)",
         provider="deepseek",
-        notes="barato; default recomendado p/ o grosso do trabalho",
+        notes="barato; default recomendado ($0.14/$0.28); deepseek-chat "
+              "(alias) deprecado 2026-07-24",
     ),
     ModelInfo(
-        id="openrouter/anthropic/claude-3.7-sonnet",
-        label="Claude 3.7 Sonnet (OpenRouter)",
+        id="openrouter/anthropic/claude-sonnet-4.6",
+        label="Claude Sonnet 4.6 (OpenRouter)",
         provider="openrouter",
-        notes="premium; tarefas cirúrgicas críticas",
+        notes="premium; tarefas cirúrgicas críticas ($3/$15 por 1M)",
     ),
     ModelInfo(
-        id="openrouter/deepseek/deepseek-chat",
-        label="DeepSeek Chat (OpenRouter)",
+        id="openrouter/deepseek/deepseek-v4-flash",
+        label="DeepSeek V4 Flash (OpenRouter)",
         provider="openrouter",
+        notes="substitui deepseek-chat (deprecado 2026-07-24)",
     ),
     ModelInfo(
         id="openrouter/qwen/qwen3-coder",
-        label="Qwen3 Coder (OpenRouter)",
+        label="Qwen3 Coder 480B (OpenRouter)",
         provider="openrouter",
     ),
 ]
