@@ -139,7 +139,10 @@ RUN if [ "$WORKER_KIND" = "codex" ]; then \
     fi
 
 # Garante PATH dos binários instalados em $HOME por scripts de install.
-ENV PATH="/usr/local/bin:/venv/bin:/home/${WORKER_KIND}/.opencode/bin:/home/${WORKER_KIND}/.local/bin:${PATH}"
+# /venv/bin ANTES de /usr/local/bin: `python3` precisa ser o do venv (tem aiohttp
+# + deps do server); senão resolve pro python base e o server falha com
+# ImportError aiohttp (homologação E2E). Binários CLI em /usr/local/bin seguem no PATH.
+ENV PATH="/venv/bin:/usr/local/bin:/home/${WORKER_KIND}/.opencode/bin:/home/${WORKER_KIND}/.local/bin:${PATH}"
 
 # Non-root user nomeado pelo kind (HOME = /home/<kind>, casa com o manifest).
 RUN groupadd --system --gid 10001 cliworker \
@@ -157,8 +160,13 @@ COPY --chown=10001:10001 infra/k8s/_worker_resume.py    /app/_worker_resume.py
 COPY --chown=10001:10001 infra/k8s/dispatch_logger.py   /app/dispatch_logger.py
 COPY --chown=10001:10001 infra/k8s/jsonl_cost.py        /app/jsonl_cost.py
 COPY --chown=10001:10001 infra/k8s/cli_adapters         /app/cli_adapters
+# wrapper.py — launcher universal (modo cli-worker): carrega secrets montados,
+# wira GITHUB_TOKEN/GITLAB_TOKEN + identidade git e valida allowlist ANTES de
+# subir o server. O template do worker sobe via `wrapper.py cli-worker`, então
+# o arquivo PRECISA estar em /app (homologação E2E: pod crashava sem ele).
+COPY --chown=10001:10001 infra/k8s/wrapper.py            /app/wrapper.py
 RUN chmod -R 0555 /app/cli_worker_server.py /app/_worker_core.py \
-        /app/_worker_resume.py /app/dispatch_logger.py /app/jsonl_cost.py \
+        /app/_worker_resume.py /app/dispatch_logger.py /app/jsonl_cost.py /app/wrapper.py \
     && find /app/cli_adapters -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 
 WORKDIR /app
