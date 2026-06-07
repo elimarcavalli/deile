@@ -105,8 +105,13 @@ def test_registering_adapter_adds_dispatcher(synthetic_adapter):
         f"{_SYNTH_DISPATCHER!r} ausente — get_valid_dispatchers não derivou "
         "do registro de adapters (provável re-hardcode)"
     )
-    # Núcleo intacto + exatamente o worker novo adicionado.
-    assert valid - dr.BUILTIN_DISPATCHERS == {_SYNTH_DISPATCHER}
+    # O worker sintético vive na frota CLI (set-difference do núcleo), provando
+    # que o crescimento veio do registro e não de um literal. Não se assume que
+    # a frota CLI esteja vazia — adapters reais (ex.: opencode) também aparecem.
+    fleet = valid - dr.BUILTIN_DISPATCHERS
+    assert _SYNTH_DISPATCHER in fleet
+    # Núcleo intacto: nenhum builtin sumiu da derivação.
+    assert dr.BUILTIN_DISPATCHERS <= valid
 
 
 def test_registered_dispatcher_validates(synthetic_adapter):
