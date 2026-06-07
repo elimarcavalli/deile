@@ -241,6 +241,27 @@ models:
     context_window: 163840
     capabilities: [function_calling, streaming, json_output, thinking]
 
+  # deepseek-v4 via OpenRouter (rota da frota CLI com chave única). v4-pro também
+  # existe via provider DeepSeek direto (deepseek:deepseek-v4-pro); estas entradas
+  # adicionam a rota OpenRouter p/ os CLI workers (opencode/aider/goose) usarem.
+  - provider_id: openrouter
+    model_id: deepseek/deepseek-v4-pro
+    tier: tier_1
+    label: deepseek-pro
+    display_name: DeepSeek V4 Pro (OpenRouter)
+    pricing: { input_per_1m_usd: 0.435, output_per_1m_usd: 0.870 }
+    context_window: 1048576
+    capabilities: [function_calling, streaming, json_output, thinking]
+
+  - provider_id: openrouter
+    model_id: deepseek/deepseek-v4-flash
+    tier: tier_4
+    label: ultra-cheap
+    display_name: DeepSeek V4 Flash (OpenRouter)
+    pricing: { input_per_1m_usd: 0.098, output_per_1m_usd: 0.197 }
+    context_window: 1048576
+    capabilities: [function_calling, streaming, json_output, thinking]
+
   - provider_id: openrouter
     model_id: qwen/qwen3-coder
     tier: tier_3

@@ -76,10 +76,22 @@ _MODELS_CMD_TIMEOUT_S = 20
 #: garante que o picker do painel nunca fica vazio.
 _FALLBACK_MODELS: List[ModelInfo] = [
     ModelInfo(
+        id="openrouter/deepseek/deepseek-v4-flash",
+        label="DeepSeek V4 Flash (OpenRouter)",
+        provider="openrouter",
+        notes="ultra-barato; default recomendado p/ o grosso do trabalho",
+    ),
+    ModelInfo(
+        id="openrouter/deepseek/deepseek-v4-pro",
+        label="DeepSeek V4 Pro (OpenRouter)",
+        provider="openrouter",
+        notes="custo-benefício alto; tarefas que pedem mais capacidade",
+    ),
+    ModelInfo(
         id="openrouter/deepseek/deepseek-chat",
         label="DeepSeek Chat (OpenRouter)",
         provider="openrouter",
-        notes="barato; default recomendado p/ o grosso do trabalho",
+        notes="barato; legado (v4-flash o substitui)",
     ),
     ModelInfo(
         id="openrouter/anthropic/claude-3.7-sonnet",
