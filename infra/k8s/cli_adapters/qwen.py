@@ -104,19 +104,28 @@ class QwenAdapter(BaseCliAdapter):
     ) -> List[str]:
         """Monta o argv headless do ``qwen``.
 
-        Forma: ``qwen -p "<conteúdo do brief>" --yolo --output-format json``.
+        Forma: ``qwen -p "<conteúdo do brief>" --yolo --auth-type openai
+        --output-format json``.
 
-        O modelo NÃO entra no argv — viaja por ``OPENAI_MODEL`` no env (a tríade
-        OpenAI-compatible do Qwen). ``model`` aqui é aceito por compat de
-        assinatura mas não emite flag; o servidor injeta ``OPENAI_MODEL``.
-        ``reasoning`` e ``resume`` são ignorados (sem suporte). O ``workdir`` é o
-        cwd do subprocess (definido pelo core), não uma flag.
+        ``--auth-type openai`` é OBRIGATÓRIO em modo não-interativo: o qwen-code
+        suporta vários backends de auth (``openai``/``anthropic``/``qwen-oauth``/
+        ``gemini``/``vertex-ai``) e SEM o flag aborta com "No auth type is
+        selected ... before running in non-interactive mode" (homologação E2E do
+        stage pr_review). A frota usa a tríade OpenAI-compatible
+        (``OPENAI_BASE_URL``/``OPENAI_API_KEY``/``OPENAI_MODEL``) apontando para
+        OpenRouter/Dashscope/OpenAI — todos sob o backend ``openai``.
+
+        O modelo NÃO entra no argv — viaja por ``OPENAI_MODEL`` no env. ``model``
+        aqui é aceito por compat de assinatura mas não emite flag; o servidor
+        injeta ``OPENAI_MODEL``. ``reasoning`` e ``resume`` são ignorados (sem
+        suporte). O ``workdir`` é o cwd do subprocess (definido pelo core).
         """
         brief_text = self._read_brief(brief_path)
         return [
             "qwen",
             "-p", brief_text,
             "--yolo",
+            "--auth-type", "openai",
             "--output-format", "json",
         ]
 

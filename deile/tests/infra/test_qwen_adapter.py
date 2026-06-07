@@ -72,6 +72,9 @@ def test_build_argv_form(adapter, brief):
     assert argv[0] == "qwen"
     assert argv[argv.index("-p") + 1] == "CORRIJA O BUG Y"  # conteúdo, não path
     assert "--yolo" in argv                                  # §1.4 autonomia
+    # --auth-type openai: obrigatório em modo não-interativo (regressão homolog
+    # pr_review — sem ele o qwen-code aborta "No auth type is selected").
+    assert argv[argv.index("--auth-type") + 1] == "openai"
     assert argv[argv.index("--output-format") + 1] == "json"  # §1.6
     # Modelo viaja por OPENAI_MODEL no env — não há -m/--model no argv.
     assert "-m" not in argv
