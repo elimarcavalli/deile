@@ -42,6 +42,22 @@ providers:
     timeout_seconds: 120
     sdk_kwargs: {}
 
+  # OpenRouter — gateway OpenAI-compatible (uma chave → todos os modelos).
+  # Reusa o adapter OpenAI (OpenRouterProvider é subclasse fina). Os headers
+  # HTTP-Referer/X-Title são best-effort (ranking/atribuição na OpenRouter; não
+  # obrigatórios). PRIVACIDADE: o OpenRouter roteia o prompt para provedores
+  # terceiros (Anthropic, OpenAI, Google, DeepSeek, etc.) — os dados passam por
+  # um hop adicional. Aceitável para código do projeto; ver DECISOES.md #50.
+  openrouter:
+    api_key_env: OPENROUTER_API_KEY
+    base_url: https://openrouter.ai/api/v1
+    enabled: true
+    timeout_seconds: 120
+    sdk_kwargs:
+      default_headers:
+        HTTP-Referer: https://github.com/elimarcavalli/deile
+        X-Title: DEILE
+
 models:
   # === ANTHROPIC ===
   # Context window 1M aplica-se a Opus 4.8, Opus 4.6 e Sonnet 4.6 (standard pricing).
@@ -200,6 +216,67 @@ models:
     context_window: 1000000
     capabilities: [function_calling, streaming, caching, json_output, thinking]
 
+  # === OPENROUTER (gateway OpenAI-compatible) ===
+  # model_id segue o formato vendor/model do OpenRouter (o ':' separa provider_id
+  # do model_id; o '/' fica intacto no model_id — ver _MODEL_SLUG_RE). O custo
+  # AUTORITATIVO vem do campo usage.cost da resposta (OR5); a pricing abaixo é
+  # FALLBACK quando a API não reporta custo. Valores OpenRouter ~2026-06; o
+  # markup/roteamento dinâmico do OpenRouter pode divergir — por isso o custo
+  # reportado pela resposta tem prioridade.
+  - provider_id: openrouter
+    model_id: deepseek/deepseek-chat
+    tier: tier_3
+    label: ultra-cheap
+    display_name: DeepSeek Chat (OpenRouter)
+    pricing: { input_per_1m_usd: 0.28, output_per_1m_usd: 0.88 }
+    context_window: 163840
+    capabilities: [function_calling, streaming, json_output]
+
+  - provider_id: openrouter
+    model_id: deepseek/deepseek-reasoner
+    tier: tier_3
+    label: cheap-reasoning
+    display_name: DeepSeek Reasoner (OpenRouter)
+    pricing: { input_per_1m_usd: 0.55, output_per_1m_usd: 2.19 }
+    context_window: 163840
+    capabilities: [function_calling, streaming, json_output, thinking]
+
+  - provider_id: openrouter
+    model_id: qwen/qwen3-coder
+    tier: tier_3
+    label: cheap-coder
+    display_name: Qwen3 Coder (OpenRouter)
+    pricing: { input_per_1m_usd: 0.30, output_per_1m_usd: 1.20 }
+    context_window: 262144
+    capabilities: [function_calling, streaming, json_output]
+
+  - provider_id: openrouter
+    model_id: google/gemini-2.5-flash
+    tier: tier_3
+    label: fast
+    display_name: Gemini 2.5 Flash (OpenRouter)
+    pricing: { input_per_1m_usd: 0.30, output_per_1m_usd: 2.50 }
+    context_window: 1048576
+    capabilities: [function_calling, streaming, vision, thinking]
+
+  - provider_id: openrouter
+    model_id: anthropic/claude-sonnet-4.6
+    tier: tier_2
+    label: premium
+    display_name: Claude Sonnet 4.6 (OpenRouter)
+    pricing: { input_per_1m_usd: 3.00, output_per_1m_usd: 15.00 }
+    context_window: 1000000
+    capabilities: [function_calling, streaming, vision, extended_thinking]
+
+  - provider_id: openrouter
+    model_id: openai/gpt-5.5
+    tier: tier_1
+    label: premium
+    display_name: GPT-5.5 (OpenRouter)
+    pricing: { input_per_1m_usd: 5.00, output_per_1m_usd: 30.00 }
+    context_window: 1050000
+    capabilities: [function_calling, streaming, vision, reasoning]
+
 policies:
   task_optimized:
     tier_1: [anthropic:claude-opus-4-8, gemini:gemini-3.1-pro-preview, gemini:gemini-2.5-pro, openai:gpt-5.5, deepseek:deepseek-v4-pro]
@@ -225,10 +302,12 @@ budget:
     anthropic: 50.00
     openai: 50.00
     deepseek: 10.00
+    openrouter: 20.00
   per_provider_monthly_usd:
     anthropic: 500.00
     openai: 500.00
     deepseek: 100.00
+    openrouter: 200.00
   alert_threshold_pct: 80
 
 feature_flags:

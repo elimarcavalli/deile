@@ -61,7 +61,8 @@ SETUP_ENV = _INFRA / "setup_environment.py"
 # Sobrescrito pelo flag global --namespace/-n em qualquer subcomando k8s.
 NS_DEFAULT = os.environ.get("DEILE_K8S_NAMESPACE", "deile")
 IMAGE = "deile-stack:local"
-LLM_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
+LLM_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
+            "GOOGLE_API_KEY", "OPENROUTER_API_KEY")
 K8S_DEPLOYMENTS = ("deilebot", "deile-worker", "deile-shell", "deile-pipeline",
                    # issue #309 fase 2 — claude-worker (Service :8767, OAuth
                    # in-pod). O `_rollout_restart_all` checa `kubectl get
@@ -588,7 +589,7 @@ def k8s_up(args: dict) -> int:
 
     llm = {k: env[k] for k in LLM_KEYS if env.get(k, "").strip()}
     if not llm:
-        ui.err("nenhuma chave de LLM no `.env` (ANTHROPIC/OPENAI/DEEPSEEK/GOOGLE).")
+        ui.err("nenhuma chave de LLM no `.env` (ANTHROPIC/OPENAI/DEEPSEEK/GOOGLE/OPENROUTER).")
         return 1
 
     discord_token = env.get("DEILE_BOT_DISCORD_TOKEN", "").strip()
@@ -1831,6 +1832,7 @@ class CreateNamespaceConfig:
         openai_key: str = "",
         deepseek_key: str = "",
         google_key: str = "",
+        openrouter_key: str = "",
         worker_replicas: int = 1,
         claude_worker_replicas: int = 0,
         enable_claude_worker: bool = False,
@@ -1848,6 +1850,7 @@ class CreateNamespaceConfig:
         self.openai_key = openai_key
         self.deepseek_key = deepseek_key
         self.google_key = google_key
+        self.openrouter_key = openrouter_key
         self.worker_replicas = worker_replicas
         self.claude_worker_replicas = claude_worker_replicas
         self.enable_claude_worker = enable_claude_worker
@@ -1878,10 +1881,11 @@ def do_create_namespace(cfg: CreateNamespaceConfig) -> int:
     # ---- Validação mínima de tokens ----------------------------------------
     llm = {}
     for key, val in (
-        ("ANTHROPIC_API_KEY", cfg.anthropic_key),
-        ("OPENAI_API_KEY",    cfg.openai_key),
-        ("DEEPSEEK_API_KEY",  cfg.deepseek_key),
-        ("GOOGLE_API_KEY",    cfg.google_key),
+        ("ANTHROPIC_API_KEY",  cfg.anthropic_key),
+        ("OPENAI_API_KEY",     cfg.openai_key),
+        ("DEEPSEEK_API_KEY",   cfg.deepseek_key),
+        ("GOOGLE_API_KEY",     cfg.google_key),
+        ("OPENROUTER_API_KEY", cfg.openrouter_key),
     ):
         if val.strip():
             llm[key] = val.strip()
@@ -1894,7 +1898,7 @@ def do_create_namespace(cfg: CreateNamespaceConfig) -> int:
                 llm[k] = env_file[k].strip()
     if not llm:
         ui.err("nenhuma chave de LLM fornecida (--anthropic-key / --openai-key / "
-               "--deepseek-key / --google-key) nem no .env.")
+               "--deepseek-key / --google-key / --openrouter-key) nem no .env.")
         return 1
 
     discord_token = cfg.discord_token.strip() or env_file.get(
@@ -2091,6 +2095,7 @@ def _parse_create_namespace_flags(extra: List[str]) -> CreateNamespaceConfig:
         "--openai-key":           "openai_key",
         "--deepseek-key":         "deepseek_key",
         "--google-key":           "google_key",
+        "--openrouter-key":       "openrouter_key",
     }
     _flag_int = {
         "--worker-replicas":        "worker_replicas",

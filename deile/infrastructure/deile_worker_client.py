@@ -91,9 +91,11 @@ _TOKEN_SAFE_CHARS = re.compile(r"^[A-Za-z0-9._\-+/=:~]{16,4096}$")
 WorkerPersona = Literal["developer", "architect", "debugger", "reviewer", "analyst"]
 
 # Per-stage model override slug (issue #305): ``provider:model`` (e.g.
-# ``deepseek:deepseek-v4-pro``, ``anthropic:claude-sonnet-4-6``). Mirrors
-# ``_MODEL_SLUG_RE`` in ``deile/config/settings.py`` — keep in sync.
-_MODEL_SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]*:[a-z0-9._-]+$")
+# ``deepseek:deepseek-v4-pro``, ``anthropic:claude-sonnet-4-6``,
+# ``openrouter:anthropic/claude-sonnet-4.6``). Mirrors ``_MODEL_SLUG_RE`` in
+# ``deile/config/settings.py`` — keep in sync. The ``/`` is required for the
+# OpenRouter gateway, whose model ids embed the upstream vendor.
+_MODEL_SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]*:[a-z0-9._/-]+$")
 
 
 class WorkerDispatchError(DEILEError):

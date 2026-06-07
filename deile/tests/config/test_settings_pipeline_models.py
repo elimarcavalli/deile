@@ -37,6 +37,19 @@ class TestModelSlugValidator:
         assert _to_optional_model_slug("openai:gpt-4o-mini-2024_07_18") == \
             "openai:gpt-4o-mini-2024_07_18"
 
+    def test_openrouter_slug_with_slash_is_accepted(self):
+        """OpenRouter model ids embed the upstream vendor with a '/', e.g.
+        ``openrouter:anthropic/claude-sonnet-4.6``. The slug regex must allow
+        the '/' on the model side; otherwise the per-stage override is silently
+        dropped (the validator raises and ``apply_overrides`` keeps the default).
+        """
+        assert _to_optional_model_slug("openrouter:anthropic/claude-sonnet-4.6") == \
+            "openrouter:anthropic/claude-sonnet-4.6"
+        assert _to_optional_model_slug("openrouter:deepseek/deepseek-chat") == \
+            "openrouter:deepseek/deepseek-chat"
+        assert _to_optional_model_slug("openrouter:qwen/qwen3-coder") == \
+            "openrouter:qwen/qwen3-coder"
+
     def test_strips_surrounding_whitespace(self):
         assert _to_optional_model_slug("  deepseek:v4-pro  ") == "deepseek:v4-pro"
 

@@ -23,6 +23,16 @@ class TestPreferredModelValidator:
         )
         assert p.preferred_model == "deepseek:deepseek-v4-pro"
 
+    def test_accepts_openrouter_slug_with_slash(self):
+        # OpenRouter model ids embed the upstream vendor with a '/'. The wire
+        # validator must accept it — otherwise the worker rejects every
+        # OpenRouter dispatch at the boundary (Part-3a).
+        p = DispatchPayload(
+            brief="x", channel_id="c",
+            preferred_model="openrouter:anthropic/claude-sonnet-4.6",
+        )
+        assert p.preferred_model == "openrouter:anthropic/claude-sonnet-4.6"
+
     def test_none_stays_none(self):
         p = DispatchPayload(brief="x", channel_id="c", preferred_model=None)
         assert p.preferred_model is None

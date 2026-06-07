@@ -61,6 +61,7 @@ _SENSITIVE_KEYS = (
     "OPENAI_API_KEY",
     "DEEPSEEK_API_KEY",
     "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
     "GITHUB_TOKEN",
     # GitLab tokens (issue #297) — stripped after wrapper bootstrap so they
     # never appear in /proc/self/environ. ``GITLAB_TOKEN`` is the canonical

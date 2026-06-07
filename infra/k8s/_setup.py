@@ -30,7 +30,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import _cli_ui as ui  # noqa: E402
 
-LLM_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
+LLM_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
+            "GOOGLE_API_KEY", "OPENROUTER_API_KEY")
 
 _NS_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+)+$")
@@ -44,6 +45,7 @@ _TOKEN_PATTERNS: Dict[str, re.Pattern] = {
     "OPENAI_API_KEY": re.compile(r"^sk-[A-Za-z0-9_\-]{20,}$"),
     "DEEPSEEK_API_KEY": re.compile(r"^sk-[A-Za-z0-9_\-]{20,}$"),
     "GOOGLE_API_KEY": re.compile(r"^[A-Za-z0-9_\-]{20,}$"),
+    "OPENROUTER_API_KEY": re.compile(r"^sk-or-[A-Za-z0-9_\-]{20,}$"),
     "GITHUB_TOKEN": re.compile(
         r"^(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_\-]{20,}$"
     ),
@@ -238,7 +240,7 @@ def _ask_secret_validated(env_var: str, *, optional: bool, dry_run: bool = False
 
 
 def _ask_llm_keys(plan_idx: int, dry_run: bool = False) -> Dict[str, str]:
-    """Pergunta as 4 LLM keys; exige ao menos UMA (bootstrap_providers).
+    """Pergunta as LLM keys; exige ao menos UMA (bootstrap_providers).
 
     Loop até obter ao menos uma chave (sem recursão — evita stack growth
     em interações longas com erros).
@@ -254,7 +256,7 @@ def _ask_llm_keys(plan_idx: int, dry_run: bool = False) -> Dict[str, str]:
             return collected
         ui.err(
             "nenhuma chave de LLM configurada — DEILE não sobe sem ao menos uma "
-            "de ANTHROPIC/OPENAI/DEEPSEEK/GOOGLE. Repetindo este bloco."
+            "de ANTHROPIC/OPENAI/DEEPSEEK/GOOGLE/OPENROUTER. Repetindo este bloco."
         )
 
 
