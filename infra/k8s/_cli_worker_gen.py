@@ -266,17 +266,47 @@ def _provider_env_block(
     return "\n".join(lines)
 
 
-def _needs_pvc(adapter) -> bool:
-    """True se o worker precisa persistir estado (oauth refresh ou resume)."""
+def _auth_mode_env_block(
+    adapter, *, kind: str, indent: str = "            ", oauth_mode: bool = False,
+) -> str:
+    """Env ``DEILE_<KIND>_AUTH=oauth`` quando o worker é renderizado em modo OAuth.
+
+    Só emitido quando o worker roda em OAuth — ``oauth_mode=True`` (opt-in de um
+    adapter oauth-capable env-default, ex.: codex) OU adapter ``oauth_file``
+    estático. Espelha o ``DEILE_<KIND>_AUTH=oauth`` que o ``cli-worker-login`` já
+    seta no Deployment via ``kubectl set env`` — tê-lo no manifest mantém a
+    seleção do modo OAuth durável a re-aplicações do manifest. Workers env-auth
+    (sem oauth_mode) não emitem nada — comportamento inalterado.
+    """
+    if not _is_oauth_file(adapter, oauth_mode=oauth_mode):
+        return f"{indent}# (worker env-auth — sem DEILE_{kind.upper()}_AUTH)"
+    return f'{indent}- {{ name: DEILE_{kind.upper()}_AUTH, value: "oauth" }}'
+
+
+def _needs_pvc(adapter, *, oauth_mode: bool = False) -> bool:
+    """True se o worker precisa persistir estado (oauth refresh ou resume).
+
+    ``oauth_mode=True`` força o caminho com PVC mesmo num adapter cujo
+    ``auth_mode`` default é ``env`` mas que tem ``OAuthSpec`` (opt-in via
+    ``DEILE_<KIND>_AUTH=oauth`` — ex.: codex): no modo OAuth a credencial é
+    refrescada in-pod e precisa do PVC para sobreviver ao restart.
+    """
     return (
-        getattr(adapter, "auth_mode", "env") == "oauth_file"
+        _is_oauth_file(adapter, oauth_mode=oauth_mode)
         or bool(getattr(adapter, "supports_resume", False))
     )
 
 
-def _is_oauth_file(adapter) -> bool:
-    """True se o adapter autentica por credencial em arquivo (OAuth)."""
-    return getattr(adapter, "auth_mode", "env") == "oauth_file"
+def _is_oauth_file(adapter, *, oauth_mode: bool = False) -> bool:
+    """True se o worker deve ser renderizado em modo OAuth (credencial em arquivo).
+
+    Verdadeiro quando o adapter declara ``auth_mode="oauth_file"`` (estático) OU
+    quando o chamador força ``oauth_mode=True`` — caminho opt-in de um adapter
+    env-default mas oauth-capable (tem ``OAuthSpec``). O override é o que faz o
+    codex (``auth_mode="env"`` + ``oauth``) renderizar PVC + initContainer +
+    mount da credencial quando instalado via ``cli-worker-login``.
+    """
+    return oauth_mode or getattr(adapter, "auth_mode", "env") == "oauth_file"
 
 
 def resolve_pod_cred_path(adapter, *, kind: str) -> str:
@@ -316,7 +346,9 @@ def cred_secret_name(adapter, *, kind: str) -> str:
     return f"{kind}-worker-credentials"
 
 
-def _oauth_init_block(adapter, *, kind: str, indent: str = "      ") -> str:
+def _oauth_init_block(
+    adapter, *, kind: str, indent: str = "      ", oauth_mode: bool = False,
+) -> str:
     """``initContainers`` ``bootstrap-creds`` para workers ``oauth_file``.
 
     Espelha o initContainer do claude-worker (manifest 50): copia a credencial
@@ -326,9 +358,11 @@ def _oauth_init_block(adapter, *, kind: str, indent: str = "      ") -> str:
     preserva o token do PVC quando ele é >= o do Secret (refresh in-pod),
     copiando só quando o PVC não tem credencial OU o Secret é mais recente.
 
-    Workers ``env`` NÃO geram initContainer — devolve "" (no-op, sem regressão).
+    Workers ``env`` SEM ``oauth_mode`` NÃO geram initContainer — devolve "" (no-op,
+    sem regressão). Com ``oauth_mode=True`` (opt-in de um adapter oauth-capable) o
+    bloco é gerado normalmente.
     """
-    if not _is_oauth_file(adapter):
+    if not _is_oauth_file(adapter, oauth_mode=oauth_mode):
         return ""
     cred_pod = resolve_pod_cred_path(adapter, kind=kind)
     basename = cred_pod.rsplit("/", 1)[-1]
@@ -390,13 +424,16 @@ def _oauth_init_block(adapter, *, kind: str, indent: str = "      ") -> str:
     ))
 
 
-def _oauth_volume_block(adapter, *, kind: str, indent: str = "        ") -> str:
+def _oauth_volume_block(
+    adapter, *, kind: str, indent: str = "        ", oauth_mode: bool = False,
+) -> str:
     """Volume do Secret de credencial OAuth (workers ``oauth_file``) ou "".
 
     O Secret é montado read-only no initContainer; o nome do Secret é resolvido
-    de :func:`cred_secret_name`. Workers ``env`` não geram volume — devolve "".
+    de :func:`cred_secret_name`. Workers ``env`` sem ``oauth_mode`` não geram
+    volume — devolve "".
     """
-    if not _is_oauth_file(adapter):
+    if not _is_oauth_file(adapter, oauth_mode=oauth_mode):
         return ""
     secret = cred_secret_name(adapter, kind=kind)
     return (
@@ -407,9 +444,11 @@ def _oauth_volume_block(adapter, *, kind: str, indent: str = "        ") -> str:
     )
 
 
-def _home_volume_block(adapter, *, worker: str, indent: str = "        ") -> str:
+def _home_volume_block(
+    adapter, *, worker: str, indent: str = "        ", oauth_mode: bool = False,
+) -> str:
     """Volume do HOME: PVC quando persiste estado, senão ``emptyDir`` efêmero."""
-    if _needs_pvc(adapter):
+    if _needs_pvc(adapter, oauth_mode=oauth_mode):
         return (
             f"{indent}- name: worker-home\n"
             f"{indent}  persistentVolumeClaim:\n"
@@ -421,7 +460,9 @@ def _home_volume_block(adapter, *, worker: str, indent: str = "        ") -> str
     )
 
 
-def _pvc_doc_block(adapter, *, worker: str, namespace: str) -> str:
+def _pvc_doc_block(
+    adapter, *, worker: str, namespace: str, oauth_mode: bool = False,
+) -> str:
     """Objeto ``PersistentVolumeClaim`` quando o worker persiste estado.
 
     O ``_home_volume_block`` referencia ``persistentVolumeClaim.claimName:
@@ -429,7 +470,7 @@ def _pvc_doc_block(adapter, *, worker: str, namespace: str) -> str:
     objeto a PVC ficaria *unbound* e o Pod travaria em ``Pending`` (plano §1.13).
     Workers ``emptyDir`` (env-only, sem resume) não geram PVC — devolve "".
     """
-    if not _needs_pvc(adapter):
+    if not _needs_pvc(adapter, oauth_mode=oauth_mode):
         return ""
     return (
         "---\n"
@@ -449,7 +490,7 @@ def _pvc_doc_block(adapter, *, worker: str, namespace: str) -> str:
 
 
 def _cleanup_cronjob_block(
-    adapter, *, kind: str, worker: str, namespace: str,
+    adapter, *, kind: str, worker: str, namespace: str, oauth_mode: bool = False,
 ) -> str:
     """CronJob de cleanup do PVC quando o worker tem PVC (plano §1.13).
 
@@ -458,7 +499,7 @@ def _cleanup_cronjob_block(
     filesystem some com o pod, e o server já faz cleanup periódico in-process;
     devolve "" para eles.
     """
-    if not _needs_pvc(adapter):
+    if not _needs_pvc(adapter, oauth_mode=oauth_mode):
         return ""
     return (
         "---\n"
@@ -571,6 +612,7 @@ def render_manifests(
     *,
     namespace: str = "deile",
     timeout_s: Optional[int] = None,
+    oauth_mode: bool = False,
 ) -> str:
     """Renderiza o YAML completo (Deployment+Service+Secret+NetworkPolicy) do worker.
 
@@ -578,6 +620,12 @@ def render_manifests(
         kind: kind do adapter (deve estar registrado em ``cli_adapters.ADAPTERS``).
         namespace: namespace k8s alvo (default ``deile``).
         timeout_s: timeout do subprocess; default :data:`_DEFAULT_TIMEOUT_S`.
+        oauth_mode: força o caminho OAuth (PVC + initContainer ``bootstrap-creds``
+            + mount da credencial + env ``DEILE_<KIND>_AUTH=oauth``) mesmo num
+            adapter cujo ``auth_mode`` default é ``env`` mas que é oauth-capable
+            (tem ``OAuthSpec`` — ex.: codex). Workers env-auth sem este flag
+            renderizam inalterados (``emptyDir``, sem initContainer). Adapters
+            ``auth_mode="oauth_file"`` renderizam OAuth independentemente do flag.
 
     Returns:
         O documento multi-YAML como string, pronto para escrever/``kubectl apply``.
@@ -605,18 +653,28 @@ def render_manifests(
         "NAMESPACE": namespace,
         "TIMEOUT_S": str(timeout_s or _DEFAULT_TIMEOUT_S),
         "AUTH_ENV_BLOCK": _auth_env_block(adapter),
+        "AUTH_MODE_ENV_BLOCK": _auth_mode_env_block(
+            adapter, kind=kind, oauth_mode=oauth_mode,
+        ),
         "OVERLAY_ENV_BLOCK": _overlay_env_block(adapter, kind=kind),
         "PROVIDER_ENV_BLOCK": _provider_env_block(adapter, kind=kind),
-        "HOME_VOLUME_BLOCK": _home_volume_block(adapter, worker=worker),
-        "OAUTH_INIT_BLOCK": _oauth_init_block(adapter, kind=kind),
-        "OAUTH_VOLUME_BLOCK": _oauth_volume_block(adapter, kind=kind),
+        "HOME_VOLUME_BLOCK": _home_volume_block(
+            adapter, worker=worker, oauth_mode=oauth_mode,
+        ),
+        "OAUTH_INIT_BLOCK": _oauth_init_block(
+            adapter, kind=kind, oauth_mode=oauth_mode,
+        ),
+        "OAUTH_VOLUME_BLOCK": _oauth_volume_block(
+            adapter, kind=kind, oauth_mode=oauth_mode,
+        ),
         "EGRESS_HOST_RULES": _egress_host_rules(adapter, port=port),
         "EGRESS_HOSTS_CSV": ", ".join(egress_hosts(adapter)),
         "PVC_DOC_BLOCK": _pvc_doc_block(
-            adapter, worker=worker, namespace=namespace,
+            adapter, worker=worker, namespace=namespace, oauth_mode=oauth_mode,
         ),
         "CLEANUP_CRONJOB_BLOCK": _cleanup_cronjob_block(
             adapter, kind=kind, worker=worker, namespace=namespace,
+            oauth_mode=oauth_mode,
         ),
     }
     return tmpl.substitute(mapping)
@@ -632,13 +690,16 @@ def write_manifests(
     *,
     namespace: str = "deile",
     timeout_s: Optional[int] = None,
+    oauth_mode: bool = False,
 ) -> Path:
     """Renderiza e GRAVA o manifest gerado em :func:`manifest_path`.
 
     Returns:
         O ``Path`` do arquivo escrito.
     """
-    rendered = render_manifests(kind, namespace=namespace, timeout_s=timeout_s)
+    rendered = render_manifests(
+        kind, namespace=namespace, timeout_s=timeout_s, oauth_mode=oauth_mode,
+    )
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     out = manifest_path(kind)
     out.write_text(rendered, encoding="utf-8")

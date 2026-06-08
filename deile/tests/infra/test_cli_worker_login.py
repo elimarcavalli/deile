@@ -106,12 +106,60 @@ class TestBootstrapGuards:
         assert not res.ok
         assert res.error
 
-    def test_env_auth_kind_rejected_points_to_install(self, login_mod):
-        # codex default é auth_mode=env → cli-worker-login deve recusar e
-        # apontar o cli-worker-install (erro claro, paridade com o inverso).
-        res = login_mod.bootstrap_cli_worker_oauth("codex")
+    def test_worker_without_oauthspec_rejected_points_to_install(
+        self, login_mod, monkeypatch,
+    ):
+        # Um worker SEM OAuthSpec (não oauth-capable) deve ser recusado, com erro
+        # apontando o cli-worker-install (auth por chave de API).
+        import cli_adapters
+
+        class _NoOauth:
+            kind = "noauthprobe"
+            auth_mode = "env"
+            oauth = None
+            auth_env_keys = ["OPENAI_API_KEY"]
+
+        monkeypatch.setitem(cli_adapters.ADAPTERS, "noauthprobe", _NoOauth())
+        res = login_mod.bootstrap_cli_worker_oauth("noauthprobe")
         assert not res.ok
         assert "cli-worker-install" in (res.error or "")
+
+    def test_oauth_capable_env_default_codex_accepted_and_oauth_mode(
+        self, login_mod, codex_adapter, monkeypatch, tmp_path,
+    ):
+        # codex é env-default MAS oauth-capable (tem OAuthSpec) → cli-worker-login
+        # ACEITA, captura a credencial e renderiza em modo OAuth (kubectl mockado).
+        cred = tmp_path / ".codex" / "auth.json"
+        cred.parent.mkdir(parents=True)
+        cred.write_text('{"tokens": {"access_token": "X"}}', encoding="utf-8")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+
+        oauth_mode_seen: list = []
+
+        def fake_apply_manifest(kind, *, namespace, oauth_mode=False):
+            oauth_mode_seen.append(oauth_mode)
+            return True
+
+        # Stub de todas as etapas de cluster do install reusado.
+        import _cli_worker_install as inst
+
+        monkeypatch.setattr(login_mod, "_kubectl_apply_cred_secret",
+                            lambda *a, **k: True)
+        monkeypatch.setattr(login_mod, "_kubectl_set_auth_mode",
+                            lambda *a, **k: True)
+        monkeypatch.setattr(inst, "_kubectl_apply_keys_secret",
+                            lambda *a, **k: True)
+        monkeypatch.setattr(inst, "_kubectl_sync_bearer", lambda *a, **k: True)
+        monkeypatch.setattr(inst, "_kubectl_apply_manifest", fake_apply_manifest)
+        monkeypatch.setattr(inst, "_kubectl_scale", lambda *a, **k: True)
+
+        res = login_mod.bootstrap_cli_worker_oauth("codex", home=tmp_path)
+        assert res.ok, res.error
+        assert res.auth_mode_set
+        # O manifest foi renderizado em MODO OAUTH (oauth_mode=True) apesar de o
+        # adapter ter auth_mode=env por default.
+        assert oauth_mode_seen == [True]
 
     def test_no_credential_non_interactive_fails_fast(
         self, login_mod, codex_adapter, monkeypatch, tmp_path,

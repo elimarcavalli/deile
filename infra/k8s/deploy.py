@@ -2502,11 +2502,15 @@ def k8s_cli_worker_install(args: dict) -> int:
 def _parse_cli_worker_login_flags(extra: List[str]) -> Dict[str, object]:
     """Decodifica flags de ``k8s cli-worker-login`` (sem o ``<kind>`` posicional).
 
-    Reconhece ``--switch``/``--force-relogin`` e ``--no-interactive`` (espelha o
-    ``claude-login``). Devolve ``{"_error": msg}`` em flag desconhecida. O kind
-    e o ``--namespace`` são resolvidos fora daqui.
+    Reconhece ``--switch``/``--force-relogin``, ``--no-interactive`` e ``--in-pod``
+    (espelha o ``claude-login``). ``--in-pod`` roda o device-auth DENTRO do pod
+    via ``kubectl exec`` — para o operador que não tem o CLI no host. Devolve
+    ``{"_error": msg}`` em flag desconhecida. O kind e o ``--namespace`` são
+    resolvidos fora daqui.
     """
-    parsed: Dict[str, object] = {"force_relogin": False, "interactive": True}
+    parsed: Dict[str, object] = {
+        "force_relogin": False, "interactive": True, "in_pod": False,
+    }
     for token in extra:
         if token in ("--switch", "--force-relogin"):
             parsed["force_relogin"] = True
@@ -2514,11 +2518,206 @@ def _parse_cli_worker_login_flags(extra: List[str]) -> Dict[str, object]:
         if token == "--no-interactive":
             parsed["interactive"] = False
             continue
+        if token == "--in-pod":
+            parsed["in_pod"] = True
+            continue
         if token == "--kind":
             continue  # consumido por _parse_kind_flag
         if token.startswith("-"):
             return {"_error": f"flag desconhecido: `{token}`"}
     return parsed
+
+
+def _k8s_in_pod_cli_worker_login(
+    kind: str, *, ns: str, force_relogin: bool = False,
+) -> int:
+    """``cli-worker-login <kind> --in-pod`` — device-auth DENTRO do pod.
+
+    Para o operador que NÃO tem o CLI do worker no host (ex.: ``codex``).
+    Espelha ``_k8s_in_pod_claude_login``, mas o login do codex é um device-auth
+    interativo simples (sem servidor HTTP de OAuth): o pod imprime a URL + o
+    código de device-auth no terminal e o operador autoriza no browser.
+
+    Sequência (cada etapa idempotente):
+
+    1. resolve o adapter (oauth-capable) + o path da credencial no pod;
+    2. aplica Secret de credencial placeholder + bearer + keys + manifest OAUTH
+       (PVC + initContainer + mount) para o pod subir;
+    3. escala a 1 réplica e aguarda o pod ficar Running;
+    4. ``kubectl exec -it`` rodando o ``login_cmd`` do OAuthSpec — device-auth
+       interativo (o operador completa no browser);
+    5. lê a credencial gerada no pod (``kubectl exec cat``) — NUNCA loga o valor;
+    6. atualiza o Secret de credencial com o conteúdo real;
+    7. rollout restart para o initContainer copiar a credencial real ao PVC.
+
+    Retorna 0 em sucesso, !=0 em falha (com mensagem clara).
+    """
+    sys.path.insert(0, str(HERE))
+    try:
+        from _cli_worker_gen import resolve_pod_cred_path  # noqa: PLC0415
+        from _cli_worker_install import (  # noqa: PLC0415
+            _kubectl_apply_keys_secret,
+            _kubectl_apply_manifest,
+            _kubectl_scale,
+            _kubectl_sync_bearer,
+            _resolve_auth_keys,
+        )
+        from _cli_worker_login import (  # noqa: PLC0415
+            _adapter,
+            _kubectl_apply_cred_secret,
+            _kubectl_set_auth_mode,
+            build_cred_secret_payload,
+            cred_secret_name,
+        )
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o fluxo de login OAuth in-pod: {exc}")
+        return 1
+    finally:
+        if str(HERE) in sys.path:
+            sys.path.remove(str(HERE))
+
+    try:
+        adapter = _adapter(kind)
+    except KeyError as exc:
+        ui.err(f"kind desconhecido: {exc}")
+        return 64
+
+    oauth = getattr(adapter, "oauth", None)
+    if oauth is None or not getattr(oauth, "login_cmd", None):
+        ui.err(
+            f"adapter {kind!r} não é oauth-capable (sem OAuthSpec/login_cmd) — "
+            "use `cli-worker-install` (auth por chave de API)."
+        )
+        return 64
+
+    worker = f"{kind}-worker"
+    cred_pod_path = resolve_pod_cred_path(adapter, kind=kind)
+    cred_basename = cred_pod_path.rsplit("/", 1)[-1]
+    secret_name = cred_secret_name(kind, adapter)
+    login_cmd = list(oauth.login_cmd)
+
+    ui.section(f"k8s cli-worker-login {kind} --in-pod")
+    ui.info(f"namespace={ns}, cred no pod={cred_pod_path}")
+
+    # 1. Secret de credencial placeholder — o initContainer não falha por Secret
+    #    ausente; o conteúdo real é escrito no passo 6 após o device-auth.
+    ui.info("Aplicando Secret de credencial placeholder...")
+    placeholder = build_cred_secret_payload(
+        '{"placeholder": "in-pod-oauth-pending"}', cred_path=Path(cred_pod_path),
+    )
+    if not _kubectl_apply_cred_secret(secret_name, placeholder, namespace=ns):
+        ui.err("Falha ao aplicar Secret de credencial placeholder — aborting")
+        return 1
+
+    # 2. keys + bearer + manifest OAUTH.
+    auth_values = _resolve_auth_keys(adapter, kind=kind)
+    if not _kubectl_apply_keys_secret(auth_values, namespace=ns):
+        ui.err("Falha ao aplicar Secret cli-worker-keys — aborting")
+        return 1
+    if not _kubectl_sync_bearer(worker, namespace=ns):
+        ui.err(f"Falha ao sincronizar {worker}-bearer — aborting")
+        return 1
+    ui.info("Aplicando manifest OAuth (PVC + initContainer + mount)...")
+    try:
+        if not _kubectl_apply_manifest(kind, namespace=ns, oauth_mode=True):
+            ui.err(f"Falha ao aplicar manifest de {worker} — aborting")
+            return 1
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"Erro ao gerar/aplicar manifest: {exc}")
+        return 1
+    if not _kubectl_set_auth_mode(worker, kind, namespace=ns):
+        ui.err(f"Falha ao setar DEILE_{kind.upper()}_AUTH=oauth — aborting")
+        return 1
+
+    # 3. escala + aguarda Running.
+    if not _kubectl_scale(worker, 1, namespace=ns):
+        ui.err(f"Falha ao escalar {worker} — aborting")
+        return 1
+    ui.info(f"Aguardando pod {worker} ficar Running (até 120s)...")
+    pod_running = False
+    for _ in range(24):  # 24 × 5s = 120s
+        try:
+            chk = subprocess.run(
+                ["kubectl", "-n", ns, "get", f"deploy/{worker}",
+                 "-o", "jsonpath={.status.availableReplicas}"],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            break
+        if (chk.stdout or "").strip() not in ("", "0"):
+            pod_running = True
+            break
+        time.sleep(5)
+    if not pod_running:
+        ui.warn(
+            f"{worker} não reportou réplica disponível em 120s — tentando o "
+            "device-auth mesmo assim (o pod pode estar Running not-ready)."
+        )
+
+    # 4. device-auth interativo DENTRO do pod (kubectl exec -it). O pod imprime
+    #    a URL + código; o operador autoriza no browser. NÃO captura stdout
+    #    (pode conter o código de device-auth) — stdio herdado pro terminal.
+    ui.ok(
+        f"\nRodando `{' '.join(login_cmd)}` DENTRO do pod {worker}.\n"
+        "Siga a URL + código de device-auth que o pod imprimir e autorize no "
+        "seu browser. Este processo aguarda o login concluir."
+    )
+    try:
+        exec_rc = subprocess.run(
+            ["kubectl", "-n", ns, "exec", "-it", f"deploy/{worker}",
+             "-c", worker, "--", *login_cmd],
+            check=False, timeout=600,
+        ).returncode
+    except subprocess.TimeoutExpired:
+        ui.err("device-auth in-pod excedeu 10min — não foi completado.")
+        return 1
+    except FileNotFoundError:
+        ui.err("kubectl não encontrado no PATH")
+        return 1
+    if exec_rc != 0:
+        ui.err(f"`{' '.join(login_cmd)}` no pod retornou rc={exec_rc} — aborting")
+        return 1
+
+    # 5. lê a credencial gerada no pod (NUNCA loga o conteúdo).
+    ui.info("Lendo a credencial gerada no pod...")
+    try:
+        cat = subprocess.run(
+            ["kubectl", "-n", ns, "exec", f"deploy/{worker}",
+             "-c", worker, "--", "cat", cred_pod_path],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        ui.err(f"Falha ao ler a credencial do pod: {exc}")
+        return 1
+    if cat.returncode != 0 or not cat.stdout.strip():
+        ui.err(
+            f"Credencial não encontrada em {cred_pod_path} após o device-auth "
+            "— aborting"
+        )
+        return 1
+
+    # 6. atualiza o Secret de credencial com o valor real (chave = basename).
+    ui.info(f"Atualizando Secret {secret_name} com a credencial real...")
+    real_payload = {cred_basename: cat.stdout}
+    if not _kubectl_apply_cred_secret(secret_name, real_payload, namespace=ns):
+        ui.err("Falha ao atualizar o Secret com a credencial real — aborting")
+        return 1
+
+    # 7. rollout restart (initContainer copia a credencial real do Secret ao PVC).
+    ui.info(f"Rollout restart do {worker}...")
+    try:
+        subprocess.run(
+            ["kubectl", "-n", ns, "rollout", "restart", f"deployment/{worker}"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        ui.err(f"Falha no rollout restart: {exc}")
+        return 1
+
+    ui.ok(f"{worker} pronto (OAuth in-pod).")
+    ui.info("acompanhe o rollout: "
+            f"kubectl -n {ns} rollout status deployment/{worker}")
+    return 0
 
 
 def k8s_cli_worker_login(args: dict) -> int:
@@ -2552,10 +2751,29 @@ def k8s_cli_worker_login(args: dict) -> int:
     flags = _parse_cli_worker_login_flags(extra)
     if "_error" in flags:
         ui.err(str(flags["_error"]))
-        ui.info("flags válidos: --switch (--force-relogin), --no-interactive")
+        ui.info(
+            "flags válidos: --switch (--force-relogin), --no-interactive, --in-pod"
+        )
         return 64
     force_relogin = bool(flags["force_relogin"])
     interactive = bool(flags["interactive"])
+    in_pod = bool(flags["in_pod"])
+
+    if in_pod:
+        if not announce_plan(
+            args, "k8s cli-worker-login --in-pod",
+            f"{kind}-worker (namespace `{ns}`)",
+            [
+                "aplica Secret placeholder + manifest OAuth para o pod subir",
+                f"roda o device-auth DENTRO do pod (kubectl exec): {kind} login",
+                "lê a credencial gerada no pod e atualiza o Secret com o valor real",
+                "rollout restart para o initContainer copiar a credencial real",
+            ],
+        ):
+            return 0
+        return _k8s_in_pod_cli_worker_login(
+            kind, ns=ns, force_relogin=force_relogin,
+        )
 
     if not announce_plan(
         args, "k8s cli-worker-login", f"{kind}-worker (namespace `{ns}`)",
@@ -2674,7 +2892,7 @@ _K8S_ACTIONS = [
      "instalar um CLI worker on-demand (cli-worker-install <kind>) — opt-in"),
     ("cli-worker-login",
      "instalar CLI worker OAuth via device-auth (cli-worker-login <kind>;"
-     " flags: --switch, --no-interactive) — opt-in"),
+     " flags: --switch, --no-interactive, --in-pod) — opt-in"),
     ("cli-worker-uninstall",
      "remover um CLI worker do cluster (cli-worker-uninstall <kind>)"),
     ("down", "APAGAR o namespace e TODOS os dados"),

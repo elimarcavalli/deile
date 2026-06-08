@@ -1,10 +1,19 @@
 """bootstrap_cli_worker_oauth — captura a credencial OAuth de um CLI worker do
 host e instala o worker (paridade com ``_claude_install`` / ``claude-login``).
 
-Generaliza o fluxo ``claude-login`` para qualquer CLI da frota cujo adapter
-declara ``auth_mode="oauth_file"`` e um :class:`~cli_adapters.base.OAuthSpec`
-(hoje: codex no caminho opt-in ``DEILE_CODEX_AUTH=oauth``). Onde o
-``claude-login`` é hard-coded para o Claude (Keychain macOS, Secret
+Generaliza o fluxo ``claude-login`` para qualquer CLI da frota cujo adapter é
+**oauth-capable** — declara um :class:`~cli_adapters.base.OAuthSpec` (atributo
+``oauth`` não-None), INDEPENDENTE do ``auth_mode`` default. Cobre dois casos:
+
+* adapters ``auth_mode="oauth_file"`` (claude-like — OAuth é o único modo);
+* adapters env-default mas oauth-capable (codex: ``auth_mode="env"`` +
+  ``OAuthSpec``), cujo OAuth é OPT-IN via ``DEILE_<KIND>_AUTH=oauth``. Instalar
+  por este verb coloca o worker em MODO OAUTH: o manifest é renderizado com os
+  blocos OAuth (``oauth_mode=True``) e o env ``DEILE_<KIND>_AUTH=oauth`` é setado
+  no Deployment. Workers SEM ``OAuthSpec`` são rejeitados (vão para
+  ``cli-worker-install``, auth por chave de API).
+
+Onde o ``claude-login`` é hard-coded para o Claude (Keychain macOS, Secret
 ``claude-credentials``, manifests 47/49/50), este módulo lê TUDO do adapter:
 
 * o caminho da credencial no host (``OAuthSpec.cred_path``, com expansão de ``~``
@@ -257,7 +266,8 @@ def bootstrap_cli_worker_oauth(
     adapter. Idempotente: rerodar sem flags é noop quando tudo está pronto.
 
     Args:
-        kind: kind do adapter (deve ter ``auth_mode="oauth_file"`` e ``oauth``).
+        kind: kind do adapter (deve ser oauth-capable — ter um ``OAuthSpec`` em
+            ``oauth``, independente do ``auth_mode`` default).
         namespace: namespace k8s alvo.
         force_relogin: força rodar o ``login_cmd`` mesmo com credencial presente
             (trocar de conta).
@@ -275,24 +285,24 @@ def bootstrap_cli_worker_oauth(
     except KeyError as exc:
         return CliWorkerLoginResult(ok=False, kind=kind, error=str(exc))
 
-    if getattr(adapter, "auth_mode", "env") != "oauth_file":
-        return CliWorkerLoginResult(
-            ok=False, kind=kind,
-            error=(
-                f"adapter {kind!r} usa auth_mode={getattr(adapter, 'auth_mode', 'env')!r}; "
-                "`cli-worker-login` cobre só workers oauth_file. Para auth por "
-                "chave de API use `cli-worker-install`."
-            ),
-        )
+    # `cli-worker-login` cobre QUALQUER worker oauth-capable: ou `auth_mode`
+    # estático `oauth_file` (claude-like), ou env-default COM um `OAuthSpec`
+    # opt-in (codex, que roda OAuth via `DEILE_CODEX_AUTH=oauth`). Rejeita só
+    # quem não tem OAuthSpec — esse vai para `cli-worker-install` (chave de API).
     oauth = getattr(adapter, "oauth", None)
     if oauth is None or not getattr(oauth, "login_cmd", None):
         return CliWorkerLoginResult(
             ok=False, kind=kind,
             error=(
-                f"adapter {kind!r} declara auth_mode=oauth_file mas não tem um "
-                "OAuthSpec com login_cmd — não dá para capturar credencial."
+                f"adapter {kind!r} não declara um OAuthSpec com login_cmd — não é "
+                "oauth-capable. `cli-worker-login` cobre só workers OAuth. Para "
+                "auth por chave de API use `cli-worker-install`."
             ),
         )
+    # Quando o adapter é env-default mas oauth-capable, o worker entra em MODO
+    # OAUTH: o manifest é renderizado com os blocos OAuth e o env
+    # `DEILE_<KIND>_AUTH=oauth` é setado no Deployment (etapa 6 abaixo).
+    oauth_mode = True
 
     result = CliWorkerLoginResult(ok=False, kind=kind)
     worker = f"{kind}-worker"
@@ -356,7 +366,9 @@ def bootstrap_cli_worker_oauth(
     result.bearer_applied = True
 
     try:
-        if not _kubectl_apply_manifest(kind, namespace=namespace):
+        if not _kubectl_apply_manifest(
+            kind, namespace=namespace, oauth_mode=oauth_mode,
+        ):
             result.error = f"falha ao aplicar manifest de {worker}"
             return result
     except Exception as exc:  # noqa: BLE001 — render/apply pode estourar

@@ -236,18 +236,24 @@ def _kubectl_sync_bearer(worker: str, *, namespace: str) -> bool:
     return apply.returncode == 0
 
 
-def _kubectl_apply_manifest(kind: str, *, namespace: str) -> bool:
+def _kubectl_apply_manifest(
+    kind: str, *, namespace: str, oauth_mode: bool = False,
+) -> bool:
     """Gera o manifest do template e o aplica no cluster (kubectl apply -f -).
 
     O Secret ``<worker>-bearer`` do manifest é um STUB (stringData vazio); ele é
     aplicado ANTES por :func:`_kubectl_sync_bearer` com o token real, então
     aplicamos o manifest gerado SEM o documento do Secret para não zerar o token
     (mesmo cuidado do claude-worker-bearer no ``k8s up``).
+
+    ``oauth_mode=True`` (chamado pelo ``cli-worker-login`` de um worker
+    oauth-capable env-default) renderiza o manifest com os blocos OAuth (PVC +
+    initContainer + mount + env ``DEILE_<KIND>_AUTH=oauth``).
     """
     _ensure_on_path()
     from _cli_worker_gen import render_manifests  # noqa: PLC0415
 
-    rendered = render_manifests(kind, namespace=namespace)
+    rendered = render_manifests(kind, namespace=namespace, oauth_mode=oauth_mode)
     # Remove o doc do Secret-stub do YAML aplicado (token real já está no
     # cluster via _kubectl_sync_bearer). Split por separador YAML.
     docs = rendered.split("\n---\n")

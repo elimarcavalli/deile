@@ -14,6 +14,7 @@
 #   $$NAMESPACE     namespace k8s alvo
 #   $$TIMEOUT_S     timeout do subprocess (DEILE_CLI_WORKER_TASK_TIMEOUT_S)
 #   $$AUTH_ENV_BLOCK   linhas ``- {name: KEY, valueFrom: secretKeyRef...}`` (env)
+#   $$AUTH_MODE_ENV_BLOCK env ``DEILE_<KIND>_AUTH=oauth`` (modo OAuth) ou comentário
 #   $$OVERLAY_ENV_BLOCK linhas de env extras declaradas pelo adapter (env_overlay)
 #   $$PROVIDER_ENV_BLOCK env de provider por worker (DEILE_CLI_<KIND>_ENV_<VAR>):
 #                       não-sensíveis como valor literal, sensíveis via secretKeyRef
@@ -88,6 +89,7 @@ $OAUTH_INIT_BLOCK
             - { name: DEILE_CLAUDE_ALLOWED_REPOS_FILE,
                 value: "/etc/cli-worker/allowed_repos.regex" }
 $AUTH_ENV_BLOCK
+$AUTH_MODE_ENV_BLOCK
 $OVERLAY_ENV_BLOCK
 $PROVIDER_ENV_BLOCK
           ports:

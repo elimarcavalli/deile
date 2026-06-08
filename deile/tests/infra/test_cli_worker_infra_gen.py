@@ -357,6 +357,111 @@ class TestOauthInitContainerGeneration:
         assert "oauth-cred" not in vols
 
 
+# ===== oauth_mode override — adapter env-default oauth-capable (codex) =========
+
+
+class TestOauthModeOverride:
+    """``render_manifests(kind, oauth_mode=True)`` força o caminho OAuth num
+    adapter cujo ``auth_mode`` default é ``env`` mas que é oauth-capable (codex):
+    PVC + initContainer ``bootstrap-creds`` + mount da credencial + env
+    ``DEILE_<KIND>_AUTH=oauth``. Sem o flag (default), o codex renderiza inalterado
+    (``emptyDir``, sem initContainer, sem o env) — nenhuma regressão.
+    """
+
+    def _docs(self, rendered):
+        return [d for d in yaml.safe_load_all(rendered) if d]
+
+    def _container_env(self, dep):
+        return {
+            e["name"]: e
+            for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
+        }
+
+    def test_codex_oauth_mode_renders_oauth_blocks(self):
+        rendered = gen.render_manifests("codex", namespace="deile", oauth_mode=True)
+        docs = self._docs(rendered)
+        kinds = [d["kind"] for d in docs]
+        # PVC + CronJob aparecem (worker passa a persistir estado).
+        assert "PersistentVolumeClaim" in kinds
+        assert "CronJob" in kinds
+        dep = next(d for d in docs if d["kind"] == "Deployment")
+        spec = dep["spec"]["template"]["spec"]
+        # initContainer bootstrap-creds presente.
+        inits = [c["name"] for c in (spec.get("initContainers") or [])]
+        assert "bootstrap-creds" in inits
+        # volume da credencial OAuth presente.
+        vols = {v["name"]: v for v in spec["volumes"]}
+        assert "oauth-cred" in vols
+        assert "persistentVolumeClaim" in vols["worker-home"]
+        # mount da auth.json: o cred path do codex é ~/.codex/auth.json.
+        ic = next(c for c in spec["initContainers"] if c["name"] == "bootstrap-creds")
+        assert "/home/codex/.codex/auth.json" in ic["args"][0]
+        # env DEILE_CODEX_AUTH=oauth presente.
+        env = self._container_env(dep)
+        assert env["DEILE_CODEX_AUTH"]["value"] == "oauth"
+
+    def test_codex_default_unchanged_no_oauth_blocks(self):
+        rendered = gen.render_manifests("codex", namespace="deile")
+        docs = self._docs(rendered)
+        kinds = [d["kind"] for d in docs]
+        assert "PersistentVolumeClaim" not in kinds
+        assert "CronJob" not in kinds
+        dep = next(d for d in docs if d["kind"] == "Deployment")
+        spec = dep["spec"]["template"]["spec"]
+        assert spec.get("initContainers") in (None, [])
+        vols = {v["name"]: v for v in spec["volumes"]}
+        assert "oauth-cred" not in vols
+        assert "emptyDir" in vols["worker-home"]
+        env = self._container_env(dep)
+        assert "DEILE_CODEX_AUTH" not in env
+
+    def test_codex_oauth_mode_yaml_is_valid(self):
+        # safe_load_all estoura se o block-scalar do initContainer ficar mal
+        # indentado; este teste prova que o YAML do modo OAuth é parseável.
+        docs = self._docs(
+            gen.render_manifests("codex", oauth_mode=True)
+        )
+        assert any(d["kind"] == "Deployment" for d in docs)
+
+    def test_oauth_file_adapter_renders_oauth_without_flag(self):
+        # Sanity: um adapter auth_mode=oauth_file renderiza OAuth mesmo SEM o flag
+        # (oauth_mode default False) — o override não regride o caminho estático.
+        from cli_adapters.base import (BaseCliAdapter, ModelInfo, OAuthSpec,
+                                       WorkResult)
+
+        class _A(BaseCliAdapter):
+            def build_argv(self, **_kw):
+                return ["true"]
+
+            def parse_output(self, **_kw):
+                return WorkResult(ok=True)
+
+            def list_models(self):
+                return [ModelInfo(id="x")]
+
+        kind = "staticoauth"
+        cli_adapters.ADAPTERS[kind] = _A(
+            kind=kind, default_port=8797, auth_mode="oauth_file",
+            oauth=OAuthSpec(
+                cred_path="~/.staticoauth/auth.json",
+                login_cmd=["x", "login"], secret_name="staticoauth-credentials",
+            ),
+        )
+        try:
+            docs = self._docs(gen.render_manifests(kind))  # sem oauth_mode
+            dep = next(d for d in docs if d["kind"] == "Deployment")
+            inits = [
+                c["name"]
+                for c in (dep["spec"]["template"]["spec"].get("initContainers") or [])
+            ]
+            assert "bootstrap-creds" in inits
+            # adapter oauth_file também emite DEILE_<KIND>_AUTH=oauth.
+            env = self._container_env(dep)
+            assert env["DEILE_STATICOAUTH_AUTH"]["value"] == "oauth"
+        finally:
+            cli_adapters.ADAPTERS.pop(kind, None)
+
+
 # ===== NetworkPolicy gerada dos egress_hosts do adapter =======================
 
 
