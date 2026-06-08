@@ -71,3 +71,8 @@ data:
         "db_path": "/home/deile/data/cron.db"
       }
     }
+  # HPA tuning values read by scripts/update_hpa.sh (issue #627).
+  # Update them, then run the helper script before applying the HPA patch.
+  worker.hpa.minReplicas: "2"
+  worker.hpa.maxReplicas: "5"
+  worker.hpa.targetAverageValue: "400m"
