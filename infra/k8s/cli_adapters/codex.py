@@ -200,7 +200,13 @@ class CodexAdapter(BaseCliAdapter):
         argv: List[str] = ["codex", "exec"]
         if resume is not None and resume.session_id:
             argv += ["resume", resume.session_id]
-        argv += ["--cd", workdir]
+            # ``--cd`` é flag do ``codex exec`` FRESH; o subcomando
+            # ``codex exec resume <id>`` NÃO o aceita ("error: unexpected
+            # argument '--cd'") — pego só na validação ao vivo (os testes
+            # mockam o subprocess). No resume, o cwd do subprocess (= workdir,
+            # setado pelo server) já posiciona o codex no diretório certo.
+        else:
+            argv += ["--cd", workdir]
         if model:
             argv += ["-m", model]
         if reasoning and reasoning in _VALID_REASONING:

@@ -141,7 +141,10 @@ def test_build_argv_resume_uses_exec_resume(adapter, brief):
         brief_path=brief, model=None, reasoning=None, workdir="/w", resume=resume,
     )
     assert argv[:4] == ["codex", "exec", "resume", "thr_xyz"]
-    assert "--cd" in argv  # ainda passa o workdir
+    # ``codex exec resume`` NÃO aceita ``--cd`` ("error: unexpected argument
+    # '--cd'") — bug pego só na validação ao vivo (o subprocess é mockado aqui).
+    # No resume o cwd do subprocess (= workdir) já posiciona o codex.
+    assert "--cd" not in argv
     assert argv[-1] == "IMPLEMENTE A FEATURE X"  # brief continua o prompt posicional
 
 
