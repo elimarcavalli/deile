@@ -372,19 +372,21 @@ async def resume_info_handler(request: web.Request) -> web.Response:
     ``True``, o pipeline NÃO re-despacha (mantém em andamento) — é o que impede
     o **double-dispatch** de um CLI worker cujo subprocess ainda está rodando.
 
-    Por que isto é essencial: os CLI workers da frota têm
-    ``supports_resume=False`` (não há sessão a retomar) e o server ANTES não
-    expunha este endpoint. O pipeline recebia 404 (rota inexistente), o
-    interpretava como "ledger stale → fresh dispatch" e disparava uma SEGUNDA
-    execução enquanto a primeira (fire-and-forget) ainda processava — abrindo PR
-    duplicada / falso ``NO_PUSH``. Expor a liveness fecha esse buraco para
-    qualquer worker, com ou sem resume de sessão.
+    Por que isto é essencial: o server ANTES não expunha este endpoint. O
+    pipeline recebia 404 (rota inexistente), o interpretava como "ledger stale →
+    fresh dispatch" e disparava uma SEGUNDA execução enquanto a primeira
+    (fire-and-forget) ainda processava — abrindo PR duplicada / falso
+    ``NO_PUSH``. Expor a liveness fecha esse buraco para qualquer worker.
 
     Liveness = o ``.lease.json`` do workspace existe e NÃO está stale
     (heartbeat fresco OU PID do subprocess vivo — ver ``_core.lease_is_stale``).
-    ``session_id`` é vazio de propósito: estes workers não retomam sessão, então
-    quando a task termina (``claude_alive=False``) o pipeline cai em fresh
-    (retry limitado pelo teto), que é o comportamento correto.
+
+    **Resume nativo (issue #445):** ``session_id`` traz o id nativo do CLI
+    capturado no dispatch anterior (``supports_resume=True`` em todos os 5
+    adapters). Quando a task NÃO está mais viva (``claude_alive=False``) e há
+    ``session_id``, o pipeline re-despacha com ``resume_session_id`` + reuso do
+    MESMO workdir — retomando o trabalho parcial em vez de re-gastar do zero.
+    Vazio (sessão não capturada) → fresh com retry limitado pelo teto.
 
     Respostas:
       - ``400`` task_id fora de ``[0-9a-f]{16}`` (guard de path traversal).
@@ -417,13 +419,18 @@ async def resume_info_handler(request: web.Request) -> web.Response:
     # (o reconcile lê isso como RUNNING). Concluída → meta traz ``last_completed_at``
     # + ``last_result_full`` (que o ``parse_critique_verdict`` consome).
     meta = await asyncio.to_thread(_load_task_result, task_id) or {}
+    # ``session_id`` (issue #445): id nativo do CLI capturado no dispatch anterior.
+    # Quando o adapter suporta resume, é não-vazio e o pipeline re-despacha com
+    # ``resume_session_id`` + reuso do MESMO workdir, retomando o trabalho parcial
+    # em vez de re-gastar do zero. Vazio (adapter sem resume / sessão não
+    # capturada) → o pipeline cai em fresh quando a task não está mais viva.
     return web.json_response({
         "task_id": task_id,
-        "workdir": str(workspace),
+        "workdir": meta.get("workdir") or str(workspace),
         "workdir_exists": True,
-        # CLI workers não retomam sessão (supports_resume=False) — sem session_id
-        # o pipeline cai em fresh quando a task NÃO está mais viva (retry limitado).
-        "session_id": "",
+        "session_id": meta.get("session_id", "") or "",
+        "prev_task_id": meta.get("prev_task_id"),
+        "attempt": meta.get("attempt", 1),
         "claude_alive": alive,
         "last_completed_at": meta.get("last_completed_at"),
         "last_is_error": meta.get("last_is_error"),
@@ -586,6 +593,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         reasoning=reasoning,
         workdir=str(run_cwd),
         resume=resume_ctx,
+        task_id=task_id,
     )
     overlay = adapter.env_overlay(home=home)
     # Aplica o overlay do adapter no processo (HOME/XDG/config). As auth_env_keys
@@ -639,6 +647,19 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 
     base_sha = await _git_head(workspace)
 
+    # Identidade de resume (issue #445): no resume reusamos o MESMO task_id/workdir
+    # (``resume_ctx.prev_task_id == task_id``); o ``attempt`` herda do meta anterior
+    # +1. No fresh, attempt=1 e prev_task_id é o que veio no payload (cadeia de
+    # tentativas anteriores, se houver). Lido ANTES da closure para o meta refletir
+    # a cadeia mesmo quando o adapter não tem session-id de servidor.
+    _prev_meta = await asyncio.to_thread(_load_task_result, task_id) or {}
+    if resume_ctx is not None:
+        attempt = int(_prev_meta.get("attempt", 1)) + 1
+        meta_prev_task_id = resume_ctx.prev_task_id
+    else:
+        attempt = 1
+        meta_prev_task_id = str(prev_task_id or "") or None
+
     async def _run_and_finalize() -> dict:
         stop_hb = asyncio.Event()
         hb_task = asyncio.create_task(
@@ -653,6 +674,17 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             work = adapter.parse_output(
                 stdout=result.stdout, stderr=result.stderr, rc=result.returncode,
             )
+            # Captura o session-id NATIVO do CLI a partir da saída (issue #445):
+            # opencode/qwen emitem no JSON; codex no thread.started; goose/aider
+            # retornam o task_id sentinela. Persistido no meta para o ``resume-info``
+            # devolver ao pipeline → próximo dispatch retoma a sessão (mesmo workdir).
+            try:
+                session_id = adapter.extract_session_id(
+                    stdout=result.stdout, stderr=result.stderr, task_id=task_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — extração nunca derruba o dispatch
+                logger.warning("extract_session_id falhou task_id=%s: %s", task_id, exc)
+                session_id = ""
             # Etapa de git pós-run, ramificada por ``git_strategy`` (plano §1.5/§4):
             #   * brief_driven: se o agente não commitou, o wrapper faz fallback
             #     commit do working tree sujo (error_code WRAPPER_COMMITTED).
@@ -666,12 +698,17 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             work = await _post_run_gate(
                 adapter, work, workdir=workspace, base_sha=base_sha, branch=branch,
             )
-            # Persiste o veredito ANTES de retornar — no caminho fire-and-forget a
-            # resposta é descartada (202), então sem isto o ``resume-info`` ficaria
-            # sem ``last_completed_at``/``last_result_full`` e o reconcile trataria
-            # a task como RUNNING eternamente (crítica/refine presas).
-            await asyncio.to_thread(_save_task_result, task_id, work)
-            return _build_response(task_id, result, work)
+            # Persiste o veredito + a metadata de sessão ANTES de retornar — no
+            # caminho fire-and-forget a resposta é descartada (202), então sem isto
+            # o ``resume-info`` ficaria sem ``session_id``/``last_completed_at`` e o
+            # reconcile trataria a task como RUNNING eternamente (crítica/refine
+            # presas) e nunca retomaria trabalho parcial.
+            await asyncio.to_thread(
+                _save_task_result, task_id, work,
+                session_id=session_id, workspace=workspace,
+                prev_task_id=meta_prev_task_id, attempt=attempt,
+            )
+            return _build_response(task_id, result, work, session_id=session_id)
         finally:
             stop_hb.set()
             try:
@@ -764,20 +801,37 @@ def _result_meta_path(task_id: str) -> Path:
     return _worker_root() / _RESULT_SUBDIR / f"{task_id}.json"
 
 
-def _save_task_result(task_id: str, work: WorkResult) -> None:
-    """Persiste o veredito da task para o ``resume-info`` (write-tmp + replace).
+def _save_task_result(
+    task_id: str,
+    work: WorkResult,
+    *,
+    session_id: str = "",
+    workspace: Optional[Path] = None,
+    prev_task_id: Optional[str] = None,
+    attempt: int = 1,
+) -> None:
+    """Persiste o veredito + a metadata de sessão da task (write-tmp + replace).
 
-    Sem isto, um dispatch fire-and-forget computa o ``WorkResult`` e descarta a
-    resposta (202), deixando o ``resume-info`` sem ``last_result_full`` nem
-    ``last_completed_at`` — o reconcile do pipeline trataria a task como RUNNING
-    para sempre (crítica/refine presas em ``em_revisao``). Persistir o veredito
-    fecha o ciclo: ``last_completed_at`` set → reconcile detecta DONE;
-    ``last_result_full`` → ``parse_critique_verdict`` lê CLARO/VAGO/REFINO.
+    Espelha o ``session.json`` do claude-worker (issue #445). Dois propósitos:
+
+    1. **Conclusão fire-and-forget:** sem isto, um dispatch ``wait=False`` computa
+       o ``WorkResult`` e descarta a resposta (202), deixando o ``resume-info``
+       sem ``last_result_full``/``last_completed_at`` — o reconcile do pipeline
+       trataria a task como RUNNING para sempre (crítica/refine presas).
+    2. **Resume nativo (anti-sangria):** persiste ``session_id`` (nativo do CLI),
+       ``workdir``, ``prev_task_id`` e ``attempt`` para o ``resume-info`` devolver
+       ao pipeline — que então re-despacha com ``resume_session_id`` + reuso do
+       MESMO workdir, retomando o trabalho parcial em vez de re-gastar do zero.
+
     Best-effort: falha de I/O vira warning, não derruba o dispatch.
     """
     full = work.result_text or ""
     meta = {
         "task_id": task_id,
+        "session_id": session_id or "",
+        "workdir": str(workspace) if workspace is not None else "",
+        "prev_task_id": prev_task_id,
+        "attempt": int(attempt),
         "last_completed_at": int(time.time()),
         "last_is_error": not work.ok,
         "last_result_full": full,
@@ -808,19 +862,22 @@ def _load_task_result(task_id: str) -> Optional[dict]:
 
 
 def _build_response(
-    task_id: str, result, work: WorkResult,
+    task_id: str, result, work: WorkResult, *, session_id: str = "",
 ) -> dict:
     """Monta a resposta JSON do contrato unificado a partir do resultado.
 
-    Mesma forma do claude-worker: ``ok, stdout, stderr, task_id, returncode,
-    duration_seconds, total_cost_usd, error_code?, error?``.
+    Mesma forma do claude-worker: ``ok, stdout, stderr, task_id, session_id,
+    returncode, duration_seconds, total_cost_usd, error_code?, error?``.
+
+    ``session_id`` é o id nativo capturado do CLI (issue #445); ``None``/``""``
+    quando o adapter não suporta resume.
     """
     response = {
         "ok": work.ok,
         "stdout": result.stdout[-_STDOUT_TAIL:],
         "stderr": result.stderr[-_STDERR_TAIL:],
         "task_id": task_id,
-        "session_id": None,
+        "session_id": session_id or None,
         "returncode": result.returncode,
         "duration_seconds": result.duration_seconds,
         "total_cost_usd": work.cost_usd,
