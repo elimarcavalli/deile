@@ -782,3 +782,5 @@ Projeto licenciado sob [**MIT License**](LICENSE).
 ---
 
 **DEILE 5.1.0** — `python3 deile.py`
+
+> Quando uma PR recebe **2 aprovações** de revisores distintos, o pipeline a **mergeia automaticamente**, sem intervenção manual.
