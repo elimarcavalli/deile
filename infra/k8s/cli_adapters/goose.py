@@ -19,7 +19,8 @@ contra a doc oficial do Goose via context7 — ``goose run --no-session -t``,
   Goose tenta o keyring do SO (DBus) por padrão, que não existe no pod e quebra
   o startup. Com a env var, ele lê a chave do provider do ambiente.
 * **Teto de turns (§ custo):** ``--max-turns <teto>`` baixo capa o custo (não há
-  cap em USD nesses CLIs). Default conservador; o server pode sobrepor por env.
+  cap em USD nesses CLIs). Default conservador (:data:`_DEFAULT_MAX_TURNS`),
+  sobreposto pela env ``DEILE_GOOSE_MAX_TURNS`` (ver :func:`_max_turns`).
 * **Brief (§2.5):** o conteúdo do brief é lido do arquivo e passado via ``-t``
   (texto da instrução). Goose também aceita ``--instructions <arquivo>``/``-i -``
   (stdin), mas ``-t`` com o texto inline é o caminho determinístico headless.
@@ -59,6 +60,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import List, Optional
 
 import _worker_core as _core
@@ -67,8 +69,21 @@ from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
 
 logger = logging.getLogger("deile.cli_adapters.goose")
 
-#: Teto default de turns headless (capa custo; o server pode sobrepor por env).
+#: Teto default de turns headless (capa custo). Sobreposto por
+#: ``DEILE_GOOSE_MAX_TURNS`` em runtime — ver :func:`_max_turns`.
 _DEFAULT_MAX_TURNS = 40
+
+
+def _max_turns() -> int:
+    """Teto de turns do ``goose run``, sobreposto por ``DEILE_GOOSE_MAX_TURNS``.
+
+    Alavanca de custo: cada turn é uma rodada LLM. Valor inválido (não-int)
+    cai no default conservador :data:`_DEFAULT_MAX_TURNS`.
+    """
+    try:
+        return int(os.environ.get("DEILE_GOOSE_MAX_TURNS", str(_DEFAULT_MAX_TURNS)))
+    except ValueError:
+        return _DEFAULT_MAX_TURNS
 
 #: Teto do ``result_text`` preservando o FIM do texto. Os veredictos das fases
 #: de julgamento (crítica CLARO/VAGO, refine REFINO:OK, pr_review APPROVE) são
@@ -183,7 +198,7 @@ class GooseAdapter(BaseCliAdapter):
         argv += [
             "--quiet",
             "--output-format", "json",
-            "--max-turns", str(_DEFAULT_MAX_TURNS),
+            "--max-turns", str(_max_turns()),
         ]
         if model:
             if "/" in model:

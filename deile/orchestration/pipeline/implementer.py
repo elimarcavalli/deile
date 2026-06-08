@@ -426,6 +426,22 @@ def _review_was_blocked(text: str) -> bool:
     return bool(_BLOCKED_VERDICT_RE.search(text[-8000:]))
 
 
+def _worker_kind_from_url(url: str) -> str:
+    """Deriva o ``worker_kind`` (telemetria de custo) do endpoint do dispatch.
+
+    Os dispatchers são canônicos ``<kind>-worker`` e cada um responde num
+    endpoint ``http://<kind>-worker:<porta>`` (ver ``dispatch_resolver``). O
+    ``worker_kind`` gravado no ledger é o ``<kind>`` — extraído do hostname
+    (strip de scheme/porta/path) com o sufixo ``-worker`` removido. Genérico:
+    cobre toda a frota CLI (``opencode-worker`` → ``opencode``) sem hardcode de
+    kinds. Fallback ``deile`` quando o hostname não casa o padrão.
+    """
+    m = re.search(r"//([^:/]+)", url or "")
+    host = m.group(1) if m else ""
+    kind = host.removesuffix("-worker")
+    return kind or "deile"
+
+
 def _estimate_session_tokens_from_jsonl(jsonl_text: str) -> int:
     """Soma usage tokens dos turns do JSONL claude. ``jsonl_text`` é o
     conteúdo bruto do arquivo. Tolerante a malformed lines.
@@ -1118,7 +1134,7 @@ class WorkerImplementer(PipelineImplementer):
             # implement. Sem isso o task_id se perde antes do reconcile poder
             # fazer resume na próxima janela.
             if ledger_key and task_id:
-                worker_kind = "claude" if "claude-worker" in url else "deile"
+                worker_kind = _worker_kind_from_url(url)
                 self._ledger.record(
                     ledger_key,
                     task_id=task_id,
@@ -1158,7 +1174,7 @@ class WorkerImplementer(PipelineImplementer):
         # • ok=False (erro, timeout, etc.): grava entrada pra retry com
         #   resume no próximo tick.
         if ledger_key and outcome.task_id:
-            worker_kind = "claude" if "claude-worker" in url else "deile"
+            worker_kind = _worker_kind_from_url(url)
             blocked_by_verdict = (
                 stage == "pr_review" and outcome.ok
                 and _review_was_blocked(outcome.text)

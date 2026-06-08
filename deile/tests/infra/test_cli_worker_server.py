@@ -608,21 +608,28 @@ async def test_resume_reuses_workdir_and_passes_session(
 
 
 async def test_resume_with_missing_workdir_degrades_to_fresh(
-    mock_resume_adapter, monkeypatch,
+    mock_resume_adapter, monkeypatch, caplog,
 ):
-    """prev_task_id cujo workdir sumiu -> degrada para fresh (novo task_id)."""
+    """prev_task_id cujo workdir sumiu -> degrada para fresh (novo task_id)
+    + emite warning observável do re-gasto (FIX D)."""
     _commit_pushed_git(monkeypatch)
     app = cws.build_app(auth_token="test-token")
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
-            json={"brief": "x", "branch": "auto/issue-1", "cli_model": "m",
-                  "resume_session_id": "ses_mock",
-                  "prev_task_id": "0000000000000000"},
-        )
-        body = await resp.json()
-        assert body["task_id"] != "0000000000000000"
-        assert body["ok"] is True
+    with caplog.at_level("WARNING", logger="deile.cli_worker"):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/v1/dispatch", headers=_AUTH_HEADERS,
+                json={"brief": "x", "branch": "auto/issue-1", "cli_model": "m",
+                      "resume_session_id": "ses_mock",
+                      "prev_task_id": "0000000000000000"},
+            )
+            body = await resp.json()
+            assert body["task_id"] != "0000000000000000"
+            assert body["ok"] is True
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "degradando para FRESH" in m and "0000000000000000" in m
+        for m in warnings
+    ), f"warning de degrade resume→fresh ausente: {warnings}"
 
 
 

@@ -550,6 +550,10 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         workspace = root / task_id
         if not workspace.is_dir():
             # Workdir sumiu → degrada para fresh (brief lê .deile-progress.md).
+            logger.warning(
+                "resume solicitado (prev_task_id=%s) mas workdir sumiu — "
+                "degradando para FRESH (re-gasto de tokens)", task_id,
+            )
             resume_ctx = None
             task_id = secrets.token_hex(_TASK_ID_BYTES)
             workspace = root / task_id

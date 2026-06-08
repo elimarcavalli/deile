@@ -448,13 +448,9 @@ def parse_deile():
             if any(sum(v.values()) > 0 for v in s["models"].values())]
 
 
-PARSERS = {
-    "claude": parse_claude,
-    "opencode": parse_progress_kind, "codex": parse_progress_kind,
-    "qwen": parse_progress_kind, "goose": parse_progress_kind,
-    "aider": parse_progress_kind,
-    "deile": parse_deile,
-}
+PARSERS = {k: parse_progress_kind for k in _FPP["PROGRESS_PARSERS"]}
+PARSERS["claude"] = parse_claude
+PARSERS["deile"] = parse_deile
 
 fn = PARSERS.get(KIND)
 print(json.dumps(fn() if fn else []))

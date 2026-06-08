@@ -362,6 +362,26 @@ def test_fleet_worker_kinds_includes_core_and_cli(fta):
         assert cli in kinds
 
 
+def test_in_pod_parsers_derived_from_progress_parsers_single_source(fta):
+    """FIX B: o dict ``PARSERS`` in-pod deriva as chaves de progress de
+    ``_FPP['PROGRESS_PARSERS']`` (fonte única) + claude/deile. Sonda o source
+    real do IN_POD_PARSER trocando o ``print`` final por um dump das chaves."""
+    probe = fta.IN_POD_PARSER.replace(
+        "print(json.dumps(fn() if fn else []))",
+        "print(json.dumps(sorted(PARSERS)))",
+    )
+    proc = subprocess.run(
+        [sys.executable, "-"],
+        input=probe, capture_output=True, text=True,
+        env={"FLEET_KIND": "", "PATH": "/usr/bin:/bin"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    resolved = set(json.loads(proc.stdout.strip()))
+    # Os 5 kinds de progress atuais ainda resolvem + os dois núcleo.
+    assert {"opencode", "codex", "qwen", "goose", "aider"}.issubset(resolved)
+    assert {"claude", "deile"}.issubset(resolved)
+
+
 def test_renderer_by_worker_and_sessions_no_crash(fta):
     from rich.console import Console
     console = Console(file=__import__("io").StringIO(), width=120)

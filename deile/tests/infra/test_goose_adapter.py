@@ -77,6 +77,36 @@ def test_build_argv_form_no_task_id_degrades_to_no_session(adapter, brief):
 
 
 @pytest.mark.unit
+def test_max_turns_default_when_env_absent(adapter, brief, monkeypatch):
+    # FIX E: sem env → default conservador no argv.
+    monkeypatch.delenv("DEILE_GOOSE_MAX_TURNS", raising=False)
+    argv = adapter.build_argv(
+        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
+    )
+    assert argv[argv.index("--max-turns") + 1] == str(go_mod._DEFAULT_MAX_TURNS)
+
+
+@pytest.mark.unit
+def test_max_turns_overridable_by_env(adapter, brief, monkeypatch):
+    # FIX E: DEILE_GOOSE_MAX_TURNS sobrepõe o teto no argv (alavanca de custo).
+    monkeypatch.setenv("DEILE_GOOSE_MAX_TURNS", "12")
+    argv = adapter.build_argv(
+        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
+    )
+    assert argv[argv.index("--max-turns") + 1] == "12"
+
+
+@pytest.mark.unit
+def test_max_turns_invalid_env_falls_back_to_default(adapter, brief, monkeypatch):
+    # FIX E: valor não-inteiro cai no default sem quebrar.
+    monkeypatch.setenv("DEILE_GOOSE_MAX_TURNS", "nope")
+    argv = adapter.build_argv(
+        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
+    )
+    assert argv[argv.index("--max-turns") + 1] == str(go_mod._DEFAULT_MAX_TURNS)
+
+
+@pytest.mark.unit
 def test_build_argv_fresh_uses_named_session(adapter, brief):
     # issue #445: fresh com task_id → sessão nomeada determinística (resumível).
     argv = adapter.build_argv(
