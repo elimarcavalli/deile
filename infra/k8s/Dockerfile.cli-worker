@@ -3,111 +3,47 @@
 #
 # Plano §1.8: runtimes divergem (node20 vs node22 vs pip vs binário) → NÃO cabe
 # imagem única. Esta imagem é parametrizada por ``--build-arg WORKER_KIND=<kind>``
-# e produz ``deile-cli-worker-<kind>:local``. A camada-base (Python + servidor
-# genérico + git/gh/glab + _worker_core + cli_adapters) é compartilhada via cache;
-# o stage final instala SÓ o CLI do kind escolhido (bloco condicional, espelha o
-# padrão ``WITH_BOT`` do Dockerfile principal).
+# e produz ``deile-cli-worker-<kind>:local``.
+#
+# DRY (footprint): as deps PESADAS e idênticas entre todos os kinds (venv com
+# requirements.txt + extra [test] + apt comuns + server/adapters/wrapper) vivem
+# em ``deile-cli-worker-base:local`` (``Dockerfile.cli-worker-base``), construído
+# UMA vez e COMPARTILHADO por layer no containerd. Esta imagem faz ``FROM`` a
+# base e instala SÓ a CLI do kind escolhido — nenhuma dep do deile é reinstalada
+# aqui. Antes (commit 66f411a1) cada imagem rebakava ~1 GB de deps duplicadas
+# (5×~1 GB), estourava o disco do Rancher Desktop e a GC do containerd evictava
+# 4 das 5 imagens. Agora: base ~1.3 GB + 5 camadas pequenas de CLI.
 #
 # INVARIANTE: esta imagem só é construída sob demanda (``deploy.py k8s
 # build-cli-workers --kind <k>``); ``k8s up`` jamais a constrói nem a exige. Um
-# CLI worker é 100%% opt-in.
+# CLI worker é 100%% opt-in. O ``build-cli-workers`` garante a base ANTES (auto-
+# build se ausente), pois esta imagem depende dela em build-time.
 #
-# Build (a partir da RAIZ do repo, como o Dockerfile principal):
+# Build (a partir da RAIZ do repo; a base PRECISA existir antes):
+#   nerdctl --namespace k8s.io build -f infra/k8s/Dockerfile.cli-worker-base \
+#       -t deile-cli-worker-base:local .
 #   nerdctl --namespace k8s.io build -f infra/k8s/Dockerfile.cli-worker \
 #       --build-arg WORKER_KIND=opencode -t deile-cli-worker-opencode:local .
 # =============================================================================
-ARG PYTHON_VERSION=3.11.10
+ARG BASE_IMAGE=deile-cli-worker-base:local
 
-# ---- builder: venv com aiohttp + toolchain de teste do deile -----------------
-# O servidor genérico é aiohttp; ALÉM disso o /venv carrega pytest + plugins +
-# as deps de runtime do deile para que um CLI worker rode ``pytest deile/tests/``
-# sobre um clone do repo (DoD do brief: "SUÍTE COMPLETA verde antes de
-# mergear/abrir PR"). Sem isso, o clone roda ``python3 -m pytest`` e estoura
-# ``No module named pytest`` — o DoD fica inverificável e a frase "deps já
-# instaladas — NÃO rode pip install" do brief vira falsa (rootfs read-only).
-#
-# FONTE ÚNICA (DRY com o deile-stack): as deps de runtime vêm do MESMO
-# ``requirements.txt`` e o conjunto de plugins de teste vem do extra ``[test]``
-# do ``pyproject.toml`` (instalado via ``.[test]``). Nada de lista de deps
-# duplicada aqui. ``build-essential`` só no builder (compila wheels nativas como
-# grpcio/cryptography); o stage final permanece sem compilador.
-FROM python:${PYTHON_VERSION}-slim AS builder
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential git \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
-
-# Copiamos só os arquivos de metadados + o pacote deile (mesma ordem do
-# Dockerfile principal) para maximizar o cache de layer: alterar um arquivo
-# de teste sob deile/tests não invalida a layer de install das deps.
-COPY pyproject.toml requirements.txt README.md ./
-COPY deile ./deile
-
-RUN python -m venv /venv \
-    && /venv/bin/pip install --upgrade pip wheel \
-    && /venv/bin/pip install -r requirements.txt \
-    && /venv/bin/pip install ".[test]" \
-    && find /venv -type d -name __pycache__ -exec rm -rf {} +
-
-# ---- final: base comum + install per-kind -----------------------------------
-FROM python:${PYTHON_VERSION}-slim AS final
+# A base já carrega: venv (/venv com requirements.txt + extra [test]), apt
+# comuns (tini, git, curl, gh, glab, ...), server/core/adapters/wrapper em /app.
+# Esta imagem adiciona SÓ o runtime + binário da CLI do kind.
+FROM ${BASE_IMAGE} AS final
 
 ARG WORKER_KIND=opencode
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/venv/bin:/usr/local/bin:${PATH}" \
     DEILE_CLI_WORKER_KIND=${WORKER_KIND}
-
-# tini (zombie reaper — o worker faz shell-out via git/CLI), git, curl, gh, glab.
-# git/gh/glab são obrigatórios: o git_strategy de qualquer adapter precisa
-# commitar+pushar (brief_driven) ou só pushar (cli_autocommit).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        tini git iputils-ping curl ca-certificates gnupg jq procps \
-    && mkdir -p -m 0755 /etc/apt/keyrings \
-    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        | dd of=/etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
-    && rm -rf /var/lib/apt/lists/*
-
-# glab (GitLab CLI) — version PINNED + SHA256 verificado (paridade com o
-# Dockerfile principal). Forge-agnóstico: o worker pode pushar para GH ou GL.
-ARG GLAB_VERSION=1.45.0
-ARG GLAB_SHA256_AMD64=3efe5be6d5fd6c3346d2cabd2ca35d7f85a5ae5d97da8c90dff81557124dc519
-ARG GLAB_SHA256_ARM64=2bd45d6d0f7c6af15604720dc8d177a3a15661230bcee45334879c5928de57bc
-RUN ARCH="$(dpkg --print-architecture)" \
-    && case "$ARCH" in \
-        amd64) GLAB_ARCH=x86_64 ; EXPECTED_SHA="$GLAB_SHA256_AMD64" ;; \
-        arm64) GLAB_ARCH=arm64  ; EXPECTED_SHA="$GLAB_SHA256_ARM64" ;; \
-        *) echo "unsupported arch for glab: $ARCH" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL -o /tmp/glab.deb \
-        "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_Linux_${GLAB_ARCH}.deb" \
-    && echo "${EXPECTED_SHA}  /tmp/glab.deb" | sha256sum -c - \
-    && dpkg -i /tmp/glab.deb \
-    && rm /tmp/glab.deb \
-    && gh --version \
-    && glab --version
-
-# venv com aiohttp.
-COPY --from=builder /venv /venv
 
 # -----------------------------------------------------------------------------
 # Bloco de install PER-CLI — gated por WORKER_KIND. Cada bloco instala SÓ o
 # runtime + binário daquele CLI. Versões PINADAS (nunca ``upgrade`` em runtime).
 # Mantido em paridade com as specs da Parte 2 do plano (flags validadas via
-# context7 contra a doc oficial de cada CLI).
+# context7 contra a doc oficial de cada CLI). NENHUMA dep do deile aqui —
+# requirements.txt + [test] já vêm da base (DRY).
 # -----------------------------------------------------------------------------
 
 # opencode — binário standalone (Tier 1). Pin de versão; ``upgrade`` proibido.
@@ -125,10 +61,11 @@ RUN if [ "$WORKER_KIND" = "opencode" ]; then \
         && opencode --version ; \
     fi
 
-# aider — pip (Tier 1, cli_autocommit). Precisa de git (já instalado).
+# aider — pip (Tier 1, cli_autocommit). Precisa de git (já instalado na base).
+# Instala SÓ a CLI no venv da base — não reinstala as deps do deile.
 ARG AIDER_VERSION=0.86.2
 RUN if [ "$WORKER_KIND" = "aider" ]; then \
-        /venv/bin/pip install "aider-chat==${AIDER_VERSION}" \
+        /venv/bin/pip install --no-cache-dir "aider-chat==${AIDER_VERSION}" \
         && aider --version ; \
     fi
 
@@ -150,7 +87,9 @@ RUN if [ "$WORKER_KIND" = "goose" ]; then \
 # com o node20 do claude-stack → o per-tool image resolve, plano §1.8).
 ARG QWEN_VERSION=0.17.1
 RUN if [ "$WORKER_KIND" = "qwen" ]; then \
-        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+        apt-get update \
+        && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+        && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
         && rm -rf /var/lib/apt/lists/* \
         && npm install -g --omit=dev "@qwen-code/qwen-code@${QWEN_VERSION}" \
@@ -160,7 +99,9 @@ RUN if [ "$WORKER_KIND" = "qwen" ]; then \
 # codex — npm (Tier 2; OpenAI direto, ver caveat wire_api=responses no adapter).
 ARG CODEX_VERSION=0.137.0
 RUN if [ "$WORKER_KIND" = "codex" ]; then \
-        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+        apt-get update \
+        && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+        && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
         && rm -rf /var/lib/apt/lists/* \
         && npm install -g --omit=dev "@openai/codex@${CODEX_VERSION}" \
@@ -174,29 +115,13 @@ RUN if [ "$WORKER_KIND" = "codex" ]; then \
 ENV PATH="/venv/bin:/usr/local/bin:/home/${WORKER_KIND}/.opencode/bin:/home/${WORKER_KIND}/.local/bin:${PATH}"
 
 # Non-root user nomeado pelo kind (HOME = /home/<kind>, casa com o manifest).
+# /app já vem da base (root:root mode 0555, world-readable → executável pelo uid
+# 10001); só precisamos criar o user + HOME gravável e garantir o /app existente.
 RUN groupadd --system --gid 10001 cliworker \
     && useradd  --system --uid 10001 --gid 10001 \
         --home-dir /home/${WORKER_KIND} --shell /usr/sbin/nologin cliworker \
     && mkdir -p /home/${WORKER_KIND} /app \
-    && chown -R 10001:10001 /home/${WORKER_KIND} /app
-
-# Servidor genérico + core agnóstico + registro de adapters. O servidor importa
-# ``_worker_core``, ``cli_adapters`` (pacote), ``dispatch_logger`` e ``jsonl_cost``
-# por nome — todos precisam ficar em /app lado a lado.
-COPY --chown=10001:10001 infra/k8s/cli_worker_server.py /app/cli_worker_server.py
-COPY --chown=10001:10001 infra/k8s/_worker_core.py      /app/_worker_core.py
-COPY --chown=10001:10001 infra/k8s/_worker_resume.py    /app/_worker_resume.py
-COPY --chown=10001:10001 infra/k8s/dispatch_logger.py   /app/dispatch_logger.py
-COPY --chown=10001:10001 infra/k8s/jsonl_cost.py        /app/jsonl_cost.py
-COPY --chown=10001:10001 infra/k8s/cli_adapters         /app/cli_adapters
-# wrapper.py — launcher universal (modo cli-worker): carrega secrets montados,
-# wira GITHUB_TOKEN/GITLAB_TOKEN + identidade git e valida allowlist ANTES de
-# subir o server. O template do worker sobe via `wrapper.py cli-worker`, então
-# o arquivo PRECISA estar em /app (homologação E2E: pod crashava sem ele).
-COPY --chown=10001:10001 infra/k8s/wrapper.py            /app/wrapper.py
-RUN chmod -R 0555 /app/cli_worker_server.py /app/_worker_core.py \
-        /app/_worker_resume.py /app/dispatch_logger.py /app/jsonl_cost.py /app/wrapper.py \
-    && find /app/cli_adapters -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    && chown -R 10001:10001 /home/${WORKER_KIND}
 
 WORKDIR /app
 USER 10001:10001

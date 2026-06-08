@@ -2373,27 +2373,111 @@ def k8s_gen_worker(args: dict) -> int:
     return 0
 
 
+CLI_WORKER_BASE_IMAGE = "deile-cli-worker-base:local"
+
+
+def _container_runtime() -> Optional[str]:
+    """Prefixo do runtime de container (nerdctl/colima/docker) ou None.
+
+    Fonte única do dispatch nerdctl→colima→docker, reusada pelos builds de
+    imagem da frota CLI (base + per-kind). Cada item é o prefixo de comando
+    completo antes do verbo ``build``.
+    """
+    nerdctl = _resolve("nerdctl")
+    if nerdctl:
+        return [nerdctl, "--namespace", "k8s.io"]
+    if which("colima"):
+        return ["colima", "nerdctl", "--", "--namespace", "k8s.io"]
+    if which("docker"):
+        return ["docker"]
+    return None
+
+
+def _cli_worker_base_build_cmd() -> Optional[List[str]]:
+    """Monta o comando de build da base compartilhada ``deile-cli-worker-base:local``.
+
+    Usa o ``Dockerfile.cli-worker-base`` (FONTE ÚNICA das deps pesadas: venv com
+    requirements.txt + extra [test] + apt comuns + server/adapters). Construída
+    UMA vez e compartilhada por layer entre todos os kinds.
+    """
+    runtime = _container_runtime()
+    if runtime is None:
+        return None
+    dockerfile = str(HERE / "Dockerfile.cli-worker-base")
+    return [*runtime, "build", "-f", dockerfile, "-t", CLI_WORKER_BASE_IMAGE, str(ROOT)]
+
+
+def _cli_worker_base_exists() -> bool:
+    """True se a imagem base já existir no runtime de container (idempotência)."""
+    runtime = _container_runtime()
+    if runtime is None:
+        return False
+    out = _capture([*runtime, "images", "-q", CLI_WORKER_BASE_IMAGE])
+    return bool(out and out.strip())
+
+
 def _cli_worker_build_cmd(kind: str) -> Optional[List[str]]:
     """Monta o comando de build da imagem ``deile-cli-worker-<kind>:local``.
 
-    Espelha :func:`_image_build_cmd` mas usa o ``Dockerfile.cli-worker`` com
-    ``--build-arg WORKER_KIND=<kind>``. Tag por kind (runtimes divergem, §1.8).
+    Usa o ``Dockerfile.cli-worker`` (``FROM deile-cli-worker-base:local``) com
+    ``--build-arg WORKER_KIND=<kind>`` — instala SÓ a CLI do kind; as deps vêm
+    da base (DRY). Tag por kind (runtimes divergem, §1.8). A base PRECISA existir
+    antes (``build-cli-workers`` garante isso).
     """
+    runtime = _container_runtime()
+    if runtime is None:
+        return None
+    if which("docker") and runtime[0] == "docker":
+        ui.warn("usando `docker build` — num cluster k3s a imagem pode "
+                "precisar de import manual no containerd.")
     dockerfile = str(HERE / "Dockerfile.cli-worker")
     image = f"deile-cli-worker-{kind}:local"
     build_arg = ["--build-arg", f"WORKER_KIND={kind}"]
-    nerdctl = _resolve("nerdctl")
-    if nerdctl:
-        return [nerdctl, "--namespace", "k8s.io", "build", *build_arg,
-                "-f", dockerfile, "-t", image, str(ROOT)]
-    if which("colima"):
-        return ["colima", "nerdctl", "--", "--namespace", "k8s.io", "build",
-                *build_arg, "-f", dockerfile, "-t", image, str(ROOT)]
-    if which("docker"):
-        ui.warn("usando `docker build` — num cluster k3s a imagem pode "
-                "precisar de import manual no containerd.")
-        return ["docker", "build", *build_arg, "-f", dockerfile, "-t", image, str(ROOT)]
-    return None
+    return [*runtime, "build", *build_arg, "-f", dockerfile, "-t", image, str(ROOT)]
+
+
+def _ensure_cli_worker_base(yes: bool, *, force: bool = False) -> bool:
+    """Garante a base ``deile-cli-worker-base:local`` construída (idempotente).
+
+    A imagem per-kind faz ``FROM`` a base em build-time, então a base PRECISA
+    existir ANTES de qualquer build per-kind. Reconstrói só se ausente (ou
+    ``force=True``); caso já exista, é no-op (containerd reusa a layer).
+    Retorna ``False`` se o build falhar.
+    """
+    if not force and _cli_worker_base_exists():
+        ui.info(f"base {CLI_WORKER_BASE_IMAGE} já existe — reuso por layer.")
+        return True
+    cmd = _cli_worker_base_build_cmd()
+    if cmd is None:
+        ui.err("nenhum runtime de container encontrado (nerdctl/colima/docker).")
+        return False
+    ui.info(f"buildando base compartilhada {CLI_WORKER_BASE_IMAGE}")
+    if _run(cmd) != 0:
+        ui.err(f"build da base {CLI_WORKER_BASE_IMAGE} falhou.")
+        return False
+    ui.ok(f"base {CLI_WORKER_BASE_IMAGE} construída.")
+    return True
+
+
+def k8s_build_cli_base(args: dict) -> int:
+    """``k8s build-cli-base [--force]`` — builda a base compartilhada da frota CLI.
+
+    Produz ``deile-cli-worker-base:local`` (venv com requirements.txt + extra
+    [test] + apt comuns + server/adapters) — FONTE ÚNICA das deps pesadas,
+    compartilhada por layer entre todos os kinds. Idempotente: pula se já existe,
+    salvo ``--force``. ON-DEMAND — nunca chamado por ``k8s up``.
+    """
+    extra = args.get("extra") or []
+    force = "--force" in extra
+    target = "rebuild forçado" if force else "build se ausente (idempotente)"
+    if not announce_plan(
+        args, "k8s build-cli-base", CLI_WORKER_BASE_IMAGE,
+        [f"{target} da base compartilhada via Dockerfile.cli-worker-base"],
+    ):
+        return 0
+    if not ensure_container_prereqs(args["yes"]):
+        return 1
+    return 0 if _ensure_cli_worker_base(args["yes"], force=force) else 1
 
 
 def k8s_build_cli_workers(args: dict) -> int:
@@ -2419,13 +2503,21 @@ def k8s_build_cli_workers(args: dict) -> int:
     else:
         targets = kinds
 
-    steps = [f"build de deile-cli-worker-{k}:local" for k in targets]
+    steps = [
+        f"garante a base {CLI_WORKER_BASE_IMAGE} (build se ausente — deps "
+        "compartilhadas por layer)",
+        *[f"build de deile-cli-worker-{k}:local (FROM base)" for k in targets],
+    ]
     if not announce_plan(
         args, "k8s build-cli-workers",
         ", ".join(f"{k}-worker" for k in targets), steps,
     ):
         return 0
     if not ensure_container_prereqs(args["yes"]):
+        return 1
+
+    # A base PRECISA existir antes de qualquer build per-kind (FROM em build-time).
+    if not _ensure_cli_worker_base(args["yes"]):
         return 1
 
     rc = 0
@@ -2852,6 +2944,7 @@ _K8S = {
     "create-namespace": k8s_create_namespace,
     "scale": k8s_scale,
     "gen-worker": k8s_gen_worker,
+    "build-cli-base": k8s_build_cli_base,
     "build-cli-workers": k8s_build_cli_workers,
     "cli-worker-install": k8s_cli_worker_install,
     "cli-worker-login": k8s_cli_worker_login,
@@ -2886,8 +2979,11 @@ _K8S_ACTIONS = [
      "renovar OAuth do claude-worker (lightweight: Secret + restart, sem manifests)"),
     ("gen-worker",
      "gerar manifest de um CLI worker do template (gen-worker <kind>) — opt-in"),
+    ("build-cli-base",
+     "buildar a base compartilhada da frota CLI (deps; --force rebuilda) — opt-in"),
     ("build-cli-workers",
-     "buildar imagem(ns) per-tool da frota CLI (--kind <k> ou todos) — opt-in"),
+     "buildar imagem(ns) per-tool da frota CLI (--kind <k> ou todos; "
+     "auto-builda a base) — opt-in"),
     ("cli-worker-install",
      "instalar um CLI worker on-demand (cli-worker-install <kind>) — opt-in"),
     ("cli-worker-login",
