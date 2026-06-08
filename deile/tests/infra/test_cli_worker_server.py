@@ -627,6 +627,175 @@ async def test_resume_with_missing_workdir_degrades_to_fresh(
 
 
 # --------------------------------------------------------------------------- #
+# Modelo durável no meta (anti model=unknown — issue #445)
+# --------------------------------------------------------------------------- #
+
+
+def test_save_task_result_persists_cli_model(mock_adapter):
+    """O ``cli_model`` recebido no dispatch é persistido no meta — fonte de verdade
+    do modelo para a auditoria (vários CLIs não emitem o modelo no stdout)."""
+    from cli_adapters.base import WorkResult
+
+    task_id = "deadbeefdeadbeef"
+    cws._save_task_result(
+        task_id, WorkResult(ok=True, result_text="done"),
+        cli_model="openrouter/deepseek/deepseek-v4-pro",
+    )
+    meta = cws._load_task_result(task_id)
+    assert meta is not None
+    assert meta["cli_model"] == "openrouter/deepseek/deepseek-v4-pro"
+
+
+def test_save_task_result_cli_model_defaults_empty(mock_adapter):
+    """Sem ``cli_model`` (CLI decide) → campo vazio, não quebra o meta."""
+    from cli_adapters.base import WorkResult
+
+    cws._save_task_result("0011223344556677", WorkResult(ok=True, result_text="x"))
+    meta = cws._load_task_result("0011223344556677")
+    assert meta["cli_model"] == ""
+
+
+# --------------------------------------------------------------------------- #
+# Ledger de custo durável da frota (issue #445)
+# --------------------------------------------------------------------------- #
+
+
+def _write_progress_log(root, task_id, lines):
+    pdir = root / ".progress"
+    pdir.mkdir(parents=True, exist_ok=True)
+    text = lines if isinstance(lines, str) else "\n".join(lines)
+    p = pdir / f"{task_id}.stdout.log"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_harvest_appends_cost_then_prunes_old_log(mock_adapter, monkeypatch):
+    """O harvester colhe os tokens do .progress para o ledger ANTES de podar o log
+    velho — espelha o claude-worker (#445)."""
+    import json as _json
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
+    root = cws._worker_root()
+    log = _write_progress_log(root, "aabbccdd00112233", [
+        _json.dumps({"type": "step_finish", "modelID": "deepseek/deepseek-v4-pro",
+                     "part": {"tokens": {"input": 1500, "output": 300,
+                                         "cache": {"read": 1000, "write": 50}},
+                              "cost": 0.012}}),
+    ])
+    # Loga como antigo (além da retenção e do grace).
+    old = __import__("time").time() - 60 * 86400
+    import os as _os
+    _os.utime(log, (old, old))
+
+    res = cws.harvest_progress_to_ledger(root, "opencode")
+    assert res["sessions_harvested"] == 1
+    assert res["logs_removed"] == 1
+    assert not log.exists()  # log podado após colheita
+
+    ledger = cws._cost_ledger_path()
+    assert ledger.exists()
+    recs = [_json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
+    assert len(recs) == 1
+    r = recs[0]
+    assert r["task_id"] == "aabbccdd00112233" and r["worker"] == "opencode"
+    m = r["models"]["deepseek/deepseek-v4-pro"]
+    assert m["in"] == 1500 and m["out"] == 300 and m["cr"] == 1000
+
+
+def test_harvest_dedup_by_task_id_idempotent(mock_adapter, monkeypatch):
+    """Rodar o harvest duas vezes não duplica o registro do mesmo task_id."""
+    import json as _json
+    import os as _os
+    import time as _time
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
+    root = cws._worker_root()
+    log = _write_progress_log(root, "1122334455667788", [
+        _json.dumps({"type": "step_finish", "modelID": "qwen3-coder-plus",
+                     "part": {"tokens": {"input": 100, "output": 20}, "cost": 0.0}}),
+    ])
+    old = _time.time() - 60 * 86400
+    _os.utime(log, (old, old))
+    cws.harvest_progress_to_ledger(root, "opencode")
+    # Recria o log (mesmo task_id) e roda de novo — não deve re-anexar.
+    log2 = _write_progress_log(root, "1122334455667788", [
+        _json.dumps({"type": "step_finish", "modelID": "qwen3-coder-plus",
+                     "part": {"tokens": {"input": 100, "output": 20}, "cost": 0.0}}),
+    ])
+    _os.utime(log2, (old, old))
+    res2 = cws.harvest_progress_to_ledger(root, "opencode")
+    assert res2["sessions_harvested"] == 0  # já no ledger
+    ledger = cws._cost_ledger_path()
+    recs = [ln for ln in ledger.read_text().splitlines() if ln.strip()]
+    assert len(recs) == 1  # sem duplicata
+
+
+def test_harvest_preserves_recent_log_within_grace(mock_adapter, monkeypatch):
+    """Log recém-modificado (dentro do grace TOCTOU) NÃO é colhido nem podado."""
+    import json as _json
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
+    root = cws._worker_root()
+    log = _write_progress_log(root, "99aabbccddeeff00", [
+        _json.dumps({"type": "step_finish", "modelID": "x/y",
+                     "part": {"tokens": {"input": 10, "output": 5}, "cost": 0.0}}),
+    ])
+    res = cws.harvest_progress_to_ledger(root, "opencode")  # mtime = agora
+    assert res["sessions_harvested"] == 0 and res["logs_removed"] == 0
+    assert log.exists()  # preservado (resume agendado pode precisar)
+
+
+def test_harvest_uses_meta_model_for_unknown(mock_adapter, monkeypatch):
+    """Quando o stdout não emite o modelo (goose), o harvester usa o ``cli_model``
+    do meta — não grava ``unknown`` no ledger."""
+    import json as _json
+    import os as _os
+    import time as _time
+    from cli_adapters.base import WorkResult
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "goose")
+    root = cws._worker_root()
+    task_id = "f0f0f0f0f0f0f0f0"
+    # goose só emite total_tokens, sem modelo no metadata.
+    log = _write_progress_log(root, task_id, _json.dumps({
+        "messages": [], "metadata": {"total_tokens": 4000, "status": "completed"}}))
+    old = _time.time() - 60 * 86400
+    _os.utime(log, (old, old))
+    # Meta com o cli_model (gravado no dispatch).
+    cws._save_task_result(task_id, WorkResult(ok=True, result_text="ok"),
+                          cli_model="deepseek/deepseek-v4-flash")
+    cws.harvest_progress_to_ledger(root, "goose")
+    ledger = cws._cost_ledger_path()
+    rec = _json.loads(ledger.read_text().splitlines()[0])
+    assert "unknown" not in rec["models"]
+    assert "deepseek/deepseek-v4-flash" in rec["models"]
+
+
+def test_harvest_failsafe_aborts_without_parser(mock_adapter, monkeypatch):
+    """Sem o parser (fleet_progress_parse ausente da imagem) o harvest NÃO poda —
+    fail-safe cardinal: nunca deletar custo não colhido (#445)."""
+    import json as _json
+    import os as _os
+    import time as _time
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
+    monkeypatch.setattr(cws, "_fpp", None)
+    root = cws._worker_root()
+    log = _write_progress_log(root, "cafecafecafecafe", [
+        _json.dumps({"type": "step_finish", "modelID": "x/y",
+                     "part": {"tokens": {"input": 10, "output": 5}, "cost": 0.0}}),
+    ])
+    old = _time.time() - 60 * 86400
+    _os.utime(log, (old, old))
+    res = cws.harvest_progress_to_ledger(root, "opencode")
+    assert res["logs_removed"] == 0
+    assert log.exists()  # preservado
+    assert any("indisponível" in e for e in res["errors"])
+
+
+def test_run_cleanup_invokes_harvest(mock_adapter, monkeypatch):
+    """``run_cleanup`` encadeia o harvest do ledger após o cleanup de workdirs."""
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
+    res = cws.run_cleanup()
+    assert "cost_ledger" in res  # harvest sempre roda (best-effort)
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 

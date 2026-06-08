@@ -102,5 +102,6 @@ infra/
 # Docker exige re-incluir os filhos depois de re-incluir o pai).
 !infra/k8s/cli_worker_server.py
 !infra/k8s/_worker_core.py
+!infra/k8s/fleet_progress_parse.py
 !infra/k8s/cli_adapters
 !infra/k8s/cli_adapters/**

@@ -427,3 +427,127 @@ def test_panel_t_lowercase_still_claude_legacy():
     assert result.kind == panel.Action.SUSPEND
     cmd = result.payload.get("command")
     assert cmd and any("session_tokens_audit.py" in str(c) for c in cmd)
+
+
+# --------------------------------------------------------------------------- #
+# 6. Modelo durável (anti model=unknown) — IN_POD_PARSER lê .sessions/<id>.json #
+# --------------------------------------------------------------------------- #
+def _write_meta(root: Path, task_id: str, cli_model: str):
+    sdir = root / ".sessions"
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / f"{task_id}.json").write_text(
+        json.dumps({"task_id": task_id, "cli_model": cli_model}), encoding="utf-8")
+
+
+def test_meta_model_remaps_unknown(fta, tmp_path):
+    # goose só emite total_tokens, sem modelo → o parser cai em "unknown"; o meta
+    # com cli_model deve reescrever a chave.
+    _write_progress(tmp_path, "task_goose000099", json.dumps({
+        "messages": [], "metadata": {"total_tokens": 8000, "status": "completed"}}))
+    _write_meta(tmp_path, "task_goose000099", "deepseek/deepseek-v4-flash")
+    sessions = _run_parser(fta, "goose", tmp_path)
+    assert len(sessions) == 1
+    models = sessions[0]["models"]
+    assert "unknown" not in models
+    assert "deepseek/deepseek-v4-flash" in models
+
+
+def test_meta_model_does_not_override_emitted_model(fta, tmp_path):
+    # opencode emite o modelID; o meta NÃO deve sobrescrever um modelo real.
+    _write_progress(tmp_path, "task_opencode001", [
+        json.dumps({"type": "step_finish", "modelID": "qwen3-coder-plus",
+                    "part": {"tokens": {"input": 100, "output": 20}, "cost": 0.0}}),
+    ])
+    _write_meta(tmp_path, "task_opencode001", "deepseek/deepseek-v4-pro")
+    sessions = _run_parser(fta, "opencode", tmp_path)
+    models = sessions[0]["models"]
+    assert "qwen3-coder-plus" in models  # modelo emitido prevalece
+    assert "deepseek/deepseek-v4-pro" not in models
+
+
+# --------------------------------------------------------------------------- #
+# 7. Leitura do ledger durável + dedup por task_id (sessões já podadas)         #
+# --------------------------------------------------------------------------- #
+def _write_ledger(root: Path, records, env_path: Path | None = None):
+    path = env_path or (root / ".cost-ledger.jsonl")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+    return path
+
+
+def test_parser_reads_ledger_for_pruned_sessions(fta, tmp_path):
+    # Sem .progress vivo, mas com ledger → reidrata a sessão podada.
+    _write_ledger(tmp_path, [{
+        "v": 1, "task_id": "harvested0000001", "worker": "opencode",
+        "models": {"deepseek/deepseek-v4-pro": {"in": 9000, "out": 800, "cc": 0, "cr": 0}},
+        "native_cost": 0.05, "harvested_at": 1_700_000_000.0,
+        "source_mtime": 1_700_000_000.0,
+    }])
+    sessions = _run_parser(fta, "opencode", tmp_path)
+    assert len(sessions) == 1
+    s = sessions[0]
+    assert s["task_id"] == "harvested0000001" and s.get("harvested") is True
+    assert s["models"]["deepseek/deepseek-v4-pro"]["in"] == 9000
+
+
+def test_parser_ledger_dedup_against_live(fta, tmp_path):
+    # Mesmo task_id no .progress vivo E no ledger → a viva prevalece (1 sessão).
+    _write_progress(tmp_path, "dup00000000001a", [
+        json.dumps({"type": "step_finish", "modelID": "x/y",
+                    "part": {"tokens": {"input": 1234, "output": 50}, "cost": 0.0}}),
+    ])
+    _write_ledger(tmp_path, [{
+        "v": 1, "task_id": "dup00000000001a", "worker": "opencode",
+        "models": {"x/y": {"in": 1, "out": 1, "cc": 0, "cr": 0}},
+        "harvested_at": 1_700_000_000.0, "source_mtime": 1_700_000_000.0,
+    }])
+    sessions = _run_parser(fta, "opencode", tmp_path)
+    assert len([s for s in sessions if s["task_id"] == "dup00000000001a"]) == 1
+    live = next(s for s in sessions if s["task_id"] == "dup00000000001a")
+    # A viva (do .progress) tem in=1234, não a do ledger (in=1).
+    assert live["models"]["x/y"]["in"] == 1234
+    assert live.get("harvested") is not True
+
+
+def test_parser_ledger_env_override_path(fta, tmp_path):
+    # DEILE_CLI_WORKER_COST_LEDGER_PATH redireciona o ledger lido.
+    led = tmp_path / "custom" / "led.jsonl"
+    _write_ledger(tmp_path, [{
+        "v": 1, "task_id": "envledger0000001", "worker": "opencode",
+        "models": {"x/y": {"in": 500, "out": 100, "cc": 0, "cr": 0}},
+        "harvested_at": 1_700_000_000.0, "source_mtime": 1_700_000_000.0,
+    }], env_path=led)
+    sessions = _run_parser(fta, "opencode", tmp_path,
+                           env_extra={"DEILE_CLI_WORKER_COST_LEDGER_PATH": str(led)})
+    assert any(s["task_id"] == "envledger0000001" for s in sessions)
+
+
+# --------------------------------------------------------------------------- #
+# 8. Mensagem correta de worker indisponível (replicas=0 × ausente)            #
+# --------------------------------------------------------------------------- #
+def test_unavailable_reason_distinguishes_scaled_zero_from_absent(fta, monkeypatch):
+    calls = {}
+
+    def fake_kubectl_json(kubectl, ns, *args):
+        calls["args"] = args
+        # get deploy <app> -o json
+        if args[:2] == ("get", "deploy"):
+            app = args[2]
+            if app == "opencode-worker":
+                return {"spec": {"replicas": 0}, "status": {}}
+            if app == "qwen-worker":
+                return {}  # Deployment ausente
+            if app == "codex-worker":
+                return {"spec": {"replicas": 2}, "status": {"readyReplicas": 2}}
+        return {}
+
+    monkeypatch.setattr(fta, "kubectl_json", fake_kubectl_json)
+    r0 = fta.worker_unavailable_reason("kc", "deile", "opencode")
+    rabsent = fta.worker_unavailable_reason("kc", "deile", "qwen")
+    rready = fta.worker_unavailable_reason("kc", "deile", "codex")
+    assert "replicas=0" in r0 and "pausada" in r0
+    assert "ausente" in rabsent and "não instalado" in rabsent
+    # replicas>0 + ready → nem ausente nem pausada (caso de borda: pod transitório).
+    assert "replicas=0" not in rready and "ausente" not in rready

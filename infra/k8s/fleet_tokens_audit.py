@@ -79,11 +79,24 @@ except ImportError:  # Windows / sem POSIX termios
 
 # Fonte única da lógica de custo (issue #445).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fleet_progress_parse  # noqa: E402 — fonte única dos parsers de .progress
 from jsonl_cost import (  # noqa: E402
     cost_of_model,
     fleet_cost_of_model,
     nocache_cost_of_model,
 )
+
+
+def _fleet_progress_parse_source() -> str:
+    """Source de ``fleet_progress_parse`` para inlinar no parser in-pod.
+
+    O parser roda via ``kubectl exec ... python3 -`` (stdin) em pods cuja
+    presença do módulo em ``sys.path`` não é garantida (ex.: claude-worker). Em
+    vez de depender do import, inlinamos o source do módulo compartilhado —
+    mantendo-o como FONTE ÚNICA dos parsers de ``.progress``.
+    """
+    import inspect
+    return inspect.getsource(fleet_progress_parse)
 
 # Todas as datas exibidas em BRT (UTC−3, sem DST desde 2019).
 BRT = timezone(timedelta(hours=-3))
@@ -193,12 +206,31 @@ def _brief_for(task_id):
     return None
 
 
+# Subdir do PVC onde o servidor persiste o meta por task (cli_worker_server.
+# _RESULT_SUBDIR). Carrega o ``cli_model`` (model-id nativo recebido no payload
+# do /v1/dispatch) — fonte de verdade do modelo, pois o stdout de vários CLIs
+# (goose, codex sem turn_context, aider sem "Model:") NÃO emite o modelo.
+SESSIONS_DIR = os.path.join(ROOT, ".sessions")
+
+
+def _meta_model_for(task_id):
+    # Lê .sessions/<task_id>.json e devolve o cli_model persistido (ou None).
+    path = os.path.join(SESSIONS_DIR, "%s.json" % task_id)
+    try:
+        with open(path, errors="replace") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    m = meta.get("cli_model")
+    return m.strip() if isinstance(m, str) and m.strip() else None
+
+
 def _new_session(task_id, src):
     return {
         "worker": KIND, "task_id": task_id, "source": src,
         "models": {}, "native_cost": None,
         "first_ts": None, "last_ts": None, "brief": _brief_for(task_id),
-        "mtime": _mtime(src),
+        "mtime": _mtime(src), "meta_model": _meta_model_for(task_id),
     }
 
 
@@ -206,6 +238,19 @@ def _add(session, model, tk):
     mm = session["models"].setdefault(model or "unknown", EMPTY())
     for k in ("in", "out", "cc", "cr"):
         mm[k] += int(tk.get(k, 0) or 0)
+
+
+def _apply_meta_model(session):
+    # Remapeia a chave "unknown" para o cli_model persistido no meta (fonte de
+    # verdade do argv --model). Só age quando há meta_model E a única origem de
+    # tokens é "unknown" — nunca sobrescreve um modelo que o CLI emitiu de fato.
+    meta = session.get("meta_model")
+    if not meta or "unknown" not in session["models"]:
+        return
+    unk = session["models"].pop("unknown")
+    dst = session["models"].setdefault(meta, EMPTY())
+    for k in ("in", "out", "cc", "cr"):
+        dst[k] += int(unk.get(k, 0) or 0)
 
 
 def _iter_progress_logs():
@@ -222,17 +267,84 @@ def _iter_progress_logs():
             continue
 
 
-def _ndjson_events(text):
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or not line.startswith("{"):
+# Parsers de .progress por kind — fonte ÚNICA inlinada de fleet_progress_parse.py
+# (o host substitui o placeholder pelo source real ANTES de pipar via stdin, pois
+# o pod não tem garantia de import do módulo). Exec num namespace isolado para
+# não colidir com o ``_add(session,...)`` deste parser (assinatura diferente).
+_FPP = {}
+exec(compile(__FLEET_PROGRESS_PARSE_SOURCE__, "<fleet_progress_parse>", "exec"), _FPP)
+_parse_progress_text = _FPP["parse_progress_text"]
+
+
+def _ledger_path():
+    # Espelha cli_worker_server._cost_ledger_path: env override > <root>/.cost-ledger.jsonl.
+    env = os.environ.get("DEILE_CLI_WORKER_COST_LEDGER_PATH", "").strip()
+    return env or os.path.join(ROOT, ".cost-ledger.jsonl")
+
+
+def _ledger_sessions(live_task_ids):
+    # Sessões já podadas do .progress, reconstruídas do ledger durável (issue
+    # #445). Dedup por task_id contra as vivas (que prevalecem — mais frescas).
+    out = []
+    path = _ledger_path()
+    seen = set()
+    try:
+        fh = open(path, errors="replace")
+    except OSError:
+        return out
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            tid = r.get("task_id")
+            models = r.get("models") or {}
+            if not tid or tid in live_task_ids or tid in seen:
+                continue
+            if not any(sum(int(x or 0) for x in v.values()) > 0
+                       for v in models.values() if isinstance(v, dict)):
+                continue
+            mtime = r.get("source_mtime") or r.get("harvested_at") or 0
+            if SINCE_MTIME and mtime and mtime < SINCE_MTIME:
+                continue
+            seen.add(tid)
+            out.append({
+                "worker": r.get("worker") or KIND, "task_id": tid,
+                "source": "<ledger>", "models": models,
+                "native_cost": r.get("native_cost"),
+                "first_ts": None, "last_ts": None, "brief": None,
+                "mtime": mtime or None, "harvested": True,
+            })
+    return out
+
+
+def parse_progress_kind():
+    # Genérico para os 5 workers que gravam em .progress (opencode/codex/qwen/
+    # goose/aider). Delega o parsing do shape nativo ao módulo compartilhado e
+    # embrulha numa sessão (brief/mtime/meta_model). Espelha o harvester do ledger.
+    sessions = []
+    live_ids = set()
+    for task_id, f, text in _iter_progress_logs():
+        parsed = _parse_progress_text(KIND, text, task_id)
+        if parsed is None:
             continue
-        try:
-            o = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(o, dict):
-            yield o
+        s = _new_session(task_id, f)
+        for model, tk in parsed.get("models", {}).items():
+            _add(s, model, tk)
+        nc = parsed.get("native_cost")
+        if isinstance(nc, (int, float)):
+            s["native_cost"] = nc
+        _apply_meta_model(s)
+        if any(sum(v.values()) > 0 for v in s["models"].values()):
+            sessions.append(s)
+            live_ids.add(task_id)
+    # Sessões históricas já podadas do .progress, reidratadas do ledger durável.
+    sessions.extend(_ledger_sessions(live_ids))
+    return sessions
 
 
 # --- claude: JSONL do `claude -p` (model+tokens nativos, dedup por id) ------
@@ -300,196 +412,6 @@ def parse_claude():
     return sessions
 
 
-# --- opencode: NDJSON step_finish (part.tokens + part.cost nativo) ----------
-def parse_opencode():
-    sessions = []
-    for task_id, f, text in _iter_progress_logs():
-        s = _new_session(task_id, f)
-        cost = 0.0; saw_cost = False; model = "unknown"
-        for o in _ndjson_events(text):
-            # modelID aparece em eventos de mensagem em algumas versões.
-            model = o.get("modelID") or o.get("model") or model
-            if str(o.get("type", "")) != "step_finish":
-                continue
-            part = o.get("part") if isinstance(o.get("part"), dict) else o
-            tok = part.get("tokens") if isinstance(part.get("tokens"), dict) else {}
-            cache = tok.get("cache") if isinstance(tok.get("cache"), dict) else {}
-            _add(s, model, {
-                "in": tok.get("input", 0), "out": tok.get("output", 0),
-                "cc": cache.get("write", 0), "cr": cache.get("read", 0),
-            })
-            c = part.get("cost")
-            if isinstance(c, (int, float)):
-                cost += float(c); saw_cost = True
-        if saw_cost:
-            s["native_cost"] = cost
-        if any(sum(v.values()) > 0 for v in s["models"].values()):
-            sessions.append(s)
-    return sessions
-
-
-# --- codex: JSONL token_count / turn.completed (turn_context.model) ---------
-def parse_codex():
-    sessions = []
-    for task_id, f, text in _iter_progress_logs():
-        s = _new_session(task_id, f)
-        model = "unknown"
-        prev_in = prev_out = prev_cr = 0
-        for o in _ndjson_events(text):
-            tc = o.get("turn_context")
-            if isinstance(tc, dict) and tc.get("model"):
-                model = tc.get("model")
-            if o.get("model"):
-                model = o.get("model")
-            etype = o.get("type") or ""
-            msg = o.get("msg") if isinstance(o.get("msg"), dict) else None
-            if msg and msg.get("type"):
-                etype = msg.get("type")
-            # token_count: totais cumulativos → delta sobre o anterior.
-            info = (msg or o).get("info") if isinstance((msg or o).get("info"), dict) else None
-            usage = None
-            if etype == "token_count" and info:
-                usage = info.get("total_token_usage") or info.get("last_token_usage")
-            elif etype in ("turn.completed", "turn_complete") or o.get("usage"):
-                usage = o.get("usage") or (msg.get("usage") if msg else None)
-            if not isinstance(usage, dict):
-                continue
-            cur_in = int(usage.get("input_tokens", 0) or 0)
-            cur_out = int(usage.get("output_tokens", 0) or 0)
-            cur_cr = int(usage.get("cached_input_tokens", 0)
-                         or usage.get("cached_tokens", 0) or 0)
-            # token_count é cumulativo; turn.completed costuma ser por-turn.
-            if etype == "token_count":
-                d_in, d_out, d_cr = (max(0, cur_in - prev_in),
-                                     max(0, cur_out - prev_out),
-                                     max(0, cur_cr - prev_cr))
-                prev_in, prev_out, prev_cr = cur_in, cur_out, cur_cr
-            else:
-                d_in, d_out, d_cr = cur_in, cur_out, cur_cr
-            _add(s, model, {"in": d_in, "out": d_out, "cr": d_cr})
-        if any(sum(v.values()) > 0 for v in s["models"].values()):
-            sessions.append(s)
-    return sessions
-
-
-# --- qwen: array de eventos; result.stats.models[model].tokens --------------
-def parse_qwen():
-    sessions = []
-    for task_id, f, text in _iter_progress_logs():
-        s = _new_session(task_id, f)
-        whole = text.strip()
-        events = None
-        if whole.startswith("["):
-            try:
-                events = json.loads(whole)
-            except Exception:
-                events = None
-        if events is None:
-            events = list(_ndjson_events(text))
-        if not isinstance(events, list):
-            continue
-        result_ev = next((e for e in reversed(events)
-                          if isinstance(e, dict) and e.get("type") == "result"), None)
-        stats = result_ev.get("stats") if isinstance(result_ev, dict) else None
-        models = stats.get("models") if isinstance(stats, dict) else None
-        if isinstance(models, dict):
-            for model, mdata in models.items():
-                tok = mdata.get("tokens") if isinstance(mdata, dict) else {}
-                if not isinstance(tok, dict):
-                    continue
-                _add(s, model, {
-                    "in": tok.get("input", 0) or tok.get("prompt", 0),
-                    "out": tok.get("output", 0) or tok.get("candidates", 0),
-                    "cr": tok.get("cached", 0) or tok.get("cache", 0),
-                })
-        elif isinstance(result_ev, dict) and isinstance(result_ev.get("usage"), dict):
-            u = result_ev["usage"]
-            _add(s, result_ev.get("model") or "unknown", {
-                "in": u.get("input_tokens", 0), "out": u.get("output_tokens", 0),
-                "cr": u.get("cached", 0) or u.get("cached_tokens", 0),
-            })
-        if any(sum(v.values()) > 0 for v in s["models"].values()):
-            sessions.append(s)
-    return sessions
-
-
-# --- goose: {messages, metadata:{total_tokens,...}} -------------------------
-def parse_goose():
-    sessions = []
-    for task_id, f, text in _iter_progress_logs():
-        s = _new_session(task_id, f)
-        whole = text.strip()
-        obj = None
-        if whole.startswith("{"):
-            try:
-                obj = json.loads(whole)
-            except Exception:
-                obj = None
-        meta = obj.get("metadata") if isinstance(obj, dict) else None
-        if not isinstance(meta, dict):
-            # JSONL: pega o último evento com metadata.
-            for o in _ndjson_events(text):
-                m = o.get("metadata")
-                if isinstance(m, dict):
-                    meta = m
-        if isinstance(meta, dict):
-            model = meta.get("model") or (obj.get("model") if isinstance(obj, dict) else None) or "unknown"
-            tin = int(meta.get("input_tokens", 0) or 0)
-            tout = int(meta.get("output_tokens", 0) or 0)
-            ttot = int(meta.get("total_tokens", 0) or meta.get("accumulated_total_tokens", 0) or 0)
-            if not tin and not tout and ttot:
-                # Só o total: estima ~25% input / 75% output (coding agent).
-                tin = ttot // 4
-                tout = ttot - tin
-            _add(s, model, {"in": tin, "out": tout, "cr": int(meta.get("cached_tokens", 0) or 0)})
-        if any(sum(v.values()) > 0 for v in s["models"].values()):
-            sessions.append(s)
-    return sessions
-
-
-# --- aider: texto livre "Tokens: N sent, M received." / "Cost: $X" ----------
-_AIDER_TOK = re.compile(r"[Tt]okens:\s*([\d,\.]+)k?\s*sent,\s*([\d,\.]+)k?\s*received")
-_AIDER_COST = re.compile(r"[Cc]ost:\s*\$?([\d\.]+)")
-_AIDER_MODEL = re.compile(r"[Mm]odel:\s*([\w\-./:]+)")
-
-
-def _num(s):
-    s = s.replace(",", "")
-    try:
-        return float(s)
-    except ValueError:
-        return 0.0
-
-
-def parse_aider():
-    sessions = []
-    for task_id, f, text in _iter_progress_logs():
-        s = _new_session(task_id, f)
-        sent = recv = 0
-        cost = 0.0; saw_cost = False
-        model = "unknown"
-        mm = _AIDER_MODEL.search(text)
-        if mm:
-            model = mm.group(1)
-        for line in text.splitlines():
-            tk = _AIDER_TOK.search(line)
-            if tk:
-                a = _num(tk.group(1)); b = _num(tk.group(2))
-                if "k sent" in line.lower() or "k received" in line.lower():
-                    a *= 1000; b *= 1000
-                sent += int(a); recv += int(b)
-            cm = _AIDER_COST.search(line)
-            if cm:
-                cost += _num(cm.group(1)); saw_cost = True
-        if sent or recv:
-            _add(s, model, {"in": sent, "out": recv})
-        if saw_cost:
-            s["native_cost"] = cost
-        if any(sum(v.values()) > 0 for v in s["models"].values()):
-            sessions.append(s)
-    return sessions
-
-
 # --- deile-worker: SQLite usage_records (tokens+custo nativos) --------------
 def parse_deile():
     db = os.environ.get("FLEET_DEILE_DB") or os.path.join(
@@ -527,14 +449,23 @@ def parse_deile():
 
 
 PARSERS = {
-    "claude": parse_claude, "opencode": parse_opencode, "codex": parse_codex,
-    "qwen": parse_qwen, "goose": parse_goose, "aider": parse_aider,
+    "claude": parse_claude,
+    "opencode": parse_progress_kind, "codex": parse_progress_kind,
+    "qwen": parse_progress_kind, "goose": parse_progress_kind,
+    "aider": parse_progress_kind,
     "deile": parse_deile,
 }
 
 fn = PARSERS.get(KIND)
 print(json.dumps(fn() if fn else []))
 '''
+
+# Inlina o source dos parsers de .progress (fonte única — ver placeholder no
+# IN_POD_PARSER). repr() escapa o source para um literal Python seguro.
+IN_POD_PARSER = IN_POD_PARSER.replace(
+    "__FLEET_PROGRESS_PARSE_SOURCE__",
+    repr(_fleet_progress_parse_source()),
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -560,10 +491,15 @@ def kubectl_json(kubectl: str, ns: str, *args: str) -> dict:
         return {}
 
 
+def _app_name_for(kind: str) -> str:
+    """Nome do app/Deployment do worker ``<kind>`` (label ``app=`` + container)."""
+    return "claude-worker" if kind == "claude" else (
+        "deile-worker" if kind == "deile" else f"{kind}-worker")
+
+
 def resolve_pod_for_worker(kubectl: str, ns: str, kind: str) -> str | None:
     """Pod Running do worker ``<kind>``; ``None`` se ausente (worker não instalado)."""
-    app = "claude-worker" if kind == "claude" else (
-        "deile-worker" if kind == "deile" else f"{kind}-worker")
+    app = _app_name_for(kind)
     data = kubectl_json(kubectl, ns, "get", "pods", "-l", f"app={app}", "-o", "json")
     items = data.get("items", [])
     running = [it for it in items
@@ -574,9 +510,29 @@ def resolve_pod_for_worker(kubectl: str, ns: str, kind: str) -> str | None:
     return pool[0]["metadata"]["name"]
 
 
+def worker_unavailable_reason(kubectl: str, ns: str, kind: str) -> str:
+    """Motivo legível de um worker sem pod Running (distingue ausente × replicas=0).
+
+    Consulta barata do Deployment (``kubectl get deploy <app>``) para não MENTIR
+    que o worker "não está instalado" quando, na verdade, o Deployment existe e
+    está apenas escalado a zero (frota pausada). Retorna a frase para o operador.
+    """
+    app = _app_name_for(kind)
+    data = kubectl_json(kubectl, ns, "get", "deploy", app, "-o", "json")
+    if not data:
+        return "Deployment ausente (worker não instalado) — pulado"
+    spec_replicas = (data.get("spec") or {}).get("replicas")
+    ready = (data.get("status") or {}).get("readyReplicas", 0) or 0
+    if spec_replicas == 0:
+        return "Deployment existe mas replicas=0 (frota pausada) — pulado"
+    if not ready:
+        return (f"Deployment replicas={spec_replicas} mas nenhum pod Running "
+                "(subindo/crash?) — pulado")
+    return "sem pod Running no momento — pulado"
+
+
 def _container_for(kind: str) -> str:
-    return "claude-worker" if kind == "claude" else (
-        "deile-worker" if kind == "deile" else f"{kind}-worker")
+    return _app_name_for(kind)
 
 
 def fetch_worker_sessions(kubectl: str, ns: str, kind: str, pod: str,
@@ -1025,8 +981,8 @@ def collect_fleet(kubectl: str, ns: str, kinds: list, collectors: dict,
     for kind in kinds:
         pod = resolve_pod_for_worker(kubectl, ns, kind)
         if not pod:
-            print(f"• {kind}: sem pod no namespace (worker não instalado) — pulado",
-                  file=sys.stderr)
+            reason = worker_unavailable_reason(kubectl, ns, kind)
+            print(f"• {kind}: {reason}", file=sys.stderr)
             continue
         print(f"• {kind}: parseando uso no pod {pod}...", file=sys.stderr)
         sess = fetch_worker_sessions(kubectl, ns, kind, pod, since_mtime)

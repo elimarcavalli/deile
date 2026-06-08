@@ -131,6 +131,10 @@ COPY infra/k8s/_worker_core.py      /app/_worker_core.py
 COPY infra/k8s/_worker_resume.py    /app/_worker_resume.py
 COPY infra/k8s/dispatch_logger.py   /app/dispatch_logger.py
 COPY infra/k8s/jsonl_cost.py        /app/jsonl_cost.py
+# Parsers de .progress (fonte única — issue #445). O harvester do ledger de
+# custo em cli_worker_server importa ``fleet_progress_parse`` por nome; sem ele
+# o harvest é abortado (fail-safe) e os logs de progresso nunca são podados.
+COPY infra/k8s/fleet_progress_parse.py /app/fleet_progress_parse.py
 COPY infra/k8s/cli_adapters         /app/cli_adapters
 # wrapper.py — launcher universal (modo cli-worker): carrega secrets montados,
 # wira GITHUB_TOKEN/GITLAB_TOKEN + identidade git e valida allowlist ANTES de
@@ -138,7 +142,8 @@ COPY infra/k8s/cli_adapters         /app/cli_adapters
 # o arquivo PRECISA estar em /app (homologação E2E: pod crashava sem ele).
 COPY infra/k8s/wrapper.py           /app/wrapper.py
 RUN chmod -R 0555 /app/cli_worker_server.py /app/_worker_core.py \
-        /app/_worker_resume.py /app/dispatch_logger.py /app/jsonl_cost.py /app/wrapper.py \
+        /app/_worker_resume.py /app/dispatch_logger.py /app/jsonl_cost.py \
+        /app/fleet_progress_parse.py /app/wrapper.py \
     && find /app/cli_adapters -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 
 WORKDIR /app

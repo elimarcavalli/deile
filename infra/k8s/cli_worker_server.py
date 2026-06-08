@@ -46,6 +46,14 @@ from aiohttp import web
 from cli_adapters import ADAPTERS, get_adapter
 from cli_adapters.base import CliAdapter, ResumeCtx, WorkResult
 
+# Harvester do ledger de custo (issue #445): parsing dos .progress (fonte única
+# em fleet_progress_parse) + tabela de preço (jsonl_cost). Import best-effort —
+# se ausente da imagem, o harvest é abortado (fail-safe: nunca poda sem colher).
+try:
+    import fleet_progress_parse as _fpp  # noqa: E402
+except Exception:  # noqa: BLE001 — módulo opcional; harvest degrada para no-op
+    _fpp = None
+
 logger = logging.getLogger("deile.cli_worker")
 
 #: Tamanho do task_id (hex) — alinhado ao claude-worker (``secrets.token_hex(8)``).
@@ -78,6 +86,20 @@ _CLEANUP_RETENTION_DAYS: int = int(
 #: Intervalo (s) entre execuções periódicas do cleanup (default 1 h).
 _CLEANUP_INTERVAL_S: float = float(
     os.environ.get("DEILE_CLI_WORKER_CLEANUP_INTERVAL_S", "3600")
+)
+
+#: Retenção dos logs de progresso (.progress/*.stdout.log), em DIAS (default 30).
+#: Espelha o ``DEILE_CLAUDE_JSONL_RETENTION_DAYS`` do claude — gatilho principal
+#: da poda dos logs DEPOIS de o custo ser colhido para o ledger durável. Os logs
+#: são volumosos (sessões de milhões de tokens); o ledger é minúsculo (~KB).
+_PROGRESS_RETENTION_DAYS: int = int(
+    os.environ.get("DEILE_CLI_WORKER_PROGRESS_RETENTION_DAYS", "30")
+)
+
+#: Grace period (s, default 1 h) — piso TOCTOU: um log recém-modificado pode ter
+#: um resume agendado; nunca colhemos+podamos log modificado dentro dessa janela.
+_PROGRESS_GRACE_S: int = int(
+    os.environ.get("DEILE_CLI_WORKER_PROGRESS_GRACE_S", "3600")
 )
 
 
@@ -707,6 +729,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 _save_task_result, task_id, work,
                 session_id=session_id, workspace=workspace,
                 prev_task_id=meta_prev_task_id, attempt=attempt,
+                cli_model=cli_model,
             )
             return _build_response(task_id, result, work, session_id=session_id)
         finally:
@@ -809,10 +832,11 @@ def _save_task_result(
     workspace: Optional[Path] = None,
     prev_task_id: Optional[str] = None,
     attempt: int = 1,
+    cli_model: Optional[str] = None,
 ) -> None:
     """Persiste o veredito + a metadata de sessão da task (write-tmp + replace).
 
-    Espelha o ``session.json`` do claude-worker (issue #445). Dois propósitos:
+    Espelha o ``session.json`` do claude-worker (issue #445). Três propósitos:
 
     1. **Conclusão fire-and-forget:** sem isto, um dispatch ``wait=False`` computa
        o ``WorkResult`` e descarta a resposta (202), deixando o ``resume-info``
@@ -822,6 +846,11 @@ def _save_task_result(
        ``workdir``, ``prev_task_id`` e ``attempt`` para o ``resume-info`` devolver
        ao pipeline — que então re-despacha com ``resume_session_id`` + reuso do
        MESMO workdir, retomando o trabalho parcial em vez de re-gastar do zero.
+    3. **Modelo durável (anti model=unknown):** persiste o ``cli_model`` recebido
+       no payload do ``/v1/dispatch``. O stdout nativo de vários CLIs (goose,
+       aider sem ``Model:``, codex sem ``turn_context``) NÃO emite o modelo —
+       ele vive só no argv ``--model``. A auditoria de tokens lê este meta como
+       fonte de verdade do modelo (fallback para o parse da saída).
 
     Best-effort: falha de I/O vira warning, não derruba o dispatch.
     """
@@ -832,6 +861,7 @@ def _save_task_result(
         "workdir": str(workspace) if workspace is not None else "",
         "prev_task_id": prev_task_id,
         "attempt": int(attempt),
+        "cli_model": cli_model or "",
         "last_completed_at": int(time.time()),
         "last_is_error": not work.ok,
         "last_result_full": full,
@@ -926,6 +956,215 @@ def _build_failure_reason(
 _bearer_auth_mw = _core.make_bearer_auth_mw(("/v1/health",))
 
 
+# --------------------------------------------------------------------------- #
+# Ledger de custo durável da frota CLI (issue #445) — espelha o claude-worker.
+#
+# Os logs de progresso (``<root>/.progress/<task>.stdout.log``) carregam duas
+# responsabilidades com ciclos de vida opostos: continuidade/debug (volumoso,
+# efêmero — sessões de milhões de tokens) e auditoria de custo (minúscula,
+# permanente). O cleanup antes só podava WORKDIRS e deixava os logs acumularem
+# sem limite no PVC. Agora, ANTES de podar um log além da retenção, o harvester
+# colhe os tokens por modelo para um ledger append-only durável (~KB). O
+# ``fleet_tokens_audit.py`` lê o ledger (sessões podadas) + o ``.progress`` vivo
+# (recentes), dedup por task_id — exatamente como o ``session_tokens_audit`` faz
+# para o claude.
+# --------------------------------------------------------------------------- #
+
+
+def _cost_ledger_path() -> Path:
+    """Caminho do ledger de custo durável (no PVC, sobrevive à poda dos logs)."""
+    env = os.environ.get("DEILE_CLI_WORKER_COST_LEDGER_PATH", "").strip()
+    if env:
+        return Path(env)
+    return _worker_root() / ".cost-ledger.jsonl"
+
+
+def _harvested_task_ids(ledger_path: Path) -> set:
+    """Conjunto de ``task_id`` já presentes no ledger (dedup do harvest)."""
+    ids: set = set()
+    if not ledger_path.exists():
+        return ids
+    try:
+        with open(ledger_path, errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                tid = rec.get("task_id")
+                if tid:
+                    ids.add(tid)
+    except OSError:
+        pass
+    return ids
+
+
+def _append_ledger(ledger_path: Path, record: dict) -> int:
+    """Anexa um registro ao ledger (append-only). Returns bytes escritos."""
+    line = json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger_path, "a", encoding="utf-8") as fh:
+        fh.write(line)
+    return len(line.encode("utf-8"))
+
+
+def _meta_model_for(task_id: str) -> Optional[str]:
+    """``cli_model`` persistido no meta da task (fonte de verdade do modelo)."""
+    meta = _load_task_result(task_id) or {}
+    m = meta.get("cli_model")
+    return m.strip() if isinstance(m, str) and m.strip() else None
+
+
+def harvest_progress_to_ledger(
+    root: Path,
+    kind: str,
+    *,
+    ledger_path: Optional[Path] = None,
+    retention_days: Optional[int] = None,
+    grace_s: Optional[int] = None,
+    now: Optional[float] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Colhe o custo dos logs de progresso para o ledger durável e poda.
+
+    Para cada ``<root>/.progress/<task>.stdout.log`` além da retenção (e fora do
+    grace TOCTOU):
+
+      1. Parseia o shape nativo via ``fleet_progress_parse`` (fonte única, mesma
+         lógica do parser in-pod), remapeando a chave ``unknown`` para o
+         ``cli_model`` persistido no meta (anti model=unknown).
+      2. Anexa um registro ``{task_id, worker, models, native_cost, ...}`` ao
+         ledger — pulando ``task_id`` já colhidos (idempotente, dedup por task_id).
+      3. Remove o ``.stdout.log`` (+ o ``.stderr.log`` irmão) só DEPOIS de o custo
+         ter sido contabilizado. Qualquer falha de parse/escrita preserva o log.
+
+    Fail-safe cardinal (mesmo do claude #445): sem o parser disponível, NÃO poda
+    — preserva tudo para não perder custo. ``dry_run`` só reporta os candidatos.
+    """
+    if ledger_path is None:
+        ledger_path = _cost_ledger_path()
+    if retention_days is None:
+        retention_days = _PROGRESS_RETENTION_DAYS
+    if grace_s is None:
+        grace_s = _PROGRESS_GRACE_S
+    if now is None:
+        now = time.time()
+
+    progress_dir = root / ".progress"
+    result = {
+        "sessions_harvested": 0,
+        "logs_removed": 0,
+        "ledger_bytes_written": 0,
+        "bytes_freed": 0,
+        "errors": [],
+    }
+    if not progress_dir.is_dir():
+        return result
+
+    # Cutoff = mais conservador entre retenção (gatilho principal) e grace TOCTOU.
+    cutoff = now - max(max(0, retention_days) * 86400, grace_s)
+    try:
+        logs = sorted(progress_dir.glob("*.stdout.log"))
+    except OSError as exc:
+        result["errors"].append(f"glob {progress_dir}: {exc}")
+        return result
+
+    candidates = []
+    for log in logs:
+        try:
+            if log.stat().st_mtime > cutoff:
+                continue
+        except OSError:
+            continue
+        candidates.append(log)
+
+    if dry_run or not candidates:
+        result["candidates"] = [str(p) for p in candidates]
+        return result
+
+    # Fail-safe: sem o parser não há como preservar o custo antes de deletar.
+    if _fpp is None:
+        result["errors"].append(
+            "fleet_progress_parse indisponível — poda abortada (fail-safe)")
+        logger.error(
+            "cost-ledger harvest ABORTADO: fleet_progress_parse indisponível; "
+            "%d logs preservados (sem poda) para não perder custo", len(candidates),
+        )
+        return result
+
+    harvested = _harvested_task_ids(ledger_path)
+    for log in candidates:
+        task_id = log.name[: -len(".stdout.log")]
+        try:
+            text = log.read_text(errors="replace")
+        except OSError as exc:
+            result["errors"].append(f"read {log}: {exc}")
+            continue
+        try:
+            parsed = _fpp.parse_progress_text(kind, text, task_id)
+        except Exception as exc:  # noqa: BLE001 — parse falhou: preserva o log
+            result["errors"].append(f"parse {log}: {exc}")
+            continue
+        if parsed is None:
+            # Kind não usa .progress (claude/deile) — não é nosso para colher/podar.
+            continue
+        models = dict(parsed.get("models") or {})
+        # Remap unknown → cli_model do meta (anti model=unknown durável).
+        meta_model = _meta_model_for(task_id)
+        if meta_model and "unknown" in models:
+            unk = models.pop("unknown")
+            dst = models.setdefault(meta_model, {"in": 0, "out": 0, "cc": 0, "cr": 0})
+            for k in ("in", "out", "cc", "cr"):
+                dst[k] = int(dst.get(k, 0)) + int(unk.get(k, 0) or 0)
+
+        has_tokens = any(sum(int(x or 0) for x in v.values()) > 0 for v in models.values())
+        if task_id not in harvested and has_tokens:
+            try:
+                source_mtime = log.stat().st_mtime
+            except OSError:
+                source_mtime = now
+            try:
+                written = _append_ledger(ledger_path, {
+                    "v": 1,
+                    "task_id": task_id,
+                    "worker": kind,
+                    "models": models,
+                    "native_cost": parsed.get("native_cost"),
+                    "harvested_at": now,
+                    "source_mtime": source_mtime,
+                })
+            except OSError as exc:
+                result["errors"].append(f"ledger write {log}: {exc}")
+                continue  # preserva o log: custo não contabilizado
+            result["ledger_bytes_written"] += written
+            result["sessions_harvested"] += 1
+            harvested.add(task_id)
+
+        # Poda o log (+ stderr irmão) — custo já contabilizado (ou zero tokens).
+        freed = 0
+        for sibling in (log, log.with_name(task_id + ".stderr.log")):
+            try:
+                if sibling.is_file():
+                    freed += sibling.stat().st_size
+                    sibling.unlink()
+            except OSError as exc:
+                result["errors"].append(f"unlink {sibling}: {exc}")
+        if not log.exists():
+            result["logs_removed"] += 1
+            result["bytes_freed"] += freed
+
+    logger.info(
+        "cost-ledger harvest (%s): sessions=%d logs_removed=%d freed=%d bytes "
+        "ledger=+%d bytes errors=%d",
+        kind, result["sessions_harvested"], result["logs_removed"],
+        result["bytes_freed"], result["ledger_bytes_written"], len(result["errors"]),
+    )
+    return result
+
+
 def run_cleanup() -> dict:
     """Executa um ciclo de cleanup dos workdirs stale (síncrono, idempotente).
 
@@ -934,10 +1173,22 @@ def run_cleanup() -> dict:
     preservar —, então ``has_session=None``: o critério de remoção é só lease-
     morto + idade (``_CLEANUP_RETENTION_DAYS``). Isto evita o mesmo incidente do
     claude-worker (issue #445) em que workdirs acumulavam indefinidamente.
+
+    Depois do cleanup de workdirs, colhe o custo dos logs de progresso para o
+    ledger durável e poda os logs além da retenção (issue #445) — best-effort:
+    falha do harvest é logada mas não derruba o cleanup de workdirs.
     """
-    return _core.startup_cleanup(
-        _worker_root(), retention_days=_CLEANUP_RETENTION_DAYS, has_session=None,
+    root = _worker_root()
+    res = _core.startup_cleanup(
+        root, retention_days=_CLEANUP_RETENTION_DAYS, has_session=None,
     )
+    try:
+        harvest = harvest_progress_to_ledger(root, _selected_kind())
+        res["cost_ledger"] = harvest
+    except Exception as exc:  # noqa: BLE001 — harvest nunca derruba o cleanup
+        logger.warning("harvest do ledger falhou: %s", exc)
+        res["cost_ledger"] = {"errors": [str(exc)]}
+    return res
 
 
 async def _cleanup_loop(stop_event: asyncio.Event) -> None:
