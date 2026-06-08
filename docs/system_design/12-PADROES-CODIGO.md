@@ -10,6 +10,7 @@
 | Novo arquivo em `deile/commands/**/*.py` | **Command Implementation** |
 | Novo arquivo em `deile/parsers/**/*.py` | **Parser Development** |
 | Novo `*.md` em `deile/skills/library/`, `~/.deile/skills/`, `.deile/skills/`, etc. | **Skill Development** |
+| Novo CLI worker em `infra/k8s/cli_adapters/<kind>.py` | **CLI Adapter Development** |
 | Estado cross-turn ou cross-session | **Memory System Integration** |
 | Permission check / audit log / sanitização | **Security Implementation** |
 | Padrões de intent / regex novos | **Intent Analysis Integration** |
@@ -300,6 +301,68 @@ Recomendações de redação:
 Override: a ordem é `bundled < user < user-claude < project < project-claude < extras`. Um arquivo posterior substitui o anterior em colisão de nome (com log INFO).
 
 ❌ Nunca: usar `name: null` ou ausente quando o stem normalizado fica vazio (skip silencioso); usar `priority: yes` (YAML 1.1 lê como `True` — rejeitado explicitamente); referenciar `../` em `file_content_patterns` para tentar ler fora do `project_root` (containment); duplicar nome de um built-in slash command (`/help`, `/model`, etc. — colisão filtrada com warning).
+
+## CLI Adapter Development
+
+Adapter = **um** arquivo `infra/k8s/cli_adapters/<kind>.py` que pluga um CLI de coding headless (opencode/codex/qwen/aider/goose/…) na frota multi-worker (Decisão #51 — ver `00-VISAO-GERAL.md`). O server genérico (`cli_worker_server.py` sobre `_worker_core.py`) reusa TODA a maquinaria agnóstica (lease, heartbeat, subprocess one-shot, HTTP bearer, cleanup, gate pós-run de commit/push/test); o adapter especializa só os **cinco pontos divergentes**. Auto-discovery (`cli_adapters/__init__.py`) monta `ADAPTERS = {kind: adapter}` — **fonte única** lida por `dispatch_resolver` (`VALID_DISPATCHERS`), painel, `deploy.py gen-worker` e geração de NetworkPolicy. **Adicionar worker = escrever o adapter; nenhum consumidor é editado** (`test_worker_registry_drives_everything.py`).
+
+Herde de `BaseCliAdapter` (defaults conservadores), declare os metadados na instância exportada `ADAPTER`, sobrescreva só o que diverge:
+
+```python
+from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
+import _worker_core as _core
+
+
+class FoocliAdapter(BaseCliAdapter):
+    def build_argv(self, *, brief_path, model, reasoning, workdir,
+                   resume, task_id="") -> list[str]:
+        # 1. argv headless (flags de autonomia, modelo, brief).
+        # resume não-None → retomar a sessão NATIVA no MESMO workdir (#445).
+        argv = ["foocli", "run", "--yes"]
+        if resume is not None:
+            argv += ["--resume", resume.session_id]
+        if model:
+            argv += ["--model", model]
+        return argv + ["--message-file", brief_path]
+
+    def env_overlay(self, *, home: str) -> dict:
+        # 2. env que o CLI exige (HOME/XDG/config inline). NÃO inclui auth_env_keys
+        #    (vêm do Secret montado no Deployment).
+        return {"HOME": home, "XDG_CONFIG_HOME": f"{home}/.config"}
+
+    def parse_output(self, *, stdout, stderr, rc) -> WorkResult:
+        # 3. saída → WorkResult. Exit-code NÃO é confiável; o gate pós-run decide
+        #    o sucesso final. Classifique corte de provider ANTES (anti-sangria).
+        err = _core.classify_provider_error(f"{stdout}\n{stderr}")
+        if err:
+            return WorkResult(ok=False, result_text=stderr[-2000:], error_code=err)
+        return WorkResult(ok=True, result_text=stdout[-12000:])
+
+    def list_models(self) -> list[ModelInfo]:
+        # 4. catálogo (estático curado ou dinâmico) → GET /v1/models / picker do painel.
+        return [ModelInfo(id="openrouter/deepseek/deepseek-v4-flash", provider="openrouter")]
+
+    def extract_session_id(self, *, stdout, stderr, task_id) -> str:
+        # session-id NATIVO p/ resume-info; workdir-keyed → task_id sentinela; "" = sem persistir.
+        return task_id
+
+
+# 5. metadados (single source of truth p/ registro/painel/manifests/NetworkPolicy).
+ADAPTER = FoocliAdapter(
+    kind="foocli",
+    default_port=8776,                       # próximo livre após a frota (8771–8775)
+    auth_mode="env",                         # "env" (API key, preferido) | "oauth_file"
+    supports_resume=True,                    # True → manifest gen provisiona PVC <kind>-worker-home
+    supports_reasoning=False,
+    git_strategy="brief_driven",             # "brief_driven" | "cli_autocommit"
+    auth_env_keys=["OPENROUTER_API_KEY"],    # chaves do Secret cli-worker-keys
+    egress_hosts=["openrouter.ai"],          # whitelist de egress da NetworkPolicy
+    writable_dirs=["HOME", "XDG_CONFIG_HOME"],
+    oauth=None,                              # OAuthSpec(...) habilita cli-worker-login
+)
+```
+
+❌ Nunca: confiar no exit-code do CLI para `ok` (o gate pós-run é a autoridade — sempre cheque commit/push); deixar `extract_session_id` extrair de saída quando a sessão é keyed-by-workdir (retorne o `task_id` sentinela); incluir `auth_env_keys` no `env_overlay` (vêm do Secret, nunca inline no manifest); declarar resume sem o CLI ter retomada nativa real (re-gasto = sangria de custo #445); deixar o módulo estourar no import sem o registro o tolerar (auto-discovery loga e PULA — mas valide localmente que `ADAPTERS["<kind>"]` resolve); duplicar `kind` (o primeiro registrado vence, o resto é warning).
 
 ## Configuration Management
 

@@ -61,6 +61,7 @@
 | Camadas de memória | filesystem | `ls deile/memory/*.py` (excluindo `memory_manager.py`, `memory_consolidation.py`, `__init__.py`) |
 | Runtime state por-processo | filesystem | `ls deile/runtime/*.py` (issue #303 — `instance_state.py`, `status_server.py`, `registry.py`) |
 | Observabilidade (traces + metrics) | filesystem | `ls deile/observability/*.py` (issue #303 fase 4 — `tracer.py`, `metrics.py`, `config.py`, `no_op.py`) |
+| Adapters de CLI workers (frota multi-CLI) | filesystem | `ls infra/k8s/cli_adapters/*.py` (excluindo `base.py`, `__init__.py`; Decisão #51 — auto-discovery monta `ADAPTERS`, fonte única) |
 | Provedores de LLM | YAML | seção `providers:` em `deile/config/model_providers.yaml` |
 | Modelos | YAML | seção `models:` em `deile/config/model_providers.yaml` |
 | Personas (instruções) | filesystem | `ls deile/personas/instructions/*.md` |

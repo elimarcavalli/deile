@@ -10,8 +10,56 @@
 | OpenAI | `openai` | `openai` | `OPENAI_API_KEY` | `deile/core/models/openai_provider.py:OpenAIProvider` |
 | DeepSeek | `deepseek` | `openai` (compat layer; `base_url` customizada em `model_providers.yaml`) | `DEEPSEEK_API_KEY` | `deile/core/models/deepseek_provider.py:DeepSeekProvider` (subclassa `OpenAIProvider`) |
 | Gemini | `gemini` | `google-genai` (novo SDK) | `GOOGLE_API_KEY` | `deile/core/models/gemini_provider.py:GeminiProvider` |
+| OpenRouter | `openrouter` | `openai` (gateway OpenAI-compatible; `base_url` customizada em `model_providers.yaml`) | `OPENROUTER_API_KEY` | `deile/core/models/openrouter_provider.py:OpenRouterProvider` (subclassa `OpenAIProvider`) |
 
 > Pelo menos uma `*_API_KEY` precisa estar definida no ambiente. Se nenhuma estiver, a CLI sai com mensagem de erro instruindo qual variável definir.
+
+> Os provedores acima são consumidos **in-process** (SDK chamado dentro do processo DEILE). A frota multi-CLI (abaixo) é uma camada de execução distinta — invoca o LLM por subprocess de CLIs de coding, cada um com seu próprio provider/auth.
+
+## Frota multi-CLI — execução de LLM por subprocess (Decisão #51)
+
+Além dos providers in-process, DEILE integra LLMs por uma **camada de execução** distinta: a frota de CLI workers. Cada worker é um pod que executa, em subprocess one-shot dentro de um worktree isolado, um CLI de coding headless — o CLI fala com o seu próprio LLM/provider, sem passar pelos `ModelProvider` deste pilar. Ver Decisão #51 (`00-VISAO-GERAL.md` / `DECISOES.md`) para o desenho; o roteamento per-stage que escolhe qual worker recebe cada etapa vive em [`05-FLUXO-EXECUCAO.md`](05-FLUXO-EXECUCAO.md).
+
+> Não enumere os workers aqui — o registro de adapters é a fonte única (`ls infra/k8s/cli_adapters/*.py`).
+
+### Adapters e responsabilidades
+
+| Responsabilidade | Onde vive |
+|---|---|
+| Contrato do adapter por CLI (Protocol `CliAdapter` + metadados `kind`/`default_port`/`auth_mode`/`supports_resume`/`git_strategy`/`auth_env_keys`/`egress_hosts` + métodos `build_argv`/`env_overlay`/`parse_output`/`list_models`/`extract_session_id`/`provision_auth`) | `infra/k8s/cli_adapters/base.py` |
+| Adapter concreto por CLI (encapsula o CLI + seu provider/auth) | `infra/k8s/cli_adapters/<kind>.py` |
+| Server genérico que reusa `_worker_core` (lease/heartbeat/subprocess/HTTP bearer/cleanup) e delega ao adapter os pontos divergentes | `infra/k8s/cli_worker_server.py` |
+
+### Auth por worker
+
+Dois modos declarados pelo adapter (`AuthMode` em `cli_adapters/base.py:41`):
+
+| Modo | Detalhe |
+|---|---|
+| `env` | Chave de API via variável de ambiente — não expira; default recomendado para automação. Chaves no Secret `cli-worker-keys` |
+| `oauth_file` | Credencial OAuth montada num arquivo; opt-in via `DEILE_<KIND>_AUTH=oauth`; exige bootstrap + refresh in-pod (mecanismo generalizado do `claude-login` via `OAuthSpec`) |
+
+Cada adapter declara as `auth_env_keys` que o seu CLI exige (verificável no campo `auth_env_keys=` de cada `cli_adapters/<kind>.py`). As rotas de provider divergem por CLI:
+
+| CLI | Rota de auth/provider (ground-truth no adapter) |
+|---|---|
+| codex | OpenAI **direto** (`OPENAI_API_KEY`); `wire_api="responses"` inviabiliza a maioria do OpenRouter. Dual-mode: alguns modelos exigem conta ChatGPT (OAuth `auth.json`) via `provision_auth` (`cli_adapters/codex.py`) |
+| qwen | Tríade `OPENAI_*` (`OPENAI_BASE_URL`/`OPENAI_API_KEY`/`OPENAI_MODEL`) apontando para Dashscope ou OpenRouter (`cli_adapters/qwen.py`) |
+| aider, goose | OpenRouter (`OPENROUTER_API_KEY`) — uma chave → vários modelos (`cli_adapters/aider.py`, `goose.py`) |
+| opencode | OpenRouter (`OPENROUTER_API_KEY`) (`cli_adapters/opencode.py`) |
+
+### Custo durável da frota
+
+Os CLIs raramente expõem custo de forma confiável; o custo é colhido do log de progresso de cada sessão para um **ledger durável** ANTES da poda do log volumoso (espelha o claude #445):
+
+| Responsabilidade | Onde vive |
+|---|---|
+| Fonte única de preço dos modelos da frota (não-claude): tabela por substring + fallback conservador + custo de um bloco de tokens | `infra/k8s/jsonl_cost.py` (`FLEET_PRICING_BY_SUBSTRING`, `fleet_pricing_for`, `fleet_cost_of_model`) |
+| Preço declarado pelo adapter (`ModelInfo.price_in`/`price_out`/`cached_in`) prevalece sobre a tabela quando presente | `cli_adapters/base.py:ModelInfo` → `jsonl_cost.fleet_pricing_for(declared=...)` |
+| Ledger durável append-only (path em `DEILE_CLI_WORKER_COST_LEDGER_PATH`, default `<root>/.cost-ledger.jsonl`, dedup por task_id) | `infra/k8s/cli_worker_server.py` |
+| Auditoria (lê ledger dos podados + progresso vivo) por worker × modelo | `infra/k8s/fleet_tokens_audit.py` (tela `[T]okens` do painel) |
+
+> O custo dos providers **in-process** continua pelo `UsageRepository` (seção "Budget e custo" abaixo); a frota CLI tem contabilidade própria via ledger. A unificação push-central é follow-up (issue #638).
 
 ## Catálogo e tiers
 

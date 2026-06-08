@@ -1,6 +1,6 @@
 # 04 — Modelo de Componentes
 
-> Interfaces e registries dos cinco tipos de componentes plugáveis: **Tools, Commands, Parsers, Personas, Skills**. Catalogações e contagens em [`00-VISAO-GERAL.md`](00-VISAO-GERAL.md). Templates em [`12-PADROES-CODIGO.md`](12-PADROES-CODIGO.md).
+> Interfaces e registries dos tipos de componentes plugáveis: **Tools, Commands, Parsers, Personas, Skills** (descobertos dentro de `deile/`) e os **CLI Adapters** da frota de workers (descobertos em `infra/k8s/`, lado de deployment). Catalogações e contagens em [`00-VISAO-GERAL.md`](00-VISAO-GERAL.md). Templates em [`12-PADROES-CODIGO.md`](12-PADROES-CODIGO.md).
 
 ## Tools
 
@@ -220,6 +220,50 @@ Ambas são auto-descobertas via `DEFAULT_TOOL_PACKAGES` — `deile/tools/skill_t
 
 `deile/commands/builtin/skills_command.py` gerencia paths extras via `SettingsManager.add_skills_path` / `remove_skills_path` (escopo `global` ou `project`). O comando aciona `agent.reload_skills()` para hot-reload pós-mudança.
 
+## CLI Adapters
+
+> Componente plugável da **frota de workers** (Decisão #51 em [`DECISOES.md`](DECISOES.md)): cada CLI de coding headless (opencode, codex, qwen, aider, goose, …) é integrado por **um** adapter, sem editar nenhum consumidor. Diferente dos cinco componentes acima, vive em `infra/k8s/cli_adapters/` (lado de deployment, fora de `deile/`) porque seu consumidor é o server do worker e o pipeline de dispatch, não o agente CLI. Containerização em [`14-CONTAINERIZACAO.md`](14-CONTAINERIZACAO.md).
+
+### Responsabilidade
+
+Um adapter declara **o que muda entre CLIs** e nada mais. Toda a maquinaria agnóstica (lease, heartbeat, subprocess one-shot, Bearer auth, cleanup, gate pós-run) é compartilhada via `infra/k8s/_worker_core.py` e o server genérico `infra/k8s/cli_worker_server.py`; o adapter especializa apenas os **cinco pontos divergentes** mais os metadados de classe que dirigem registro, painel, geração de manifest e NetworkPolicy.
+
+### Interface (Protocol `CliAdapter` em `infra/k8s/cli_adapters/base.py`)
+
+| Símbolo | Tipo | Papel |
+|---|---|---|
+| `CliAdapter` | `Protocol` (`runtime_checkable`) | Contrato do adapter — validado por `isinstance` sem herança nominal (basta ter os atributos/métodos) |
+| `BaseCliAdapter` | dataclass | Base opcional com defaults conservadores (sem resume/reasoning, auth `env`, `brief_driven`); métodos obrigatórios levantam `NotImplementedError` para falhar cedo |
+| `WorkResult` | dataclass frozen | Veredito de `parse_output`: `ok`, `result_text`, `error_code`, `cost_usd` |
+| `ResumeCtx` | dataclass frozen | Contexto de retomada (`session_id`, `prev_task_id`) — passado a `build_argv` só quando `supports_resume=True` e o pipeline pediu resume (anti-sangria de custo, issue #445) |
+| `ModelInfo` | dataclass frozen | Um modelo suportado, exposto por `GET /v1/models` (alimenta o picker do painel); inclui preço e `auth` por modelo (opcionais, retrocompatíveis) |
+| `OAuthSpec` | dataclass frozen | Especificação de OAuth para adapters `auth_mode="oauth_file"` (generaliza o `claude-login`) |
+| `AuthMode` / `GitStrategy` / `ModelAuth` | `Literal` | `env`\|`oauth_file`; `cli_autocommit`\|`brief_driven`; `apikey`\|`chatgpt` |
+
+**Metadados de classe** (lidos como dados pelos consumidores): `kind`, `default_port`, `auth_mode`, `supports_resume`, `supports_reasoning`, `git_strategy`, `auth_env_keys`, `egress_hosts`, `writable_dirs`, `oauth`.
+
+**Os cinco pontos do contrato** (especialização por dispatch):
+
+| Método | Responsabilidade |
+|---|---|
+| `build_argv(...)` | Monta o argv headless do CLI (flags de autonomia, modelo, brief, resume) |
+| `env_overlay(home=...)` | Variáveis de ambiente que o CLI exige (HOME/XDG/config); **não** inclui as `auth_env_keys` (vêm do Secret) |
+| `parse_output(stdout, stderr, rc)` | Interpreta a saída num `WorkResult` — exit-code não basta; o server ainda aplica o gate pós-run por cima |
+| `list_models()` | Catálogo (estático ou dinâmico) que alimenta `GET /v1/models` |
+| `extract_session_id(...)` | Deriva o session-id nativo para o resume (CLIs workdir-keyed devolvem o `task_id` sentinela) |
+
+(`provision_auth(...)` é um sexto ponto opcional, no-op por default; sobrescrito só por adapters dual-mode como o codex, em que o modelo escolhido dita a credencial.)
+
+### Registro (auto-discovery em `infra/k8s/cli_adapters/__init__.py`)
+
+| Aspecto | Detalhe |
+|---|---|
+| Fonte única | O dicionário `ADAPTERS = {kind: adapter}` é montado em import escaneando o pacote; consome-o `dispatch_resolver` (deriva `VALID_DISPATCHERS`), o painel, `deploy.py gen-worker` e a geração de NetworkPolicy |
+| Convenção de descoberta | Um módulo `<kind>.py` participa se expõe `ADAPTER` (preferido), `get_adapter()`, ou uma única instância detectável que satisfaça `CliAdapter`; `base.py` e módulos `_privados` nunca são escaneados |
+| Tolerância a falha | Um módulo que estoure no import é logado e **pulado** — um adapter quebrado não derruba o registro inteiro |
+| Hot-reload em testes | `reload_adapters()` re-escaneia e muta `ADAPTERS` in-place (referências já capturadas seguem válidas) |
+| Gate Antigravity | `cli_adapters/antigravity.py` é um **gate documentado**: NÃO exporta `ADAPTER`/`get_adapter` (só a classe-rascunho + sentinela `ANTIGRAVITY_GATED=True`), então o auto-discovery o ignora e `antigravity-worker` não vira dispatcher. Motivo e condição de saída do gate em Decisão #51 |
+
 ## Como adicionar um novo componente
 
 > Templates concretos em [`12-PADROES-CODIGO.md`](12-PADROES-CODIGO.md).
@@ -231,3 +275,4 @@ Ambas são auto-descobertas via `DEFAULT_TOOL_PACKAGES` — `deile/tools/skill_t
 | Parser | Subclasse de `Parser` (ou `RegexParser`) em `deile/parsers/`, implementar `can_parse` (rápido, síncrono) e `parse` (síncrono); opcionalmente `parse_async` para I/O; definir `priority`; registrar |
 | Persona | Criar instrução em `deile/personas/instructions/<id>.md` e config em `deile/personas/library/<id>.yaml`; mapeamento em `deile/config/persona_config.yaml` |
 | Skill | Criar `*.md` com frontmatter (`name`, `description`, `triggers`, `priority`) num dos 5 diretórios de scan; **nenhum código Python**. Hot-reload pega em 0,5 s |
+| CLI Adapter | Criar `infra/k8s/cli_adapters/<kind>.py` satisfazendo o Protocol `CliAdapter` (ou herdando `BaseCliAdapter`), expondo `ADAPTER`/`get_adapter`; declarar metadados (`kind`/`default_port`/…) e implementar os cinco pontos do contrato. O auto-discovery registra; **nenhum consumidor é editado** (Decisão #51) |
