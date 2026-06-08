@@ -82,27 +82,39 @@ def _cap_verdict(text: str) -> str:
 #: recomendada (OpenRouter). Garante picker não-vazio no painel.
 _MODELS: List[ModelInfo] = [
     ModelInfo(
-        id="anthropic/claude-sonnet-4.6",
-        label="Claude Sonnet 4.6 (OpenRouter)",
-        provider="openrouter",
-        notes="rota recomendada GOOSE_PROVIDER=openrouter ($3/$15 por 1M)",
-    ),
-    ModelInfo(
         id="deepseek/deepseek-v4-flash",
         label="DeepSeek V4 Flash (OpenRouter)",
         provider="openrouter",
-        notes="barato; default recomendado; deepseek-chat (alias) deprecado 2026-07-24",
+        price_in=0.0983, price_out=0.1966, context=1_048_576,
+        notes="MAIS BARATO de coding; default recomendado (GOOSE_PROVIDER=openrouter)",
+    ),
+    ModelInfo(
+        id="deepseek/deepseek-v4-pro",
+        label="DeepSeek V4 Pro (OpenRouter)",
+        provider="openrouter",
+        price_in=0.435, price_out=0.87, context=1_048_576,
+        notes="MELHOR custo-benefício de coding (promo)",
+    ),
+    ModelInfo(
+        id="anthropic/claude-sonnet-4.6",
+        label="Claude Sonnet 4.6 (OpenRouter)",
+        provider="openrouter",
+        price_in=3.00, price_out=15.00, context=1_000_000,
+        notes="premium; review crítico / arquitetura",
     ),
     ModelInfo(
         id="qwen/qwen3-coder",
         label="Qwen3 Coder 480B (OpenRouter)",
         provider="openrouter",
+        price_in=0.22, price_out=1.80, context=1_000_000,
+        notes="bom custo-benefício p/ implementação",
     ),
     ModelInfo(
         id="gpt-5.4",
         label="GPT-5.4 (OpenAI)",
         provider="openai",
-        notes="rota GOOSE_PROVIDER=openai ($2.50/$15 por 1M); gpt-4o é geração anterior",
+        price_in=2.50, price_out=15.00,
+        notes="rota GOOSE_PROVIDER=openai; gpt-4o é geração anterior",
     ),
 ]
 

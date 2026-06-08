@@ -239,10 +239,35 @@ def test_list_models_static_catalog(adapter):
     models = adapter.list_models()
     assert models, "catálogo estático não pode ser vazio"
     ids = [m.id for m in models]
-    assert "gpt-5.5-codex" in ids
+    assert "gpt-5.3-codex" in ids
+    assert "gpt-5.1-codex-mini" in ids
     # Codex assume OpenAI direto (sem prefixo de provider no id nativo).
     assert all(m.provider == "openai" for m in models)
     assert all("/" not in m.id for m in models)
+
+
+@pytest.mark.unit
+def test_list_models_auth_by_model(adapter):
+    """Cada modelo declara o modo de auth exigido — codex dual-mode (Frente 4).
+
+    Modelos ``gpt-5*-codex`` premium exigem ChatGPT (OAuth); ``-mini``/
+    ``codex-mini-latest`` aceitam API key. Toda entrada do catálogo deve
+    declarar ``auth`` (não pode ficar ``None``).
+    """
+    by_id = {m.id: m for m in adapter.list_models()}
+    assert by_id["gpt-5.3-codex"].auth == "chatgpt"
+    assert by_id["gpt-5-codex"].auth == "chatgpt"
+    assert by_id["gpt-5.1-codex-mini"].auth == "apikey"
+    assert by_id["codex-mini-latest"].auth == "apikey"
+    assert all(m.auth in ("chatgpt", "apikey") for m in adapter.list_models())
+
+
+@pytest.mark.unit
+def test_list_models_carry_prices(adapter):
+    """Preço input/output presente em todos os modelos do catálogo codex."""
+    for m in adapter.list_models():
+        assert m.price_in is not None and m.price_in > 0
+        assert m.price_out is not None and m.price_out > 0
 
 
 @pytest.mark.unit

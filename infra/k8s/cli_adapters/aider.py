@@ -85,28 +85,32 @@ _ERROR_MARKERS = (
 #: prevalece quando disponível; este catálogo só garante picker não-vazio.
 _FALLBACK_MODELS: List[ModelInfo] = [
     ModelInfo(
-        id="deepseek/deepseek-v4-flash",
-        label="DeepSeek V4 Flash (direto)",
-        provider="deepseek",
-        notes="barato; default recomendado ($0.14/$0.28); deepseek-chat "
-              "(alias) deprecado 2026-07-24",
+        id="openrouter/deepseek/deepseek-v4-flash",
+        label="DeepSeek V4 Flash (OpenRouter)",
+        provider="openrouter",
+        price_in=0.0983, price_out=0.1966, context=1_048_576,
+        notes="MAIS BARATO de coding; default recomendado",
+    ),
+    ModelInfo(
+        id="openrouter/deepseek/deepseek-v4-pro",
+        label="DeepSeek V4 Pro (OpenRouter)",
+        provider="openrouter",
+        price_in=0.435, price_out=0.87, context=1_048_576,
+        notes="MELHOR custo-benefício de coding (promo)",
     ),
     ModelInfo(
         id="openrouter/anthropic/claude-sonnet-4.6",
         label="Claude Sonnet 4.6 (OpenRouter)",
         provider="openrouter",
-        notes="premium; tarefas cirúrgicas críticas ($3/$15 por 1M)",
-    ),
-    ModelInfo(
-        id="openrouter/deepseek/deepseek-v4-flash",
-        label="DeepSeek V4 Flash (OpenRouter)",
-        provider="openrouter",
-        notes="substitui deepseek-chat (deprecado 2026-07-24)",
+        price_in=3.00, price_out=15.00, context=1_000_000,
+        notes="premium; tarefas cirúrgicas críticas",
     ),
     ModelInfo(
         id="openrouter/qwen/qwen3-coder",
         label="Qwen3 Coder 480B (OpenRouter)",
         provider="openrouter",
+        price_in=0.22, price_out=1.80, context=1_000_000,
+        notes="bom custo-benefício p/ implementação",
     ),
 ]
 

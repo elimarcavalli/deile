@@ -32,7 +32,7 @@ import pkgutil
 from typing import Dict
 
 from .base import (AuthMode, BaseCliAdapter, CliAdapter, GitStrategy,
-                   ModelInfo, OAuthSpec, ResumeCtx, WorkResult)
+                   ModelAuth, ModelInfo, OAuthSpec, ResumeCtx, WorkResult)
 
 logger = logging.getLogger("deile.cli_adapters")
 
@@ -157,5 +157,6 @@ __all__ = [
     "ModelInfo",
     "OAuthSpec",
     "AuthMode",
+    "ModelAuth",
     "GitStrategy",
 ]

@@ -67,27 +67,77 @@ _VALID_REASONING = frozenset({"minimal", "low", "medium", "high"})
 
 #: Catálogo estático curado (Codex não tem ``list-models`` confiável — §2.2).
 #:
-#: Fonte: modelos ``gpt-*`` da OpenAI servidos via Responses API (o único wire
-#: protocol que o Codex fala). IDs no formato nativo do ``-m`` do Codex. Sem
-#: prefixo de provider (Codex assume OpenAI direto). Mantido conservador — só os
-#: modelos premium de coding que o operador escolheria conscientemente.
+#: Fonte: modelos ``gpt-*-codex`` da OpenAI servidos via Responses API (o único
+#: wire protocol que o Codex fala). IDs no formato nativo do ``-m`` do Codex,
+#: sem prefixo de provider (Codex assume OpenAI direto).
+#:
+#: **Auth POR MODELO** (campo ``auth``) — fato verificado empiricamente + doc
+#: OpenAI: os modelos ``gpt-5*-codex`` premium SÓ funcionam com conta ChatGPT
+#: (OAuth ``auth.json``) e são REJEITADOS via API key com erro
+#: "model is not supported when using Codex with a ChatGPT account" / 400
+#: unsupported-model. Já ``gpt-5.1-codex-mini`` e ``codex-mini-latest`` aceitam
+#: API key (``OPENAI_API_KEY``). O ``cli_worker_server`` provisiona o
+#: ``CODEX_HOME/auth.json`` no modo exigido por este campo antes de invocar
+#: ``codex exec`` (sem destruir a credencial OAuth — homes/backup separados).
+#:
+#: Preços em USD por 1M tokens (input / cached-input / output), tabela do
+#: operador (jun/2026). Mantido em ordem decrescente de capacidade.
 _MODELS: List[ModelInfo] = [
     ModelInfo(
-        id="gpt-5.5-codex",
-        label="GPT-5.5 Codex (OpenAI)",
+        id="gpt-5.3-codex",
+        label="GPT-5.3 Codex (ChatGPT)",
         provider="openai",
-        notes="premium; melhor modelo de coding do Codex",
+        price_in=1.75, cached_in=0.175, price_out=14.00,
+        auth="chatgpt",
+        notes="topo de linha; exige conta ChatGPT (OAuth)",
     ),
     ModelInfo(
-        id="gpt-5.5",
-        label="GPT-5.5 (OpenAI)",
+        id="gpt-5.2-codex",
+        label="GPT-5.2 Codex (ChatGPT)",
         provider="openai",
-        notes="premium; uso geral via Responses API",
+        price_in=1.75, cached_in=0.175, price_out=14.00,
+        auth="chatgpt",
+        notes="exige conta ChatGPT (OAuth)",
+    ),
+    ModelInfo(
+        id="gpt-5.1-codex-max",
+        label="GPT-5.1 Codex Max (ChatGPT)",
+        provider="openai",
+        price_in=1.25, cached_in=0.125, price_out=10.00,
+        auth="chatgpt",
+        notes="exige conta ChatGPT (OAuth)",
+    ),
+    ModelInfo(
+        id="gpt-5.1-codex",
+        label="GPT-5.1 Codex (ChatGPT)",
+        provider="openai",
+        price_in=1.25, cached_in=0.125, price_out=10.00,
+        auth="chatgpt",
+        notes="exige conta ChatGPT (OAuth)",
     ),
     ModelInfo(
         id="gpt-5-codex",
-        label="GPT-5 Codex (OpenAI)",
+        label="GPT-5 Codex (ChatGPT)",
         provider="openai",
+        price_in=1.25, cached_in=0.125, price_out=10.00,
+        auth="chatgpt",
+        notes="exige conta ChatGPT (OAuth); rejeitado via API key",
+    ),
+    ModelInfo(
+        id="gpt-5.1-codex-mini",
+        label="GPT-5.1 Codex Mini (API key)",
+        provider="openai",
+        price_in=0.25, cached_in=0.025, price_out=2.00,
+        auth="apikey",
+        notes="mais barato de coding; FUNCIONA via OPENAI_API_KEY",
+    ),
+    ModelInfo(
+        id="codex-mini-latest",
+        label="Codex Mini Latest (API key)",
+        provider="openai",
+        price_in=1.50, cached_in=0.375, price_out=6.00,
+        auth="apikey",
+        notes="aceita OPENAI_API_KEY",
     ),
 ]
 

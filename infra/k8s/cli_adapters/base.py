@@ -93,6 +93,19 @@ class ResumeCtx:
     prev_task_id: str
 
 
+#: Modo de autenticação exigido por um modelo específico (subconjunto de
+#: :data:`AuthMode` mais o sentinela ``chatgpt``). Diferente do ``auth_mode`` da
+#: classe do adapter (que é o default do worker): aqui declaramos a exigência
+#: POR MODELO, porque alguns CLIs (codex) servem modelos que SÓ funcionam com
+#: assinatura ChatGPT (OAuth) e outros que aceitam API key — a escolha do modelo
+#: dita qual credencial o worker tem de provisionar antes de invocar o CLI.
+#:
+#: * ``apikey``  — aceita chave de API via env (``OPENAI_API_KEY`` etc.).
+#: * ``chatgpt`` — exige conta ChatGPT (OAuth ``auth.json``); rejeita API key.
+#: * ``None``    — sem exigência específica; usa o ``auth_mode`` do adapter.
+ModelAuth = Literal["apikey", "chatgpt"]
+
+
 @dataclass(frozen=True)
 class ModelInfo:
     """Um modelo suportado por um worker, exposto via ``GET /v1/models``.
@@ -101,6 +114,12 @@ class ModelInfo:
     cujo worker é este. ``id`` é o model-id NATIVO do CLI (string livre, não o
     formato ``provider:model`` do deile-worker).
 
+    Os campos de preço (``price_in``/``price_out``/``cached_in``) e ``auth`` são
+    OPCIONAIS e retrocompatíveis (default ``None``): adapters legados que não os
+    declaram continuam válidos. Quando presentes, o painel exibe o custo e o modo
+    de auth no picker, e o worker deriva de ``auth`` qual credencial provisionar
+    (ver :mod:`cli_worker_server` codex dual-mode).
+
     Attributes:
         id: model-id nativo do CLI (ex.: ``openrouter/anthropic/claude-3.7-sonnet``,
             ``qwen3-coder-plus``, ``gpt-5.5-codex``).
@@ -108,6 +127,10 @@ class ModelInfo:
         provider: provider de origem (``openrouter``, ``openai``, ...) ou ``None``.
         context: janela de contexto em tokens, quando conhecida.
         notes: observação curta (custo, caveat) ou ``None``.
+        price_in: preço de input em USD por 1M tokens, ou ``None`` se desconhecido.
+        price_out: preço de output em USD por 1M tokens, ou ``None``.
+        cached_in: preço de input cacheado (USD/1M), ou ``None`` (raro fora do codex).
+        auth: exigência de auth por modelo (:data:`ModelAuth`) ou ``None``.
     """
 
     id: str
@@ -115,6 +138,10 @@ class ModelInfo:
     provider: Optional[str] = None
     context: Optional[int] = None
     notes: Optional[str] = None
+    price_in: Optional[float] = None
+    price_out: Optional[float] = None
+    cached_in: Optional[float] = None
+    auth: Optional[ModelAuth] = None
 
     def as_dict(self) -> dict:
         """Serializa para o JSON de ``GET /v1/models`` (contrato §1.12)."""
@@ -124,6 +151,10 @@ class ModelInfo:
             "provider": self.provider,
             "context": self.context,
             "notes": self.notes,
+            "price_in": self.price_in,
+            "price_out": self.price_out,
+            "cached_in": self.cached_in,
+            "auth": self.auth,
         }
 
 
@@ -303,6 +334,7 @@ class BaseCliAdapter:
 
 __all__ = [
     "AuthMode",
+    "ModelAuth",
     "GitStrategy",
     "WorkResult",
     "ResumeCtx",

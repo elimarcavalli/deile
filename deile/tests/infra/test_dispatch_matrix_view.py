@@ -185,6 +185,62 @@ def test_worker_picker_options(mock_data_with_claude):
     assert any("global" in o.lower() or "default" in o.lower() for o in options)
 
 
+def test_worker_picker_offers_all_fleet_dispatchers(mock_data_with_claude):
+    """Frente 1: picker de Worker oferece os 7 dispatchers válidos.
+
+    Deriva de ``dispatch_resolver.get_valid_dispatchers`` (núcleo + frota CLI
+    descoberta no registro de adapters) — não uma lista hardcoded.
+    """
+    from _panel import DispatchMatrixView
+    from deile.orchestration.pipeline.dispatch_resolver import \
+        get_valid_dispatchers
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    options = view._worker_picker_options()
+    for dispatcher in get_valid_dispatchers():
+        assert dispatcher in options, f"{dispatcher} ausente do picker de worker"
+    # Os 5 workers da frota CLI + 2 núcleo = 7 (mais o sentinela global).
+    assert "codex-worker" in options
+    assert "opencode-worker" in options
+    assert "qwen-worker" in options
+    assert "aider-worker" in options
+    assert "goose-worker" in options
+
+
+def test_model_picker_for_cli_worker_uses_adapter_catalog(mock_data_with_claude):
+    """Frente 2: worker da frota CLI → model picker mostra ids do adapter.
+
+    Os valores das opções são os ids NATIVOS (bare) que vão pro env; os
+    rótulos enriquecidos (preço/auth) ficam em ``_option_labels``.
+    """
+    from _panel import DispatchMatrixView
+    import cli_adapters
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    options = view._model_picker_options(worker="codex-worker")
+    adapter_ids = {m.id for m in cli_adapters.ADAPTERS["codex"].list_models()}
+    option_ids = {o for o in options if o in adapter_ids}
+    assert option_ids == adapter_ids, "picker não cobre o catálogo do codex"
+    # gpt-5.3-codex deve aparecer com label enriquecido (preço + auth chatgpt).
+    label = view._option_labels.get("gpt-5.3-codex", "")
+    assert "$" in label and "chatgpt" in label, \
+        f"label enriquecido ausente: {label!r}"
+
+
+def test_model_picker_apply_uses_bare_id_not_label(mock_data_with_claude):
+    """Frente 2: o valor aplicado é o id bare, NÃO o label decorado."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    options = view._model_picker_options(worker="codex-worker")
+    # Toda opção que tem label enriquecido deve, ela mesma, ser um id bare
+    # (sem "$", sem "[", sem "  — ") — só o display é decorado.
+    for opt in options:
+        if opt in view._option_labels:
+            assert "$" not in opt and "[" not in opt and "— " not in opt, \
+                f"opção {opt!r} carrega decoração — apply enviaria valor sujo"
+
+
 def test_model_picker_restricted_when_claude_worker(mock_data_with_claude):
     """Worker=claude-worker → model picker só anthropic:* + (default)."""
     from _panel import DispatchMatrixView

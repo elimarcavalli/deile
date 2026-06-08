@@ -49,6 +49,22 @@ def test_modelinfo_as_dict_fills_label_from_id():
     assert d["label"] == "openrouter/deepseek/deepseek-chat"  # fallback p/ id
     assert d["provider"] == "openrouter"
     assert d["context"] is None and d["notes"] is None
+    # Campos de preço/auth são opcionais e default None (retrocompat).
+    assert d["price_in"] is None and d["price_out"] is None
+    assert d["cached_in"] is None and d["auth"] is None
+
+
+def test_modelinfo_price_and_auth_roundtrip():
+    """Frente 3: ModelInfo carrega preço + auth e serializa em as_dict."""
+    mi = base.ModelInfo(
+        id="gpt-5-codex", provider="openai",
+        price_in=1.25, cached_in=0.125, price_out=10.00, auth="chatgpt",
+    )
+    d = mi.as_dict()
+    assert d["price_in"] == 1.25
+    assert d["cached_in"] == 0.125
+    assert d["price_out"] == 10.00
+    assert d["auth"] == "chatgpt"
 
 
 def test_oauthspec_fields():

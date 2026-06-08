@@ -5828,6 +5828,12 @@ class DispatchMatrixView(View):
         # usa ``scale_prompt`` style (entrada numérica livre em vez de lista).
         self.mode: Optional[tuple] = None
         self.picker_cursor: int = 0
+        # Decoração visual do picker: mapeia o VALOR de uma opção (que é o
+        # que vai pro ``kubectl set env``, mantido bare em ``options``) para um
+        # rótulo enriquecido (preço/auth) exibido SÓ no render. Vazio = render
+        # mostra o próprio valor. Resetado a cada abertura de picker para não
+        # vazar rótulos stale entre pickers. Single source: ``adapter.list_models()``.
+        self._option_labels: Dict[str, str] = {}
         # Última ação para feedback no painel (paridade com
         # ``DispatchModeView`` / ``StageModelsView``).
         self.last_msg: str = ""
@@ -5851,6 +5857,7 @@ class DispatchMatrixView(View):
         # Reentry sempre na matriz, nunca num picker stale.
         self.mode = None
         self.picker_cursor = 0
+        self._option_labels = {}
 
     def intercepts_key(self, key: str) -> bool:
         # ESC dentro do picker fecha o modal (handle_key), não pop a view.
@@ -5951,8 +5958,8 @@ class DispatchMatrixView(View):
         ]
 
     @staticmethod
-    def _cli_worker_model_ids(worker: str) -> List[str]:
-        """Model-ids que um CLI worker da frota suporta (alimenta o picker).
+    def _cli_worker_models(worker: str) -> List:
+        """``ModelInfo`` que um CLI worker da frota suporta (alimenta o picker).
 
         É a MESMA fonte que o endpoint ``GET /v1/models`` daquele worker serve:
         ``adapter.list_models()`` do registro de adapters (``cli_adapters``).
@@ -5974,15 +5981,39 @@ class DispatchMatrixView(View):
         if adapter is None:
             return []
         try:
-            models = adapter.list_models() or []
+            return [m for m in (adapter.list_models() or [])
+                    if isinstance(getattr(m, "id", None), str) and m.id]
         except Exception:  # noqa: BLE001 — list_models é best-effort
             return []
-        ids: List[str] = []
-        for m in models:
-            mid = getattr(m, "id", None)
-            if isinstance(mid, str) and mid:
-                ids.append(mid)
-        return ids
+
+    @classmethod
+    def _cli_worker_model_ids(cls, worker: str) -> List[str]:
+        """Model-ids (bare) do CLI worker — usado p/ apply via kubectl set env."""
+        return [m.id for m in cls._cli_worker_models(worker)]
+
+    @staticmethod
+    def _format_model_label(model) -> str:
+        """Rótulo enriquecido p/ o picker: ``<id>  $in/$out  [auth]``.
+
+        SÓ para exibição — o valor que vai pro env continua sendo ``model.id``
+        (o mapeamento ``id → label`` vive em ``_option_labels``). Preço e auth
+        são omitidos quando ``None`` (retrocompat com catálogos sem esses campos).
+        """
+        mid = model.id
+        parts: List[str] = [mid]
+        price_in = getattr(model, "price_in", None)
+        price_out = getattr(model, "price_out", None)
+        if price_in is not None and price_out is not None:
+            parts.append(f"${price_in:g}/${price_out:g} per 1M")
+        elif price_in is not None:
+            parts.append(f"${price_in:g} in/1M")
+        auth = getattr(model, "auth", None)
+        if auth:
+            parts.append(f"[{auth}]")
+        notes = getattr(model, "notes", None)
+        if notes:
+            parts.append(f"— {notes}")
+        return "  ".join(parts)
 
     def _model_picker_options(self, *, worker: str) -> List[str]:
         """Opções do picker de model, contextualizadas por ``worker``.
@@ -5997,13 +6028,20 @@ class DispatchMatrixView(View):
           "cada worker mostra os modelos que suporta".
         * ``deile-worker`` (default) → catálogo ``provider:model`` completo.
         """
+        # Reset da decoração — cada abertura de picker recomeça limpa.
+        self._option_labels = {}
         if worker == "claude-worker":
             all_models = self._load_all_models()
             filtered = [m for m in all_models if m.startswith("anthropic:")]
             return [self._CLEAR_SENTINEL_MODEL, *filtered]
-        cli_ids = self._cli_worker_model_ids(worker)
-        if cli_ids:
-            return [self._CLEAR_SENTINEL_MODEL, *cli_ids]
+        cli_models = self._cli_worker_models(worker)
+        if cli_models:
+            # Valores bare (ids) em ``options`` p/ apply; rótulos ricos
+            # (preço/auth) em ``_option_labels`` p/ render.
+            self._option_labels = {
+                m.id: self._format_model_label(m) for m in cli_models
+            }
+            return [self._CLEAR_SENTINEL_MODEL, *[m.id for m in cli_models]]
         return [self._CLEAR_SENTINEL_MODEL, *self._load_all_models()]
 
     def _claude_status(self):
@@ -6354,7 +6392,10 @@ class DispatchMatrixView(View):
         tbl.add_column("opção", style="bold")
         for i, opt in enumerate(options):
             marker = "▶" if i == self.picker_cursor else " "
-            tbl.add_row(Text(marker, style="bold cyan"), Text(opt))
+            # Decoração visual (preço/auth) quando houver — o valor ``opt``
+            # continua sendo o que vai pro apply; só o display muda.
+            display = self._option_labels.get(opt, opt)
+            tbl.add_row(Text(marker, style="bold cyan"), Text(display))
 
         # Modais de confirmação Y/N usam um prompt e atalhos Y/N visíveis;
         # pickers de entrada numérica livre (timeout/retries/max_parallel) mostram buffer;
@@ -7774,6 +7815,7 @@ class DispatchMatrixView(View):
         if key == "ESC":
             self.mode = None
             self.picker_cursor = 0
+            self._option_labels = {}
             return ActionResult.refresh()
         if self.mode is None:  # defesa — não deveria chegar aqui
             return ActionResult()
@@ -7794,6 +7836,7 @@ class DispatchMatrixView(View):
             self._apply_picker_selection()
             self.mode = None
             self.picker_cursor = 0
+            self._option_labels = {}
             # Invalida cache do StageDispatchProvider para a próxima
             # render mostrar o valor novo (sem precisar de [r] manual).
             if self.data is not None:

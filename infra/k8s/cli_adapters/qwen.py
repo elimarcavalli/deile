@@ -69,26 +69,31 @@ _VERDICT_CAP = 12000
 #: OpenRouter = ``qwen/qwen3-coder``). Garante picker não-vazio no painel.
 _MODELS: List[ModelInfo] = [
     ModelInfo(
-        id="qwen3-coder-plus",
-        label="Qwen3 Coder Plus (Dashscope)",
-        provider="dashscope",
-        notes="melhor custo-benefício p/ implementação (rota Dashscope direta)",
-    ),
-    ModelInfo(
         id="qwen3-coder-next",
         label="Qwen3 Coder Next (Dashscope)",
         provider="dashscope",
+        price_in=0.11, price_out=0.80,
+        notes="MAIS BARATO; MoE esparso 80B/3B-ativos",
+    ),
+    ModelInfo(
+        id="qwen3-coder-plus",
+        label="Qwen3 Coder Plus (Dashscope)",
+        provider="dashscope",
+        price_in=1.00, price_out=5.00,
+        notes="melhor de coding (rota Dashscope direta)",
     ),
     ModelInfo(
         id="qwen3-coder-480b-a35b-instruct",
         label="Qwen3 Coder 480B (Dashscope)",
         provider="dashscope",
-        notes="modelo grande; mais caro",
+        price_in=0.22, price_out=1.80, context=1_000_000,
+        notes="modelo grande 480B/35B-ativos",
     ),
     ModelInfo(
         id="qwen/qwen3-coder",
-        label="Qwen3 Coder (OpenRouter)",
+        label="Qwen3 Coder 480B (OpenRouter)",
         provider="openrouter",
+        price_in=0.22, price_out=1.80, context=1_000_000,
         notes="mesma família via OpenRouter (OPENAI_BASE_URL=openrouter.ai)",
     ),
 ]
