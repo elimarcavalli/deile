@@ -116,6 +116,114 @@ def nocache_cost_of_model(tk: dict, model: str) -> float:
 
 
 # --------------------------------------------------------------------------- #
+# Tabela de preços da FROTA multi-worker (issue #445 — extensão aditiva).      #
+#                                                                             #
+# claude tem a sua própria tabela acima (``PRICING``/``pricing_for``). Os      #
+# demais workers (opencode/codex/qwen/goose/aider) rodam modelos de outros     #
+# provedores (OpenRouter, OpenAI Codex, Dashscope, DeepSeek) cujo preço NÃO    #
+# segue a curva opus/sonnet/haiku. Esta seção é a FONTE ÚNICA do preço desses  #
+# modelos — fora do claude.                                                    #
+#                                                                             #
+# Preços em USD por MILHÃO de tokens (input / cached-input / output). Fontes   #
+# (verif. jun/2026): catálogos dos adapters (``cli_adapters/*.py`` campos      #
+# ``price_in``/``cached_in``/``price_out`` do :class:`ModelInfo`), OpenRouter  #
+# (openrouter.ai/<model>), OpenAI Codex (developers.openai.com/codex) e        #
+# Dashscope. Quando um adapter declara o preço no ``ModelInfo`` ele PREVALECE  #
+# (mais fresco que esta tabela) — ver ``fleet_tokens_audit.fleet_pricing``.    #
+#                                                                             #
+# Match por substring de model-id normalizado (case-insensitive), do mais      #
+# específico para o mais genérico. ``read`` = preço de cache hit; default ao    #
+# ``cached_in`` declarado ou 0.1x input (convenção da maioria dos provedores). #
+# --------------------------------------------------------------------------- #
+FLEET_PRICING_BY_SUBSTRING = (
+    # (substring, {in, out, read})  — ordem: específico → genérico.
+    # OpenAI Codex (developers.openai.com/codex; cached = 0.1x input).
+    ("gpt-5.3-codex",        {"in": 1.75, "out": 14.0, "read": 0.175}),
+    ("gpt-5.2-codex",        {"in": 1.75, "out": 14.0, "read": 0.175}),
+    ("gpt-5.1-codex-mini",   {"in": 0.25, "out": 2.0,  "read": 0.025}),
+    ("gpt-5.1-codex-max",    {"in": 1.25, "out": 10.0, "read": 0.125}),
+    ("gpt-5.1-codex",        {"in": 1.25, "out": 10.0, "read": 0.125}),
+    ("gpt-5-codex",          {"in": 1.25, "out": 10.0, "read": 0.125}),
+    ("codex-mini",           {"in": 1.50, "out": 6.0,  "read": 0.375}),
+    # OpenAI GPT (gpt-5.5 / gpt-5.4 — rota OpenAI direta / OpenRouter).
+    ("gpt-5.5",              {"in": 2.50, "out": 15.0, "read": 0.25}),
+    ("gpt-5.4",              {"in": 2.50, "out": 15.0, "read": 0.25}),
+    # DeepSeek (OpenRouter / api.deepseek.com) — o grosso barato da frota.
+    ("deepseek-v4-flash",    {"in": 0.0983, "out": 0.1966, "read": 0.00983}),
+    ("deepseek-v4-pro",      {"in": 0.435,  "out": 0.87,   "read": 0.0435}),
+    ("deepseek-chat",        {"in": 0.27,   "out": 1.10,   "read": 0.027}),
+    ("deepseek",             {"in": 0.27,   "out": 1.10,   "read": 0.027}),
+    # Qwen3 Coder (Dashscope / OpenRouter).
+    ("qwen3-coder-next",     {"in": 0.11, "out": 0.80, "read": 0.011}),
+    ("qwen3-coder-plus",     {"in": 1.00, "out": 5.0,  "read": 0.10}),
+    ("qwen3-coder-480b",     {"in": 0.22, "out": 1.80, "read": 0.022}),
+    ("qwen3-coder",          {"in": 0.22, "out": 1.80, "read": 0.022}),
+    ("qwen",                 {"in": 0.22, "out": 1.80, "read": 0.022}),
+    # Claude via OpenRouter (anthropic/claude-*) — preço público OpenRouter.
+    ("claude-sonnet-4.6",    {"in": 3.0,  "out": 15.0, "read": 0.30}),
+    ("claude-sonnet",        {"in": 3.0,  "out": 15.0, "read": 0.30}),
+    ("claude-3.7-sonnet",    {"in": 3.0,  "out": 15.0, "read": 0.30}),
+    ("claude-opus",          {"in": 5.0,  "out": 25.0, "read": 0.50}),
+)
+
+#: Preço de fallback quando o model-id não casa nenhuma substring nem há preço
+#: declarado pelo adapter. Conservador: usa um custo-benefício médio de coding
+#: (~DeepSeek Pro) para não subestimar grosseiramente. ``read`` = 0.1x input.
+FLEET_PRICING_DEFAULT = {"in": 0.435, "out": 0.87, "read": 0.0435}
+
+
+def fleet_pricing_for(model: str, *, declared: Optional[dict] = None) -> dict:
+    """Tabela de preço {in,out,read} de um modelo da frota (não-claude).
+
+    Resolução (primeiro que existir vence):
+
+    1. ``declared`` — preço vindo do ``ModelInfo`` do adapter (``price_in``/
+       ``price_out``/``cached_in``); mais fresco, prevalece.
+    2. :data:`FLEET_PRICING_BY_SUBSTRING` — match por substring do model-id.
+    3. :data:`FLEET_PRICING_DEFAULT` — fallback conservador.
+
+    Args:
+        model: model-id nativo do CLI (ex.: ``openrouter/deepseek/deepseek-v4-pro``,
+            ``gpt-5.1-codex``, ``qwen3-coder-plus``).
+        declared: dict opcional ``{"in":..,"out":..,"read":..}`` com o preço que
+            o adapter declarou (já normalizado pelo chamador). ``None`` ignora.
+
+    Returns:
+        dict ``{"in":float, "out":float, "read":float}`` em USD/MTok.
+    """
+    if declared:
+        return {
+            "in": float(declared.get("in") or 0.0),
+            "out": float(declared.get("out") or 0.0),
+            "read": float(
+                declared["read"] if declared.get("read") is not None
+                else (declared.get("in") or 0.0) * 0.1
+            ),
+        }
+    m = (model or "").lower()
+    for needle, price in FLEET_PRICING_BY_SUBSTRING:
+        if needle in m:
+            return dict(price)
+    return dict(FLEET_PRICING_DEFAULT)
+
+
+def fleet_cost_of_model(tk: dict, model: str, *, declared: Optional[dict] = None) -> float:
+    """Custo USD de um bloco de tokens {in,out,cr} de um modelo da frota.
+
+    Espelha :func:`cost_of_model` mas com a tabela de preço da frota e o
+    breakdown de cache simples (read a preço de hit; tokens de cache-write são
+    raros fora do claude e, quando presentes, somam ao input a preço cheio).
+    """
+    p = fleet_pricing_for(model, declared=declared)
+    return (
+        tk.get("in", 0) * p["in"]
+        + tk.get("out", 0) * p["out"]
+        + tk.get("cc", 0) * p["in"]
+        + tk.get("cr", 0) * p["read"]
+    ) / 1_000_000.0
+
+
+# --------------------------------------------------------------------------- #
 # Agregação de um JSONL de sessão.                                            #
 #                                                                             #
 # NOTA DE PARIDADE: este laço de dedup+soma é a fonte única da agregação de   #

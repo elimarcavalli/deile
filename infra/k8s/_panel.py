@@ -1471,12 +1471,13 @@ class DashboardView(View):
         if self._activity_focused:
             return (
                 "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
-                "[t]okens  [M]onitor  [n]otifier  [a]ctivity:[↑↓/enter/esc]  "
+                "[t]okens(claude) [T]okens(frota)  [M]onitor  [n]otifier  "
+                "[a]ctivity:[↑↓/enter/esc]  "
                 f"[m]odel/runtime  [d]ispatch  [S]caling  [s]ort:{self.sort_mode}  [?]help  [q]uit"
             )
         return (
             "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
-            "[t]okens  [M]onitor  [n]otifier  [a]ctivity  [m]odel/runtime  "
+            "[t]okens(claude) [T]okens(frota)  [M]onitor  [n]otifier  [m]odel/runtime  "
             f"[d]ispatch  [S]caling  [s]ort:{self.sort_mode}  [?]help  [q]uit"
         )
 
@@ -1859,10 +1860,10 @@ class DashboardView(View):
                 ("Tokens 24h: ", "dim"),
                 (total_str, "bold green"),
                 (f"  ·  1h: {hour_str}", "dim"),
-                ("  [t] detalhes", "dim"),
+                ("  [t] claude · [T] frota", "dim"),
             ))
         else:
-            lines.append(Text("Tokens 24h: $11.40  ·  1h: $1.32  [t] detalhes",
+            lines.append(Text("Tokens 24h: $11.40  ·  1h: $1.32  [t] claude · [T] frota",
                                style="dim"))
 
         body = Group(*lines) if lines else Text("· sem dados", style="dim")
@@ -1956,6 +1957,16 @@ class DashboardView(View):
             if self.data is not None and self.data.context is not None:
                 ns = getattr(self.data.context, "namespace", None) or _NS_DEFAULT
             script = Path(__file__).resolve().parent / "session_tokens_audit.py"
+            return ActionResult.suspend(
+                [sys.executable, str(script), "-n", ns])
+        if key == "T":
+            # [T]okens (MAIÚSCULO) — auditoria da FROTA INTEIRA (todos os
+            # worker-kinds: claude/deile/opencode/codex/qwen/goose/aider) via
+            # fleet_tokens_audit.py. O [t] minúsculo segue só claude (legacy).
+            ns = _NS_DEFAULT
+            if self.data is not None and self.data.context is not None:
+                ns = getattr(self.data.context, "namespace", None) or _NS_DEFAULT
+            script = Path(__file__).resolve().parent / "fleet_tokens_audit.py"
             return ActionResult.suspend(
                 [sys.executable, str(script), "-n", ns])
         if key == "s":
