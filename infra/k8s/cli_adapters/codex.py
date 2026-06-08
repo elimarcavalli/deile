@@ -55,11 +55,29 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import List, Optional
+import os
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Callable, List, Optional, Tuple
 
-from .base import BaseCliAdapter, ModelInfo, OAuthSpec, ResumeCtx, WorkResult
+from .base import (BaseCliAdapter, ModelAuth, ModelInfo, OAuthSpec, ResumeCtx,
+                   WorkResult)
 
 logger = logging.getLogger("deile.cli_adapters.codex")
+
+#: Backup do ``auth.json`` OAuth (modo chatgpt) preservado quando o worker
+#: troca para API key. Sem isso, ``codex login --with-api-key`` sobrescreveria
+#: a credencial de assinatura e um dispatch seguinte de modelo ``chatgpt``
+#: ficaria sem OAuth (Frente 4 — "NÃO destrua as credenciais OAuth").
+_OAUTH_BACKUP_NAME = "auth.oauth.json.bak"
+
+#: Nome do arquivo de credencial dentro de ``CODEX_HOME``.
+_AUTH_FILE_NAME = "auth.json"
+
+#: Runner de subprocess injetável (testes substituem para não chamar o binário
+#: codex real). Assinatura compatível com ``subprocess.run``.
+SubprocessRunner = Callable[..., "subprocess.CompletedProcess"]
 
 #: Vocabulário oficial de reasoning effort do Codex (``model_reasoning_effort``).
 #: Qualquer valor fora deste conjunto é silenciosamente ignorado (fail-open).
@@ -311,6 +329,151 @@ class CodexAdapter(BaseCliAdapter):
     def list_models(self) -> List[ModelInfo]:
         """Catálogo estático (Codex não tem ``list-models`` confiável — §2.2)."""
         return list(_MODELS)
+
+    @staticmethod
+    def auth_for_model(model: Optional[str]) -> ModelAuth:
+        """Modo de auth exigido por *model* (Frente 4).
+
+        Lê o campo ``ModelInfo.auth`` do catálogo. Modelo desconhecido ou
+        ``None`` → ``"chatgpt"`` (conservador: a maioria dos modelos premium do
+        Codex exige conta ChatGPT; melhor garantir o OAuth do que falhar com
+        401 numa API key que não cobre aquele modelo).
+        """
+        if model:
+            for m in _MODELS:
+                if m.id == model and m.auth:
+                    return m.auth
+        return "chatgpt"
+
+    def provision_auth(
+        self,
+        *,
+        model: Optional[str],
+        home: str,
+        env: dict,
+        runner: Optional[SubprocessRunner] = None,
+    ) -> Tuple[bool, str]:
+        """Garante o ``CODEX_HOME/auth.json`` no modo exigido por *model*.
+
+        Codex dual-mode por modelo (Frente 4):
+
+        * ``apikey``  → faz backup do ``auth.json`` OAuth (se houver) e roda
+          ``printenv OPENAI_API_KEY | codex login --with-api-key`` para gravar
+          a credencial de API key. Exige ``OPENAI_API_KEY`` no env.
+        * ``chatgpt`` → garante o ``auth.json`` OAuth presente; se o modo apikey
+          o sobrescreveu antes, restaura do backup. A credencial OAuth original
+          chega via initContainer (Secret/PVC) — esta função só a
+          preserva/restaura, nunca a gera (login OAuth é do operador).
+
+        Idempotente e não-destrutivo: nunca apaga a credencial OAuth (move para
+        ``auth.oauth.json.bak`` antes de sobrescrever).
+
+        Args:
+            model: model-id selecionado (decide o modo via :meth:`auth_for_model`).
+            home: HOME gravável (não usado direto — CODEX_HOME vem do env).
+            env: env já com overlay (lê ``CODEX_HOME`` e ``OPENAI_API_KEY``).
+            runner: injeção do subprocess runner (testes). Default ``subprocess.run``.
+
+        Returns:
+            ``(ok, detail)``; ``ok=False`` aborta o dispatch.
+        """
+        run = runner or subprocess.run
+        codex_home = Path(
+            env.get("CODEX_HOME") or os.path.join(home, ".codex")
+        )
+        auth_path = codex_home / _AUTH_FILE_NAME
+        backup_path = codex_home / _OAUTH_BACKUP_NAME
+        mode = self.auth_for_model(model)
+        try:
+            codex_home.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return False, f"não criei CODEX_HOME {codex_home}: {exc}"
+
+        if mode == "apikey":
+            return self._provision_apikey(
+                auth_path, backup_path, env=env, run=run,
+            )
+        return self._provision_chatgpt(auth_path, backup_path)
+
+    @staticmethod
+    def _provision_apikey(
+        auth_path: Path, backup_path: Path, *, env: dict, run: SubprocessRunner,
+    ) -> Tuple[bool, str]:
+        """Modo API key: backup do OAuth + ``codex login --with-api-key``."""
+        api_key = (env.get("OPENAI_API_KEY") or "").strip()
+        if not api_key:
+            return False, (
+                "modelo exige API key mas OPENAI_API_KEY não está no env"
+            )
+        # Preserva a credencial OAuth antes de sobrescrever (não-destrutivo).
+        if auth_path.exists() and not backup_path.exists():
+            if not CodexAdapter._looks_like_apikey_auth(auth_path):
+                try:
+                    shutil.copy2(auth_path, backup_path)
+                except OSError as exc:
+                    logger.warning("backup do auth.json OAuth falhou: %s", exc)
+        try:
+            result = run(
+                ["codex", "login", "--with-api-key"],
+                input=api_key,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, **env},
+            )
+        except FileNotFoundError:
+            return False, "binário codex não encontrado para login --with-api-key"
+        except subprocess.TimeoutExpired:
+            return False, "codex login --with-api-key expirou (30s)"
+        except Exception as exc:  # noqa: BLE001 — login nunca derruba o dispatch sem msg
+            return False, f"codex login --with-api-key falhou: {exc}"
+        if getattr(result, "returncode", 1) != 0:
+            tail = (getattr(result, "stderr", "") or
+                    getattr(result, "stdout", "") or "")[-300:]
+            return False, f"codex login --with-api-key rc!=0: {tail.strip()}"
+        return True, "auth: API key (codex login --with-api-key)"
+
+    @staticmethod
+    def _provision_chatgpt(
+        auth_path: Path, backup_path: Path,
+    ) -> Tuple[bool, str]:
+        """Modo ChatGPT: garante o ``auth.json`` OAuth (restaura do backup)."""
+        # Se o modo apikey sobrescreveu o auth.json, restaura o OAuth do backup.
+        if backup_path.exists():
+            try:
+                shutil.copy2(backup_path, auth_path)
+            except OSError as exc:
+                return False, f"restore do auth.json OAuth falhou: {exc}"
+            return True, "auth: OAuth ChatGPT (restaurado do backup)"
+        if auth_path.exists():
+            if CodexAdapter._looks_like_apikey_auth(auth_path):
+                return False, (
+                    "modelo exige conta ChatGPT (OAuth) mas só há credencial de "
+                    "API key e nenhum backup OAuth — rode codex-login OAuth"
+                )
+            return True, "auth: OAuth ChatGPT (auth.json presente)"
+        return False, (
+            "modelo exige conta ChatGPT (OAuth) mas auth.json ausente — "
+            "rode deploy.py k8s cli-worker-login (codex OAuth) antes"
+        )
+
+    @staticmethod
+    def _looks_like_apikey_auth(auth_path: Path) -> bool:
+        """Heurística: o ``auth.json`` é de API key (não OAuth)?
+
+        Codex grava ``OPENAI_API_KEY`` no auth.json do modo API key; o OAuth
+        carrega ``tokens``/``refresh_token``. Best-effort — em erro de parse
+        assume OAuth (conservador: não sobrescreve o que não conseguiu ler).
+        """
+        try:
+            data = json.loads(auth_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        if data.get("OPENAI_API_KEY") and not data.get("tokens"):
+            return True
+        return False
 
 
 #: Instância exportada — descoberta pelo registro (``cli_adapters.ADAPTERS``).

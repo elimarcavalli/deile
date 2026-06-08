@@ -209,6 +209,83 @@ async def test_dispatch_writes_brief_file(mock_adapter, monkeypatch, tmp_path):
     assert brief.read_text() == "BRIEF-CONTENT-MARKER"
 
 
+@pytest.fixture
+def mock_adapter_auth_fail(tmp_path, monkeypatch):
+    """Mock adapter cujo ``provision_auth`` reprova — testa o gate (Frente 4)."""
+    pkg_dir = Path(cli_adapters.__path__[0])
+    mod_path = pkg_dir / "zzz_mock_authfail.py"
+    mod_path.write_text(textwrap.dedent('''\
+        from cli_adapters.base import BaseCliAdapter, WorkResult, ModelInfo
+
+
+        class MockAuthFailAdapter(BaseCliAdapter):
+            def build_argv(self, *, brief_path, model, reasoning, workdir, resume):
+                return ["sh", "-c", f"touch {workdir}/.ran"]
+
+            def parse_output(self, *, stdout, stderr, rc):
+                return WorkResult(ok=True, result_text="ran")
+
+            def list_models(self):
+                return [ModelInfo(id="x", provider="openai", auth="chatgpt")]
+
+            def provision_auth(self, *, model, home, env):
+                return False, "OAuth ausente — rode codex-login"
+
+
+        ADAPTER = MockAuthFailAdapter(
+            kind="mockauthfail", default_port=8798,
+            auth_env_keys=["MOCK_API_KEY"], writable_dirs=["HOME"],
+        )
+    '''), encoding="utf-8")
+    cli_adapters.reload_adapters()
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "mockauthfail")
+    monkeypatch.setenv("DEILE_CLI_WORKER_ROOT", str(tmp_path / "work"))
+    try:
+        yield
+    finally:
+        mod_path.unlink(missing_ok=True)
+        sys.modules.pop("cli_adapters.zzz_mock_authfail", None)
+        cli_adapters.reload_adapters()
+        cws._models_cache.clear()
+
+
+async def test_dispatch_aborts_when_provision_auth_fails(mock_adapter_auth_fail):
+    """provision_auth reprova → dispatch retorna WORKER_AUTH_EXPIRED, não roda."""
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch",
+            json={"brief": "x", "branch": "b", "cli_model": "x"},
+            headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is False
+        assert body["error_code"] == "WORKER_AUTH_EXPIRED"
+        assert "OAuth" in body["error"]
+
+
+async def test_dispatch_proceeds_when_provision_auth_ok(mock_adapter, monkeypatch):
+    """Adapter sem provision_auth custom (no-op base) → dispatch segue + roda."""
+    seq = {"head": ["base-sha", "new-sha"]}
+
+    async def _fake_head(_workdir):
+        return seq["head"].pop(0) if seq["head"] else "new-sha"
+
+    monkeypatch.setattr(cws, "_git_head", _fake_head)
+    monkeypatch.setattr(cws, "_git_branch_pushed", _async_return(True))
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch",
+            json={"brief": "x", "stage": "implement",
+                  "branch": "auto/issue-1", "cli_model": "x"},
+            headers=_AUTH_HEADERS,
+        )
+        body = await resp.json()
+        assert body["ok"] is True
+
+
 async def test_progress_404_for_unknown_task(mock_adapter):
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:

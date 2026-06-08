@@ -292,3 +292,134 @@ def test_parse_output_item_completed_agent_message(adapter):
     res = adapter.parse_output(stdout=out, stderr="", rc=0)
     assert res.ok is True
     assert "HOMOLOG CODEX OK." in res.result_text
+
+
+# --------------------------------------------------------------------------- #
+# Frente 4 — provision_auth (codex dual-mode por modelo)
+# --------------------------------------------------------------------------- #
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+@pytest.mark.unit
+def test_auth_for_model_resolves_from_catalog(adapter):
+    assert adapter.auth_for_model("gpt-5.3-codex") == "chatgpt"
+    assert adapter.auth_for_model("gpt-5-codex") == "chatgpt"
+    assert adapter.auth_for_model("gpt-5.1-codex-mini") == "apikey"
+    assert adapter.auth_for_model("codex-mini-latest") == "apikey"
+    # Desconhecido / None → conservador (chatgpt).
+    assert adapter.auth_for_model("modelo-inexistente") == "chatgpt"
+    assert adapter.auth_for_model(None) == "chatgpt"
+
+
+@pytest.mark.unit
+def test_provision_apikey_runs_codex_login(adapter, tmp_path):
+    """Modelo apikey → roda 'codex login --with-api-key' com a chave no stdin."""
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append((argv, kw))
+        return _FakeProc(returncode=0)
+
+    env = {"CODEX_HOME": str(tmp_path), "OPENAI_API_KEY": "sk-test-123"}
+    ok, detail = adapter.provision_auth(
+        model="gpt-5.1-codex-mini", home=str(tmp_path), env=env, runner=fake_run,
+    )
+    assert ok is True
+    assert len(calls) == 1
+    argv, kw = calls[0]
+    assert argv == ["codex", "login", "--with-api-key"]
+    assert kw["input"] == "sk-test-123"
+
+
+@pytest.mark.unit
+def test_provision_apikey_fails_without_key(adapter, tmp_path):
+    ok, detail = adapter.provision_auth(
+        model="gpt-5.1-codex-mini", home=str(tmp_path),
+        env={"CODEX_HOME": str(tmp_path)}, runner=lambda *a, **k: _FakeProc(),
+    )
+    assert ok is False
+    assert "OPENAI_API_KEY" in detail
+
+
+@pytest.mark.unit
+def test_provision_apikey_backs_up_oauth(adapter, tmp_path):
+    """Trocar para API key NÃO destrói o auth.json OAuth — faz backup antes."""
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"tokens": {"access_token": "oauth-xyz"}}),
+                    encoding="utf-8")
+    env = {"CODEX_HOME": str(tmp_path), "OPENAI_API_KEY": "sk-x"}
+    ok, _ = adapter.provision_auth(
+        model="gpt-5.1-codex-mini", home=str(tmp_path), env=env,
+        runner=lambda *a, **k: _FakeProc(returncode=0),
+    )
+    assert ok is True
+    backup = tmp_path / "auth.oauth.json.bak"
+    assert backup.exists(), "backup do OAuth não foi criado"
+    assert "oauth-xyz" in backup.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_provision_chatgpt_ok_when_oauth_present(adapter, tmp_path):
+    auth = tmp_path / "auth.json"
+    auth.write_text(json.dumps({"tokens": {"access_token": "oauth-xyz"}}),
+                    encoding="utf-8")
+    ok, detail = adapter.provision_auth(
+        model="gpt-5-codex", home=str(tmp_path),
+        env={"CODEX_HOME": str(tmp_path)},
+    )
+    assert ok is True
+    assert "OAuth" in detail
+
+
+@pytest.mark.unit
+def test_provision_chatgpt_fails_when_no_credential(adapter, tmp_path):
+    ok, detail = adapter.provision_auth(
+        model="gpt-5-codex", home=str(tmp_path),
+        env={"CODEX_HOME": str(tmp_path)},
+    )
+    assert ok is False
+    assert "OAuth" in detail or "ChatGPT" in detail
+
+
+@pytest.mark.unit
+def test_provision_chatgpt_restores_oauth_from_backup(adapter, tmp_path):
+    """Após usar API key, voltar a um modelo chatgpt restaura o OAuth."""
+    # Estado: auth.json é de API key, backup OAuth existe.
+    (tmp_path / "auth.json").write_text(
+        json.dumps({"OPENAI_API_KEY": "sk-x"}), encoding="utf-8")
+    (tmp_path / "auth.oauth.json.bak").write_text(
+        json.dumps({"tokens": {"access_token": "oauth-back"}}), encoding="utf-8")
+    ok, detail = adapter.provision_auth(
+        model="gpt-5-codex", home=str(tmp_path),
+        env={"CODEX_HOME": str(tmp_path)},
+    )
+    assert ok is True
+    restored = json.loads((tmp_path / "auth.json").read_text(encoding="utf-8"))
+    assert restored["tokens"]["access_token"] == "oauth-back"
+
+
+@pytest.mark.unit
+def test_provision_chatgpt_rejects_apikey_only_auth(adapter, tmp_path):
+    """auth.json de API key + sem backup + modelo chatgpt → falha clara."""
+    (tmp_path / "auth.json").write_text(
+        json.dumps({"OPENAI_API_KEY": "sk-x"}), encoding="utf-8")
+    ok, detail = adapter.provision_auth(
+        model="gpt-5-codex", home=str(tmp_path),
+        env={"CODEX_HOME": str(tmp_path)},
+    )
+    assert ok is False
+
+
+@pytest.mark.unit
+def test_base_adapter_provision_auth_is_noop():
+    """Adapters que não sobrescrevem → no-op (True, '')."""
+    from cli_adapters import opencode as oc
+    ok, detail = oc.ADAPTER.provision_auth(
+        model="openrouter/deepseek/deepseek-v4-flash", home="/tmp/x", env={},
+    )
+    assert ok is True and detail == ""

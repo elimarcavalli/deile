@@ -607,6 +607,30 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 logger.warning("não criei writable dir %s=%s: %s",
                                _dir_var, _dir_path, exc)
 
+    # Provisiona a credencial certa POR MODELO antes de invocar o CLI (Frente 4
+    # — codex dual-mode: modelos gpt-5*-codex exigem ChatGPT/OAuth, mini aceita
+    # API key). Default da base é no-op; o codex sobrescreve. Falha aborta o
+    # dispatch com erro tipado em vez de queimar tokens num auth errado.
+    provision = getattr(adapter, "provision_auth", None)
+    if callable(provision):
+        try:
+            auth_ok, auth_detail = provision(
+                model=cli_model, home=home, env=dict(os.environ),
+            )
+        except Exception as exc:  # noqa: BLE001 — provision nunca crasha o handler
+            auth_ok, auth_detail = False, f"provision_auth exceção: {exc}"
+        if not auth_ok:
+            await _release_lease(workspace / ".lease.json")
+            return web.json_response({
+                "ok": False,
+                "error_code": "WORKER_AUTH_EXPIRED",
+                "error": (auth_detail or "provisionamento de auth falhou")[:500],
+                "task_id": task_id,
+            }, status=200)
+        if auth_detail:
+            logger.info("provision_auth kind=%s model=%s → %s",
+                        adapter.kind, cli_model, auth_detail)
+
     logger.info(
         "dispatch kind=%s task_id=%s stage=%s model=%s resume=%s repo=%s (%s)",
         adapter.kind, task_id, stage, cli_model, resume_ctx is not None,

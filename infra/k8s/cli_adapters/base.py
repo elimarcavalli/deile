@@ -29,7 +29,7 @@ concretos (``cli_adapters/<kind>.py``), descobertos por auto-discovery no
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Protocol, runtime_checkable
+from typing import List, Literal, Optional, Protocol, Tuple, runtime_checkable
 
 #: Modo de autenticação suportado por um adapter.
 #:
@@ -282,6 +282,30 @@ class CliAdapter(Protocol):
         """
         ...
 
+    def provision_auth(
+        self, *, model: Optional[str], home: str, env: dict,
+    ) -> "Tuple[bool, str]":
+        """Garante a credencial certa ANTES de invocar o CLI (dual-mode opt-in).
+
+        Chamado pelo ``cli_worker_server`` após ``env_overlay`` e antes do
+        subprocess. A maioria dos adapters não precisa (auth via env não muda
+        por modelo) — o default da base é no-op ``(True, "")``. O codex
+        sobrescreve: alguns modelos exigem conta ChatGPT (OAuth ``auth.json``),
+        outros aceitam API key — a escolha do *model* dita qual provisionar
+        (campo ``ModelInfo.auth``). Implementações NÃO podem destruir uma
+        credencial OAuth ao trocar para API key (backup/restore).
+
+        Args:
+            model: model-id nativo selecionado, ou ``None`` (CLI decide).
+            home: HOME gravável do worker (o mesmo passado a ``env_overlay``).
+            env: dict de env já com o overlay aplicado (lê ``CODEX_HOME`` etc.
+                e ``OPENAI_API_KEY``).
+
+        Returns:
+            ``(ok, detail)`` — ``ok=False`` aborta o dispatch com erro tipado.
+        """
+        ...
+
 
 @dataclass
 class BaseCliAdapter:
@@ -330,6 +354,12 @@ class BaseCliAdapter:
 
     def list_models(self) -> List[ModelInfo]:
         return []
+
+    def provision_auth(
+        self, *, model: Optional[str], home: str, env: dict,
+    ) -> Tuple[bool, str]:
+        """No-op por default — auth via env não muda por modelo."""
+        return True, ""
 
 
 __all__ = [
