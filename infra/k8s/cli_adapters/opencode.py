@@ -30,8 +30,11 @@ de ``permission`` e ``OPENCODE_CONFIG_CONTENT``):
 * **list_models:** dinâmico via ``opencode models`` (uma linha ``provider/model``
   por modelo), com **catálogo curado de fallback** quando o comando falha/sem
   rede (o server cacheia o resultado com TTL).
-* **Resume:** ``supports_resume=False`` (§2.1 lista opencode como fresh-only); o
-  brief lê ``.deile-progress.md`` para contexto natural entre dispatches.
+* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
+  Quando o pipeline detecta trabalho começado (workdir reusado + sessão
+  anterior), retoma via ``--session <id>`` (id capturado do ``sessionID`` do
+  NDJSON) em vez de re-gastar tokens do zero. O brief continua lendo
+  ``.deile-progress.md`` como contexto natural complementar.
 * **Auth (§1.11/§2.1):** ``env`` — ``OPENROUTER_API_KEY`` (uma chave → vários
   providers). Sem login, sem refresh-token.
 * **Dirs graváveis (§1.7):** ``HOME`` + ``XDG_DATA_HOME``/``XDG_CONFIG_HOME`` +
@@ -51,6 +54,8 @@ import logging
 import shutil
 import subprocess
 from typing import List, Optional
+
+import _worker_core as _core
 
 from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
 
@@ -133,16 +138,20 @@ class OpenCodeAdapter(BaseCliAdapter):
         reasoning: Optional[str],
         workdir: str,
         resume: Optional[ResumeCtx],
+        task_id: str = "",
     ) -> List[str]:
         """Monta o argv headless do ``opencode run``.
 
         Forma: ``opencode run --dir <workdir> [-m <model>] [--variant <r>]
-        --dangerously-skip-permissions --format json "<instrução posicional>"
-        -f <brief_path>``.
+        [--session <id>] --dangerously-skip-permissions --format json
+        "<instrução posicional>" -f <brief_path>``.
 
-        ``resume`` é ignorado (``supports_resume=False`` → o server sempre passa
-        ``None``). A instrução posicional é curta e neutra-de-CLI; o conteúdo
-        real vem do anexo ``-f``.
+        **Resume nativo (issue #445):** quando ``resume`` não é ``None`` (workdir
+        reusado + sessão anterior), passa ``--session <session_id>`` para retomar
+        a conversa nativa do opencode em vez de re-gastar tokens do zero. O id é o
+        ``sessionID`` que o opencode emitiu no NDJSON do dispatch anterior
+        (capturado por :meth:`extract_session_id`). Flag confirmada na doc oficial
+        do opencode (``run --session``/``-s``). Sem resume, roda fresh.
 
         ORDEM CRÍTICA (homologação E2E): ``-f``/``--file`` é declarado como
         ``[array]`` no opencode (>=1.16); o parser yargs é GULOSO e consome todos
@@ -158,6 +167,8 @@ class OpenCodeAdapter(BaseCliAdapter):
         # supports_reasoning=False → reasoning sempre None aqui; guarda defensiva.
         if reasoning:
             argv += ["--variant", reasoning]
+        if resume is not None and resume.session_id:
+            argv += ["--session", resume.session_id]
         argv += [
             "--dangerously-skip-permissions",
             "--format", "json",
@@ -200,7 +211,23 @@ class OpenCodeAdapter(BaseCliAdapter):
         Tolerante a linhas malformadas (parse best-effort, ignora o que não for
         JSON). Sem nenhum evento textual e ``rc != 0`` → ``ok=False`` com tail
         do stderr.
+
+        ANTI-SANGRIA (issue #445): ANTES de qualquer heurística, classifica a
+        saída por corte de provider (402/429/5xx/conexão). Se casar, retorna
+        ``ok=False`` com o ``error_code`` específico — NUNCA "conclusão limpa" —,
+        para que o pipeline retome o trabalho parcial (mesmo workdir + sessão) em
+        vez de re-gastar do zero. É exatamente o bug do opencode #629 (402
+        mid-task marcado completo).
         """
+        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
+        if provider_err:
+            tail = (stderr or stdout)[-2000:].strip()
+            return WorkResult(
+                ok=False,
+                result_text=tail or f"opencode cortado por provider ({provider_err})",
+                error_code=provider_err,
+            )
+
         last_text = ""
         error_text = ""
         saw_event = False
@@ -266,6 +293,40 @@ class OpenCodeAdapter(BaseCliAdapter):
                     return nested.strip()
         return ""
 
+    def extract_session_id(
+        self, *, stdout: str, stderr: str, task_id: str,
+    ) -> str:
+        """Extrai o ``sessionID`` que o opencode emite nos eventos NDJSON.
+
+        Com ``--format json``, todo evento (``step_start``/``step_finish``/
+        ``tool_use``/``text``) carrega ``sessionID`` (confirmado na doc oficial do
+        opencode — ``run.ts``). Pega o primeiro id não-vazio encontrado (todos os
+        eventos de um run compartilham a mesma sessão). Vazio se nenhum evento
+        trouxe id (ex.: run abortado antes do primeiro evento) — o server então
+        não persiste session-id e o próximo dispatch cai em fresh.
+        """
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            sid = event.get("sessionID") or event.get("sessionId")
+            if isinstance(sid, str) and sid.strip():
+                return sid.strip()
+            # Alguns eventos aninham em ``data``/``session``.
+            for nest_key in ("data", "session"):
+                nest = event.get(nest_key)
+                if isinstance(nest, dict):
+                    nsid = nest.get("sessionID") or nest.get("id")
+                    if isinstance(nsid, str) and nsid.strip():
+                        return nsid.strip()
+        return ""
+
     def list_models(self) -> List[ModelInfo]:
         """Modelos suportados — dinâmico via ``opencode models``, com fallback.
 
@@ -315,7 +376,7 @@ ADAPTER = OpenCodeAdapter(
     kind="opencode",
     default_port=8771,
     auth_mode="env",
-    supports_resume=False,
+    supports_resume=True,
     supports_reasoning=False,
     git_strategy="brief_driven",
     auth_env_keys=["OPENROUTER_API_KEY"],

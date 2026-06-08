@@ -33,8 +33,11 @@ contra a doc oficial do Qwen Code via context7 — ``-p``/``--prompt``,
 * **list_models:** Qwen não tem comando de listagem confiável → **catálogo
   estático curado** (modelos Qwen-Coder + o que o base_url expõe). Os IDs nativos
   variam com o ``OPENAI_BASE_URL`` configurado; o catálogo cobre os recorrentes.
-* **Resume:** ``supports_resume=False`` (fresh-only; o brief lê
-  ``.deile-progress.md`` para contexto natural).
+* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
+  Retoma via ``qwen --resume <session_id>`` (session_id capturado dos eventos
+  JSON) restaurando history + tool state + compression checkpoints, em vez de
+  re-gastar tokens do zero. O brief continua lendo ``.deile-progress.md`` como
+  contexto natural complementar.
 * **Auth (§1.11/§2.3):** ``env`` — ``OPENAI_API_KEY`` (a tríade OpenAI-compatible;
   OAuth free-tier do Qwen morreu em 2026-04-15). Sem login, sem refresh.
 * **Dirs graváveis (§1.7):** ``HOME`` + ``~/.qwen`` (config/cache do CLI node).
@@ -52,6 +55,8 @@ from __future__ import annotations
 import json
 import logging
 from typing import List, Optional
+
+import _worker_core as _core
 
 from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
 
@@ -110,6 +115,7 @@ class QwenAdapter(BaseCliAdapter):
         reasoning: Optional[str],
         workdir: str,
         resume: Optional[ResumeCtx],
+        task_id: str = "",
     ) -> List[str]:
         """Monta o argv headless do ``qwen``.
 
@@ -129,11 +135,20 @@ class QwenAdapter(BaseCliAdapter):
         servidor — sem ``-m`` o qwen caía no default ``qwen3.5-plus``, que o
         OpenRouter rejeita (``400 ... is not a valid model ID``), derrubando a
         homologação E2E do pr_review. ``None`` deixa o qwen usar seu default.
-        ``reasoning`` e ``resume`` são ignorados (sem suporte). O ``workdir`` é o
-        cwd do subprocess (definido pelo core).
+        ``reasoning`` é ignorado (sem suporte). O ``workdir`` é o cwd do
+        subprocess (definido pelo core).
+
+        **Resume nativo (issue #445):** quando ``resume`` não é ``None``, passa
+        ``--resume <session_id>`` para retomar a conversa (history + tool state +
+        compression checkpoints restaurados) em vez de re-gastar tokens do zero.
+        Forma confirmada na doc oficial do qwen-code (``qwen --resume <id> -p``).
+        O id é o ``session_id`` que o qwen emite nos eventos JSON (capturado por
+        :meth:`extract_session_id`). Sem resume, roda fresh.
         """
         brief_text = self._read_brief(brief_path)
         argv = ["qwen", "-p", brief_text, "--yolo", "--auth-type", "openai"]
+        if resume is not None and resume.session_id:
+            argv += ["--resume", resume.session_id]
         if model:
             argv += ["-m", model]
         argv += ["--output-format", "json"]
@@ -183,7 +198,20 @@ class QwenAdapter(BaseCliAdapter):
         textual de resposta como veredito; campo/tipo de erro → ``ok=False``.
         Exit-code é informativo apenas (§1.6) — o gate de commit/push do server
         decide o sucesso final. Tolerante a saída malformada.
+
+        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx/
+        conexão) ANTES de qualquer parse — retorna ``error_code`` específico em
+        vez de "conclusão limpa" para o pipeline retomar o trabalho parcial.
         """
+        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
+        if provider_err:
+            tail = (stderr or stdout)[-2000:].strip()
+            return WorkResult(
+                ok=False,
+                result_text=tail or f"qwen cortado por provider ({provider_err})",
+                error_code=provider_err,
+            )
+
         whole = stdout.strip()
         if whole.startswith("{"):
             try:
@@ -316,6 +344,67 @@ class QwenAdapter(BaseCliAdapter):
                     return nested.strip()
         return ""
 
+    def extract_session_id(
+        self, *, stdout: str, stderr: str, task_id: str,
+    ) -> str:
+        """Extrai o ``session_id`` que o qwen emite em TODO evento JSON.
+
+        Com ``--output-format json``, a saída é um array (ou JSONL) de eventos e
+        cada um carrega ``session_id`` (o ``system``/``session_start`` o emite
+        primeiro), confirmado na doc oficial do qwen-code (dual-output schema).
+        Pega o primeiro id não-vazio. Tolera tanto o array único quanto JSONL
+        linha-a-linha. Vazio se a saída não trouxe id.
+        """
+        whole = stdout.strip()
+        # Array único de eventos.
+        if whole.startswith("["):
+            try:
+                events = json.loads(whole)
+            except (ValueError, TypeError):
+                events = None
+            if isinstance(events, list):
+                for ev in events:
+                    sid = self._event_session_id(ev)
+                    if sid:
+                        return sid
+        # Objeto único.
+        if whole.startswith("{"):
+            try:
+                obj = json.loads(whole)
+            except (ValueError, TypeError):
+                obj = None
+            sid = self._event_session_id(obj)
+            if sid:
+                return sid
+        # JSONL linha-a-linha.
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            sid = self._event_session_id(ev)
+            if sid:
+                return sid
+        return ""
+
+    @staticmethod
+    def _event_session_id(event) -> str:
+        """``session_id`` de um evento qwen (top-level ou aninhado em ``data``)."""
+        if not isinstance(event, dict):
+            return ""
+        sid = event.get("session_id") or event.get("sessionId")
+        if isinstance(sid, str) and sid.strip():
+            return sid.strip()
+        data = event.get("data")
+        if isinstance(data, dict):
+            nsid = data.get("session_id") or data.get("sessionId")
+            if isinstance(nsid, str) and nsid.strip():
+                return nsid.strip()
+        return ""
+
     def list_models(self) -> List[ModelInfo]:
         """Catálogo estático (Qwen não tem ``list-models`` confiável — §2.3)."""
         return list(_MODELS)
@@ -326,7 +415,7 @@ ADAPTER = QwenAdapter(
     kind="qwen",
     default_port=8773,
     auth_mode="env",
-    supports_resume=False,
+    supports_resume=True,
     supports_reasoning=False,
     git_strategy="brief_driven",
     auth_env_keys=["OPENAI_API_KEY"],

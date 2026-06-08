@@ -2,7 +2,8 @@
 """cli_adapters.goose — adapter do Goose CLI (frota multi-worker, Tier 1).
 
 Goose é o agente de coding open-source da Block (binário rust). Headless via
-``goose run --no-session``. Este adapter pluga o Goose na frota pelos cinco
+``goose run --name <task_id>`` (sessão nomeada determinística para suportar
+resume; issue #445). Este adapter pluga o Goose na frota pelos cinco
 pontos do contrato :class:`~cli_adapters.base.CliAdapter`; toda a maquinaria
 genérica (lease, heartbeat, subprocess, gate de git, HTTP) vem do
 ``cli_worker_server`` + ``_worker_core``.
@@ -32,8 +33,11 @@ contra a doc oficial do Goose via context7 — ``goose run --no-session -t``,
 * **list_models:** Goose não tem comando de listagem confiável → **catálogo
   estático curado** (OpenRouter/OpenAI). Os IDs nativos dependem do
   ``GOOSE_PROVIDER`` configurado.
-* **Resume:** ``supports_resume=False`` (``--no-session``; o brief lê
-  ``.deile-progress.md`` para contexto natural).
+* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
+  Substitui o ``--no-session`` por sessão NOMEADA determinística
+  (``--name <task_id>``); o resume reabre o mesmo nome com ``--resume``,
+  retomando a sessão SQLite persistida em vez de re-gastar do zero. O brief
+  continua lendo ``.deile-progress.md`` como contexto natural complementar.
 * **Auth (§1.11/§2.5):** ``env`` — ``OPENROUTER_API_KEY`` (rota recomendada, uma
   chave → vários providers) ou ``OPENAI_API_KEY``. Sem login, sem refresh.
 * **Dirs graváveis (§1.7):** ``HOME`` + ``XDG_CONFIG_HOME`` (``~/.config/goose``).
@@ -53,6 +57,8 @@ from __future__ import annotations
 import json
 import logging
 from typing import List, Optional
+
+import _worker_core as _core
 
 from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
 
@@ -130,23 +136,43 @@ class GooseAdapter(BaseCliAdapter):
         reasoning: Optional[str],
         workdir: str,
         resume: Optional[ResumeCtx],
+        task_id: str = "",
     ) -> List[str]:
         """Monta o argv headless do ``goose run``.
 
-        Forma: ``goose run --no-session --quiet --output-format json
+        Forma fresh: ``goose run --name <task_id> --quiet --output-format json
         --max-turns <teto> [--provider <p> --model <m>] -t "<conteúdo do brief>"``.
 
+        Forma resume (issue #445): ``goose run --name <session_id> --resume ...``
+        — retoma a sessão NOMEADA persistida (SQLite) em vez de re-gastar tokens
+        do zero. Formas confirmadas na doc oficial do Goose (``goose run -n <name>``
+        / ``goose run -n <name> --resume``).
+
+        **Sessão nomeada determinística:** o ``task_id`` (que nós controlamos) É o
+        nome/session-id da sessão Goose — fresh cria ``--name <task_id>``, resume
+        reabre o MESMO nome com ``--resume``. Isto substitui o ``--no-session``
+        antigo (que não persistia nada e impossibilitava resume). Quando o
+        ``task_id`` não é fornecido (dublês antigos) ou no resume usamos o
+        ``resume.session_id`` (== prev task_id); sem nenhum dos dois, cai em
+        ``--no-session`` (fresh efêmero, sem resume — degradação graciosa).
+
         Quando ``model`` vem no formato ``provider/model``, mapeia os dois lados
-        para ``--provider``/``--model`` (sobrepõe o env por invocação); um
-        ``model`` sem ``/`` vira só ``--model`` (provider fica a cargo do env);
+        para ``--provider``/``--model``; um ``model`` sem ``/`` vira só ``--model``;
         ``None`` deixa ``GOOSE_PROVIDER``/``GOOSE_MODEL`` do env decidirem.
-        ``reasoning`` e ``resume`` são ignorados (sem suporte). O ``workdir`` é o
-        cwd do subprocess (definido pelo core), não uma flag.
+        ``reasoning`` é ignorado (sem suporte). O ``workdir`` é o cwd do
+        subprocess (definido pelo core), não uma flag.
         """
         brief_text = self._read_brief(brief_path)
-        argv: List[str] = [
-            "goose", "run",
-            "--no-session",
+        session_name = (resume.session_id if resume is not None else "") or task_id
+        argv: List[str] = ["goose", "run"]
+        if session_name:
+            argv += ["--name", session_name]
+            if resume is not None:
+                argv += ["--resume"]
+        else:
+            # Sem identidade de sessão → efêmero (não persiste, sem resume).
+            argv += ["--no-session"]
+        argv += [
             "--quiet",
             "--output-format", "json",
             "--max-turns", str(_DEFAULT_MAX_TURNS),
@@ -201,7 +227,20 @@ class GooseAdapter(BaseCliAdapter):
         Tipo/campo de erro → ``ok=False``. Exit-code não-confiável (§2.5) → o gate
         de commit/push do server decide o sucesso final. Tolerante a saída
         malformada.
+
+        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx/
+        conexão) ANTES do parse — retorna ``error_code`` específico em vez de
+        "conclusão limpa" para o pipeline retomar o trabalho parcial.
         """
+        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
+        if provider_err:
+            tail = (stderr or stdout)[-2000:].strip()
+            return WorkResult(
+                ok=False,
+                result_text=tail or f"goose cortado por provider ({provider_err})",
+                error_code=provider_err,
+            )
+
         whole = stdout.strip()
         if whole.startswith("{"):
             try:
@@ -313,6 +352,19 @@ class GooseAdapter(BaseCliAdapter):
                     return nested.strip()
         return ""
 
+    def extract_session_id(
+        self, *, stdout: str, stderr: str, task_id: str,
+    ) -> str:
+        """Goose usa sessão NOMEADA determinística → o session-id É o ``task_id``.
+
+        Como :meth:`build_argv` cria a sessão com ``--name <task_id>``, o nome (=
+        session-id que ``--resume`` reabre) é o próprio ``task_id`` — não há que
+        parsear da saída. Retornar o ``task_id`` faz o ``resume-info`` sinalizar
+        "há sessão a retomar", disparando o reuso do MESMO workdir + ``--resume``
+        no próximo dispatch.
+        """
+        return task_id
+
     def list_models(self) -> List[ModelInfo]:
         """Catálogo estático (Goose não tem ``list-models`` confiável — §2.5)."""
         return list(_MODELS)
@@ -323,7 +375,7 @@ ADAPTER = GooseAdapter(
     kind="goose",
     default_port=8775,
     auth_mode="env",
-    supports_resume=False,
+    supports_resume=True,
     supports_reasoning=False,
     git_strategy="brief_driven",
     auth_env_keys=["OPENROUTER_API_KEY", "OPENAI_API_KEY"],

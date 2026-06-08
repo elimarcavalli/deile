@@ -32,9 +32,12 @@ contra a doc oficial do Codex via context7 — ``codex exec``, ``--json``,
   de commit/push do server decide o sucesso final.
 * **list_models:** Codex não tem comando de listagem confiável → **catálogo
   estático curado** (fonte: modelos ``gpt-*`` da OpenAI documentados).
-* **Resume:** ``supports_resume=False`` neste worker (fresh-only; o brief lê
-  ``.deile-progress.md`` para contexto natural). Codex tem ``resume`` nativo, mas
-  a frota padroniza fresh-com-contexto (espelha opencode) para não inflar estado.
+* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
+  Codex tem ``resume`` nativo: quando o pipeline detecta trabalho começado, o
+  worker retoma via ``codex exec resume <thread_id>`` (thread.id capturado do
+  evento ``thread.started`` do JSONL) preservando transcript + plan + approvals,
+  em vez de re-gastar tokens do zero. O brief continua lendo
+  ``.deile-progress.md`` como contexto natural complementar.
 * **Auth (§1.11/§2.2):** DOIS modos. **Default ``env``** — ``OPENAI_API_KEY``
   (não expira; robusto). **Opt-in ``oauth_file``** (``DEILE_CODEX_AUTH=oauth``)
   — ``codex login --device-auth`` no host grava ``auth.json`` sob ``CODEX_HOME``,
@@ -60,6 +63,8 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
+
+import _worker_core as _core
 
 from .base import (BaseCliAdapter, ModelAuth, ModelInfo, OAuthSpec, ResumeCtx,
                    WorkResult)
@@ -171,19 +176,31 @@ class CodexAdapter(BaseCliAdapter):
         reasoning: Optional[str],
         workdir: str,
         resume: Optional[ResumeCtx],
+        task_id: str = "",
     ) -> List[str]:
         """Monta o argv headless do ``codex exec``.
 
-        Forma: ``codex exec --cd <workdir> [-m <model>]
+        Forma fresh: ``codex exec --cd <workdir> [-m <model>]
         [-c model_reasoning_effort=<r>] --dangerously-bypass-approvals-and-sandbox
         --json --skip-git-repo-check "<conteúdo do brief>"``.
 
+        Forma resume (issue #445): ``codex exec resume <thread_id> --cd <workdir>
+        [flags...] "<conteúdo do brief>"`` — o subcomando ``resume <id>`` retoma
+        o thread anterior (transcript + plan + approvals preservados) e aplica o
+        brief como nova instrução, em vez de re-gastar tokens do zero. Forma
+        confirmada na doc oficial do Codex (``codex exec resume <SESSION_ID>``). O
+        ``thread_id`` vem do evento ``thread.started`` do JSONL do dispatch
+        anterior (capturado por :meth:`extract_session_id`).
+
         SEMPRE ``codex exec`` (nunca ``codex`` puro — panica sem TTY, §2.2). O
         brief é lido do arquivo e vira o prompt posicional (Codex não tem
-        ``--message-file``). ``resume`` é ignorado (fresh-only).
+        ``--message-file``).
         """
         brief_text = self._read_brief(brief_path)
-        argv: List[str] = ["codex", "exec", "--cd", workdir]
+        argv: List[str] = ["codex", "exec"]
+        if resume is not None and resume.session_id:
+            argv += ["resume", resume.session_id]
+        argv += ["--cd", workdir]
         if model:
             argv += ["-m", model]
         if reasoning and reasoning in _VALID_REASONING:
@@ -240,7 +257,20 @@ class CodexAdapter(BaseCliAdapter):
 
         Tolerante a linhas malformadas (parse best-effort). Sem nenhum evento
         textual e ``rc != 0`` → ``ok=False`` com tail do stderr.
+
+        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx/
+        conexão) ANTES da heurística — retorna ``error_code`` específico em vez de
+        "conclusão limpa" para o pipeline retomar o trabalho parcial.
         """
+        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
+        if provider_err:
+            tail = (stderr or stdout)[-2000:].strip()
+            return WorkResult(
+                ok=False,
+                result_text=tail or f"codex cortado por provider ({provider_err})",
+                error_code=provider_err,
+            )
+
         last_text = ""
         error_text = ""
         saw_event = False
@@ -324,6 +354,38 @@ class CodexAdapter(BaseCliAdapter):
                 )
                 if isinstance(nested, str) and nested.strip():
                     return nested.strip()
+        return ""
+
+    def extract_session_id(
+        self, *, stdout: str, stderr: str, task_id: str,
+    ) -> str:
+        """Extrai o ``thread.id`` do evento ``thread.started`` do JSONL.
+
+        Com ``--json``, o PRIMEIRO evento é ``thread.started`` carregando o
+        ``thread`` (campo ``thread.id`` — ex.: ``thr_123``), confirmado no
+        ``exec_events.rs`` do Codex. Esse id é o que ``codex exec resume <id>``
+        consome. Tolera versões que aninham em ``thread_id``/``session_id`` no
+        topo do evento. Vazio se nenhum evento de início foi emitido.
+        """
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            thread = event.get("thread")
+            if isinstance(thread, dict):
+                tid = thread.get("id")
+                if isinstance(tid, str) and tid.strip():
+                    return tid.strip()
+            for key in ("thread_id", "threadId", "session_id", "conversation_id"):
+                val = event.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
         return ""
 
     def list_models(self) -> List[ModelInfo]:
@@ -487,7 +549,7 @@ ADAPTER = CodexAdapter(
     kind="codex",
     default_port=8772,
     auth_mode="env",
-    supports_resume=False,
+    supports_resume=True,
     supports_reasoning=True,
     git_strategy="brief_driven",
     auth_env_keys=["OPENAI_API_KEY"],

@@ -43,8 +43,11 @@ contra a doc oficial do Aider via context7 — ``--message-file``/``-f``,
 * **list_models:** DINÂMICO via ``aider --list-models ""`` (lista os modelos que
   o litellm conhece), com **catálogo curado de fallback** quando o comando
   falha/sem rede. O ``cli_worker_server`` cacheia com TTL.
-* **Resume:** ``supports_resume=False`` (single-pass; o brief lê
-  ``.deile-progress.md`` para contexto natural).
+* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
+  Aider não tem session-id de servidor — a continuidade é *keyed-by-workdir*
+  (``.aider.chat.history.md`` no clone). Em resume, o servidor reusa o workdir e
+  ``--restore-chat-history`` recarrega o histórico, retomando em vez de re-gastar
+  do zero. O brief continua lendo ``.deile-progress.md`` como contexto natural.
 * **Auth (§1.11/§2.4):** ``env`` — ``OPENROUTER_API_KEY`` (uma chave → vários
   providers) ou ``DEEPSEEK_API_KEY``. Sem login, sem refresh.
 * **Dirs graváveis (§1.7):** ``HOME`` (config/cache do litellm + history files do
@@ -60,6 +63,8 @@ import logging
 import shutil
 import subprocess
 from typing import List, Optional
+
+import _worker_core as _core
 
 from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
 
@@ -126,21 +131,31 @@ class AiderAdapter(BaseCliAdapter):
         reasoning: Optional[str],
         workdir: str,
         resume: Optional[ResumeCtx],
+        task_id: str = "",
     ) -> List[str]:
         """Monta o argv headless do ``aider``.
 
-        Forma: ``aider [--model <m>] --message-file <brief_path> --yes-always
-        --no-stream --no-pretty --analytics-disable --no-check-update
-        --no-gitignore --auto-commits --no-attribute-author
+        Forma: ``aider [--model <m>] [--restore-chat-history] --message-file
+        <brief_path> --yes-always --no-stream --no-pretty --analytics-disable
+        --no-check-update --no-gitignore --auto-commits --no-attribute-author
         --no-attribute-committer --no-attribute-commit-message-author``.
 
-        ``reasoning`` e ``resume`` são ignorados (sem suporte). O ``workdir`` é o
-        cwd do subprocess (definido pelo core), não uma flag — o Aider opera no
-        repo do diretório corrente.
+        **Resume nativo (issue #445):** o Aider NÃO tem session-id de servidor —
+        sua continuidade é *keyed-by-workdir*: o histórico vive em
+        ``.aider.chat.history.md`` DENTRO do repo. Quando ``resume`` não é
+        ``None``, o workdir anterior é reusado (o servidor reaproveita o clone) e
+        ``--restore-chat-history`` recarrega esse histórico, retomando a conversa
+        em vez de re-gastar tokens do zero. Forma confirmada na doc oficial do
+        Aider. ``reasoning`` é ignorado (sem suporte). O ``workdir`` é o cwd do
+        subprocess (definido pelo core).
         """
         argv: List[str] = ["aider"]
         if model:
             argv += ["--model", model]
+        if resume is not None:
+            # Continuidade keyed-by-workdir: recarrega .aider.chat.history.md do
+            # clone reusado (não há session-id nativo a passar).
+            argv += ["--restore-chat-history"]
         argv += [
             "--message-file", brief_path,
             "--yes-always",
@@ -175,7 +190,20 @@ class AiderAdapter(BaseCliAdapter):
         do stdout como veredito. Exit-code é informativo apenas (§1.6); o gate de
         git (commit local feito pelo Aider) + test do server decide o sucesso
         final (``git_strategy="cli_autocommit"``).
+
+        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx/
+        conexão) ANTES da heurística — retorna ``error_code`` específico em vez de
+        "conclusão limpa" para o pipeline retomar o trabalho parcial.
         """
+        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
+        if provider_err:
+            tail = (stderr or stdout)[-2000:].strip()
+            return WorkResult(
+                ok=False,
+                result_text=tail or f"aider cortado por provider ({provider_err})",
+                error_code=provider_err,
+            )
+
         combined = f"{stdout}\n{stderr}".lower()
         for marker in _ERROR_MARKERS:
             if marker in combined:
@@ -195,6 +223,20 @@ class AiderAdapter(BaseCliAdapter):
             ok=True,
             result_text="aider concluiu sem saída textual; gate de git confirma o commit",
         )
+
+    def extract_session_id(
+        self, *, stdout: str, stderr: str, task_id: str,
+    ) -> str:
+        """Aider é keyed-by-workdir (sem session-id de servidor) → ``task_id``.
+
+        O Aider não emite um id de sessão: a continuidade vem do
+        ``.aider.chat.history.md`` no clone reusado. Retornamos o ``task_id`` como
+        sentinela não-vazio para que o ``resume-info`` sinalize "há sessão a
+        retomar" — o que dispara o reuso do MESMO workdir no próximo dispatch
+        (onde ``--restore-chat-history`` recarrega o histórico). Sem isto o
+        pipeline cairia em fresh com workdir novo e o histórico se perderia.
+        """
+        return task_id
 
     def list_models(self) -> List[ModelInfo]:
         """Modelos suportados — dinâmico via ``aider --list-models``, com fallback.
@@ -249,7 +291,7 @@ ADAPTER = AiderAdapter(
     kind="aider",
     default_port=8774,
     auth_mode="env",
-    supports_resume=False,
+    supports_resume=True,
     supports_reasoning=False,
     git_strategy="cli_autocommit",
     auth_env_keys=["OPENROUTER_API_KEY", "DEEPSEEK_API_KEY"],
