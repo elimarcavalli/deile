@@ -54,6 +54,26 @@ def _load(name: str, rel: str):
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _isolate_sys_modules():
+    """Isola ``sys.modules`` por teste.
+
+    ``_load`` registra módulos por arquivo em ``sys.modules[name]`` (necessário
+    para os imports do painel carregado por path). Carregar nomes COMPARTILHADOS
+    como ``_panel`` substitui a instância que OUTROS testes da suíte já importaram
+    → poluição de ordenação (quebrava ``test_panel_pod_watch_filter`` no run
+    completo, embora passasse isolado). Snapshot + restore devolve ``sys.modules``
+    ao estado anterior ao fim de cada teste."""
+    saved = dict(sys.modules)
+    try:
+        yield
+    finally:
+        for name in list(sys.modules):
+            if name not in saved:
+                del sys.modules[name]
+        sys.modules.update(saved)
+
+
 @pytest.fixture(scope="module")
 def fta():
     return _load("fleet_tokens_audit", "fleet_tokens_audit.py")
