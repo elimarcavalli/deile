@@ -251,3 +251,19 @@ def test_list_models_returns_copy(adapter):
     a.append(base.ModelInfo(id="x"))
     b = adapter.list_models()
     assert len(b) == len(cx_mod._MODELS)  # mutação no retorno não vaza
+
+
+@pytest.mark.unit
+def test_parse_output_item_completed_agent_message(adapter):
+    """Regressão #25 (homolog follow_ups): codex >=0.13x emite
+    ``{type:item.completed, item:{type:agent_message, text:"..."}}``; o veredito
+    está em item.text. O parser deve extraí-lo (não cair no fallback)."""
+    out = "\n".join([
+        '{"type":"thread.started"}',
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"HOMOLOG CODEX OK."}}',
+        '{"type":"turn.completed","usage":{"output_tokens":40}}',
+    ])
+    res = adapter.parse_output(stdout=out, stderr="", rc=0)
+    assert res.ok is True
+    assert "HOMOLOG CODEX OK." in res.result_text

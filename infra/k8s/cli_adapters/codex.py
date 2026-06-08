@@ -237,8 +237,14 @@ class CodexAdapter(BaseCliAdapter):
 
     @staticmethod
     def _event_text(event: dict) -> str:
-        """Extrai o texto de um evento JSONL, tolerante ao shape por versão."""
-        for key in ("message", "text", "content", "msg", "delta"):
+        """Extrai o texto de um evento JSONL, tolerante ao shape por versão.
+
+        Inclui ``item`` (codex >=0.13x): ``{type:item.completed, item:{type:
+        agent_message, text:"..."}}`` carrega o veredito do agente em
+        ``item.text``. Sem isso o parser caía no fallback "sem veredito textual"
+        mesmo com o codex tendo respondido (homologação E2E do stage follow_ups).
+        """
+        for key in ("message", "text", "content", "msg", "delta", "item"):
             val = event.get(key)
             if isinstance(val, str) and val.strip():
                 return val.strip()
