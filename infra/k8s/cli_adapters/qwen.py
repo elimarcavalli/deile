@@ -1,53 +1,24 @@
 #!/usr/bin/env python3
 """cli_adapters.qwen — adapter do Qwen Code CLI (frota multi-worker, Tier 2).
 
-Qwen Code é um fork do Gemini CLI (node) focado nos modelos Qwen-Coder; o melhor
-custo-benefício da frota. Headless via ``qwen -p "<prompt>"``. Este adapter pluga
-o Qwen na frota pelos cinco pontos do contrato
-:class:`~cli_adapters.base.CliAdapter`; toda a maquinaria genérica (lease,
-heartbeat, subprocess, gate de git, HTTP) vem do ``cli_worker_server`` +
-``_worker_core``.
+Qwen Code (fork do Gemini CLI, node) headless via ``qwen -p "<prompt>"``.
+Toda maquinaria genérica (lease, heartbeat, subprocess, git gate, HTTP) vem do
+``cli_worker_server`` + ``_worker_core``.
 
-Decisões deste adapter (alinhadas ao plano §2.3/§1.4/§1.6/§1.11 e validadas
-contra a doc oficial do Qwen Code via context7 — ``-p``/``--prompt``,
-``--output-format json``, ``--approval-mode yolo``/``--yolo``, a tríade
-``OPENAI_MODEL``/``OPENAI_BASE_URL``/``OPENAI_API_KEY``):
+Decisões-chave (§2.3/§1.4/§1.6/§1.11, validadas contra doc oficial via context7):
 
-* **Multi-provider via base_url (§2.3):** Qwen fala OpenAI-compatible; o provider
-  é escolhido pela tríade de env (``OPENAI_BASE_URL`` aponta pro Dashscope OU
-  OpenRouter OU outro endpoint compatível). O modelo viaja por ``OPENAI_MODEL``,
-  não por flag — por isso :meth:`build_argv` NÃO emite ``-m``; o modelo é injetado
-  no env pelo servidor (o adapter expõe ``OPENAI_MODEL`` como a env var de modelo).
-* **Autonomia (§1.4):** ``--yolo`` (= ``--approval-mode yolo``) + env
-  ``QWEN_CODE_UNATTENDED_RETRY=1``; sem TTY qualquer prompt de aprovação travaria
-  o subprocess.
-* **Brief (§2.3):** o conteúdo do brief é lido do arquivo e passado via ``-p``
-  (Qwen não tem ``--message-file``). O timeout do pod capa runs longos (§ custo).
-* **Modelo:** via env ``OPENAI_MODEL`` (ex.: ``qwen3-coder-plus``, ou
-  ``qwen/qwen3-coder`` quando ``OPENAI_BASE_URL`` aponta pro OpenRouter). O
-  servidor injeta o ``OPENAI_MODEL`` resolvido; o adapter não toca o argv com
-  modelo.
-* **Saída (§1.6):** ``--output-format json`` → JSON estruturado;
-  :meth:`parse_output` lê a resposta/erro. Exit-code grosso → o gate de
+* **Multi-provider:** OpenAI-compatible; tríade ``OPENAI_BASE_URL`` /
+  ``OPENAI_API_KEY`` / ``OPENAI_MODEL`` aponta Dashscope, OpenRouter ou outro
+  endpoint. O modelo viaja por ``-m <model>`` no argv (ver :meth:`build_argv`).
+* **Autonomia:** ``--yolo`` + ``QWEN_CODE_UNATTENDED_RETRY=1`` — sem TTY,
+  qualquer prompt de aprovação travaria o subprocess.
+* **Auth:** ``OPENAI_API_KEY`` (OAuth free-tier do Qwen morreu em 2026-04-15).
+* **Resume (issue #445):** ``qwen --resume <session_id>`` restaura history +
+  tool state em vez de re-gastar tokens do zero.
+* **Saída:** ``--output-format json``; exit-code é informativo — o gate de
   commit/push do server decide o sucesso final.
-* **list_models:** Qwen não tem comando de listagem confiável → **catálogo
-  estático curado** (modelos Qwen-Coder + o que o base_url expõe). Os IDs nativos
-  variam com o ``OPENAI_BASE_URL`` configurado; o catálogo cobre os recorrentes.
-* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
-  Retoma via ``qwen --resume <session_id>`` (session_id capturado dos eventos
-  JSON) restaurando history + tool state + compression checkpoints, em vez de
-  re-gastar tokens do zero. O brief continua lendo ``.deile-progress.md`` como
-  contexto natural complementar.
-* **Auth (§1.11/§2.3):** ``env`` — ``OPENAI_API_KEY`` (a tríade OpenAI-compatible;
-  OAuth free-tier do Qwen morreu em 2026-04-15). Sem login, sem refresh.
-* **Dirs graváveis (§1.7):** ``HOME`` + ``~/.qwen`` (config/cache do CLI node).
-  **node>=22** exige imagem própria (Fase C/D — não é responsabilidade do
-  adapter). O workdir do repo é gravável por construção.
-* **Egress (§1.13):** ``dashscope.aliyuncs.com`` (Dashscope) + ``openrouter.ai``
-  (rota OpenRouter). As forges são adicionadas transversalmente pela geração de
-  NetworkPolicy.
-* **git (§1.5):** ``brief_driven`` — o brief instrui ``git add/commit/push`` sob
-  auto-approve; o server valida commit novo + push no gate pós-run.
+* **list_models:** catálogo estático (Qwen não tem ``list-models`` confiável).
+* **git:** ``brief_driven`` — o brief instrui ``git add/commit/push``.
 """
 
 from __future__ import annotations
@@ -66,12 +37,8 @@ logger = logging.getLogger("deile.cli_adapters.qwen")
 #: conclui). Truncar o início cortaria o veredito; mantém os últimos N chars.
 _VERDICT_CAP = 12000
 
-#: Catálogo estático curado (Qwen não tem ``list-models`` confiável — §2.3).
-#:
-#: Fonte: modelos Qwen-Coder do Dashscope + os equivalentes servidos pelo
-#: OpenRouter. Os IDs dependem do ``OPENAI_BASE_URL`` configurado no Deployment;
-#: o catálogo cobre as duas rotas recorrentes (Dashscope direto = ``qwen3-*``;
-#: OpenRouter = ``qwen/qwen3-coder``). Garante picker não-vazio no painel.
+#: Catálogo estático (Qwen não tem ``list-models`` confiável — §2.3).
+#: Cobre Dashscope (``qwen3-*``) + OpenRouter (``qwen/qwen3-coder``).
 _MODELS: List[ModelInfo] = [
     ModelInfo(
         id="qwen3-coder-next",
@@ -119,31 +86,20 @@ class QwenAdapter(BaseCliAdapter):
     ) -> List[str]:
         """Monta o argv headless do ``qwen``.
 
-        Forma: ``qwen -p "<conteúdo do brief>" --yolo --auth-type openai
-        --output-format json``.
+        Forma: ``qwen -p "<brief>" --yolo --auth-type openai --output-format json``.
 
-        ``--auth-type openai`` é OBRIGATÓRIO em modo não-interativo: o qwen-code
-        suporta vários backends de auth (``openai``/``anthropic``/``qwen-oauth``/
-        ``gemini``/``vertex-ai``) e SEM o flag aborta com "No auth type is
-        selected ... before running in non-interactive mode" (homologação E2E do
-        stage pr_review). A frota usa a tríade OpenAI-compatible
-        (``OPENAI_BASE_URL``/``OPENAI_API_KEY``/``OPENAI_MODEL``) apontando para
-        OpenRouter/Dashscope/OpenAI — todos sob o backend ``openai``.
+        ``--auth-type openai`` é OBRIGATÓRIO em modo não-interativo: sem o flag o
+        qwen aborta com "No auth type is selected ... before running in
+        non-interactive mode" (homologado no stage pr_review). Todos os backends da
+        frota (OpenRouter/Dashscope/OpenAI) usam a tríade OpenAI-compatible.
 
-        O modelo entra via ``-m <model>`` (o qwen-code TEM a flag). A injeção por
-        ``OPENAI_MODEL`` no env era a intenção original mas nunca foi wirada pelo
-        servidor — sem ``-m`` o qwen caía no default ``qwen3.5-plus``, que o
-        OpenRouter rejeita (``400 ... is not a valid model ID``), derrubando a
-        homologação E2E do pr_review. ``None`` deixa o qwen usar seu default.
-        ``reasoning`` é ignorado (sem suporte). O ``workdir`` é o cwd do
-        subprocess (definido pelo core).
+        ``-m <model>`` é necessário: injetar apenas via ``OPENAI_MODEL`` no env não
+        funciona — sem ``-m`` o qwen cai no default ``qwen3.5-plus``, que o
+        OpenRouter rejeita com 400 (homologação E2E do pr_review). ``None`` deixa o
+        qwen usar seu default. ``reasoning`` é ignorado (sem suporte).
 
-        **Resume nativo (issue #445):** quando ``resume`` não é ``None``, passa
-        ``--resume <session_id>`` para retomar a conversa (history + tool state +
-        compression checkpoints restaurados) em vez de re-gastar tokens do zero.
-        Forma confirmada na doc oficial do qwen-code (``qwen --resume <id> -p``).
-        O id é o ``session_id`` que o qwen emite nos eventos JSON (capturado por
-        :meth:`extract_session_id`). Sem resume, roda fresh.
+        Resume (issue #445): ``--resume <session_id>`` restaura history + tool
+        state em vez de re-gastar tokens do zero.
         """
         brief_text = self._read_brief(brief_path)
         argv = ["qwen", "-p", brief_text, "--yolo", "--auth-type", "openai"]
@@ -156,7 +112,7 @@ class QwenAdapter(BaseCliAdapter):
 
     @staticmethod
     def _read_brief(brief_path: str) -> str:
-        """Lê o conteúdo do brief; em falha de I/O cai num prompt mínimo."""
+        """Lê o brief; em falha de I/O retorna prompt mínimo."""
         try:
             with open(brief_path, "r", encoding="utf-8") as fh:
                 return fh.read()
@@ -168,18 +124,13 @@ class QwenAdapter(BaseCliAdapter):
             )
 
     def env_overlay(self, *, home: str) -> dict:
-        """Env do subprocess: HOME gravável + retry desatendido + supressão do
-        aviso de yolo.
+        """Env do subprocess: HOME gravável + retry desatendido + supressão do aviso yolo.
 
-        ``QWEN_CODE_UNATTENDED_RETRY=1`` evita travas em retries que pediriam
-        confirmação sem TTY. ``QWEN_CODE_SUPPRESS_YOLO_WARNING=1`` silencia o
-        aviso que o qwen-code imprime em modo headless/yolo ("running headless
-        with --yolo ... no sandbox") — sem isso o aviso polui o stdout/stderr e o
-        parser o lê como veredito, derrubando o dispatch com ``NO_OUTPUT``
-        (homologação E2E do stage pr_review). O ``~/.qwen`` (config/cache) fica
-        abaixo de ``home``. NÃO inclui ``OPENAI_API_KEY``/``OPENAI_BASE_URL``/
-        ``OPENAI_MODEL`` — essas vêm do Secret/ConfigMap montados no Deployment
-        (a tríade é configuração de provider, não overlay do adapter).
+        ``QWEN_CODE_SUPPRESS_YOLO_WARNING=1`` é necessário: sem ele o qwen imprime
+        um aviso headless/yolo que polui o stdout e faz o parser retornar
+        ``NO_OUTPUT`` (homologado no stage pr_review).
+        ``QWEN_CODE_UNATTENDED_RETRY=1`` evita travas em retries sem TTY.
+        A tríade ``OPENAI_*`` NÃO entra aqui — vem do Secret/ConfigMap do Deployment.
         """
         return {
             "HOME": home,
@@ -192,16 +143,11 @@ class QwenAdapter(BaseCliAdapter):
     ) -> WorkResult:
         """Interpreta o ``--output-format json`` num :class:`WorkResult`.
 
-        Qwen emite um objeto JSON (ou JSONL de eventos, conforme versão) ao
-        final. :meth:`parse_output` tenta primeiro parsear o stdout inteiro como
-        um único objeto JSON; se falhar, varre linha-a-linha (JSONL). Lê o campo
-        textual de resposta como veredito; campo/tipo de erro → ``ok=False``.
-        Exit-code é informativo apenas (§1.6) — o gate de commit/push do server
-        decide o sucesso final. Tolerante a saída malformada.
+        Tenta: objeto JSON único → array de eventos → JSONL linha-a-linha.
+        Exit-code é informativo (§1.6); o gate do server decide o sucesso.
 
-        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx/
-        conexão) ANTES de qualquer parse — retorna ``error_code`` específico em
-        vez de "conclusão limpa" para o pipeline retomar o trabalho parcial.
+        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx)
+        ANTES de qualquer parse para que o pipeline retome em vez de re-gastar.
         """
         provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
         if provider_err:
@@ -221,12 +167,9 @@ class QwenAdapter(BaseCliAdapter):
             if isinstance(obj, dict):
                 return self._from_obj(obj, stdout, stderr, rc)
 
-        # Shape atual de ``qwen -p --output-format json``: uma LISTA de eventos
-        # ``[{type:system}, {type:assistant}, ..., {type:result}]``. O veredito
-        # final está no event ``type=result`` campo ``result``; ``is_error`` (ou
-        # um texto "API Error ...") sinaliza falha. Sem isto o parser caía no
-        # NO_OUTPUT (o stdout começa com ``[``, não casava nem o dict nem o JSONL)
-        # — homologação E2E do pr_review.
+        # Shape atual: lista ``[{type:system}, ..., {type:result}]``. O veredito
+        # está em ``type=result`` → ``result``/``is_error``. Sem este branch o
+        # stdout começando com ``[`` caia em NO_OUTPUT (homologação pr_review).
         if whole.startswith("["):
             try:
                 events = json.loads(whole)
@@ -278,12 +221,11 @@ class QwenAdapter(BaseCliAdapter):
         )
 
     def _from_events(self, events: list) -> WorkResult:
-        """Deriva o :class:`WorkResult` da LISTA de eventos do ``qwen -p``.
+        """WorkResult da lista de eventos do ``qwen -p``.
 
-        O event ``type=result`` carrega o veredito final em ``result`` e a flag
-        ``is_error``. Um ``is_error=True`` OU um texto começando com ``[API
-        Error`` / ``API Error`` reprova (ex.: model-id inválido). Sem o event
-        ``result`` cai no último texto de ``assistant`` (content[].text).
+        O event ``type=result`` tem ``result`` (veredito) e ``is_error``.
+        ``is_error=True`` ou texto começando com ``[API Error`` reprova
+        (ex.: model-id inválido). Sem esse event, usa o último ``assistant``.
         """
         result_ev = next(
             (e for e in reversed(events)
@@ -314,7 +256,7 @@ class QwenAdapter(BaseCliAdapter):
     def _from_obj(
         self, obj: dict, stdout: str, stderr: str, rc: int,
     ) -> WorkResult:
-        """Deriva o :class:`WorkResult` de um único objeto JSON do ``qwen``."""
+        """WorkResult de um único objeto JSON do ``qwen``."""
         err = obj.get("error")
         if err:
             txt = self._extract_text(obj) or (
@@ -333,7 +275,7 @@ class QwenAdapter(BaseCliAdapter):
 
     @staticmethod
     def _extract_text(obj: dict) -> str:
-        """Extrai o texto de resposta, tolerante ao shape por versão do Qwen."""
+        """Texto de resposta, tolerante ao shape por versão do Qwen."""
         for key in ("response", "result", "text", "message", "content", "output"):
             val = obj.get(key)
             if isinstance(val, str) and val.strip():
@@ -347,13 +289,10 @@ class QwenAdapter(BaseCliAdapter):
     def extract_session_id(
         self, *, stdout: str, stderr: str, task_id: str,
     ) -> str:
-        """Extrai o ``session_id`` que o qwen emite em TODO evento JSON.
+        """Extrai o ``session_id`` dos eventos JSON (dual-output schema, doc oficial).
 
-        Com ``--output-format json``, a saída é um array (ou JSONL) de eventos e
-        cada um carrega ``session_id`` (o ``system``/``session_start`` o emite
-        primeiro), confirmado na doc oficial do qwen-code (dual-output schema).
-        Pega o primeiro id não-vazio. Tolera tanto o array único quanto JSONL
-        linha-a-linha. Vazio se a saída não trouxe id.
+        Todo evento carrega ``session_id``; o ``system``/``session_start``
+        o emite primeiro. Tolera array único, objeto único e JSONL.
         """
         whole = stdout.strip()
         # Array único de eventos.
@@ -392,7 +331,7 @@ class QwenAdapter(BaseCliAdapter):
 
     @staticmethod
     def _event_session_id(event) -> str:
-        """``session_id`` de um evento qwen (top-level ou aninhado em ``data``)."""
+        """``session_id`` top-level ou aninhado em ``data``."""
         if not isinstance(event, dict):
             return ""
         sid = event.get("session_id") or event.get("sessionId")
@@ -406,7 +345,7 @@ class QwenAdapter(BaseCliAdapter):
         return ""
 
     def list_models(self) -> List[ModelInfo]:
-        """Catálogo estático (Qwen não tem ``list-models`` confiável — §2.3)."""
+        """Catálogo estático — Qwen não tem ``list-models`` confiável (§2.3)."""
         return list(_MODELS)
 
 

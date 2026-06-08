@@ -1,59 +1,23 @@
 #!/usr/bin/env python3
 """cli_adapters.goose — adapter do Goose CLI (frota multi-worker, Tier 1).
 
-Goose é o agente de coding open-source da Block (binário rust). Headless via
-``goose run --name <task_id>`` (sessão nomeada determinística para suportar
-resume; issue #445). Este adapter pluga o Goose na frota pelos cinco
-pontos do contrato :class:`~cli_adapters.base.CliAdapter`; toda a maquinaria
-genérica (lease, heartbeat, subprocess, gate de git, HTTP) vem do
-``cli_worker_server`` + ``_worker_core``.
+Goose headless via ``goose run --name <task_id>`` (sessão nomeada para
+suportar resume; issue #445). Toda a maquinaria genérica (lease, heartbeat,
+subprocess, gate de git, HTTP) vem do ``cli_worker_server`` + ``_worker_core``.
 
-Decisões deste adapter (alinhadas ao plano §2.5/§1.4/§1.6/§1.11 e validadas
-contra a doc oficial do Goose via context7 — ``goose run --no-session -t``,
-``--output-format json``, ``--max-turns``, ``--quiet``, e as env vars
-``GOOSE_MODE=auto``/``GOOSE_PROVIDER``/``GOOSE_MODEL``/``GOOSE_DISABLE_KEYRING``):
+Decisões não-óbvias:
 
-* **Autonomia (§1.4):** env ``GOOSE_MODE=auto`` — aprova operações
-  automaticamente; sem TTY qualquer confirmação travaria o subprocess.
-* **Keyring (§1.7/§2.5 gotcha):** ``GOOSE_DISABLE_KEYRING=1`` é OBRIGATÓRIO — o
-  Goose tenta o keyring do SO (DBus) por padrão, que não existe no pod e quebra
-  o startup. Com a env var, ele lê a chave do provider do ambiente.
-* **Teto de turns (§ custo):** ``--max-turns <teto>`` baixo capa o custo (não há
-  cap em USD nesses CLIs). Default conservador (:data:`_DEFAULT_MAX_TURNS`),
-  sobreposto pela env ``DEILE_GOOSE_MAX_TURNS`` (ver :func:`_max_turns`).
-* **Brief (§2.5):** o conteúdo do brief é lido do arquivo e passado via ``-t``
-  (texto da instrução). Goose também aceita ``--instructions <arquivo>``/``-i -``
-  (stdin), mas ``-t`` com o texto inline é o caminho determinístico headless.
-* **Modelo (§2.5):** o catálogo expõe ``id`` **provider-prefixado**
-  (``<provider>/<modelo>``, ex.: ``openrouter/deepseek/deepseek-v4-flash``). Esse
-  id viaja como ``cli_model`` bruto e ``build_argv`` faz o split no PRIMEIRO ``/``
-  → ``--provider``/``--model`` por invocação. Sem prefixo o Goose lê o 1º
-  segmento como provider e falha "Unknown provider" (não há ``GOOSE_PROVIDER``/
-  ``GOOSE_MODEL`` no Deployment). ``model`` sem ``/`` → só ``--model`` (provider
-  pelo env, fallback); ``None`` deixa o env decidir.
-* **Saída (§1.6):** ``--output-format json`` → JSON/JSONL de eventos;
-  :meth:`parse_output` lê a resposta/erro. Exit-code não-confiável (§2.5 gotcha)
-  → o gate de commit/push do server decide o sucesso final.
-* **list_models:** Goose não tem comando de listagem confiável → **catálogo
-  estático curado** (OpenRouter/OpenAI), com ``id`` provider-prefixado
-  (``<provider>/<modelo>``) para o split do ``build_argv``.
-* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
-  Substitui o ``--no-session`` por sessão NOMEADA determinística
-  (``--name <task_id>``); o resume reabre o mesmo nome com ``--resume``,
-  retomando a sessão SQLite persistida em vez de re-gastar do zero. O brief
-  continua lendo ``.deile-progress.md`` como contexto natural complementar.
-* **Auth (§1.11/§2.5):** ``env`` — ``OPENROUTER_API_KEY`` (rota recomendada, uma
-  chave → vários providers) ou ``OPENAI_API_KEY``. Sem login, sem refresh.
-* **Dirs graváveis (§1.7):** ``HOME`` + ``XDG_CONFIG_HOME`` (``~/.config/goose``).
-  Instalar com ``CONFIGURE=false`` (responsabilidade da imagem, Fase C/D). O
-  workdir do repo é gravável por construção.
-* **Egress (§1.13):** ``openrouter.ai`` + ``api.openai.com``. As forges são
-  adicionadas transversalmente pela geração de NetworkPolicy.
-* **git (§1.5):** ``brief_driven`` — a Developer extension dá shell + text_editor;
-  o brief instrui ``git add/commit/push``; o server valida no gate pós-run.
-* **Gotcha (§2.5):** ``GOOSE_MODE=auto`` reportado falho com provider
-  ``claude-code`` (issue #3386) — usar com OpenRouter/OpenAI (o que o catálogo
-  e o egress assumem).
+* **Keyring (gotcha):** ``GOOSE_DISABLE_KEYRING=1`` é OBRIGATÓRIO — o Goose
+  tenta DBus por padrão, que não existe no pod e quebra o startup.
+* **Modelo provider-prefixado:** ``id`` no formato ``<provider>/<modelo>``
+  (ex.: ``openrouter/deepseek/deepseek-v4-flash``). ``build_argv`` faz o split
+  no PRIMEIRO ``/`` → ``--provider``/``--model``. Sem prefixo o Goose lê o 1º
+  segmento como provider e falha "Unknown provider".
+* **Teto de turns:** ``--max-turns`` capa custo (não há cap em USD). Default
+  :data:`_DEFAULT_MAX_TURNS`, sobreposto por ``DEILE_GOOSE_MAX_TURNS``.
+* **Exit-code não-confiável:** o gate de commit/push do server decide o sucesso.
+* **GOOSE_MODE=auto falho com ``claude-code``** (issue #3386) — usar com
+  OpenRouter/OpenAI (o que o catálogo e o egress assumem).
 """
 
 from __future__ import annotations
@@ -69,46 +33,32 @@ from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
 
 logger = logging.getLogger("deile.cli_adapters.goose")
 
-#: Teto default de turns headless (capa custo). Sobreposto por
-#: ``DEILE_GOOSE_MAX_TURNS`` em runtime — ver :func:`_max_turns`.
+#: Teto default de turns (capa custo). Sobreposto por ``DEILE_GOOSE_MAX_TURNS``.
 _DEFAULT_MAX_TURNS = 40
 
 
 def _max_turns() -> int:
-    """Teto de turns do ``goose run``, sobreposto por ``DEILE_GOOSE_MAX_TURNS``.
-
-    Alavanca de custo: cada turn é uma rodada LLM. Valor inválido (não-int)
-    cai no default conservador :data:`_DEFAULT_MAX_TURNS`.
-    """
+    """Teto de turns; valor inválido cai no default :data:`_DEFAULT_MAX_TURNS`."""
     try:
         return int(os.environ.get("DEILE_GOOSE_MAX_TURNS", str(_DEFAULT_MAX_TURNS)))
     except ValueError:
         return _DEFAULT_MAX_TURNS
 
-#: Teto do ``result_text`` preservando o FIM do texto. Os veredictos das fases
-#: de julgamento (crítica CLARO/VAGO, refine REFINO:OK, pr_review APPROVE) são
-#: conclusivos — vivem no FIM de uma análise potencialmente longa. Truncar o
-#: início (``[:N]``) cortava o veredito e ``parse_critique_verdict`` caía em
-#: "veredito ausente" (homologação E2E do stage refine). Mantém os últimos N
-#: chars; folga p/ uma crítica longa + o marcador final.
+#: Teto de ``result_text`` preservando o FIM. Veredictos (CLARO/VAGO,
+#: REFINO:OK, APPROVE) vivem no FIM — truncar do início cortava o marcador
+#: e ``parse_critique_verdict`` caía em "veredito ausente".
 _VERDICT_CAP = 12000
 
 
 def _cap_verdict(text: str) -> str:
-    """Trunca preservando o FIM (onde o veredito conclui), não o início."""
+    """Trunca ``text`` preservando o FIM (onde o veredito conclui)."""
     t = (text or "").strip()
     return t[-_VERDICT_CAP:]
 
-#: Catálogo estático curado (Goose não tem ``list-models`` confiável — §2.5).
-#:
-#: Fonte: modelos OpenRouter/OpenAI de uso recorrente. **O ``id`` é
-#: provider-prefixado** (``<goose-provider>/<modelo-nativo>``) porque é o valor
-#: que o painel grava em ``DEILE_PIPELINE_MODEL_<STAGE>`` e que viaja como
-#: ``cli_model`` bruto até o ``build_argv``, que faz o split no PRIMEIRO ``/``
-#: para ``--provider``/``--model``. Sem o prefixo, o Goose interpreta o primeiro
-#: segmento (``deepseek``/``qwen``/...) como provider e falha com
-#: "Unknown provider" (não há ``GOOSE_PROVIDER`` no Deployment). Garante picker
-#: não-vazio no painel.
+#: Catálogo estático curado (Goose não tem ``list-models`` confiável).
+#: ``id`` é **provider-prefixado** (``<goose-provider>/<modelo>``); ``build_argv``
+#: faz o split no PRIMEIRO ``/`` → ``--provider``/``--model``. Sem prefixo o
+#: Goose falha "Unknown provider" (não há ``GOOSE_PROVIDER`` no Deployment).
 _MODELS: List[ModelInfo] = [
     ModelInfo(
         id="openrouter/deepseek/deepseek-v4-flash",
@@ -163,27 +113,14 @@ class GooseAdapter(BaseCliAdapter):
     ) -> List[str]:
         """Monta o argv headless do ``goose run``.
 
-        Forma fresh: ``goose run --name <task_id> --quiet --output-format json
-        --max-turns <teto> [--provider <p> --model <m>] -t "<conteúdo do brief>"``.
+        **Sessão nomeada (issue #445):** ``task_id`` É o nome da sessão Goose —
+        fresh cria ``--name <task_id>``; resume reabre o MESMO nome com
+        ``--resume`` (SQLite persistida). Sem ``task_id`` nem ``session_id``
+        cai em ``--no-session`` (efêmero, sem resume — degradação graciosa).
 
-        Forma resume (issue #445): ``goose run --name <session_id> --resume ...``
-        — retoma a sessão NOMEADA persistida (SQLite) em vez de re-gastar tokens
-        do zero. Formas confirmadas na doc oficial do Goose (``goose run -n <name>``
-        / ``goose run -n <name> --resume``).
-
-        **Sessão nomeada determinística:** o ``task_id`` (que nós controlamos) É o
-        nome/session-id da sessão Goose — fresh cria ``--name <task_id>``, resume
-        reabre o MESMO nome com ``--resume``. Isto substitui o ``--no-session``
-        antigo (que não persistia nada e impossibilitava resume). Quando o
-        ``task_id`` não é fornecido (dublês antigos) ou no resume usamos o
-        ``resume.session_id`` (== prev task_id); sem nenhum dos dois, cai em
-        ``--no-session`` (fresh efêmero, sem resume — degradação graciosa).
-
-        Quando ``model`` vem no formato ``provider/model``, mapeia os dois lados
-        para ``--provider``/``--model``; um ``model`` sem ``/`` vira só ``--model``;
-        ``None`` deixa ``GOOSE_PROVIDER``/``GOOSE_MODEL`` do env decidirem.
-        ``reasoning`` é ignorado (sem suporte). O ``workdir`` é o cwd do
-        subprocess (definido pelo core), não uma flag.
+        ``model`` em ``provider/model`` → ``--provider``/``--model`` (split no
+        PRIMEIRO ``/``). Sem ``/`` → só ``--model``. ``None`` → env decide.
+        ``reasoning`` ignorado (sem suporte).
         """
         brief_text = self._read_brief(brief_path)
         session_name = (resume.session_id if resume is not None else "") or task_id
@@ -225,12 +162,9 @@ class GooseAdapter(BaseCliAdapter):
     def env_overlay(self, *, home: str) -> dict:
         """Env do subprocess: HOME/XDG graváveis + auto-mode + keyring desligado.
 
-        ``GOOSE_MODE=auto`` (autonomia sem TTY) e ``GOOSE_DISABLE_KEYRING=1``
-        (OBRIGATÓRIO — DBus/keyring quebra no pod). ``XDG_CONFIG_HOME`` aponta
-        para baixo de ``home`` (``~/.config/goose``). NÃO inclui ``auth_env_keys``
-        (``OPENROUTER_API_KEY``/``OPENAI_API_KEY`` vêm do Secret montado no
-        Deployment) nem ``GOOSE_PROVIDER``/``GOOSE_MODEL`` (configuração de
-        Deployment).
+        ``GOOSE_DISABLE_KEYRING=1`` é OBRIGATÓRIO — DBus não existe no pod e
+        quebra o startup. Auth keys e ``GOOSE_PROVIDER``/``GOOSE_MODEL`` vêm do
+        Secret/Deployment, não daqui.
         """
         return {
             "HOME": home,
@@ -244,16 +178,11 @@ class GooseAdapter(BaseCliAdapter):
     ) -> WorkResult:
         """Interpreta o ``--output-format json`` num :class:`WorkResult`.
 
-        Goose pode emitir um objeto JSON único ou JSONL de eventos conforme a
-        versão. Tenta primeiro parsear o stdout inteiro como objeto; se falhar,
-        varre linha-a-linha (JSONL), lendo o último campo textual como veredito.
-        Tipo/campo de erro → ``ok=False``. Exit-code não-confiável (§2.5) → o gate
-        de commit/push do server decide o sucesso final. Tolerante a saída
-        malformada.
+        Tenta parsear stdout inteiro como objeto; se falhar, varre JSONL linha
+        a linha. Exit-code não-confiável — o gate de git/push do server decide.
 
-        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx/
-        conexão) ANTES do parse — retorna ``error_code`` específico em vez de
-        "conclusão limpa" para o pipeline retomar o trabalho parcial.
+        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx)
+        ANTES do parse → ``error_code`` específico para o pipeline retomar.
         """
         provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
         if provider_err:
@@ -336,14 +265,11 @@ class GooseAdapter(BaseCliAdapter):
     def _extract_text(obj: dict) -> str:
         """Extrai o texto de resposta, tolerante ao shape por versão do Goose.
 
-        Shape atual de ``goose run --output-format json`` (>=1.3x):
-        ``{"messages": [...], "metadata": {...}}`` — o veredito está na ÚLTIMA
-        mensagem ``role=assistant``, em ``content[].text`` dos blocos
-        ``type=="text"`` (há também blocos ``type=="thinking"`` que ignoramos).
-        Sem isto o parser caía no fallback "sem veredito textual" e o
-        ``parse_critique_verdict`` do pipeline nunca via CLARO/VAGO (homologação
-        E2E do stage refine). Mantém o fallback para chaves top-level de versões
-        antigas.
+        Shape >=1.3x: ``{"messages": [...]}`` — veredito na ÚLTIMA mensagem
+        ``role=assistant``, em ``content[].text`` de blocos ``type=="text"``
+        (blocos ``thinking`` são ignorados). Sem isto o parser cai no fallback
+        "sem veredito textual" e ``parse_critique_verdict`` nunca vê CLARO/VAGO.
+        Mantém fallback para chaves top-level de versões antigas.
         """
         msgs = obj.get("messages")
         if isinstance(msgs, list) and msgs:
@@ -378,22 +304,18 @@ class GooseAdapter(BaseCliAdapter):
     def extract_session_id(
         self, *, stdout: str, stderr: str, task_id: str,
     ) -> str:
-        """Goose usa sessão NOMEADA determinística → o session-id É o ``task_id``.
+        """Sessão nomeada determinística → session-id É o ``task_id``.
 
-        Como :meth:`build_argv` cria a sessão com ``--name <task_id>``, o nome (=
-        session-id que ``--resume`` reabre) é o próprio ``task_id`` — não há que
-        parsear da saída. Retornar o ``task_id`` faz o ``resume-info`` sinalizar
-        "há sessão a retomar", disparando o reuso do MESMO workdir + ``--resume``
-        no próximo dispatch.
+        Retornar ``task_id`` (não-vazio) sinaliza ao ``resume-info`` que há sessão
+        a retomar, disparando reuso do workdir + ``--resume`` no próximo dispatch.
         """
         return task_id
 
     def list_models(self) -> List[ModelInfo]:
-        """Catálogo estático (Goose não tem ``list-models`` confiável — §2.5)."""
+        """Catálogo estático (Goose não tem ``list-models`` confiável)."""
         return list(_MODELS)
 
 
-#: Instância exportada — descoberta pelo registro (``cli_adapters.ADAPTERS``).
 ADAPTER = GooseAdapter(
     kind="goose",
     default_port=8775,

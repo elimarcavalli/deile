@@ -1,24 +1,11 @@
-"""install_cli_worker — instala/desinstala um CLI worker da frota ON-DEMAND.
+"""install_cli_worker — instala/desinstala CLI workers env-auth ON-DEMAND.
 
-Generaliza o padrão do ``claude-login`` (``_claude_install``) para os workers
-de CLI ``auth_mode="env"`` (opencode, aider, goose, qwen, codex no modo API
-key): captura as chaves de API do ``.env`` → Secret compartilhado
-``cli-worker-keys``, sincroniza o bearer (reusa o ``worker-bearer`` do
-deile-worker), gera o manifest do template (``_cli_worker_gen``), aplica e
-escala a 1 réplica.
+Cobre workers ``auth_mode="env"`` (opencode, aider, goose, qwen, codex modo API key).
+Workers ``oauth_file`` têm fluxo dedicado em ``_cli_worker_login``.
 
-**Invariante:** este módulo NUNCA é chamado por ``k8s up`` — só pelo verb
-``deploy.py k8s cli-worker-install`` e pelo painel quando o operador escolhe
-instalar um worker. A frota é 100% opt-in; os Deployments nascem ``replicas:0``
-no manifest gerado e só sobem quando instalados aqui (ou via ``k8s scale``).
-
-Diferença essencial vs claude-login: workers ``env`` NÃO têm login OAuth no
-host — não abrem browser, não capturam credencial de arquivo. A "credencial" é
-a chave de API que já vive no ``.env`` do operador; o install só a propaga ao
-Secret. Workers ``oauth_file`` (ex.: codex OAuth) têm fluxo dedicado em
-``_cli_worker_login`` (verb ``deploy.py k8s cli-worker-login <kind>``), que
-captura a credencial OAuth do host via ``adapter.oauth`` e reusa as etapas de
-bearer/keys/manifest/scale deste módulo. Este módulo cobre só o caminho env-auth.
+**Invariante:** NUNCA chamado por ``k8s up`` — só via ``deploy.py k8s cli-worker-install``
+ou pelo painel. Frota 100% opt-in: Deployments nascem ``replicas:0`` e só sobem quando
+instalados aqui (ou via ``k8s scale``).
 """
 from __future__ import annotations
 
@@ -64,9 +51,8 @@ def _adapter(kind: str):
 def _read_env_file() -> Dict[str, str]:
     """Lê o ``.env`` da raiz do repo (KEY=VALUE), tolerante a ausência.
 
-    Não usa ``python-dotenv`` (infra/k8s roda standalone); parse simples
-    suficiente para extrair as chaves de API. Também consulta ``os.environ``
-    como fallback (operador que exportou a chave em vez de gravar no .env).
+    Sem ``python-dotenv`` (infra/k8s standalone). Chamador usa ``os.environ``
+    como fallback para chaves exportadas em vez de gravadas no .env.
     """
     env: Dict[str, str] = {}
     env_file = _HERE.parent.parent / ".env"
@@ -83,17 +69,10 @@ def _read_env_file() -> Dict[str, str]:
 def _resolve_auth_keys(adapter, *, kind: str) -> Dict[str, str]:
     """Resolve os segredos do worker para o Secret ``cli-worker-keys``.
 
-    Une duas fontes (env file > ``os.environ`` por chave):
-
-    * as ``auth_env_keys`` declaradas pelo adapter (ex.: ``OPENAI_API_KEY``);
-    * as vars SENSÍVEIS da convenção ``DEILE_CLI_<KIND>_ENV_<VAR>`` (ex.:
-      ``DEILE_CLI_QWEN_ENV_OPENAI_API_KEY``) — derivadas em
-      ``_cli_worker_gen.resolve_provider_env``, mesma fonte que o manifest usa
-      para emitir o ``secretKeyRef``.
-
-    Retorna só as chaves COM valor — chaves ausentes ficam de fora (o Secret é
-    populado parcialmente; o ``/v1/health`` reporta ``ready=false`` até a chave
-    aparecer, paridade com o opt-in do claude).
+    Une ``auth_env_keys`` do adapter + vars ``DEILE_CLI_<KIND>_ENV_<VAR>`` de
+    ``_cli_worker_gen.resolve_provider_env`` (mesma fonte que o manifest usa para
+    emitir o ``secretKeyRef``). Retorna só chaves com valor; o ``/v1/health``
+    reporta ``ready=false`` até a chave aparecer.
     """
     env_file = _read_env_file()
     resolved: Dict[str, str] = {}
@@ -102,8 +81,7 @@ def _resolve_auth_keys(adapter, *, kind: str) -> Dict[str, str]:
         if val:
             resolved[key] = val
 
-    # Vars sensíveis da convenção de provider-env (merge, não overwrite das
-    # auth_env_keys já resolvidas acima).
+    # Merge: provider-env não sobrescreve auth_env_keys já resolvidas.
     _ensure_on_path()
     from _cli_worker_gen import resolve_provider_env  # noqa: PLC0415
 
@@ -117,12 +95,10 @@ def _resolve_auth_keys(adapter, *, kind: str) -> Dict[str, str]:
 def _kubectl_apply_keys_secret(
     values: Dict[str, str], *, namespace: str
 ) -> bool:
-    """Cria/atualiza (merge) o Secret compartilhado ``cli-worker-keys``.
+    """Cria/atualiza (merge) o Secret ``cli-worker-keys`` via dry-run|apply (idempotente).
 
-    Faz merge: lê as chaves já presentes no Secret e sobrepõe as novas, para
-    que instalar um segundo worker não apague as chaves do primeiro. Idempotente
-    (dry-run|apply). Sem valores → no-op com ``True`` (o worker sobe ``not
-    ready`` até a chave existir).
+    Merge: lê chaves existentes antes de sobrescrever — instalar um segundo worker não
+    apaga as chaves do primeiro. Sem valores → no-op (worker sobe not-ready até a chave existir).
     """
     if not values:
         logger.warning(
@@ -132,7 +108,7 @@ def _kubectl_apply_keys_secret(
         return True
 
     merged: Dict[str, str] = {}
-    # Preserva chaves já existentes (merge, não overwrite).
+    # Lê chaves existentes para preservá-las (merge, não overwrite).
     try:
         existing = subprocess.run(
             ["kubectl", "-n", namespace, "get", "secret", "cli-worker-keys",
@@ -180,13 +156,11 @@ def _kubectl_apply_keys_secret(
 
 
 def _kubectl_sync_bearer(worker: str, *, namespace: str) -> bool:
-    """Popula ``<worker>-bearer`` reusando o token do ``worker-bearer``.
+    """Popula ``<worker>-bearer`` reusando o token do ``worker-bearer`` (idempotente).
 
-    Mesma justificativa do claude-worker: o cliente do pipeline envia o mesmo
-    Bearer para qualquer worker; reusar o token mantém todos atrás da mesma
-    boundary (já coberta pela NetworkPolicy ingress whitelist do pipeline).
-    Idempotente. Se ``worker-bearer`` ainda não existe (cluster sem ``k8s up``),
-    loga warning e retorna ``True`` (o rollout fica pending até o secret existir).
+    Reusar o mesmo token mantém todos os workers atrás da mesma boundary coberta pela
+    NetworkPolicy ingress do pipeline. Se ``worker-bearer`` ainda não existe (cluster
+    sem ``k8s up``), retorna ``True`` — rollout fica pending até o secret existir.
     """
     try:
         get = subprocess.run(
@@ -239,23 +213,20 @@ def _kubectl_sync_bearer(worker: str, *, namespace: str) -> bool:
 def _kubectl_apply_manifest(
     kind: str, *, namespace: str, oauth_mode: bool = False,
 ) -> bool:
-    """Gera o manifest do template e o aplica no cluster (kubectl apply -f -).
+    """Gera o manifest e aplica no cluster, excluindo o Secret-stub do YAML.
 
-    O Secret ``<worker>-bearer`` do manifest é um STUB (stringData vazio); ele é
-    aplicado ANTES por :func:`_kubectl_sync_bearer` com o token real, então
-    aplicamos o manifest gerado SEM o documento do Secret para não zerar o token
-    (mesmo cuidado do claude-worker-bearer no ``k8s up``).
+    O Secret ``<worker>-bearer`` do template é STUB (stringData vazio); já foi aplicado
+    com o token real por ``_kubectl_sync_bearer``. Aplicar o stub zeraria o token — por
+    isso filtramos documentos ``kind: Secret`` antes do apply (mesmo cuidado do
+    ``claude-worker-bearer`` no ``k8s up``).
 
-    ``oauth_mode=True`` (chamado pelo ``cli-worker-login`` de um worker
-    oauth-capable env-default) renderiza o manifest com os blocos OAuth (PVC +
-    initContainer + mount + env ``DEILE_<KIND>_AUTH=oauth``).
+    ``oauth_mode=True`` renderiza blocos OAuth (PVC + initContainer + mount).
     """
     _ensure_on_path()
     from _cli_worker_gen import render_manifests  # noqa: PLC0415
 
     rendered = render_manifests(kind, namespace=namespace, oauth_mode=oauth_mode)
-    # Remove o doc do Secret-stub do YAML aplicado (token real já está no
-    # cluster via _kubectl_sync_bearer). Split por separador YAML.
+    # Filtra Secret-stub para não sobrescrever o token real já no cluster.
     docs = rendered.split("\n---\n")
     kept = [d for d in docs if "kind: Secret" not in d]
     payload = "\n---\n".join(kept)
@@ -275,7 +246,7 @@ def _kubectl_apply_manifest(
 
 
 def _kubectl_scale(worker: str, replicas: int, *, namespace: str) -> bool:
-    """``kubectl scale deployment/<worker> --replicas=N``. Idempotente."""
+    """Escala o Deployment para N réplicas (idempotente)."""
     try:
         result = subprocess.run(
             ["kubectl", "-n", namespace, "scale",
@@ -291,19 +262,9 @@ def _kubectl_scale(worker: str, replicas: int, *, namespace: str) -> bool:
 def install_cli_worker(
     kind: str, *, namespace: str = "deile", replicas: int = 1,
 ) -> CliWorkerInstallResult:
-    """Instala um CLI worker da frota ON-DEMAND (env-auth).
+    """Instala um CLI worker env-auth ON-DEMAND (idempotente, não bloqueia rollout).
 
-    Sequência (cada etapa idempotente):
-
-    1. resolve o adapter (``KeyError`` se kind desconhecido → resultado de erro);
-    2. resolve as ``auth_env_keys`` do ``.env`` → Secret ``cli-worker-keys``;
-    3. sincroniza ``<worker>-bearer`` (reusa o token do ``worker-bearer``);
-    4. gera + aplica o manifest (Deployment/Service/NetworkPolicy);
-    5. escala a ``replicas`` (default 1 — sobe o worker).
-
-    Não bloqueia esperando rollout (paridade com o painel: a UI mostra o status
-    no próximo tick). Workers ``oauth_file`` NÃO são cobertos aqui (env-only);
-    para eles o caminho é o ``<kind>-login`` (captura de cred OAuth do host).
+    Workers ``oauth_file`` não são cobertos aqui — usar ``cli-worker-login``.
     """
     try:
         adapter = _adapter(kind)
@@ -323,7 +284,7 @@ def install_cli_worker(
     worker = f"{kind}-worker"
     result = CliWorkerInstallResult(ok=False, kind=kind)
 
-    # 2. chaves de API → Secret compartilhado.
+    # 2. chaves de API.
     auth_values = _resolve_auth_keys(adapter, kind=kind)
     declared = list(getattr(adapter, "auth_env_keys", []) or [])
     result.missing_keys = [k for k in declared if k not in auth_values]
@@ -360,11 +321,9 @@ def install_cli_worker(
 def uninstall_cli_worker(
     kind: str, *, namespace: str = "deile",
 ) -> CliWorkerInstallResult:
-    """Remove um CLI worker do cluster (idempotente).
+    """Remove Deployment, Service, NetworkPolicy e bearer Secret do worker (idempotente).
 
-    Deleta Deployment, Service, NetworkPolicy e o bearer Secret do worker. NÃO
-    toca no Secret compartilhado ``cli-worker-keys`` (outros workers podem usá-lo)
-    nem no ConfigMap allowed-repos (compartilhado). Recursos ausentes → no-op.
+    NÃO toca em ``cli-worker-keys`` nem no ConfigMap allowed-repos — ambos são compartilhados.
     """
     worker = f"{kind}-worker"
     resources = [

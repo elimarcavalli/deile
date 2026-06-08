@@ -49,7 +49,7 @@ def _ndjson_events(text: str):
             yield o
 
 
-# --- opencode: NDJSON step_finish (part.tokens + part.cost nativo) ----------
+# opencode: NDJSON step_finish (part.tokens + part.cost nativo)
 def parse_opencode(text: str, task_id: str) -> dict:
     models: dict = {}
     cost = 0.0
@@ -74,7 +74,7 @@ def parse_opencode(text: str, task_id: str) -> dict:
             "first_ts": None, "last_ts": None}
 
 
-# --- codex: JSONL token_count / turn.completed (turn_context.model) ---------
+# codex: JSONL token_count / turn.completed (turn_context.model)
 def parse_codex(text: str, task_id: str) -> dict:
     models: dict = {}
     model = "unknown"
@@ -113,7 +113,7 @@ def parse_codex(text: str, task_id: str) -> dict:
             "first_ts": None, "last_ts": None}
 
 
-# --- qwen: array de eventos; result.stats.models[model].tokens --------------
+# qwen: array de eventos; result.stats.models[model].tokens
 def parse_qwen(text: str, task_id: str) -> dict:
     models: dict = {}
     whole = text.strip()
@@ -152,7 +152,7 @@ def parse_qwen(text: str, task_id: str) -> dict:
             "first_ts": None, "last_ts": None}
 
 
-# --- goose: {messages, metadata:{total_tokens,...}} -------------------------
+# goose: {messages, metadata:{total_tokens,...}}
 def parse_goose(text: str, task_id: str) -> dict:
     models: dict = {}
     whole = text.strip()
@@ -181,7 +181,7 @@ def parse_goose(text: str, task_id: str) -> dict:
             "first_ts": None, "last_ts": None}
 
 
-# --- aider: texto livre "Tokens: N sent, M received." / "Cost: $X" ----------
+# aider: texto livre "Tokens: N sent, M received." / "Cost: $X"
 _AIDER_TOK = re.compile(r"[Tt]okens:\s*([\d,\.]+)k?\s*sent,\s*([\d,\.]+)k?\s*received")
 _AIDER_COST = re.compile(r"[Cc]ost:\s*\$?([\d\.]+)")
 _AIDER_MODEL = re.compile(r"[Mm]odel:\s*([\w\-./:]+)")
@@ -224,8 +224,7 @@ def parse_aider(text: str, task_id: str) -> dict:
             "first_ts": None, "last_ts": None}
 
 
-#: Parsers por worker-kind (single source of truth). Workers que NÃO gravam em
-#: ``.progress`` (claude → JSONL; deile → SQLite) não têm parser aqui.
+#: Parsers por worker-kind (fonte única). claude → JSONL e deile → SQLite não têm parser aqui.
 PROGRESS_PARSERS: Dict[str, Callable[[str, str], dict]] = {
     "opencode": parse_opencode,
     "codex": parse_codex,

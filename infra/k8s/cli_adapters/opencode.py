@@ -2,49 +2,31 @@
 """cli_adapters.opencode — adapter do OpenCode (worker piloto da frota — Tier 1).
 
 OpenCode é um agente de coding agnóstico de provider, distribuído como binário
-standalone. Headless via ``opencode run`` (sem TUI). Este adapter pluga o
-OpenCode na frota multi-worker pelos cinco pontos do contrato
-:class:`~cli_adapters.base.CliAdapter`; toda a maquinaria genérica (lease,
-heartbeat, subprocess, gate de git, HTTP) vem do ``cli_worker_server`` +
-``_worker_core``.
+standalone. Headless via ``opencode run`` (sem TUI). Pluga o OpenCode na frota
+multi-worker pelos cinco pontos do contrato :class:`~cli_adapters.base.CliAdapter`;
+a maquinaria genérica (lease, heartbeat, subprocess, gate de git, HTTP) vem do
+``cli_worker_server`` + ``_worker_core``.
 
-Decisões deste adapter (alinhadas ao plano §1.4/§1.7/§2.1 e validadas contra a
-doc oficial do OpenCode via context7 — ``run`` flags, ``models`` output, schema
-de ``permission`` e ``OPENCODE_CONFIG_CONTENT``):
+Decisões (§1.4/§1.7/§2.1 — validadas contra doc oficial via context7):
 
-* **Autonomia (§1.4):** ``--dangerously-skip-permissions`` no argv **+** config
-  inline ``{"permission":{"*":"allow"}}`` via ``OPENCODE_CONFIG_CONTENT``. Sem
-  TTY qualquer prompt de aprovação travaria o subprocess; os dois mecanismos
-  combinados garantem auto-approve total (belt-and-suspenders — se a flag não
-  existir na versão pinada, a config sozinha ainda libera).
-* **Brief (§2.1):** anexado por ``-f <brief_path>`` (flag oficial ``--file``)
-  + uma instrução posicional curta apontando pro anexo. ``stdin`` é não-oficial
-  no OpenCode; ``-f`` é o caminho suportado.
-* **Modelo:** ``-m provider/model`` (string livre nativa, ex.
-  ``openrouter/anthropic/claude-3.7-sonnet``); ``None`` deixa o OpenCode usar o
-  default da config/conta.
-* **Saída (§1.6):** ``--format json`` → NDJSON de eventos (``step_start``,
-  ``step_finish``, ``tool_use``, ``text``); :meth:`parse_output` lê o último
-  evento textual como veredito. Exit-code não é confiável → o gate de
-  commit/push do server decide o sucesso final.
-* **list_models:** dinâmico via ``opencode models`` (uma linha ``provider/model``
-  por modelo), com **catálogo curado de fallback** quando o comando falha/sem
-  rede (o server cacheia o resultado com TTL).
-* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
-  Quando o pipeline detecta trabalho começado (workdir reusado + sessão
-  anterior), retoma via ``--session <id>`` (id capturado do ``sessionID`` do
-  NDJSON) em vez de re-gastar tokens do zero. O brief continua lendo
-  ``.deile-progress.md`` como contexto natural complementar.
-* **Auth (§1.11/§2.1):** ``env`` — ``OPENROUTER_API_KEY`` (uma chave → vários
-  providers). Sem login, sem refresh-token.
-* **Dirs graváveis (§1.7):** ``HOME`` + ``XDG_DATA_HOME``/``XDG_CONFIG_HOME`` +
-  ``XDG_CACHE_HOME`` apontando para baixo de ``home`` (config inline evita
-  arquivo). O workdir do repo é gravável por construção (montado pelo server).
-* **Egress (§1.13):** ``openrouter.ai`` (LLM) + ``models.dev`` (catálogo que o
-  ``opencode models`` consulta). As forges (github/gitlab) são adicionadas pela
-  geração de NetworkPolicy de forma transversal.
-* **git (§1.5):** ``brief_driven`` — o brief instrui ``git add/commit/push`` sob
-  auto-approve; o server valida commit novo + push no gate pós-run.
+* **Autonomia (§1.4):** ``--dangerously-skip-permissions`` **+** config inline
+  ``{"permission":{"*":"allow"}}`` via ``OPENCODE_CONFIG_CONTENT``. Belt-and-
+  suspenders: se a flag não existir na versão pinada, a config sozinha libera.
+* **Brief (§2.1):** ``-f <brief_path>`` (``--file``) + instrução posicional.
+  ``stdin`` não é suportado no OpenCode; ``-f`` é o caminho oficial.
+* **Modelo:** ``-m provider/model`` (ex. ``openrouter/anthropic/claude-sonnet-4.6``);
+  ``None`` → default da config/conta.
+* **Saída (§1.6):** ``--format json`` → NDJSON (``step_start``/``step_finish``/
+  ``tool_use``/``text``). Exit-code não é confiável; gate de commit/push decide.
+* **list_models:** dinâmico via ``opencode models``, com fallback curado quando
+  o comando falha ou está sem rede (server cacheia com TTL).
+* **Resume (issue #445):** ``--session <id>`` retoma sessão anterior sem re-gastar
+  tokens. ``sessionID`` capturado do NDJSON (ver :meth:`extract_session_id`).
+* **Auth (§1.11/§2.1):** ``env`` — ``OPENROUTER_API_KEY`` (sem login/refresh).
+* **Dirs graváveis (§1.7):** ``HOME`` + XDG dirs; config inline dispensa arquivo.
+* **Egress (§1.13):** ``openrouter.ai`` (LLM) + ``models.dev`` (catálogo). Forges
+  adicionadas transversalmente pela NetworkPolicy.
+* **git (§1.5):** ``brief_driven`` — brief instrui git; server valida no gate.
 """
 
 from __future__ import annotations
@@ -61,9 +43,8 @@ from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
 
 logger = logging.getLogger("deile.cli_adapters.opencode")
 
-#: Config inline injetada via ``OPENCODE_CONFIG_CONTENT`` (escopo "local").
-#: ``permission: {"*": "allow"}`` libera TODA tool (bash/edit/webfetch/...) sem
-#: prompt — essencial sem TTY. Schema confirmado na doc oficial do OpenCode.
+#: Config inline via ``OPENCODE_CONFIG_CONTENT``. ``permission: {"*": "allow"}``
+#: libera toda tool sem prompt — essencial sem TTY. Schema confirmado na doc oficial.
 _AUTONOMY_CONFIG = {
     "$schema": "https://opencode.ai/config.json",
     "permission": {"*": "allow"},
@@ -72,13 +53,9 @@ _AUTONOMY_CONFIG = {
 #: Timeout (s) do ``opencode models`` em :meth:`list_models` (toca models.dev).
 _MODELS_CMD_TIMEOUT_S = 20
 
-#: Catálogo curado de fallback quando ``opencode models`` falha/sem rede.
-#:
-#: Fonte: modelos OpenRouter de uso recorrente na frota (DeepSeek barato p/ o
-#: grosso; Claude/Qwen/Gemini/GPT premium sob demanda). IDs no formato nativo do
-#: OpenCode (``provider/model``, onde provider=``openrouter`` aqui). A lista
-#: dinâmica (``opencode models``) prevalece quando disponível; este catálogo só
-#: garante que o picker do painel nunca fica vazio.
+#: Catálogo curado de fallback quando ``opencode models`` falha/sem rede. IDs no
+#: formato nativo (``provider/model``). A lista dinâmica prevalece; este garante
+#: que o picker do painel nunca fica vazio.
 _FALLBACK_MODELS: List[ModelInfo] = [
     ModelInfo(
         id="openrouter/deepseek/deepseek-v4-flash",
@@ -146,26 +123,19 @@ class OpenCodeAdapter(BaseCliAdapter):
         [--session <id>] --dangerously-skip-permissions --format json
         "<instrução posicional>" -f <brief_path>``.
 
-        **Resume nativo (issue #445):** quando ``resume`` não é ``None`` (workdir
-        reusado + sessão anterior), passa ``--session <session_id>`` para retomar
-        a conversa nativa do opencode em vez de re-gastar tokens do zero. O id é o
-        ``sessionID`` que o opencode emitiu no NDJSON do dispatch anterior
-        (capturado por :meth:`extract_session_id`). Flag confirmada na doc oficial
-        do opencode (``run --session``/``-s``). Sem resume, roda fresh.
+        **Resume (issue #445):** ``--session <session_id>`` retoma conversa nativa
+        sem re-gastar tokens. Flag confirmada na doc oficial (``run --session``/``-s``).
 
-        ORDEM CRÍTICA (homologação E2E): ``-f``/``--file`` é declarado como
-        ``[array]`` no opencode (>=1.16); o parser yargs é GULOSO e consome todos
-        os tokens não-flag seguintes para dentro do array. Se ``-f`` viesse antes
-        da instrução posicional, o array engoliria a instrução como se fosse mais
-        um arquivo (``File not found: "Implemente..."``) e ``message`` ficaria
-        vazio. Por isso a mensagem posicional vem ANTES e ``-f <brief_path>`` é o
-        ÚLTIMO token — assim o array captura apenas o brief.
+        ORDEM CRÍTICA (homologação E2E): ``-f``/``--file`` é ``[array]`` no opencode
+        (>=1.16); yargs é GULOSO e consome todos os tokens não-flag seguintes. Se
+        ``-f`` viesse antes da instrução posicional, o array engoliria a instrução
+        como arquivo (``File not found: "Implemente..."``). A mensagem posicional
+        vem ANTES e ``-f <brief_path>`` é o ÚLTIMO token.
         """
         argv: List[str] = ["opencode", "run", "--dir", workdir]
         if model:
             argv += ["-m", model]
-        # supports_reasoning=False → reasoning sempre None aqui; guarda defensiva.
-        if reasoning:
+        if reasoning:  # supports_reasoning=False; guarda defensiva
             argv += ["--variant", reasoning]
         if resume is not None and resume.session_id:
             argv += ["--session", resume.session_id]
@@ -181,10 +151,9 @@ class OpenCodeAdapter(BaseCliAdapter):
     def env_overlay(self, *, home: str) -> dict:
         """Env do subprocess: HOME/XDG graváveis + config de autonomia inline.
 
-        ``OPENCODE_CONFIG_CONTENT`` injeta a config (escopo "local") sem tocar
-        disco — compatível com ``readOnlyRootFilesystem``. Os XDG apontam para
-        baixo de ``home`` (gravável) para data/config/cache do OpenCode. NÃO
-        inclui ``auth_env_keys`` (essas vêm do Secret montado no Deployment).
+        ``OPENCODE_CONFIG_CONTENT`` injeta a config sem tocar disco (compatível
+        com ``readOnlyRootFilesystem``). Não inclui ``auth_env_keys`` — vêm do
+        Secret do Deployment.
         """
         return {
             "HOME": home,
@@ -201,23 +170,13 @@ class OpenCodeAdapter(BaseCliAdapter):
     ) -> WorkResult:
         """Interpreta o NDJSON de ``--format json`` num :class:`WorkResult`.
 
-        OpenCode emite uma linha JSON por evento (``type`` ∈ ``step_start``,
-        ``step_finish``, ``tool_use``, ``text``, ...). O veredito do agente é o
-        último evento ``text``; quando há erro estruturado (``type`` contendo
-        ``error``), ``ok=False`` com o texto do erro. Exit-code é informativo
-        apenas — o sucesso final é decidido pelo gate de commit/push do server
-        (§1.6); aqui ``ok`` reflete só a leitura da saída.
+        Veredito = último evento ``text``; erro estruturado (``type`` contendo
+        ``error``) → ``ok=False``. Exit-code informativo; gate de commit/push do
+        server decide o sucesso final.
 
-        Tolerante a linhas malformadas (parse best-effort, ignora o que não for
-        JSON). Sem nenhum evento textual e ``rc != 0`` → ``ok=False`` com tail
-        do stderr.
-
-        ANTI-SANGRIA (issue #445): ANTES de qualquer heurística, classifica a
-        saída por corte de provider (402/429/5xx/conexão). Se casar, retorna
-        ``ok=False`` com o ``error_code`` específico — NUNCA "conclusão limpa" —,
-        para que o pipeline retome o trabalho parcial (mesmo workdir + sessão) em
-        vez de re-gastar do zero. É exatamente o bug do opencode #629 (402
-        mid-task marcado completo).
+        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx/
+        conexão) ANTES da heurística — retorna ``error_code`` específico, nunca
+        "conclusão limpa" (bug opencode #629: 402 mid-task marcado completo).
         """
         provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
         if provider_err:
@@ -261,10 +220,8 @@ class OpenCodeAdapter(BaseCliAdapter):
         if last_text:
             return WorkResult(ok=True, result_text=last_text[:2000])
 
-        # Sem nenhum evento parseável: não confia no rc, mas precisa de veredito.
         if saw_event:
-            # Houve eventos (step_*/tool_use) mas nenhum texto — assume execução
-            # plausível; o gate de git do server confirma commit/push.
+            # Houve eventos mas nenhum texto — gate de git do server confirma.
             return WorkResult(
                 ok=True,
                 result_text="opencode concluiu sem veredito textual explícito",
@@ -278,11 +235,7 @@ class OpenCodeAdapter(BaseCliAdapter):
 
     @staticmethod
     def _event_text(event: dict) -> str:
-        """Extrai o texto de um evento NDJSON, tolerante ao shape.
-
-        OpenCode aninha o conteúdo de formas diferentes por versão; tenta as
-        chaves conhecidas em ordem e cai num ``str`` do payload se nada casar.
-        """
+        """Texto de um evento NDJSON — tenta chaves conhecidas, tolerante ao shape por versão."""
         for key in ("text", "message", "content", "data"):
             val = event.get(key)
             if isinstance(val, str) and val.strip():
@@ -296,14 +249,11 @@ class OpenCodeAdapter(BaseCliAdapter):
     def extract_session_id(
         self, *, stdout: str, stderr: str, task_id: str,
     ) -> str:
-        """Extrai o ``sessionID`` que o opencode emite nos eventos NDJSON.
+        """Extrai o ``sessionID`` do NDJSON (confirmado em ``run.ts``).
 
-        Com ``--format json``, todo evento (``step_start``/``step_finish``/
-        ``tool_use``/``text``) carrega ``sessionID`` (confirmado na doc oficial do
-        opencode — ``run.ts``). Pega o primeiro id não-vazio encontrado (todos os
-        eventos de um run compartilham a mesma sessão). Vazio se nenhum evento
-        trouxe id (ex.: run abortado antes do primeiro evento) — o server então
-        não persiste session-id e o próximo dispatch cai em fresh.
+        Todo evento carrega ``sessionID``; pega o primeiro não-vazio (todos
+        compartilham a mesma sessão). Vazio se run abortou antes do primeiro
+        evento — server não persiste id e próximo dispatch cai em fresh.
         """
         for line in stdout.splitlines():
             line = line.strip()
@@ -318,8 +268,7 @@ class OpenCodeAdapter(BaseCliAdapter):
             sid = event.get("sessionID") or event.get("sessionId")
             if isinstance(sid, str) and sid.strip():
                 return sid.strip()
-            # Alguns eventos aninham em ``data``/``session``.
-            for nest_key in ("data", "session"):
+            for nest_key in ("data", "session"):  # alguns eventos aninham o id
                 nest = event.get(nest_key)
                 if isinstance(nest, dict):
                     nsid = nest.get("sessionID") or nest.get("id")
@@ -328,20 +277,16 @@ class OpenCodeAdapter(BaseCliAdapter):
         return ""
 
     def list_models(self) -> List[ModelInfo]:
-        """Modelos suportados — dinâmico via ``opencode models``, com fallback.
+        """Dinâmico via ``opencode models``; cai em :data:`_FALLBACK_MODELS` se falhar.
 
-        Roda ``opencode models`` (uma linha ``provider/model`` por modelo) e
-        parseia. Se o binário não está no PATH, o comando falha, dá timeout ou
-        não retorna nenhuma linha válida → cai no :data:`_FALLBACK_MODELS`
-        curado. O ``cli_worker_server`` cacheia o resultado (TTL) — este método
-        pode tocar a rede (models.dev).
+        Pode tocar a rede (``models.dev``); o ``cli_worker_server`` cacheia o resultado.
         """
         dynamic = self._list_models_dynamic()
         return dynamic if dynamic else list(_FALLBACK_MODELS)
 
     @staticmethod
     def _list_models_dynamic() -> List[ModelInfo]:
-        """Tenta listar via ``opencode models``; ``[]`` em qualquer falha."""
+        """``opencode models`` → lista; ``[]`` em qualquer falha."""
         if shutil.which("opencode") is None:
             return []
         try:
@@ -360,7 +305,6 @@ class OpenCodeAdapter(BaseCliAdapter):
         seen: set = set()
         for raw in proc.stdout.splitlines():
             mid = raw.strip()
-            # Linhas válidas têm o formato provider/model; descarta ruído.
             if not mid or "/" not in mid or mid in seen:
                 continue
             if any(ch.isspace() for ch in mid):
@@ -371,7 +315,6 @@ class OpenCodeAdapter(BaseCliAdapter):
         return models
 
 
-#: Instância exportada — descoberta pelo registro (``cli_adapters.ADAPTERS``).
 ADAPTER = OpenCodeAdapter(
     kind="opencode",
     default_port=8771,

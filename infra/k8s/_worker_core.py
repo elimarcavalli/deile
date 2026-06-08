@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
 """_worker_core — núcleo agnóstico-de-CLI compartilhado pelos workers headless.
 
-Extraído do ``claude_worker_server.py`` (issue multi-CLI worker fleet, Fase A1)
-para que o servidor genérico ``cli_worker_server.py`` e o ``claude_worker_server``
-compartilhem a mesma maquinaria sem duplicação. Tudo aqui é **independente do CLI
-concreto** que roda no pod (claude, opencode, aider, ...):
+Extraído do ``claude_worker_server.py`` (Fase A1) para que ``cli_worker_server``
+e ``claude_worker_server`` compartilhem a maquinaria sem duplicação. Independente
+do CLI concreto (claude, opencode, aider, …):
 
 * Lease por workspace (``.lease.json``): aquisição atômica multi-réplica,
   heartbeat, release e marcação do PID do subprocess.
-* Liveness genérica: ``pid_alive`` (POSIX ``kill -0``) e ``lease_is_stale``
-  (TTL + PID + presença de pod).
-* Execução de subprocess one-shot com persistência de stdout/stderr para o PVC
-  (consumido pelo ``/v1/progress/{task_id}``) e timeout que mata o processo.
-* Helpers HTTP: factory de middleware Bearer (whitelist parametrizável) e
-  rate-limiter por ator (sliding-window in-memory).
-* Utilidades de filesystem: ``dir_bytes`` e validação de ``task_id``.
+* Liveness: ``pid_alive`` (POSIX ``kill -0``) e ``lease_is_stale`` (TTL+PID+pod).
+* Subprocess one-shot com persistência de stdout/stderr no PVC
+  (``/v1/progress/{task_id}``) e timeout que mata o processo.
+* Helpers HTTP: Bearer middleware com whitelist e rate-limiter sliding-window.
+* Filesystem: ``dir_bytes`` e validação de ``task_id``.
 
-Os dois servidores mantêm seus nomes públicos (``_acquire_lease``,
-``_heartbeat_loop``, etc.) — quando precisam honrar uma constante de módulo
-monkeypatchável nos testes (``_LEASE_TTL_S``/``_LEASE_HEARTBEAT_S``), o servidor
-expõe um wrapper fino que repassa essa constante a estas funções (que recebem o
-valor por parâmetro). O específico-do-CLI (argv, parsing de saída, auth/OAuth)
-fica no servidor concreto.
+Constantes de TTL/heartbeat são passadas *por parâmetro* para que os servidores
+concretos possam monkeypatchá-las nos testes sem afetar este módulo. O
+específico-do-CLI (argv, parsing de saída, auth/OAuth) fica no servidor concreto.
 """
 
 from __future__ import annotations
@@ -42,13 +36,12 @@ from aiohttp import web
 
 logger = logging.getLogger("deile.worker_core")
 
-#: ``secrets.token_hex(8)`` gera exatamente 16 chars hex; qualquer outra forma é
-#: rejeitada para não permitir path traversal pela URL nem leitura de arquivos
-#: arbitrários no PVC.
+#: Exatamente 16 hex chars — rejeita qualquer outro formato para impedir path
+#: traversal pela URL ou leitura de arquivos arbitrários no PVC.
 TASK_ID_RE = re.compile(r"[0-9a-f]{16}")
 
-#: Defaults de lease (TTL e heartbeat). Os servidores concretos sobrescrevem
-#: via suas próprias constantes monkeypatcháveis, passando o valor por parâmetro.
+#: Servidores concretos sobrescrevem via suas constantes monkeypatcháveis,
+#: passando o valor por parâmetro (não lido diretamente daqui nos testes).
 DEFAULT_LEASE_TTL_S: int = 30
 DEFAULT_LEASE_HEARTBEAT_S: int = 5
 
@@ -67,24 +60,15 @@ def validate_task_id_for_path(task_id: str) -> bool:
 # Classificação de erro de provider (anti-sangria de custo — issue #445)
 # --------------------------------------------------------------------------- #
 #
-# O problema: quando o provider LLM corta uma task no meio (402/crédito esgotado,
-# 429/rate-limit, 5xx, conexão), os CLIs headless frequentemente saem com rc=0 e
-# uma mensagem de erro no stdout/stderr — o adapter lê "sem veredito" e marca a
-# task como concluída limpa (``last_is_error=False``). O re-dispatch trata como
-# DONE e o trabalho parcial é jogado fora; o próximo recomeça do zero, re-gastando
-# todos os tokens (comprovado: opencode #629 cortado por 402, marcado completo).
-#
-# Esta função é a FONTE ÚNICA da detecção de corte por provider, chamada por todo
-# adapter no início do ``parse_output``. Quando casa, o adapter retorna
-# ``ok=False`` com o ``error_code`` específico → o server NÃO marca conclusão
-# limpa → o pipeline (``_resolve_resume_meta``/reconcile) trata como resumível e
-# RETOMA (mesmo workdir + sessão nativa), em vez de re-gastar do zero.
+# CLIs headless frequentemente saem com rc=0 mesmo quando o provider corta a task
+# (402/429/5xx) — o adapter leria "conclusão limpa" e o re-dispatch re-gastaria
+# todos os tokens do zero (comprovado: opencode #629 cortado por 402).
+# ``classify_provider_error`` é a FONTE ÚNICA de detecção: quando casa, o adapter
+# retorna ``ok=False`` → o pipeline RETOMA em vez de re-gastar.
 
-#: Codes de erro de provider, em ordem de prioridade de match (o mais específico
-#: ganha). Cada um casa um conjunto de padrões (regex case-insensitive) que
-#: aparecem na saída quando o provider corta a task.
+#: Padrões de corte por provider, em ordem de prioridade (o mais específico ganha).
 _PROVIDER_ERROR_PATTERNS: tuple = (
-    # 402 / crédito esgotado / pagamento — o corte mais comum em produção.
+    # 402 / crédito esgotado — o corte mais comum em produção.
     ("INSUFFICIENT_CREDIT", (
         r"\b402\b",
         r"payment\s+required",
@@ -95,7 +79,7 @@ _PROVIDER_ERROR_PATTERNS: tuple = (
         r"billing\s+(?:hard\s+)?limit",
         r"exceeded\s+your\s+current\s+quota",
     )),
-    # 429 / rate-limit / overloaded — retomável após espera.
+    # 429 / rate-limit — retomável após espera.
     ("RATE_LIMIT", (
         r"\b429\b",
         r"rate[\s_-]?limit",
@@ -103,7 +87,7 @@ _PROVIDER_ERROR_PATTERNS: tuple = (
         r"overloaded",
         r"\boverloaded_error\b",
     )),
-    # 5xx / erro do servidor do provider — transitório, retomável.
+    # 5xx — erro transitório do servidor do provider.
     ("PROVIDER_ERROR", (
         r"\b5\d{2}\b\s*(?:error|status|internal|server|bad\s+gateway|"
         r"service\s+unavailable|gateway\s+timeout)",
@@ -113,7 +97,7 @@ _PROVIDER_ERROR_PATTERNS: tuple = (
         r"gateway\s+time(?:d\s+)?out",
         r"api\s+error\s*:?\s*5\d{2}",
     )),
-    # Conexão / rede / timeout de socket com o provider — transitório.
+    # Conexão/rede — transitório.
     ("PROVIDER_CONN", (
         r"connection\s+(?:error|reset|refused|aborted|timed?\s*out)",
         r"connection\s+closed",
@@ -125,7 +109,6 @@ _PROVIDER_ERROR_PATTERNS: tuple = (
     )),
 )
 
-#: Pré-compila os padrões uma vez (são fixos por módulo).
 _PROVIDER_ERROR_COMPILED: tuple = tuple(
     (code, tuple(re.compile(p, re.IGNORECASE) for p in pats))
     for code, pats in _PROVIDER_ERROR_PATTERNS
@@ -135,18 +118,10 @@ _PROVIDER_ERROR_COMPILED: tuple = tuple(
 def classify_provider_error(text: str) -> Optional[str]:
     """Classifica *text* (stdout+stderr) num ``error_code`` de provider, ou None.
 
-    Retorna o code específico (``INSUFFICIENT_CREDIT``/``RATE_LIMIT``/
-    ``PROVIDER_ERROR``/``PROVIDER_CONN``) quando a saída sinaliza um corte por
-    provider, ou ``None`` quando nada casa (a saída é uma execução normal, e o
-    adapter segue sua heurística usual).
-
-    Prioridade: crédito > rate-limit > 5xx > conexão (o crédito esgotado é o
-    corte mais caro de re-gastar; checado primeiro). Best-effort e barato — só um
-    scan de regex pré-compiladas sobre a saída.
-
-    Esta é a peça anti-sangria (issue #445): um ``error_code`` retornado aqui faz
-    o adapter marcar ``ok=False`` em vez de "conclusão limpa", levando o pipeline
-    a RETOMAR o trabalho parcial (mesmo workdir + sessão nativa) sem re-gastar.
+    Prioridade: crédito > rate-limit > 5xx > conexão (crédito esgotado é o corte
+    mais caro; checado primeiro). Peça central do anti-sangria (issue #445): um
+    code retornado aqui faz o adapter marcar ``ok=False``, levando o pipeline a
+    RETOMAR em vez de re-gastar do zero. Best-effort — só regex pré-compiladas.
     """
     if not text:
         return None
@@ -213,7 +188,6 @@ async def acquire_lease(
     pod_id = os.environ.get("HOSTNAME", f"local-{os.getpid()}")
     now = time.time()
 
-    # Passo 1: verifica lease existente (I/O bloqueante → thread).
     def _check_existing() -> bool:
         """True se lease existente está dentro do TTL (ativo por outro pod)."""
         if not lease_path.exists():
@@ -226,19 +200,17 @@ async def acquire_lease(
             return False  # corrupto → trata como morto
 
     if await asyncio.to_thread(_check_existing):
-        return None  # workspace em uso por outro pod ativo
+        return None
 
-    # Passo 2: escreve candidato atômico.
     lease = {
         "pod": pod_id,
         "pid": os.getpid(),
         "started_at": now,
         "heartbeat_at": now,
     }
-    # Channel + session_id habilitam o dedup cross-workdir de fresh dispatches:
-    # uma 2ª dispatch fresca para o mesmo channel é recusada enquanto o 1º
-    # subprocess ainda está vivo. Gravados no acquire (antes do spawn) para
-    # existirem cedo o bastante para o scan.
+    # Gravados antes do spawn para que o scan de dedup cross-workdir já os
+    # enxergue: uma 2ª dispatch fresca para o mesmo channel é recusada enquanto
+    # o 1º subprocess ainda está vivo.
     if channel:
         lease["channel"] = channel
     if session_id:
@@ -249,15 +221,14 @@ async def acquire_lease(
         try:
             tmp.write_text(json.dumps(lease), encoding="utf-8")
             tmp.rename(lease_path)
-            # Passo 3: re-lê para confirmar vitória na corrida.
+            # Re-lê para confirmar vitória na corrida (TOCTOU: outro pod pode
+            # ter feito rename simultaneamente).
             confirmed = json.loads(lease_path.read_text(encoding="utf-8"))
             if confirmed.get("pod") != pod_id:
-                # Outro pod ganhou a corrida atomicamente — não somos o dono.
                 return None
             return confirmed
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("lease write/confirm falhou para %s: %s", workspace, exc)
-            # Cleanup do tmp se sobrou (best-effort).
             try:
                 tmp.unlink(missing_ok=True)
             except OSError:
@@ -270,20 +241,14 @@ async def acquire_lease(
 async def update_lease_subprocess_pid(
     lease_path: Path, subprocess_pid: Optional[int]
 ) -> None:
-    """Set/clear ``claude_pid`` on the lease — o PID do subprocess do CLI spawnado
-    (NÃO o processo do servidor wrapper, que vive em ``pid``).
+    """Grava/limpa ``claude_pid`` no lease — PID do subprocess do CLI (não o wrapper).
 
-    Without this field, ``mtime`` of ``.lease.json`` is whatever the heartbeat
-    task last wrote (always recent while the server is up) and the ``pid`` is
-    just the wrapper — an observer cannot tell whether a real workload is still
-    running. With it, ``claude_pid is not None and pid_alive(claude_pid)`` is the
-    ground truth for "the CLI is actively working on this workdir". Best-effort:
-    a missing/unwritable lease is logged and ignored — the dispatch is the source
-    of truth, the lease is just an observability aid.
+    Sem este campo, o heartbeat mantém o mtime sempre recente e não dá pra saber
+    se o CLI está rodando de verdade. Com ele, ``pid_alive(claude_pid)`` é o
+    ground truth. Best-effort: lease ilegível é logado e ignorado.
 
-    O campo permanece nomeado ``claude_pid`` por compatibilidade com observadores
-    existentes (painel, ``/v1/pod-status``); semanticamente é o PID do subprocess
-    do CLI do worker, seja ele claude ou outro.
+    Campo mantido como ``claude_pid`` por compatibilidade com o painel e
+    ``/v1/pod-status``; semanticamente é o PID do CLI do worker, qualquer que seja.
     """
     def _update() -> None:
         try:
@@ -344,8 +309,6 @@ async def heartbeat_loop(
             try:
                 content = json.loads(lease_path.read_text(encoding="utf-8"))
                 content["heartbeat_at"] = time.time()
-                # Write atômico para não corromper o lease se o processo for
-                # interrompido no meio da escrita.
                 tmp = lease_path.with_suffix(".json.hb_tmp")
                 tmp.write_text(json.dumps(content), encoding="utf-8")
                 tmp.rename(lease_path)
@@ -374,18 +337,17 @@ def lease_is_stale(
         data = json.loads(lease_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    # Verificação proativa via presença: se o conjunto está disponível e o pod
-    # dono não aparece nele, o lease é stale independente do heartbeat.
+    # Proativo: pod dono sumiu do conjunto → stale independente do heartbeat.
     if alive_pods is not None:
         pod = data.get("pod", "")
         if pod and pod not in alive_pods:
             return True
     heartbeat_at = data.get("heartbeat_at", 0)
     if (time.time() - float(heartbeat_at)) < ttl_s:
-        return False  # heartbeat recente → ativo
+        return False
     pid = data.get("pid")
     if pid and pid_alive(int(pid)):
-        return False  # TTL expirado mas PID ainda vivo → conservador
+        return False  # TTL expirado mas PID ainda vivo — fail-safe conservador
     return True
 
 
@@ -393,13 +355,9 @@ def lease_is_stale(
 # Ciclo de repositório — clone + checkout do branch (genérico, plano §1.5)
 # --------------------------------------------------------------------------- #
 #
-# O claude-worker delega o clone ao agente claude (o brief instrui ``gh repo
-# clone``), com um safety-net pré-spawn (``_ensure_repo_cloned``). Os CLI workers
-# da frota NÃO têm um agente confiável para fazer o setup de repo antes de
-# começar: o subprocess precisa de um checkout real do branch em ``cwd`` ANTES
-# de rodar. Estas funções fazem o trabalho que o plano §1.5 atribui ao wrapper:
-# clonar o repo, criar/checkout do branch de trabalho. A identidade git e os
-# tokens são wirados pelo ``wrapper.py`` (modo ``cli-worker``) no startup do pod.
+# CLI workers não têm agente confiável para setup de repo: o subprocess precisa
+# de um checkout real ANTES de rodar. Identidade git + tokens são configurados
+# pelo ``wrapper.py`` (modo ``cli-worker``) no startup do pod.
 
 
 async def _git(*argv: str, cwd: Path, timeout: int = 120) -> tuple[int, str, str]:
@@ -480,34 +438,18 @@ async def ensure_repo_and_branch(
 ) -> tuple[bool, str]:
     """Clona *repo* em ``<workspace>/repo`` e faz checkout/criação de *branch*.
 
-    É o trabalho de setup de repo que o plano §1.5 atribui ao wrapper para os
-    CLI workers (o agente não é confiável para fazê-lo antes de começar). Idem-
-    potente: se ``<workspace>/repo/.git`` já existe, só faz ``fetch`` e garante o
-    branch. Best-effort no checkout do branch — se o branch remoto não existe,
-    cria local a partir do ``base_branch`` (ou do default do clone).
-
-    Pré-requisito: a identidade git + token já estão wirados no env do pod (pelo
-    ``wrapper.py`` modo ``cli-worker``); aqui só usamos ``gh``/``git`` que os
-    consomem.
-
-    Args:
-        workspace: workdir da task (pai de ``./repo``).
-        repo: slug ``owner/repo`` (GitHub) ou ``group/.../project`` (GitLab).
-        branch: branch de trabalho a checkout/criar; ``None`` deixa no default.
-        base_branch: branch base de onde criar *branch* quando ele não existe
-            no remote (ex.: ``main``); vazio → default do clone.
-        clone_timeout: timeout (s) do clone.
+    Idempotente: se ``<workspace>/repo/.git`` já existe, só faz ``fetch``. Se o
+    branch remoto não existe, cria a partir do ``base_branch`` (ou HEAD). Pré-
+    requisito: identidade git + token já configurados pelo ``wrapper.py``.
 
     Returns:
         ``(ok, detail)`` — ``ok=True`` quando ``<workspace>/repo/.git`` existe ao
-        fim. ``detail`` descreve o que aconteceu/falhou (para log/erro). Nunca
-        levanta.
+        fim. Nunca levanta.
     """
     repo_path = repo_dir_for(workspace)
     if not repo:
         return False, "repo slug ausente — impossível clonar"
 
-    # 1. Clone (ou reuso) do repositório.
     if not (repo_path / ".git").exists():
         gh = _which_forge_cli(repo)
         rc, _out, err = await _git_or_gh_clone(gh, repo, workspace, clone_timeout)
@@ -516,7 +458,6 @@ async def ensure_repo_and_branch(
     else:
         await _git("fetch", "--quiet", "origin", cwd=repo_path, timeout=120)
 
-    # 2. Checkout/criação do branch de trabalho.
     if branch:
         ok, detail = await _checkout_branch(repo_path, branch, base_branch)
         if not ok:
@@ -544,10 +485,8 @@ async def _git_or_gh_clone(
 ) -> tuple[int, str, str]:
     """Clona *repo* em ``<workspace>/repo`` via ``gh``/``glab``; fallback git URL.
 
-    ``gh repo clone`` / ``glab repo clone`` configuram a auth automaticamente a
-    partir do token wirado no env. Se o CLI não está disponível, cai em
-    ``git clone https://<host>/<repo>.git`` (a auth vem do credential helper que
-    o wrapper configurou em ``~/.git-credentials``).
+    Fallback: ``git clone https://<host>/<repo>.git`` quando o CLI não está
+    disponível (auth via credential.helper=store configurado pelo wrapper).
     """
     base = forge_cli.rsplit("/", 1)[-1]
     if base in ("gh", "glab"):
@@ -573,7 +512,6 @@ async def _git_or_gh_clone(
             out_b.decode("utf-8", "replace"),
             err_b.decode("utf-8", "replace"),
         )
-    # Fallback: git clone por URL (auth via credential.helper=store do wrapper).
     host = os.environ.get("DEILE_GITHUB_HOST", "").strip() or "github.com"
     url = f"https://{host}/{repo}.git"
     return await _git("clone", url, "repo", cwd=workspace, timeout=timeout)
@@ -589,11 +527,9 @@ async def _checkout_branch(
     atual). Best-effort — devolve ``(False, motivo)`` só se nem criar funcionar.
     """
     await _git("fetch", "--quiet", "origin", cwd=repo_path, timeout=120)
-    # 1. Branch já existe (local ou remoto rastreável)?
     rc, _o, _e = await _git("checkout", branch, cwd=repo_path, timeout=60)
     if rc == 0:
         return True, f"checkout de {branch} (existente)"
-    # 2. Cria branch novo a partir da base.
     if base_branch:
         await _git("checkout", base_branch, cwd=repo_path, timeout=60)
     rc, _o, err = await _git("checkout", "-b", branch, cwd=repo_path, timeout=60)
@@ -617,10 +553,9 @@ async def git_fallback_commit(
     if not (cwd / ".git").exists():
         return False
     await _git("add", "-A", cwd=cwd, timeout=60)
-    # ``git diff --cached --quiet`` rc=1 ⇔ há staged changes a commitar.
     rc, _o, _e = await _git("diff", "--cached", "--quiet", cwd=cwd, timeout=30)
     if rc == 0:
-        return False  # nada staged → nada a commitar
+        return False  # rc=0 ⇔ nada staged
     rc, _o, _e = await _git("commit", "-m", message, cwd=cwd, timeout=60)
     return rc == 0
 
@@ -657,25 +592,14 @@ def startup_cleanup(
     has_session: Optional[callable] = None,
     alive_pods: Optional[set] = None,
 ) -> dict:
-    """Remove leases stale e workdirs abandonados sob *root* (genérico).
+    """Remove leases stale e workdirs abandonados sob *root*. Idempotente.
 
-    Extraído do ``claude_worker_server.startup_cleanup`` (plano A1/§1.13) para
-    ser reusado por qualquer worker com PVC. Idempotente e conservador: nunca
-    remove workdir com lease vivo nem modificado recentemente.
+    ``has_session``: predicado ``(workdir) -> bool`` p/ preservar sessões ativas
+    (ex.: JSONL do claude). ``None`` → elegível só por idade (CLI workers sem
+    resume). ``alive_pods``: recuperação proativa de leases cujo pod morreu.
 
-    Args:
-        root: raiz dos workdirs (um diretório por task_id hex-16).
-        retention_days: workdir mais velho que isto (mtime) é removido.
-        has_session: predicado ``(workdir: Path) -> bool`` que decide se o
-            workdir tem trabalho persistido a preservar (ex.: sessão JSONL do
-            claude). ``None`` → todo workdir sem lease vivo é elegível por idade
-            (CLI workers sem resume não acumulam sessão — removem só por idade).
-        alive_pods: conjunto de pods vivos (recuperação proativa de lease cujo
-            dono morreu); ``None`` desativa essa checagem.
-
-    Returns:
-        dict com ``leases_removed``, ``workdirs_removed``, ``bytes_freed``,
-        ``errors`` — para audit log.
+    Returns: dict com ``leases_removed``, ``workdirs_removed``, ``bytes_freed``,
+    ``errors``.
     """
     import shutil
 
@@ -706,11 +630,10 @@ def startup_cleanup(
         stale = lease_is_stale(lease_path, alive_pods=alive_pods) if lease_present else False
 
         if lease_present and not stale:
-            continue  # lease vivo → em uso, nunca toca
+            continue
 
-        # Captura o mtime ANTES de remover o lease: unlink do ``.lease.json``
-        # atualiza o mtime do diretório-pai, e isso mascararia o critério de
-        # idade (workdir velho pareceria recém-modificado).
+        # mtime capturado ANTES de remover o lease: unlink do ``.lease.json``
+        # atualizaria o mtime do diretório-pai e mascararia o critério de idade.
         try:
             last_mod = workdir.stat().st_mtime
         except OSError as exc:
@@ -766,9 +689,8 @@ def startup_cleanup(
 class SubprocessResult:
     """Resultado de :func:`run_subprocess_with_progress`.
 
-    Encapsula o que o handler precisa devolver na resposta JSON. ``stdout`` e
-    ``stderr`` aqui são as strings completas (não truncadas); a truncagem por
-    bytes vive no handler, próxima do contrato de resposta.
+    ``stdout``/``stderr`` são strings completas; truncagem por bytes fica no
+    handler, próxima do contrato de resposta JSON.
     """
 
     returncode: int
@@ -788,24 +710,17 @@ async def run_subprocess_with_progress(
 ) -> SubprocessResult:
     """Spawn do subprocess do CLI com persistência de stdout/stderr para o PVC.
 
-    Os arquivos ``<task_id>.stdout.log``/``<task_id>.stderr.log`` ficam em
-    ``<root>/.progress/`` e serão consumidos pelo ``/v1/progress/{task_id}`` para
-    snapshot mid-flight no painel TUI. Em timeout, devolvemos ``returncode=124``
-    (convenção do ``coreutils timeout``) com mensagem em ``stderr``.
+    Saída vai para ``<root>/.progress/<task_id>.{stdout,stderr}.log`` —
+    consumida pelo ``/v1/progress/{task_id}`` no painel. Timeout → rc=124.
 
-    Quando ``lease_path`` é informado, gravamos o PID do subprocess no lease
-    assim que ele é spawnado e limpamos ao terminar — isso permite que um
-    observador (painel, ``kubectl exec``) distinga "lease vivo por heartbeat" de
-    "CLI rodando agora" sem ter que varrer ``/proc`` (o lease é mantido vivo pela
-    heartbeat task do servidor mesmo quando o subprocess já terminou).
+    Quando ``lease_path`` é informado, grava o PID do subprocess no lease ao
+    spawnear e limpa ao terminar — o observador distingue "lease vivo por
+    heartbeat" de "CLI rodando agora" sem varrer ``/proc``.
 
-    ``root`` define onde gravar os arquivos de progresso; quando omitido, cai em
-    ``DEILE_CLAUDE_WORKER_ROOT`` (default ``/home/claude/work``) por compat com o
-    claude-worker.
+    ``root`` é omitível; default via ``DEILE_CLAUDE_WORKER_ROOT``.
     """
     start = time.monotonic()
 
-    # Persistir progress files em <root>/.progress/.
     if root is None:
         root = Path(
             os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work")
@@ -848,8 +763,7 @@ async def run_subprocess_with_progress(
     if lease_path is not None:
         await update_lease_subprocess_pid(lease_path, None)
 
-    # Persiste para o ``/v1/progress`` — best-effort; falha em escrita NÃO
-    # derruba o dispatch (o cliente já recebeu o resultado).
+    # Best-effort: falha na escrita não derruba o dispatch.
     try:
         await asyncio.to_thread(stdout_path.write_text, stdout)
         await asyncio.to_thread(stderr_path.write_text, stderr)
@@ -910,8 +824,7 @@ class RateLimiter:
     window_s: float = 60.0
 
     def __post_init__(self) -> None:
-        # {actor: [timestamp, ...]} — monotonic times of recent requests.
-        self._buckets: dict = {}
+        self._buckets: dict = {}  # {actor: [monotonic timestamps]}
         self._lock = threading.Lock()
 
     def check(self, actor: str) -> bool:
@@ -924,7 +837,6 @@ class RateLimiter:
         cutoff = now - self.window_s
         with self._lock:
             bucket = self._buckets.get(actor, [])
-            # Prune timestamps outside the window.
             bucket = [t for t in bucket if t > cutoff]
             if len(bucket) >= self.max_requests:
                 self._buckets[actor] = bucket

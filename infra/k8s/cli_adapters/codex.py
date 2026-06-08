@@ -2,56 +2,37 @@
 """cli_adapters.codex — adapter do OpenAI Codex CLI (frota multi-worker, Tier 2).
 
 Codex é o agente de coding headless da OpenAI (binário rust). Headless via
-``codex exec`` (NUNCA ``codex`` puro — pode panicar sem TTY). Este adapter pluga
-o Codex na frota pelos cinco pontos do contrato
-:class:`~cli_adapters.base.CliAdapter`; toda a maquinaria genérica (lease,
-heartbeat, subprocess, gate de git, HTTP) vem do ``cli_worker_server`` +
-``_worker_core``.
+``codex exec`` (NUNCA ``codex`` puro — pode panicar sem TTY). Pluga o Codex na
+frota pelos cinco pontos do contrato :class:`~cli_adapters.base.CliAdapter`; a
+maquinaria genérica (lease, heartbeat, subprocess, gate de git, HTTP) vem do
+``cli_worker_server`` + ``_worker_core``.
 
-Decisões deste adapter (alinhadas ao plano §2.2/§1.4/§1.6/§1.11 e validadas
-contra a doc oficial do Codex via context7 — ``codex exec``, ``--json``,
-``--skip-git-repo-check``, ``--sandbox``/approval-policy, ``CODEX_HOME``):
+Decisões (§2.2/§1.4/§1.6/§1.11 — validadas contra doc oficial via context7):
 
 * **OpenAI DIRETO, não OpenRouter (§2.2):** Codex exige ``wire_api="responses"``
-  no provider; a maioria dos modelos servidos pelo OpenRouter só fala Chat
-  Completions → não funcionariam. Por isso este adapter assume OpenAI direto
-  (``api.openai.com``); o catálogo de modelos lista os ``gpt-*`` premium.
-* **Autonomia (§1.4):** ``--dangerously-bypass-approvals-and-sandbox`` (alias
-  ``--yolo``) — sem prompt de aprovação, sem sandbox de rede, essencial sem TTY.
-* **Brief (§2.2):** ``codex exec`` aceita o prompt como argumento posicional. O
-  conteúdo do brief é lido do arquivo e passado como o prompt posicional (Codex
-  não tem flag ``--message-file``). ``--skip-git-repo-check`` garante que o
-  ``exec`` rode mesmo se o workdir ainda não for um repo git inicializado.
-* **Modelo (§2.2):** ``-m <model>`` (ex.: ``gpt-5.5-codex``); ``None`` deixa o
-  Codex usar o default da config/conta.
-* **Reasoning (§1.10):** Codex suporta esforço de raciocínio (``-c
-  model_reasoning_effort=<nivel>``); o vocabulário oficial é
+  (Responses API); OpenRouter só fala Chat Completions → incompatível.
+* **Autonomia (§1.4):** ``--dangerously-bypass-approvals-and-sandbox`` (``--yolo``)
+  — sem prompt de aprovação, sem sandbox, essencial sem TTY.
+* **Brief (§2.2):** prompt posicional (Codex não tem ``--message-file``). Conteúdo
+  do brief é lido do arquivo. ``--skip-git-repo-check`` garante exec em workdir
+  sem git ainda inicializado.
+* **Modelo:** ``-m <model>``; ``None`` → default da config/conta.
+* **Reasoning (§1.10):** ``-c model_reasoning_effort=<nivel>``; vocabulário oficial:
   ``minimal``/``low``/``medium``/``high``. ``supports_reasoning=True``.
 * **Saída (§1.6):** ``--json`` → JSONL de eventos; :meth:`parse_output` lê o
-  último evento de mensagem do agente como veredito. Exit-code grosso → o gate
-  de commit/push do server decide o sucesso final.
-* **list_models:** Codex não tem comando de listagem confiável → **catálogo
-  estático curado** (fonte: modelos ``gpt-*`` da OpenAI documentados).
-* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
-  Codex tem ``resume`` nativo: quando o pipeline detecta trabalho começado, o
-  worker retoma via ``codex exec resume <thread_id>`` (thread.id capturado do
-  evento ``thread.started`` do JSONL) preservando transcript + plan + approvals,
-  em vez de re-gastar tokens do zero. O brief continua lendo
-  ``.deile-progress.md`` como contexto natural complementar.
-* **Auth (§1.11/§2.2):** DOIS modos. **Default ``env``** — ``OPENAI_API_KEY``
-  (não expira; robusto). **Opt-in ``oauth_file``** (``DEILE_CODEX_AUTH=oauth``)
-  — ``codex login --device-auth`` no host grava ``auth.json`` sob ``CODEX_HOME``,
-  capturado via ``deploy.py k8s codex-login`` (mesmo mecanismo do claude). Este
-  adapter declara o modo ``env`` como metadado e expõe o :class:`OAuthSpec` em
-  ``oauth`` para o caminho opt-in — a seleção em runtime é do servidor/deploy
-  (``DEILE_CODEX_AUTH``), não do adapter.
-* **Dirs graváveis (§1.7):** ``HOME`` + ``CODEX_HOME`` (config + auth.json no
-  modo oauth) apontando para baixo de ``home``. O workdir do repo é gravável por
-  construção.
-* **Egress (§1.13):** ``api.openai.com``. As forges são adicionadas
-  transversalmente pela geração de NetworkPolicy.
-* **git (§1.5):** ``brief_driven`` — o brief instrui ``git add/commit/push`` sob
-  auto-approve; o server valida commit novo + push no gate pós-run.
+  último evento de mensagem do agente. Exit-code grosso; gate de commit/push do
+  server decide o sucesso final.
+* **list_models:** catálogo estático curado (Codex não tem ``list-models``).
+* **Resume (issue #445):** ``codex exec resume <thread_id>`` retoma transcript +
+  plan + approvals sem re-gastar tokens. ``thread_id`` capturado do evento
+  ``thread.started`` do JSONL (ver :meth:`extract_session_id`).
+* **Auth (§1.11/§2.2):** DOIS modos. Default ``env`` — ``OPENAI_API_KEY`` (não
+  expira). Opt-in ``oauth_file`` (``DEILE_CODEX_AUTH=oauth``) — ``auth.json``
+  capturado via ``deploy.py k8s codex-login``. Seleção em runtime é do
+  servidor/deploy, não do adapter.
+* **Dirs graváveis (§1.7):** ``HOME`` + ``CODEX_HOME`` (config + auth.json OAuth).
+* **Egress (§1.13):** ``api.openai.com``; forges adicionadas pela NetworkPolicy.
+* **git (§1.5):** ``brief_driven`` — brief instrui git; server valida no gate.
 """
 
 from __future__ import annotations
@@ -71,40 +52,31 @@ from .base import (BaseCliAdapter, ModelAuth, ModelInfo, OAuthSpec, ResumeCtx,
 
 logger = logging.getLogger("deile.cli_adapters.codex")
 
-#: Backup do ``auth.json`` OAuth (modo chatgpt) preservado quando o worker
-#: troca para API key. Sem isso, ``codex login --with-api-key`` sobrescreveria
-#: a credencial de assinatura e um dispatch seguinte de modelo ``chatgpt``
-#: ficaria sem OAuth (Frente 4 — "NÃO destrua as credenciais OAuth").
+#: Backup do ``auth.json`` OAuth preservado antes de ``codex login --with-api-key``.
+#: Sem isso, trocar para API key destruiria a credencial OAuth e o próximo dispatch
+#: de modelo ``chatgpt`` falharia (Frente 4 — "NÃO destrua as credenciais OAuth").
 _OAUTH_BACKUP_NAME = "auth.oauth.json.bak"
 
-#: Nome do arquivo de credencial dentro de ``CODEX_HOME``.
 _AUTH_FILE_NAME = "auth.json"
 
 #: Runner de subprocess injetável (testes substituem para não chamar o binário
 #: codex real). Assinatura compatível com ``subprocess.run``.
 SubprocessRunner = Callable[..., "subprocess.CompletedProcess"]
 
-#: Vocabulário oficial de reasoning effort do Codex (``model_reasoning_effort``).
-#: Qualquer valor fora deste conjunto é silenciosamente ignorado (fail-open).
+#: Vocabulário oficial de reasoning effort do Codex. Valor fora do conjunto →
+#: flag omitida (fail-open), não erro.
 _VALID_REASONING = frozenset({"minimal", "low", "medium", "high"})
 
 #: Catálogo estático curado (Codex não tem ``list-models`` confiável — §2.2).
+#: IDs no formato nativo do ``-m`` (sem prefixo de provider; Codex assume OpenAI direto).
 #:
-#: Fonte: modelos ``gpt-*-codex`` da OpenAI servidos via Responses API (o único
-#: wire protocol que o Codex fala). IDs no formato nativo do ``-m`` do Codex,
-#: sem prefixo de provider (Codex assume OpenAI direto).
+#: **Auth POR MODELO** — validado empiricamente: modelos ``gpt-5*-codex`` premium
+#: SÓ funcionam com conta ChatGPT (OAuth ``auth.json``) e são REJEITADOS via API
+#: key (400 unsupported-model). ``gpt-5.1-codex-mini`` e ``codex-mini-latest``
+#: aceitam ``OPENAI_API_KEY``. O ``cli_worker_server`` provisiona o auth antes de
+#: invocar ``codex exec`` conforme este campo.
 #:
-#: **Auth POR MODELO** (campo ``auth``) — fato verificado empiricamente + doc
-#: OpenAI: os modelos ``gpt-5*-codex`` premium SÓ funcionam com conta ChatGPT
-#: (OAuth ``auth.json``) e são REJEITADOS via API key com erro
-#: "model is not supported when using Codex with a ChatGPT account" / 400
-#: unsupported-model. Já ``gpt-5.1-codex-mini`` e ``codex-mini-latest`` aceitam
-#: API key (``OPENAI_API_KEY``). O ``cli_worker_server`` provisiona o
-#: ``CODEX_HOME/auth.json`` no modo exigido por este campo antes de invocar
-#: ``codex exec`` (sem destruir a credencial OAuth — homes/backup separados).
-#:
-#: Preços em USD por 1M tokens (input / cached-input / output), tabela do
-#: operador (jun/2026). Mantido em ordem decrescente de capacidade.
+#: Preços USD/1M tokens (input / cached / output), jun/2026. Ordem decrescente de capacidade.
 _MODELS: List[ModelInfo] = [
     ModelInfo(
         id="gpt-5.3-codex",
@@ -180,31 +152,25 @@ class CodexAdapter(BaseCliAdapter):
     ) -> List[str]:
         """Monta o argv headless do ``codex exec``.
 
-        Forma fresh: ``codex exec --cd <workdir> [-m <model>]
+        Fresh: ``codex exec --cd <workdir> [-m <model>]
         [-c model_reasoning_effort=<r>] --dangerously-bypass-approvals-and-sandbox
-        --json --skip-git-repo-check "<conteúdo do brief>"``.
+        --json --skip-git-repo-check "<brief>"``.
 
-        Forma resume (issue #445): ``codex exec resume <thread_id> --cd <workdir>
-        [flags...] "<conteúdo do brief>"`` — o subcomando ``resume <id>`` retoma
-        o thread anterior (transcript + plan + approvals preservados) e aplica o
-        brief como nova instrução, em vez de re-gastar tokens do zero. Forma
-        confirmada na doc oficial do Codex (``codex exec resume <SESSION_ID>``). O
-        ``thread_id`` vem do evento ``thread.started`` do JSONL do dispatch
-        anterior (capturado por :meth:`extract_session_id`).
+        Resume (issue #445): ``codex exec resume <thread_id> [flags...] "<brief>"``
+        — retoma transcript + plan + approvals sem re-gastar tokens. ``thread_id``
+        vem do evento ``thread.started`` (ver :meth:`extract_session_id`). Forma
+        confirmada na doc oficial (``codex exec resume <SESSION_ID>``).
 
-        SEMPRE ``codex exec`` (nunca ``codex`` puro — panica sem TTY, §2.2). O
-        brief é lido do arquivo e vira o prompt posicional (Codex não tem
-        ``--message-file``).
+        SEMPRE ``codex exec`` (nunca ``codex`` puro — panica sem TTY). Brief lido
+        do arquivo como prompt posicional (Codex não tem ``--message-file``).
         """
         brief_text = self._read_brief(brief_path)
         argv: List[str] = ["codex", "exec"]
         if resume is not None and resume.session_id:
             argv += ["resume", resume.session_id]
-            # ``--cd`` é flag do ``codex exec`` FRESH; o subcomando
-            # ``codex exec resume <id>`` NÃO o aceita ("error: unexpected
-            # argument '--cd'") — pego só na validação ao vivo (os testes
-            # mockam o subprocess). No resume, o cwd do subprocess (= workdir,
-            # setado pelo server) já posiciona o codex no diretório certo.
+            # ``--cd`` pertence ao ``codex exec`` fresh; ``codex exec resume <id>``
+            # NÃO o aceita ("error: unexpected argument '--cd'"). No resume, o
+            # cwd do subprocess (setado pelo server) já posiciona o codex.
         else:
             argv += ["--cd", workdir]
         if model:
@@ -221,12 +187,7 @@ class CodexAdapter(BaseCliAdapter):
 
     @staticmethod
     def _read_brief(brief_path: str) -> str:
-        """Lê o conteúdo do brief; em falha de I/O cai num prompt mínimo.
-
-        O servidor escreve o brief no workdir antes de chamar; se por algum
-        motivo o arquivo não puder ser lido, o prompt aponta o agente ao caminho
-        para que ele mesmo o leia (degradação graciosa, sem estourar o build).
-        """
+        """Lê o conteúdo do brief; em falha de I/O retorna prompt mínimo (degradação graciosa)."""
         try:
             with open(brief_path, "r", encoding="utf-8") as fh:
                 return fh.read()
@@ -238,11 +199,9 @@ class CodexAdapter(BaseCliAdapter):
             )
 
     def env_overlay(self, *, home: str) -> dict:
-        """Env do subprocess: HOME + CODEX_HOME graváveis.
+        """Env do subprocess: HOME + CODEX_HOME graváveis (config + auth.json OAuth).
 
-        ``CODEX_HOME`` guarda config.toml e, no modo oauth, o ``auth.json`` (com
-        refresh in-pod). NÃO inclui ``auth_env_keys`` (``OPENAI_API_KEY`` vem do
-        Secret montado no Deployment quando ``auth_mode=env``).
+        Não inclui ``auth_env_keys`` — ``OPENAI_API_KEY`` vem do Secret do Deployment.
         """
         return {
             "HOME": home,
@@ -254,19 +213,13 @@ class CodexAdapter(BaseCliAdapter):
     ) -> WorkResult:
         """Interpreta o JSONL de ``--json`` num :class:`WorkResult`.
 
-        Codex emite uma linha JSON por evento. O veredito do agente é a última
-        mensagem de assistente (eventos com ``type``/``msg.type`` indicando
-        ``agent_message``/``assistant``/``message`` ou um campo textual). Eventos
-        de erro (``type`` contendo ``error``) → ``ok=False``. Exit-code é
-        informativo apenas (§1.6) — o gate de commit/push do server decide o
-        sucesso final.
-
-        Tolerante a linhas malformadas (parse best-effort). Sem nenhum evento
-        textual e ``rc != 0`` → ``ok=False`` com tail do stderr.
+        Veredito = última mensagem de assistente (``agent_message``/``assistant``/
+        ``message``). Eventos ``error`` → ``ok=False``. Exit-code é informativo
+        apenas; gate de commit/push do server decide o sucesso final.
 
         ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx/
-        conexão) ANTES da heurística — retorna ``error_code`` específico em vez de
-        "conclusão limpa" para o pipeline retomar o trabalho parcial.
+        conexão) ANTES da heurística — retorna ``error_code`` específico, nunca
+        "conclusão limpa", para o pipeline retomar o trabalho parcial.
         """
         provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
         if provider_err:
@@ -301,7 +254,6 @@ class CodexAdapter(BaseCliAdapter):
                 if txt:
                     last_text = txt
                 continue
-            # Evento sem tipo reconhecível mas com texto solto.
             txt = self._event_text(event)
             if txt:
                 last_text = txt
@@ -328,7 +280,7 @@ class CodexAdapter(BaseCliAdapter):
 
     @staticmethod
     def _event_type(event: dict) -> str:
-        """Extrai o ``type`` do evento, tolerante ao aninhamento em ``msg``."""
+        """``type`` do evento, com fallback em ``msg.type``."""
         etype = event.get("type")
         if isinstance(etype, str) and etype:
             return etype
@@ -367,11 +319,10 @@ class CodexAdapter(BaseCliAdapter):
     ) -> str:
         """Extrai o ``thread.id`` do evento ``thread.started`` do JSONL.
 
-        Com ``--json``, o PRIMEIRO evento é ``thread.started`` carregando o
-        ``thread`` (campo ``thread.id`` — ex.: ``thr_123``), confirmado no
-        ``exec_events.rs`` do Codex. Esse id é o que ``codex exec resume <id>``
-        consome. Tolera versões que aninham em ``thread_id``/``session_id`` no
-        topo do evento. Vazio se nenhum evento de início foi emitido.
+        Com ``--json``, o primeiro evento é ``thread.started`` com ``thread.id``
+        (ex.: ``thr_123``) — confirmado em ``exec_events.rs``. Esse id é o que
+        ``codex exec resume <id>`` consome. Tolera ``thread_id``/``session_id``
+        no topo para variações de versão. Vazio se nenhum evento de início emitido.
         """
         for line in stdout.splitlines():
             line = line.strip()
@@ -395,17 +346,15 @@ class CodexAdapter(BaseCliAdapter):
         return ""
 
     def list_models(self) -> List[ModelInfo]:
-        """Catálogo estático (Codex não tem ``list-models`` confiável — §2.2)."""
+        """Catálogo estático (Codex não tem ``list-models`` confiável)."""
         return list(_MODELS)
 
     @staticmethod
     def auth_for_model(model: Optional[str]) -> ModelAuth:
         """Modo de auth exigido por *model* (Frente 4).
 
-        Lê o campo ``ModelInfo.auth`` do catálogo. Modelo desconhecido ou
-        ``None`` → ``"chatgpt"`` (conservador: a maioria dos modelos premium do
-        Codex exige conta ChatGPT; melhor garantir o OAuth do que falhar com
-        401 numa API key que não cobre aquele modelo).
+        Modelo desconhecido ou ``None`` → ``"chatgpt"`` (conservador: a maioria
+        dos modelos premium exige OAuth; melhor garantir do que falhar com 401).
         """
         if model:
             for m in _MODELS:
@@ -421,29 +370,13 @@ class CodexAdapter(BaseCliAdapter):
         env: dict,
         runner: Optional[SubprocessRunner] = None,
     ) -> Tuple[bool, str]:
-        """Garante o ``CODEX_HOME/auth.json`` no modo exigido por *model*.
+        """Garante o ``CODEX_HOME/auth.json`` no modo exigido por *model* (Frente 4).
 
-        Codex dual-mode por modelo (Frente 4):
+        * ``apikey`` → backup do OAuth (se houver) + ``codex login --with-api-key``.
+        * ``chatgpt`` → garante OAuth presente; restaura do backup se apikey sobrescreveu.
 
-        * ``apikey``  → faz backup do ``auth.json`` OAuth (se houver) e roda
-          ``printenv OPENAI_API_KEY | codex login --with-api-key`` para gravar
-          a credencial de API key. Exige ``OPENAI_API_KEY`` no env.
-        * ``chatgpt`` → garante o ``auth.json`` OAuth presente; se o modo apikey
-          o sobrescreveu antes, restaura do backup. A credencial OAuth original
-          chega via initContainer (Secret/PVC) — esta função só a
-          preserva/restaura, nunca a gera (login OAuth é do operador).
-
-        Idempotente e não-destrutivo: nunca apaga a credencial OAuth (move para
-        ``auth.oauth.json.bak`` antes de sobrescrever).
-
-        Args:
-            model: model-id selecionado (decide o modo via :meth:`auth_for_model`).
-            home: HOME gravável (não usado direto — CODEX_HOME vem do env).
-            env: env já com overlay (lê ``CODEX_HOME`` e ``OPENAI_API_KEY``).
-            runner: injeção do subprocess runner (testes). Default ``subprocess.run``.
-
-        Returns:
-            ``(ok, detail)``; ``ok=False`` aborta o dispatch.
+        Idempotente e não-destrutivo (nunca apaga OAuth — move para backup antes).
+        ``ok=False`` aborta o dispatch.
         """
         run = runner or subprocess.run
         codex_home = Path(
@@ -473,7 +406,6 @@ class CodexAdapter(BaseCliAdapter):
             return False, (
                 "modelo exige API key mas OPENAI_API_KEY não está no env"
             )
-        # Preserva a credencial OAuth antes de sobrescrever (não-destrutivo).
         if auth_path.exists() and not backup_path.exists():
             if not CodexAdapter._looks_like_apikey_auth(auth_path):
                 try:
@@ -505,8 +437,7 @@ class CodexAdapter(BaseCliAdapter):
     def _provision_chatgpt(
         auth_path: Path, backup_path: Path,
     ) -> Tuple[bool, str]:
-        """Modo ChatGPT: garante o ``auth.json`` OAuth (restaura do backup)."""
-        # Se o modo apikey sobrescreveu o auth.json, restaura o OAuth do backup.
+        """Modo ChatGPT: garante o ``auth.json`` OAuth (restaura do backup se apikey sobrescreveu)."""
         if backup_path.exists():
             try:
                 shutil.copy2(backup_path, auth_path)
@@ -527,11 +458,11 @@ class CodexAdapter(BaseCliAdapter):
 
     @staticmethod
     def _looks_like_apikey_auth(auth_path: Path) -> bool:
-        """Heurística: o ``auth.json`` é de API key (não OAuth)?
+        """Heurística: ``auth.json`` é de API key (não OAuth)?
 
-        Codex grava ``OPENAI_API_KEY`` no auth.json do modo API key; o OAuth
-        carrega ``tokens``/``refresh_token``. Best-effort — em erro de parse
-        assume OAuth (conservador: não sobrescreve o que não conseguiu ler).
+        Codex grava ``OPENAI_API_KEY`` no auth.json do modo apikey; OAuth
+        carrega ``tokens``/``refresh_token``. Em erro de parse assume OAuth
+        (conservador — não sobrescreve o que não conseguiu ler).
         """
         try:
             data = json.loads(auth_path.read_text(encoding="utf-8"))
@@ -545,12 +476,9 @@ class CodexAdapter(BaseCliAdapter):
 
 
 #: Instância exportada — descoberta pelo registro (``cli_adapters.ADAPTERS``).
-#:
-#: ``auth_mode="env"`` é o default recomendado (``OPENAI_API_KEY``, não expira).
-#: ``oauth`` carrega o :class:`OAuthSpec` do caminho opt-in
-#: (``DEILE_CODEX_AUTH=oauth`` → ``codex login --device-auth`` → ``auth.json``
-#: capturado por ``deploy.py k8s codex-login``); a seleção em runtime é do
-#: servidor/deploy, não do adapter.
+#: ``auth_mode="env"`` (default; ``OPENAI_API_KEY``). ``oauth`` expõe o
+#: :class:`OAuthSpec` opt-in (``DEILE_CODEX_AUTH=oauth``); seleção em runtime
+#: é do servidor/deploy.
 ADAPTER = CodexAdapter(
     kind="codex",
     default_port=8772,

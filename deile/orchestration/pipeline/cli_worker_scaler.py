@@ -1,29 +1,16 @@
-"""cli_worker_scaler — ensure-replica on-demand dos CLI workers (plano B5).
+"""cli_worker_scaler — ensure-replica on-demand dos CLI workers (plano §1.13/B5).
 
-Os workers da frota CLI nascem ``replicas: 0`` (scale-to-zero, custo zero
-ocioso). Quando o operador roteia um stage para um deles
-(``DEILE_PIPELINE_DISPATCH_<STAGE>=opencode-worker``), o pipeline precisa
-**garantir ≥1 réplica** ANTES de despachar — senão o ``POST /v1/dispatch`` bate
-num Service sem pods e falha com ``connection refused`` genérico, sem auto-scale
-e sem mensagem instrutiva.
+Workers CLI nascem ``replicas: 0`` (scale-to-zero). Quando o pipeline despacha
+para um deles, precisa garantir ≥1 réplica ANTES do dispatch — do contrário o
+``POST /v1/dispatch`` falha com ``connection refused`` genérico.
 
-Comportamento (plano §1.13/B5 — "default: auto-scale 1 com cooldown, reusando o
-RBAC do pipeline"):
+Fluxo: lê réplicas via ``kubectl get``; se ≥1 → ``READY``; se 0 → escala com
+cooldown anti-flapping → ``SCALED``. Sem kubectl/RBAC → ``NO_KUBECTL``/
+``SCALE_FAILED``, que o caller traduz em erro instrutivo ``WORKER_SCALED_TO_ZERO``.
 
-1. Resolve o Deployment alvo do dispatcher (``<kind>-worker``).
-2. Lê as réplicas desejadas via ``kubectl get deploy -o jsonpath``.
-3. Se já ≥1 → ``READY`` (nada a fazer).
-4. Se 0 → ``kubectl scale --replicas=1`` (com **cooldown** in-memory por alvo
-   para não flapar entre ticks) → ``SCALED``.
-5. Sem ``kubectl`` no PATH ou sem permissão/erro → devolve ``SCALE_FAILED`` /
-   ``NO_KUBECTL`` para o caller transformar num erro tipado
-   ``WORKER_SCALED_TO_ZERO`` instruindo ``k8s scale --<kind>-worker 1``.
-
-Só atua sobre dispatchers da frota CLI (``<kind>-worker`` que NÃO são núcleo);
-os workers núcleo (``deile-worker``/``claude-worker``) nascem com 1 réplica e
-nunca passam por aqui. Reusa ``KUBECTL_BIN``/``DEILE_K8S_NAMESPACE`` como o
-``_claude_creds_refresh`` (mesma SA do pipeline pod). Best-effort: nunca levanta
-— qualquer falha vira um resultado que o caller traduz em erro instrutivo.
+Só atua em dispatchers CLI (não em ``deile-worker``/``claude-worker``, que nascem
+com 1 réplica). Reusa ``KUBECTL_BIN``/``DEILE_K8S_NAMESPACE`` da mesma SA do
+pipeline pod. Best-effort: nunca levanta.
 """
 
 from __future__ import annotations
@@ -40,18 +27,16 @@ from deile.orchestration.pipeline.dispatch_resolver import BUILTIN_DISPATCHERS
 
 logger = logging.getLogger(__name__)
 
-#: Cooldown (s) entre scales do mesmo alvo — evita flapping quando vários ticks
-#: pegam o worker ainda subindo (cold-start de imagem). Override por env.
+#: Cooldown (s) entre scales do mesmo alvo — evita flapping no cold-start. Override por env.
 _SCALE_COOLDOWN_S: float = float(
     os.environ.get("DEILE_CLI_WORKER_SCALE_COOLDOWN_S", "120")
 )
 
-#: Timeouts das chamadas kubectl (curtos — nunca penduram o tick).
+#: Timeouts das chamadas kubectl — curtos para não pendurar o tick.
 _GET_TIMEOUT_S: float = 15.0
 _SCALE_TIMEOUT_S: float = 20.0
 
-#: Último instante (monotonic) em que cada alvo foi escalado — anti-flapping.
-_last_scale_at: Dict[str, float] = {}
+_last_scale_at: Dict[str, float] = {}  # monotonic ts do último scale por alvo
 
 
 class ScaleResult(Enum):
@@ -74,12 +59,10 @@ class EnsureReplicaOutcome:
 
     @property
     def ok_to_dispatch(self) -> bool:
-        """True quando o dispatch pode prosseguir (ready ou recém-escalado).
+        """True se o dispatch pode prosseguir (READY/SCALED/COOLDOWN/NOT_APPLICABLE).
 
-        ``SCALED``/``COOLDOWN`` significam que há (ou logo haverá) um pod subindo;
-        o dispatch fire-and-forget + reconcile do próximo tick cobre o cold-start
-        (o readinessProbe segura o Service até o pod estar pronto). ``READY`` é o
-        caminho quente. Falhas (``SCALE_FAILED``/``NO_KUBECTL``) bloqueiam.
+        SCALED/COOLDOWN: há (ou logo haverá) um pod subindo; o readinessProbe segura o
+        Service. Falhas (SCALE_FAILED/NO_KUBECTL) bloqueiam.
         """
         return self.result in (
             ScaleResult.READY, ScaleResult.SCALED, ScaleResult.COOLDOWN,
@@ -135,13 +118,7 @@ def _deployment_for(dispatcher: str) -> str:
 async def ensure_replica(dispatcher: str) -> EnsureReplicaOutcome:
     """Garante ≥1 réplica do Deployment do *dispatcher* CLI antes do dispatch.
 
-    Args:
-        dispatcher: dispatcher canônico (ex.: ``opencode-worker``). Dispatchers
-            núcleo (``deile-worker``/``claude-worker``) → ``NOT_APPLICABLE``.
-
-    Returns:
-        :class:`EnsureReplicaOutcome` — ``ok_to_dispatch`` indica se o caller
-        pode seguir com o ``POST /v1/dispatch`` ou deve devolver erro instrutivo.
+    Dispatchers núcleo (``deile-worker``/``claude-worker``) retornam ``NOT_APPLICABLE``.
     """
     if not dispatcher or dispatcher in BUILTIN_DISPATCHERS:
         return EnsureReplicaOutcome(ScaleResult.NOT_APPLICABLE)
@@ -171,7 +148,6 @@ async def ensure_replica(dispatcher: str) -> EnsureReplicaOutcome:
     if replicas >= 1:
         return EnsureReplicaOutcome(ScaleResult.READY, f"{deploy} já com {replicas} réplica(s)")
 
-    # 0 réplicas → escalar, respeitando o cooldown anti-flapping.
     now = time.monotonic()
     last = _last_scale_at.get(deploy, 0.0)
     if (now - last) < _SCALE_COOLDOWN_S:

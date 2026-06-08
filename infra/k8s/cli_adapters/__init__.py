@@ -1,27 +1,18 @@
 #!/usr/bin/env python3
 """cli_adapters — registro auto-descoberto dos adapters de CLI worker.
 
-**Single source of truth da frota.** Este pacote é escaneado em import: cada
-módulo ``<kind>.py`` (que não comece com ``_`` e não seja ``base``) é importado
-e inspecionado por uma instância que satisfaça o Protocol
-:class:`~cli_adapters.base.CliAdapter`. O dicionário resultante
-``ADAPTERS = {kind: adapter}`` é consumido por TODOS os pontos da frota
-(``dispatch_resolver`` deriva ``VALID_DISPATCHERS`` daqui, o painel deriva a
-lista de workers, ``deploy.py gen-worker`` lê os metadados, a NetworkPolicy lê
-``egress_hosts``). Adicionar um worker = criar ``cli_adapters/<kind>.py`` com um
-adapter; **nenhum consumidor é editado**.
+Escaneado em import: cada ``<kind>.py`` (não ``_*``, não ``base``) é importado
+e inspecionado por uma instância que satisfaça :class:`~cli_adapters.base.CliAdapter`.
+``ADAPTERS = {kind: adapter}`` é a fonte única da frota (``dispatch_resolver``,
+painel, ``gen-worker``, NetworkPolicy). Adicionar worker = criar o adapter;
+nenhum consumidor é editado.
 
-Convenção de descoberta — um módulo participa do registro se expõe **um** de:
+Convenção de descoberta (primeiro que existir vence): ``ADAPTER`` (preferido),
+``get_adapter()`` factory, varredura dos atributos do módulo (fallback).
 
-* ``ADAPTER``  — atributo apontando para a instância do adapter (preferido);
-* ``get_adapter()`` — factory que retorna a instância;
-* uma única subclasse/instância detectável que satisfaça ``CliAdapter`` via
-  varredura dos atributos do módulo (fallback).
-
-A descoberta é tolerante a falhas: um módulo que estoure no import é logado e
-PULADO (não derruba o registro inteiro) — um adapter quebrado não pode impedir
-os demais de carregarem. O ``base.py`` e módulos ``_privados`` nunca são
-escaneados.
+Tolerante a falhas: adapter com import quebrado é logado e pulado — não derruba
+os demais. Isso inclui adapters gated (ex.: antigravity) cujas dependências
+opcionais podem estar ausentes no pod.
 """
 
 from __future__ import annotations
@@ -41,14 +32,7 @@ _SKIP_MODULES = frozenset({"base"})
 
 
 def _extract_adapter(module) -> object | None:
-    """Extrai a instância de adapter de um módulo, ou ``None`` se não houver.
-
-    Ordem de resolução (primeira que existir vence):
-    1. ``module.ADAPTER`` — instância exportada explicitamente.
-    2. ``module.get_adapter()`` — factory.
-    3. varredura: primeiro atributo público que satisfaça ``CliAdapter`` e não
-       seja a própria base/Protocol.
-    """
+    """Extrai a instância de adapter de um módulo, ou ``None`` se não houver."""
     candidate = getattr(module, "ADAPTER", None)
     if candidate is not None:
         return candidate
@@ -70,12 +54,10 @@ def _extract_adapter(module) -> object | None:
 
 
 def _discover() -> Dict[str, CliAdapter]:
-    """Escaneia o pacote e monta o mapa ``{kind: adapter}``.
+    """Escaneia o pacote e monta ``{kind: adapter}``.
 
-    Itera os módulos do próprio pacote via :mod:`pkgutil`, importa cada um e
-    extrai seu adapter. Colisão de ``kind`` é logada (warning) e o primeiro
-    registrado prevalece — a descoberta é determinística pela ordem alfabética
-    de :func:`pkgutil.iter_modules`.
+    Colisão de ``kind``: warning + primeiro prevalece (ordem alfabética de
+    ``pkgutil.iter_modules`` é determinística).
     """
     registry: Dict[str, CliAdapter] = {}
     for mod_info in pkgutil.iter_modules(__path__):
@@ -115,10 +97,9 @@ def _discover() -> Dict[str, CliAdapter]:
 
 
 def reload_adapters() -> Dict[str, CliAdapter]:
-    """Re-escaneia o pacote e ATUALIZA o ``ADAPTERS`` global in-place.
+    """Re-escaneia e atualiza ``ADAPTERS`` in-place (usado em testes).
 
-    Usado em testes que dropam um adapter sintético no pacote em runtime. Muta o
-    dicionário existente (em vez de rebind) para que referências já capturadas
+    Muta o dict existente em vez de rebind para que referências já capturadas
     pelos consumidores continuem válidas.
     """
     fresh = _discover()
@@ -130,8 +111,7 @@ def reload_adapters() -> Dict[str, CliAdapter]:
 def get_adapter(kind: str) -> CliAdapter:
     """Retorna o adapter registrado para ``kind`` ou levanta ``KeyError``.
 
-    Usado pelo ``cli_worker_server`` para resolver o adapter selecionado por
-    ``DEILE_CLI_WORKER_KIND``.
+    Usado pelo ``cli_worker_server`` (``DEILE_CLI_WORKER_KIND``).
     """
     try:
         return ADAPTERS[kind]

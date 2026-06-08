@@ -1,48 +1,14 @@
-"""bootstrap_cli_worker_oauth — captura a credencial OAuth de um CLI worker do
-host e instala o worker (paridade com ``_claude_install`` / ``claude-login``).
+"""bootstrap_cli_worker_oauth — captura credencial OAuth do host e instala um CLI worker oauth-capable.
 
-Generaliza o fluxo ``claude-login`` para qualquer CLI da frota cujo adapter é
-**oauth-capable** — declara um :class:`~cli_adapters.base.OAuthSpec` (atributo
-``oauth`` não-None), INDEPENDENTE do ``auth_mode`` default. Cobre dois casos:
+Generaliza ``claude-login`` para qualquer adapter com ``OAuthSpec`` (atributo ``oauth`` não-None),
+independente do ``auth_mode`` default. Workers sem ``OAuthSpec`` vão para ``cli-worker-install``
+(auth por chave de API).
 
-* adapters ``auth_mode="oauth_file"`` (claude-like — OAuth é o único modo);
-* adapters env-default mas oauth-capable (codex: ``auth_mode="env"`` +
-  ``OAuthSpec``), cujo OAuth é OPT-IN via ``DEILE_<KIND>_AUTH=oauth``. Instalar
-  por este verb coloca o worker em MODO OAUTH: o manifest é renderizado com os
-  blocos OAuth (``oauth_mode=True``) e o env ``DEILE_<KIND>_AUTH=oauth`` é setado
-  no Deployment. Workers SEM ``OAuthSpec`` são rejeitados (vão para
-  ``cli-worker-install``, auth por chave de API).
+Adapters env-default mas oauth-capable (ex.: codex) entram em MODO OAUTH: manifest renderizado com
+blocos OAuth e ``DEILE_<KIND>_AUTH=oauth`` setado no Deployment.
 
-Onde o ``claude-login`` é hard-coded para o Claude (Keychain macOS, Secret
-``claude-credentials``, manifests 47/49/50), este módulo lê TUDO do adapter:
-
-* o caminho da credencial no host (``OAuthSpec.cred_path``, com expansão de ``~``
-  e do env var de home do CLI quando aplicável — ex.: ``CODEX_HOME``);
-* o comando de login interativo (``OAuthSpec.login_cmd`` — ``codex login
-  --device-auth``), que o OPERADOR completa no browser/device-auth;
-* o nome do Secret de credencial (``OAuthSpec.secret_name`` ou derivado);
-* a geração do manifest (PVC + initContainer ``bootstrap-creds`` + mount),
-  delegada a ``_cli_worker_gen`` (mesmo template dos workers env, com os blocos
-  OAuth condicionais ativados pelo ``auth_mode``).
-
-Sequência (cada etapa idempotente; espelha ``bootstrap_claude_worker``):
-
-1. detecta a credencial OAuth no host (lê o arquivo declarado pelo adapter);
-2. se ausente OU ``force_relogin`` E ``interactive`` → roda o ``login_cmd`` no
-   host (o operador faz o device-auth) e re-lê; sem cred + ``interactive=False``
-   → fail-fast;
-3. aplica o Secret de credencial (conteúdo bruto do arquivo, sob a chave =
-   basename do path — ex.: ``auth.json``);
-4. sincroniza o bearer ``<kind>-worker-bearer`` (reusa o ``worker-bearer``);
-5. propaga as ``auth_env_keys`` env (ex.: nenhuma no codex-oauth) ao Secret
-   compartilhado, e seta ``DEILE_<KIND>_AUTH=oauth`` no Deployment;
-6. gera + aplica o manifest (Deployment/Service/NetworkPolicy/PVC/CronJob);
-7. escala a 1 réplica.
-
-**Segurança (princípio 08):** o conteúdo da credencial NUNCA é logado — só o
-comprimento, como evidência de leitura sem expor o segredo. O Secret é criado
-via ``kubectl create secret --dry-run | apply`` (sem materializar o valor em
-disco fora do cluster).
+**Segurança (princípio 08):** o conteúdo da credencial NUNCA é logado — só o comprimento. O Secret
+é criado via ``kubectl create secret --dry-run | apply`` (valor nunca toca o disco do host).
 """
 from __future__ import annotations
 
@@ -58,9 +24,8 @@ logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).resolve().parent
 
-#: Mapa de env var de HOME por CLI — quando setada no host, sobrepõe o ``~`` do
-#: ``cred_path``. Codex respeita ``CODEX_HOME``; outros CLIs OAuth se adicionam
-#: aqui conforme entrarem na frota.
+#: Env var de HOME por CLI — sobrepõe o ``~`` do ``cred_path`` quando setada no host.
+#: Codex respeita ``CODEX_HOME``; adicionar aqui para novos CLIs OAuth.
 _HOME_ENV_BY_KIND: Dict[str, str] = {
     "codex": "CODEX_HOME",
 }
@@ -98,21 +63,10 @@ def resolve_host_cred_path(
     kind: str, adapter, *, env: Optional[Dict[str, str]] = None,
     home: Optional[Path] = None,
 ) -> Optional[Path]:
-    """Resolve o caminho ABSOLUTO da credencial OAuth no HOST (função pura).
+    """Resolve o caminho absoluto da credencial OAuth no host (função pura, não toca o filesystem).
 
-    Expande ``OAuthSpec.cred_path`` usando, nesta ordem: o env var de home do
-    CLI (ex.: ``CODEX_HOME``) quando o ``cred_path`` é relativo ao home do CLI;
-    senão o ``~`` → ``$HOME``. Não toca o filesystem (só monta o path) — a
-    existência é checada pelo chamador (testável sem cluster).
-
-    Args:
-        kind: kind do adapter.
-        adapter: instância do adapter (lê ``adapter.oauth.cred_path``).
-        env: fonte de env vars (default ``os.environ``).
-        home: HOME do operador (default ``$HOME``).
-
-    Returns:
-        O ``Path`` resolvido, ou ``None`` se o adapter não declara ``oauth``.
+    Expande ``OAuthSpec.cred_path`` usando o env var de home do CLI (ex.: ``CODEX_HOME``) quando
+    setado, ou ``$HOME`` como fallback. Retorna ``None`` se o adapter não declara ``oauth``.
     """
     oauth = getattr(adapter, "oauth", None)
     cred_path = getattr(oauth, "cred_path", None) if oauth else None
@@ -125,12 +79,10 @@ def resolve_host_cred_path(
     home_env_name = _HOME_ENV_BY_KIND.get(kind)
     cli_home = (env.get(home_env_name, "").strip() if home_env_name else "")
 
-    # ``cred_path`` tipicamente é ``~/.codex/auth.json``: a parte após o
-    # diretório-home do CLI é o que o env var de home sobrepõe.
     if cred_path.startswith("~/"):
         rel = cred_path[2:]  # ex.: ".codex/auth.json"
         if cli_home:
-            # ``CODEX_HOME`` já É ``~/.codex`` → a credencial é o basename sob ele.
+            # CODEX_HOME já É o diretório-pai (ex.: ~/.codex) → credencial é só o basename.
             basename = rel.rsplit("/", 1)[-1]
             return Path(cli_home) / basename
         return home / rel
@@ -140,7 +92,7 @@ def resolve_host_cred_path(
 
 
 def cred_secret_name(kind: str, adapter) -> str:
-    """Nome do Secret de credencial OAuth (single source: ``_cli_worker_gen``)."""
+    """Nome do Secret de credencial OAuth — delega a ``_cli_worker_gen`` (fonte única)."""
     _ensure_on_path()
     from _cli_worker_gen import cred_secret_name as _gen_name  # noqa: PLC0415
 
@@ -148,11 +100,9 @@ def cred_secret_name(kind: str, adapter) -> str:
 
 
 def read_host_credential(cred_path: Path) -> Optional[str]:
-    """Lê o conteúdo bruto da credencial OAuth do host (não loga o conteúdo).
+    """Lê a credencial OAuth do host; retorna ``None`` se ausente/ilegível.
 
-    Returns o texto do arquivo (preservado byte-a-byte para o pod consumir o
-    mesmo shape que o CLI gravou) ou ``None`` se ausente/ilegível. Loga apenas o
-    comprimento — princípio 08 (segredos não entram em log).
+    Loga só o comprimento — nunca o conteúdo (princípio 08).
     """
     try:
         if not cred_path.is_file():
@@ -171,11 +121,10 @@ def read_host_credential(cred_path: Path) -> Optional[str]:
 
 
 def build_cred_secret_payload(content: str, *, cred_path: Path) -> Dict[str, str]:
-    """Monta o payload ``{<basename>: <conteúdo>}`` do Secret (função pura).
+    """Monta ``{basename: conteúdo}`` do Secret (função pura).
 
-    A chave do Secret é o basename do path da credencial (ex.: ``auth.json``),
-    para que o initContainer encontre ``/run/secrets/<kind>-oauth/<basename>``.
-    Não materializa o valor em nenhum lugar além do dict devolvido.
+    Chave = basename do path (ex.: ``auth.json``) para que o initContainer
+    encontre ``/run/secrets/<kind>-oauth/<basename>``.
     """
     return {cred_path.name: content}
 
@@ -183,11 +132,9 @@ def build_cred_secret_payload(content: str, *, cred_path: Path) -> Dict[str, str
 def _kubectl_apply_cred_secret(
     secret_name: str, payload: Dict[str, str], *, namespace: str,
 ) -> bool:
-    """Cria/atualiza o Secret de credencial OAuth (dry-run | apply, idempotente).
+    """Cria/atualiza o Secret de credencial OAuth via dry-run|apply (idempotente).
 
-    O valor é passado via ``--from-literal`` num pipe ``dry-run -o yaml | apply``
-    — o conteúdo nunca toca o disco do host fora do cluster e nunca é logado.
-    Timeouts: 15s (dry-run) + 30s (apply).
+    Valor via ``--from-literal`` no pipe — nunca toca o disco do host nem é logado.
     """
     if not payload:
         logger.error("payload do Secret %s vazio — nada a aplicar", secret_name)
@@ -224,12 +171,9 @@ def _kubectl_apply_cred_secret(
 
 
 def _run_login_cmd(login_cmd: List[str], *, inherit_stdio: bool = True) -> bool:
-    """Roda o ``login_cmd`` do adapter no host (device-auth interativo).
+    """Roda o ``login_cmd`` do adapter no host aguardando o device-auth do operador.
 
-    O operador completa o device-auth no browser; este processo aguarda o
-    comando retornar. ``inherit_stdio=True`` (CLI direto) deixa o operador ver a
-    URL/código de device-auth no terminal. Timeout 5min (device-auth pode
-    demorar). NÃO loga o output (pode conter o código de device).
+    Timeout 5 min. NÃO loga output (pode conter o código de device — princípio 08).
     """
     kwargs: dict = ({"check": False} if inherit_stdio
                     else {"capture_output": True, "text": True, "check": False})
@@ -260,35 +204,18 @@ def bootstrap_cli_worker_oauth(
     inherit_stdio: bool = True,
     env: Optional[Dict[str, str]] = None,
 ) -> CliWorkerLoginResult:
-    """Captura a credencial OAuth do host + instala o CLI worker ``oauth_file``.
+    """Captura credencial OAuth do host e instala o CLI worker oauth-capable.
 
-    Espelha ``bootstrap_claude_worker`` generalizado pelo ``OAuthSpec`` do
-    adapter. Idempotente: rerodar sem flags é noop quando tudo está pronto.
-
-    Args:
-        kind: kind do adapter (deve ser oauth-capable — ter um ``OAuthSpec`` em
-            ``oauth``, independente do ``auth_mode`` default).
-        namespace: namespace k8s alvo.
-        force_relogin: força rodar o ``login_cmd`` mesmo com credencial presente
-            (trocar de conta).
-        interactive: ``False`` (CI) falha-rápido se a credencial estiver ausente
-            (não roda o ``login_cmd``).
-        replicas: réplicas finais do Deployment (default 1).
-        home / env: injeção para testes (default ``$HOME`` / ``os.environ``).
-        inherit_stdio: stdio do ``login_cmd`` herdado pro terminal (CLI direto).
-
-    Returns:
-        :class:`CliWorkerLoginResult` com flags por etapa + erro opcional.
+    Idempotente — rerodar sem flags é noop quando tudo já está pronto.
+    ``interactive=False`` falha-rápido se a credencial estiver ausente (CI).
+    ``force_relogin`` força o ``login_cmd`` mesmo com credencial presente.
     """
     try:
         adapter = _adapter(kind)
     except KeyError as exc:
         return CliWorkerLoginResult(ok=False, kind=kind, error=str(exc))
 
-    # `cli-worker-login` cobre QUALQUER worker oauth-capable: ou `auth_mode`
-    # estático `oauth_file` (claude-like), ou env-default COM um `OAuthSpec`
-    # opt-in (codex, que roda OAuth via `DEILE_CODEX_AUTH=oauth`). Rejeita só
-    # quem não tem OAuthSpec — esse vai para `cli-worker-install` (chave de API).
+    # Rejeita workers sem OAuthSpec — vão para `cli-worker-install` (chave de API).
     oauth = getattr(adapter, "oauth", None)
     if oauth is None or not getattr(oauth, "login_cmd", None):
         return CliWorkerLoginResult(
@@ -299,9 +226,8 @@ def bootstrap_cli_worker_oauth(
                 "auth por chave de API use `cli-worker-install`."
             ),
         )
-    # Quando o adapter é env-default mas oauth-capable, o worker entra em MODO
-    # OAUTH: o manifest é renderizado com os blocos OAuth e o env
-    # `DEILE_<KIND>_AUTH=oauth` é setado no Deployment (etapa 6 abaixo).
+    # Adapters env-default mas oauth-capable (ex.: codex) entram em modo OAuth:
+    # manifest com blocos OAuth + DEILE_<KIND>_AUTH=oauth no Deployment.
     oauth_mode = True
 
     result = CliWorkerLoginResult(ok=False, kind=kind)
@@ -342,8 +268,7 @@ def bootstrap_cli_worker_oauth(
         return result
     result.cred_secret_applied = True
 
-    # 4/5/6/7. Bearer + auth_env_keys + manifest + auth-mode env + scale —
-    # reusa o instalador env-only (que já faz bearer/keys/manifest/scale).
+    # 4-7. Bearer + auth_env_keys + manifest + auth-mode env + scale (reusa _cli_worker_install).
     _ensure_on_path()
     from _cli_worker_install import (  # noqa: PLC0415
         _kubectl_apply_keys_secret,
@@ -376,8 +301,7 @@ def bootstrap_cli_worker_oauth(
         return result
     result.manifest_applied = True
 
-    # Seta DEILE_<KIND>_AUTH=oauth no Deployment (seleção do modo OAuth em
-    # runtime — o adapter declara o modo padrão env; o opt-in é por env var).
+    # Opt-in OAuth em runtime: adapter env-default precisa desta var para usar o modo OAuth.
     if not _kubectl_set_auth_mode(worker, kind, namespace=namespace):
         result.error = f"falha ao setar DEILE_{kind.upper()}_AUTH=oauth"
         return result
@@ -392,7 +316,7 @@ def bootstrap_cli_worker_oauth(
 
 
 def _kubectl_set_auth_mode(worker: str, kind: str, *, namespace: str) -> bool:
-    """``kubectl set env`` ``DEILE_<KIND>_AUTH=oauth`` no Deployment (idempotente)."""
+    """Seta ``DEILE_<KIND>_AUTH=oauth`` no Deployment via ``kubectl set env`` (idempotente)."""
     var = f"DEILE_{kind.upper()}_AUTH"
     try:
         result = subprocess.run(

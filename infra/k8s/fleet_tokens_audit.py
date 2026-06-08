@@ -1,60 +1,41 @@
 #!/usr/bin/env python3
-"""Auditoria de tokens/custo da FROTA multi-worker do cluster DEILE (issue #445).
+"""Auditoria de tokens/custo da frota multi-worker do cluster DEILE (issue #445).
 
-O ``session_tokens_audit.py`` legado audita SÓ o ``claude-worker`` (JSONL do
-``claude -p``). Com a frota multi-CLI (claude, deile, opencode, codex, qwen,
-goose, aider) cada worker grava o uso de tokens num formato diferente e num lugar
-diferente do PVC. Este relatório agrega TODOS os workers numa visão única
-``worker-kind × modelo`` — tokens in/out/cache + custo + total da frota.
+Agrega todos os worker-kinds (claude, deile, opencode, codex, qwen, goose,
+aider) numa visão única ``worker-kind × modelo`` — tokens in/out/cache + custo.
+O ``session_tokens_audit.py`` legado cobre apenas o claude-worker.
 
-Arquitetura (SRP/SOLID — coleta × normalização × apresentação são camadas
-disjuntas):
+Camadas (SRP): coleta (I/O via ``kubectl exec``) → normalização
+(``jsonl_cost`` como fonte única de custo, #445) → apresentação (Rich, adaptativo
+ao terminal — princípio 15).
 
-* **Coleta (I/O):** :class:`TokenCollector` (ABC) + uma impl por worker-kind,
-  descobertas por registro (:data:`COLLECTORS`). Cada coletor sabe ONDE o seu
-  CLI grava o uso (path no PVC) e COMO parsear o shape nativo daquele CLI. A
-  varredura roda DENTRO do pod via um único ``kubectl exec`` (o pod tem os
-  dados); o parser in-pod emite JSON normalizado cru.
-* **Normalização (modelo→tokens→custo):** :class:`WorkerSession` + a agregação de
-  custo reutilizam ``jsonl_cost`` (fonte única, #445): claude via
-  ``cost_of_model`` (tabela opus/sonnet/haiku), demais via ``fleet_cost_of_model``
-  (tabela da frota — OpenRouter/Codex/Dashscope/DeepSeek), com o preço declarado
-  no ``ModelInfo`` do adapter prevalecendo quando presente.
-* **Apresentação (Rich):** :class:`FleetRenderer` — adaptativo a ``console.width``
-  (princípio 15; sem larguras literais). Por worker-kind → por modelo, com o
-  total da frota no rodapé.
-
-Descoberta da frota: a lista de worker-kinds sai do registro
-``cli_adapters.ADAPTERS`` (single source of truth) — registrar um adapter novo
-adiciona o worker à auditoria sem editar este módulo. claude e deile (núcleo) são
-sempre incluídos.
+Descoberta da frota: ``cli_adapters.ADAPTERS`` é a fonte de truth — registrar um
+adapter novo inclui o worker automaticamente.
 
 Uso::
 
     python3 infra/k8s/fleet_tokens_audit.py                 # tabela + modo interativo
-    python3 infra/k8s/fleet_tokens_audit.py --by-worker      # só o resumo por worker
-    python3 infra/k8s/fleet_tokens_audit.py --top 40         # só as 40 sessões mais caras
-    python3 infra/k8s/fleet_tokens_audit.py --last 20        # 20 sessões mais recentes
-    python3 infra/k8s/fleet_tokens_audit.py --worker opencode,qwen   # só esses kinds
-    python3 infra/k8s/fleet_tokens_audit.py --model deepseek # filtra por modelo
+    python3 infra/k8s/fleet_tokens_audit.py --by-worker      # resumo por worker
+    python3 infra/k8s/fleet_tokens_audit.py --top 40         # 40 sessões mais caras
+    python3 infra/k8s/fleet_tokens_audit.py --last 20        # 20 mais recentes
+    python3 infra/k8s/fleet_tokens_audit.py --worker opencode,qwen
+    python3 infra/k8s/fleet_tokens_audit.py --model deepseek
     python3 infra/k8s/fleet_tokens_audit.py --no-interactive
-    python3 infra/k8s/fleet_tokens_audit.py --export ./out   # grava JSON + CSV
+    python3 infra/k8s/fleet_tokens_audit.py --export ./out   # JSON + CSV
     python3 infra/k8s/fleet_tokens_audit.py -n deile-gl      # outro namespace
 
-No modo interativo: NÚMERO+Enter abre detalhe da sessão; ``w`` cicla agrupamento
-por worker / por modelo; ``s`` cicla ordenação; ``e`` exporta; ``r``/Enter
-atualiza; ``Esc``/``q`` sai.
+Interativo: número+Enter = detalhe; ``w`` = by-worker/sessões; ``s`` = ordenação;
+``e`` = export; ``r``/Enter = atualizar; ``Esc``/``q`` = sair.
 
-Fontes de token por worker (investigadas contra a doc oficial — ver módulo docstring
-de cada coletor):
+Fontes de token por worker:
 
-* claude  → ``~/.claude/projects/-home-claude-work-*/*.jsonl`` (model+tokens nativos).
-* opencode→ ``<root>/.progress/<task>.stdout.log`` NDJSON ``step_finish`` (custo nativo).
-* codex   → ``<root>/.progress/<task>.stdout.log`` JSONL ``token_count``/``turn.completed``.
-* qwen    → ``<root>/.progress/<task>.stdout.log`` array ``result.stats.models``.
-* goose   → ``<root>/.progress/<task>.stdout.log`` ``metadata.total_tokens``.
-* aider   → ``<root>/.progress/<task>.stdout.log`` texto "Tokens:"/"Cost:".
-* deile   → ``~/.deile/db/usage.db`` (SQLite ``usage_records`` — tokens+custo nativos).
+* claude  → ``~/.claude/projects/-home-claude-work-*/*.jsonl``
+* opencode→ ``<root>/.progress/<task>.stdout.log`` NDJSON ``step_finish`` (custo nativo)
+* codex   → ``<root>/.progress/<task>.stdout.log`` ``token_count``/``turn.completed``
+* qwen    → ``<root>/.progress/<task>.stdout.log`` ``result.stats.models``
+* goose   → ``<root>/.progress/<task>.stdout.log`` ``metadata.total_tokens``
+* aider   → ``<root>/.progress/<task>.stdout.log`` texto "Tokens:"/"Cost:"
+* deile   → ``~/.deile/db/usage.db`` SQLite ``usage_records``
 """
 
 from __future__ import annotations
@@ -77,7 +58,7 @@ try:
 except ImportError:  # Windows / sem POSIX termios
     _HAS_CBREAK = False
 
-# Fonte única da lógica de custo (issue #445).
+# fonte única de custo — issue #445
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fleet_progress_parse  # noqa: E402 — fonte única dos parsers de .progress
 from jsonl_cost import (  # noqa: E402
@@ -90,18 +71,16 @@ from jsonl_cost import (  # noqa: E402
 def _fleet_progress_parse_source() -> str:
     """Source de ``fleet_progress_parse`` para inlinar no parser in-pod.
 
-    O parser roda via ``kubectl exec ... python3 -`` (stdin) em pods cuja
-    presença do módulo em ``sys.path`` não é garantida (ex.: claude-worker). Em
-    vez de depender do import, inlinamos o source do módulo compartilhado —
-    mantendo-o como FONTE ÚNICA dos parsers de ``.progress``.
+    O parser roda via ``kubectl exec python3 -`` em pods que podem não ter o
+    módulo no ``sys.path``; inlinamos o source para manter a fonte única.
     """
     import inspect
     return inspect.getsource(fleet_progress_parse)
 
-# Todas as datas exibidas em BRT (UTC−3, sem DST desde 2019).
+# UTC−3, sem DST desde 2019
 BRT = timezone(timedelta(hours=-3))
 
-#: Workers núcleo (não vêm do registro de adapters CLI).
+#: Núcleo: não vêm do registro de adapters CLI.
 CORE_WORKERS = ("claude", "deile")
 
 
@@ -116,12 +95,7 @@ def _iso_brt(iso_str: str) -> str:
 
 
 def fleet_worker_kinds() -> list:
-    """Worker-kinds da frota — núcleo + adapters CLI (single source of truth).
-
-    A lista CLI sai de ``cli_adapters.ADAPTERS`` (registrar um adapter já
-    adiciona o worker à auditoria). Tolerante a falha: registro ausente → só os
-    núcleo. Ordem: núcleo primeiro, depois os CLI em ordem alfabética.
-    """
+    """Núcleo + adapters CLI em ordem alfabética. Tolerante a falha (sem adapters → só núcleo)."""
     kinds = list(CORE_WORKERS)
     try:
         import cli_adapters  # noqa: PLC0415 — pacote opcional em infra/k8s
@@ -134,12 +108,10 @@ def fleet_worker_kinds() -> list:
 
 
 def adapter_declared_prices() -> dict:
-    """Mapa ``{model_id: {in,out,read}}`` dos preços declarados nos adapters.
+    """``{model_id: {in,out,read}}`` dos preços em ``adapter.list_models()``.
 
-    Lê os catálogos ``adapter.list_models()`` do registro (campos ``price_in``/
-    ``price_out``/``cached_in`` do :class:`ModelInfo`). Esses preços PREVALECEM
-    sobre a tabela de substring do ``jsonl_cost`` (são mais frescos, curados pelo
-    dono do adapter). Tolerante a falha — registro ausente → ``{}``.
+    Esses preços prevalecem sobre a tabela de substring do ``jsonl_cost``
+    (são mais frescos, curados pelo dono do adapter). Tolerante a falha → ``{}``.
     """
     out: dict = {}
     try:
@@ -162,20 +134,12 @@ def adapter_declared_prices() -> dict:
     return out
 
 
-# --------------------------------------------------------------------------- #
-# Parser que roda DENTRO de um pod (stdlib pura, parametrizado por kind).      #
-#                                                                              #
-# Cada worker grava o uso de tokens num formato/local diferente. Um único      #
-# parser parametrizado por ``FLEET_KIND`` lê a fonte certa e emite sessões     #
-# normalizadas: cada sessão tem ``worker``, ``models`` (model -> {in,out,cc,   #
-# cr}), ``native_cost`` (USD quando o CLI o reporta), ``first_ts``/``last_ts``,#
-# ``brief``, ``task_id`` e ``mtime``. O host calcula o custo final + renderiza.#
-# --------------------------------------------------------------------------- #
+# Parser stdlib pura que roda dentro do pod via `kubectl exec python3 -` (stdin).
+# Parametrizado por FLEET_KIND; emite sessões normalizadas como JSON.
 IN_POD_PARSER = r'''
 import json, glob, os, re, sqlite3
 
 KIND = os.environ.get("FLEET_KIND", "")
-# Root dos workdirs/progress por worker (override por env; default /home/<kind>/work).
 ROOT = os.environ.get("FLEET_ROOT") or ("/home/%s/work" % KIND)
 PROGRESS = os.path.join(ROOT, ".progress")
 try:
@@ -194,7 +158,7 @@ def _mtime(path):
 
 
 def _brief_for(task_id):
-    # O servidor escreve o brief no workdir; tenta os nomes conhecidos.
+    # Tenta os nomes conhecidos que o servidor grava no workdir.
     for name in (".brief.md", "brief.md", ".deile-brief.md"):
         for cand in (os.path.join(ROOT, task_id, name),
                      os.path.join(ROOT, task_id, "repo", name)):
@@ -206,15 +170,12 @@ def _brief_for(task_id):
     return None
 
 
-# Subdir do PVC onde o servidor persiste o meta por task (cli_worker_server.
-# _RESULT_SUBDIR). Carrega o ``cli_model`` (model-id nativo recebido no payload
-# do /v1/dispatch) — fonte de verdade do modelo, pois o stdout de vários CLIs
-# (goose, codex sem turn_context, aider sem "Model:") NÃO emite o modelo.
+# Subdir persistido pelo servidor (cli_worker_server._RESULT_SUBDIR).
+# cli_model = fonte de verdade do modelo: goose/codex/aider NÃO emitem o modelo no stdout.
 SESSIONS_DIR = os.path.join(ROOT, ".sessions")
 
 
 def _meta_model_for(task_id):
-    # Lê .sessions/<task_id>.json e devolve o cli_model persistido (ou None).
     path = os.path.join(SESSIONS_DIR, "%s.json" % task_id)
     try:
         with open(path, errors="replace") as fh:
@@ -241,9 +202,8 @@ def _add(session, model, tk):
 
 
 def _apply_meta_model(session):
-    # Remapeia a chave "unknown" para o cli_model persistido no meta (fonte de
-    # verdade do argv --model). Só age quando há meta_model E a única origem de
-    # tokens é "unknown" — nunca sobrescreve um modelo que o CLI emitiu de fato.
+    # Remapeia "unknown" → cli_model do meta apenas quando o CLI não emitiu
+    # nenhum modelo real (nunca sobrescreve modelo emitido de fato pelo CLI).
     meta = session.get("meta_model")
     if not meta or "unknown" not in session["models"]:
         return
@@ -254,7 +214,6 @@ def _apply_meta_model(session):
 
 
 def _iter_progress_logs():
-    # Sessões por <task_id>.stdout.log em <root>/.progress/.
     for f in sorted(glob.glob(os.path.join(PROGRESS, "*.stdout.log"))):
         mt = _mtime(f)
         if SINCE_MTIME and mt is not None and mt < SINCE_MTIME:
@@ -267,24 +226,21 @@ def _iter_progress_logs():
             continue
 
 
-# Parsers de .progress por kind — fonte ÚNICA inlinada de fleet_progress_parse.py
-# (o host substitui o placeholder pelo source real ANTES de pipar via stdin, pois
-# o pod não tem garantia de import do módulo). Exec num namespace isolado para
-# não colidir com o ``_add(session,...)`` deste parser (assinatura diferente).
+# exec em namespace isolado: evita colisão com _add() local (assinatura diferente).
+# O placeholder __FLEET_PROGRESS_PARSE_SOURCE__ é substituído pelo host antes de pipar.
 _FPP = {}
 exec(compile(__FLEET_PROGRESS_PARSE_SOURCE__, "<fleet_progress_parse>", "exec"), _FPP)
 _parse_progress_text = _FPP["parse_progress_text"]
 
 
 def _ledger_path():
-    # Espelha cli_worker_server._cost_ledger_path: env override > <root>/.cost-ledger.jsonl.
+    # Espelha cli_worker_server._cost_ledger_path.
     env = os.environ.get("DEILE_CLI_WORKER_COST_LEDGER_PATH", "").strip()
     return env or os.path.join(ROOT, ".cost-ledger.jsonl")
 
 
 def _ledger_sessions(live_task_ids):
-    # Sessões já podadas do .progress, reconstruídas do ledger durável (issue
-    # #445). Dedup por task_id contra as vivas (que prevalecem — mais frescas).
+    # Sessões históricas já podadas do .progress (issue #445). Dedup: live prevalecem.
     out = []
     path = _ledger_path()
     seen = set()
@@ -342,12 +298,10 @@ def parse_progress_kind():
         if any(sum(v.values()) > 0 for v in s["models"].values()):
             sessions.append(s)
             live_ids.add(task_id)
-    # Sessões históricas já podadas do .progress, reidratadas do ledger durável.
     sessions.extend(_ledger_sessions(live_ids))
     return sessions
 
 
-# --- claude: JSONL do `claude -p` (model+tokens nativos, dedup por id) ------
 def parse_claude():
     BASE = "/home/claude/.claude/projects"
     sessions = []
@@ -412,7 +366,6 @@ def parse_claude():
     return sessions
 
 
-# --- deile-worker: SQLite usage_records (tokens+custo nativos) --------------
 def parse_deile():
     db = os.environ.get("FLEET_DEILE_DB") or os.path.join(
         os.path.expanduser("~"), ".deile", "db", "usage.db")
@@ -456,17 +409,13 @@ fn = PARSERS.get(KIND)
 print(json.dumps(fn() if fn else []))
 '''
 
-# Inlina o source dos parsers de .progress (fonte única — ver placeholder no
-# IN_POD_PARSER). repr() escapa o source para um literal Python seguro.
+# repr() escapa o source como literal Python seguro para substituição no placeholder.
 IN_POD_PARSER = IN_POD_PARSER.replace(
     "__FLEET_PROGRESS_PARSE_SOURCE__",
     repr(_fleet_progress_parse_source()),
 )
 
 
-# --------------------------------------------------------------------------- #
-# Host helpers                                                                 #
-# --------------------------------------------------------------------------- #
 def find_kubectl() -> str:
     cand = os.path.expanduser("~/.rd/bin/kubectl")
     if os.path.exists(cand):
@@ -556,18 +505,11 @@ def fetch_worker_sessions(kubectl: str, ns: str, kind: str, pod: str,
         return []
 
 
-# --------------------------------------------------------------------------- #
-# Coletores por worker (strategy/registry) — SRP: cada um sabe parsear o seu   #
-# shape; a coleta I/O (kubectl exec) é comum em :func:`fetch_worker_sessions`. #
-# --------------------------------------------------------------------------- #
 class TokenCollector:
-    """Contrato de coleta de tokens de UM worker-kind.
+    """Contrato de coleta de tokens de um worker-kind.
 
-    A coleta I/O (rodar o parser in-pod via ``kubectl exec``) é comum e vive em
-    :func:`fetch_worker_sessions`, parametrizada por ``kind``; o que diverge por
-    worker é apenas a tabela de custo aplicada à sessão normalizada — claude usa
-    a tabela opus/sonnet/haiku, os demais a tabela da frota. Subclasses só
-    sobrescrevem :meth:`cost_for_model`.
+    A coleta I/O é comum em :func:`fetch_worker_sessions`; o que diverge por
+    worker é apenas a tabela de custo. Subclasses sobrescrevem :meth:`cost_for_model`.
     """
 
     kind: str = ""
@@ -584,7 +526,7 @@ class TokenCollector:
     def nocache_for_model(self, tk: dict, model: str) -> float:
         """Custo hipotético sem cache (todo input a preço cheio)."""
         decl = self.declared_prices.get(model)
-        p = fleet_cost_of_model  # mesma tabela; recomputa com cr→in
+        p = fleet_cost_of_model
         fresh = {"in": tk.get("in", 0) + tk.get("cc", 0) + tk.get("cr", 0),
                  "out": tk.get("out", 0)}
         return p(fresh, model, declared=decl)
@@ -603,11 +545,7 @@ class ClaudeCollector(TokenCollector):
 
 
 class _NativeCostCollector(TokenCollector):
-    """Coletores cujo CLI reporta custo nativo (opencode, aider, deile).
-
-    O custo nativo é aplicado por-sessão em :func:`enrich` (campo ``native_cost``);
-    quando ausente, cai na tabela de custo por-modelo da frota (herança).
-    """
+    """CLI que reporta custo nativo; aplica ``native_cost`` em :func:`enrich`, senão herda tabela da frota."""
 
     uses_native_cost = True
 
@@ -638,7 +576,6 @@ class GooseCollector(TokenCollector):
     kind = "goose"
 
 
-#: Registro de coletores por kind (espelha ``cli_adapters.ADAPTERS`` + núcleo).
 COLLECTORS = {
     c.kind: c for c in (
         ClaudeCollector, DeileCollector, OpenCodeCollector, CodexCollector,
@@ -657,9 +594,6 @@ def collector_for(kind: str, declared_prices: dict) -> TokenCollector:
     return generic
 
 
-# --------------------------------------------------------------------------- #
-# Normalização / enriquecimento no host                                        #
-# --------------------------------------------------------------------------- #
 def enrich(sessions: list, collectors: dict) -> list:
     """Calcula custo por modelo + totais de cada sessão (camada de normalização)."""
     now = datetime.now(timezone.utc)
@@ -676,7 +610,7 @@ def enrich(sessions: list, collectors: dict) -> list:
             for k in tot:
                 tot[k] += tk.get(k, 0)
             per_model[model] = {**tk, "cost": c}
-        # Custo nativo do CLI (quando reportado) prevalece sobre o estimado.
+        # Custo nativo do CLI prevalece sobre o estimado.
         native = s.get("native_cost")
         s["estimated_cost_usd"] = cost
         if coll.uses_native_cost and isinstance(native, (int, float)) and native > 0:
@@ -747,9 +681,6 @@ def title_of(s: dict) -> str:
     return s["task_id"][:16]
 
 
-# --------------------------------------------------------------------------- #
-# Rendering (Rich, adaptativo a console.width — sem larguras literais)         #
-# --------------------------------------------------------------------------- #
 def _console():
     try:
         from rich.console import Console
@@ -759,19 +690,11 @@ def _console():
 
 
 class FleetRenderer:
-    """Apresentação (Rich) — separada da coleta/normalização (SRP).
-
-    Três visões:
-
-    * ``by-worker`` — resumo da frota: worker-kind × modelo (tokens + custo).
-    * ``sessions``  — ranking de sessões (worker, modelo, custo, brief).
-    * ``detail``    — drill-down de uma sessão (tokens/custo por modelo).
-    """
+    """Apresentação Rich, adaptativa ao terminal. Três visões: ``by-worker``, ``sessions``, ``detail``."""
 
     def __init__(self, console) -> None:
         self.console = console
 
-    # ---- resumo por worker × modelo -------------------------------------- #
     def render_by_worker(self, sessions: list) -> None:
         agg = {}  # worker -> {model -> {in,out,cc,cr,cost}}
         worker_tot = {}  # worker -> {tokens,cost,sessions}
@@ -825,7 +748,6 @@ class FleetRenderer:
         self.console.print(t)
         self._grand_total(sessions)
 
-    # ---- ranking de sessões ---------------------------------------------- #
     def render_sessions(self, sessions: list, top=None, start=0, count=None,
                         sort_col=None, sort_desc=True) -> None:
         rows = sessions[:top] if top else sessions
@@ -871,7 +793,6 @@ class FleetRenderer:
         self.console.print(t)
         self._grand_total(sessions)
 
-    # ---- detalhe de uma sessão ------------------------------------------- #
     def render_detail(self, s: dict, rank: int) -> None:
         if self.console is None:
             print(f"\n===== #{rank} [{s['worker']}] {s['task_id']} — ${s['cost_usd']:.4f} =====")
@@ -910,7 +831,6 @@ class FleetRenderer:
                                  border_style="green"))
         self.console.print(Panel(brief, title="Brief", border_style="blue"))
 
-    # ---- totais ---------------------------------------------------------- #
     def _grand_total(self, sessions: list) -> None:
         total = sum(s["cost_usd"] for s in sessions)
         by_worker = {}
@@ -939,9 +859,6 @@ class FleetRenderer:
         print(f"Por worker: {parts}")
 
 
-# --------------------------------------------------------------------------- #
-# Export                                                                       #
-# --------------------------------------------------------------------------- #
 def export(sessions: list, outdir: str):
     os.makedirs(outdir, exist_ok=True)
     jpath = os.path.join(outdir, "fleet_tokens_audit.json")
@@ -967,9 +884,6 @@ def export(sessions: list, outdir: str):
     return jpath, cpath
 
 
-# --------------------------------------------------------------------------- #
-# Coleta da frota inteira                                                      #
-# --------------------------------------------------------------------------- #
 def collect_fleet(kubectl: str, ns: str, kinds: list, collectors: dict,
                   since_mtime: float = 0.0) -> list:
     """Varre cada worker da frota (kubectl exec) e devolve sessões enriquecidas."""
@@ -987,9 +901,6 @@ def collect_fleet(kubectl: str, ns: str, kinds: list, collectors: dict,
     return enrich(all_sessions, collectors)
 
 
-# --------------------------------------------------------------------------- #
-# Interactive loop                                                             #
-# --------------------------------------------------------------------------- #
 SORT_MODES = [
     ("custo USD ↓", lambda s: s["cost_usd"], True, "USD"),
     ("custo USD ↑", lambda s: s["cost_usd"], False, "USD"),
@@ -1221,9 +1132,6 @@ def interactive(console, sessions: list, top, refetch, interval: int = 60):
             flash = "tecla não reconhecida"
 
 
-# --------------------------------------------------------------------------- #
-# Main                                                                         #
-# --------------------------------------------------------------------------- #
 def _parse_worker_filter(arg, kinds):
     if not arg:
         return kinds

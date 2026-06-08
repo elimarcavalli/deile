@@ -1,60 +1,24 @@
 #!/usr/bin/env python3
 """cli_adapters.aider — adapter do Aider CLI (frota multi-worker, Tier 1).
 
-Aider é o agente de coding pair-programming via terminal (pip). É o ÚNICO worker
-da frota com ``git_strategy="cli_autocommit"``: o próprio Aider commita as
-mudanças (``--auto-commits``); o wrapper só faz o ``push`` e (se o brief pediu)
-roda os testes — o gate pós-run reflete isso. Headless via
-``aider --message-file <brief> --yes-always``. Este adapter pluga o Aider na
-frota pelos cinco pontos do contrato :class:`~cli_adapters.base.CliAdapter`; toda
-a maquinaria genérica (lease, heartbeat, subprocess, gate de git, HTTP) vem do
-``cli_worker_server`` + ``_worker_core``.
+Único worker com ``git_strategy="cli_autocommit"``: o Aider commita
+(``--auto-commits``); o wrapper só faz push + gate de teste. Headless via
+``aider --message-file <brief> --yes-always``. Maquinaria genérica (lease,
+heartbeat, subprocess, gate de git, HTTP) vem do ``cli_worker_server`` +
+``_worker_core``.
 
-Decisões deste adapter (alinhadas ao plano §2.4/§1.4/§1.5/§1.11 e validadas
-contra a doc oficial do Aider via context7 — ``--message-file``/``-f``,
-``--yes-always``, ``--auto-commits``/``--no-auto-commits``,
-``--attribute-*``/``--no-attribute-*``, ``--list-models``):
+Decisões não-óbvias:
 
-* **git ``cli_autocommit`` (§1.5/§2.4):** ``--auto-commits`` — o Aider commita.
-  O wrapper detecta o commit local e só faz ``push``. O gate pós-run do server
-  usa o ramo ``cli_autocommit``: há commit local → wrapper pusha + (se brief
-  pediu) roda ``test_cmd``.
 * **Atribuição (regra do projeto):** ``--no-attribute-author``,
-  ``--no-attribute-committer`` e ``--no-attribute-commit-message-author`` para
-  NÃO prefixar/marcar commits com "aider"/Co-Authored-By (regra global do
-  Humano: sem Co-Authored-By, sem "(aider)").
-* **Autonomia (§1.4):** ``--yes-always`` — confirma todos os prompts; sem TTY
-  qualquer confirmação travaria o subprocess. ``--no-check-update`` e
-  ``--analytics-disable`` evitam I/O de rede/prompt inesperado.
-* **Single-pass (§2.4 gotcha):** ``--message-file --yes-always`` é uma passada
-  só → pode commitar código quebrado. Por isso o gate pós-run de teste é
-  OBRIGATÓRIO quando o brief exige suíte verde (responsabilidade do server, não
-  do adapter). Aqui ``parse_output`` só lê a saída.
-* **Brief (§2.4):** ``--message-file <brief_path>`` (flag oficial ``-f``) — o
-  Aider lê o arquivo como a mensagem. Não há prompt posicional.
-* **Modelo (§2.4):** ``--model <prov/model>`` (ex.:
-  ``openrouter/anthropic/claude-3.7-sonnet``, ``deepseek/deepseek-chat``);
-  ``None`` deixa o Aider usar o default da config/env. ``--weak-model`` barato
-  para mensagens de commit fica como configuração de Deployment (não fixado aqui
-  para não acoplar a um modelo específico).
-* **Saída (§1.6):** Aider não tem ``--output-format json`` confiável headless →
-  :meth:`parse_output` é heurística sobre stdout/stderr (detecta erros conhecidos
-  e usa o tail como veredito). O gate de git/test do server é a autoridade final.
-* **list_models:** DINÂMICO via ``aider --list-models ""`` (lista os modelos que
-  o litellm conhece), com **catálogo curado de fallback** quando o comando
-  falha/sem rede. O ``cli_worker_server`` cacheia com TTL.
-* **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
-  Aider não tem session-id de servidor — a continuidade é *keyed-by-workdir*
-  (``.aider.chat.history.md`` no clone). Em resume, o servidor reusa o workdir e
-  ``--restore-chat-history`` recarrega o histórico, retomando em vez de re-gastar
-  do zero. O brief continua lendo ``.deile-progress.md`` como contexto natural.
-* **Auth (§1.11/§2.4):** ``env`` — ``OPENROUTER_API_KEY`` (uma chave → vários
-  providers) ou ``DEEPSEEK_API_KEY``. Sem login, sem refresh.
-* **Dirs graváveis (§1.7):** ``HOME`` (config/cache do litellm + history files do
-  Aider). ``--no-gitignore`` evita o Aider mexer no ``.gitignore`` do repo. O
-  workdir do repo é gravável por construção.
-* **Egress (§1.13):** ``openrouter.ai`` + ``api.deepseek.com``. As forges são
-  adicionadas transversalmente pela geração de NetworkPolicy.
+  ``--no-attribute-committer`` e ``--no-attribute-commit-message-author`` —
+  NÃO prefixar commits com "aider"/Co-Authored-By.
+* **Single-pass gotcha:** ``--message-file --yes-always`` é uma passada só →
+  pode commitar código quebrado. O gate pós-run de teste (server) é o guard.
+* **Resume keyed-by-workdir (issue #445):** Aider não tem session-id de
+  servidor — continuidade via ``.aider.chat.history.md`` no clone reusado;
+  ``--restore-chat-history`` recarrega o histórico.
+* **list_models dinâmico:** ``aider --list-models ""`` (litellm); fallback para
+  catálogo curado quando falha/sem rede.
 """
 
 from __future__ import annotations
@@ -70,11 +34,10 @@ from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
 
 logger = logging.getLogger("deile.cli_adapters.aider")
 
-#: Timeout (s) do ``aider --list-models`` em :meth:`list_models` (toca litellm).
+#: Timeout (s) do ``aider --list-models`` (toca litellm).
 _MODELS_CMD_TIMEOUT_S = 20
 
-#: Trechos de stderr/stdout que sinalizam falha estrutural do Aider (heurística).
-#: Conservador — só padrões inequívocos; o gate de git/test é a autoridade final.
+#: Padrões de falha estrutural (heurística conservadora — o gate git/test é a autoridade).
 _ERROR_MARKERS = (
     "litellm.exceptions",
     "authenticationerror",
@@ -84,10 +47,7 @@ _ERROR_MARKERS = (
 )
 
 #: Catálogo curado de fallback quando ``aider --list-models`` falha/sem rede.
-#:
-#: Fonte: modelos OpenRouter/DeepSeek de uso recorrente na frota. IDs no formato
-#: nativo do ``--model`` do Aider (litellm: ``provider/model``). A lista dinâmica
-#: prevalece quando disponível; este catálogo só garante picker não-vazio.
+#: A lista dinâmica prevalece; este catálogo garante picker não-vazio.
 _FALLBACK_MODELS: List[ModelInfo] = [
     ModelInfo(
         id="openrouter/deepseek/deepseek-v4-flash",
@@ -135,26 +95,15 @@ class AiderAdapter(BaseCliAdapter):
     ) -> List[str]:
         """Monta o argv headless do ``aider``.
 
-        Forma: ``aider [--model <m>] [--restore-chat-history] --message-file
-        <brief_path> --yes-always --no-stream --no-pretty --analytics-disable
-        --no-check-update --no-gitignore --auto-commits --no-attribute-author
-        --no-attribute-committer --no-attribute-commit-message-author``.
-
-        **Resume nativo (issue #445):** o Aider NÃO tem session-id de servidor —
-        sua continuidade é *keyed-by-workdir*: o histórico vive em
-        ``.aider.chat.history.md`` DENTRO do repo. Quando ``resume`` não é
-        ``None``, o workdir anterior é reusado (o servidor reaproveita o clone) e
-        ``--restore-chat-history`` recarrega esse histórico, retomando a conversa
-        em vez de re-gastar tokens do zero. Forma confirmada na doc oficial do
-        Aider. ``reasoning`` é ignorado (sem suporte). O ``workdir`` é o cwd do
-        subprocess (definido pelo core).
+        Resume (issue #445): Aider é keyed-by-workdir — quando ``resume`` não é
+        ``None`` o servidor reusa o clone e ``--restore-chat-history`` recarrega
+        ``.aider.chat.history.md``, retomando sem re-gastar tokens. ``reasoning``
+        ignorado (sem suporte).
         """
         argv: List[str] = ["aider"]
         if model:
             argv += ["--model", model]
         if resume is not None:
-            # Continuidade keyed-by-workdir: recarrega .aider.chat.history.md do
-            # clone reusado (não há session-id nativo a passar).
             argv += ["--restore-chat-history"]
         argv += [
             "--message-file", brief_path,
@@ -173,10 +122,9 @@ class AiderAdapter(BaseCliAdapter):
         return argv
 
     def env_overlay(self, *, home: str) -> dict:
-        """Env do subprocess: HOME gravável (config/cache litellm + history).
+        """Env do subprocess: HOME gravável (litellm cache + history do Aider).
 
-        NÃO inclui ``auth_env_keys`` (``OPENROUTER_API_KEY``/``DEEPSEEK_API_KEY``
-        vêm do Secret montado no Deployment).
+        Auth keys vêm do Secret montado no Deployment, não daqui.
         """
         return {"HOME": home}
 
@@ -185,15 +133,10 @@ class AiderAdapter(BaseCliAdapter):
     ) -> WorkResult:
         """Heurística sobre stdout/stderr (Aider não tem JSON headless confiável).
 
-        Detecta marcadores de falha estrutural (auth/rate-limit/traceback) →
-        ``ok=False``. Caso contrário, considera a execução plausível e usa o tail
-        do stdout como veredito. Exit-code é informativo apenas (§1.6); o gate de
-        git (commit local feito pelo Aider) + test do server decide o sucesso
-        final (``git_strategy="cli_autocommit"``).
+        Exit-code é informativo apenas; o gate de git/test do server decide.
 
-        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx/
-        conexão) ANTES da heurística — retorna ``error_code`` específico em vez de
-        "conclusão limpa" para o pipeline retomar o trabalho parcial.
+        ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx)
+        ANTES da heurística → ``error_code`` específico para o pipeline retomar.
         """
         provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
         if provider_err:
@@ -229,23 +172,15 @@ class AiderAdapter(BaseCliAdapter):
     ) -> str:
         """Aider é keyed-by-workdir (sem session-id de servidor) → ``task_id``.
 
-        O Aider não emite um id de sessão: a continuidade vem do
-        ``.aider.chat.history.md`` no clone reusado. Retornamos o ``task_id`` como
-        sentinela não-vazio para que o ``resume-info`` sinalize "há sessão a
-        retomar" — o que dispara o reuso do MESMO workdir no próximo dispatch
-        (onde ``--restore-chat-history`` recarrega o histórico). Sem isto o
-        pipeline cairia em fresh com workdir novo e o histórico se perderia.
+        Retornar ``task_id`` (não-vazio) sinaliza ao ``resume-info`` que há sessão
+        a retomar, disparando reuso do MESMO workdir no próximo dispatch. Sem isto
+        o pipeline usaria workdir novo e o histórico ``.aider.chat.history.md``
+        se perderia.
         """
         return task_id
 
     def list_models(self) -> List[ModelInfo]:
-        """Modelos suportados — dinâmico via ``aider --list-models``, com fallback.
-
-        Roda ``aider --list-models ""`` (lista os modelos do litellm) e parseia.
-        Se o binário não está no PATH, o comando falha, dá timeout ou não retorna
-        linha válida → cai no :data:`_FALLBACK_MODELS` curado. O
-        ``cli_worker_server`` cacheia o resultado (TTL) — pode tocar a rede.
-        """
+        """Dinâmico via ``aider --list-models``; fallback para curado se falhar."""
         dynamic = self._list_models_dynamic()
         return dynamic if dynamic else list(_FALLBACK_MODELS)
 
@@ -286,7 +221,6 @@ class AiderAdapter(BaseCliAdapter):
         return models
 
 
-#: Instância exportada — descoberta pelo registro (``cli_adapters.ADAPTERS``).
 ADAPTER = AiderAdapter(
     kind="aider",
     default_port=8774,

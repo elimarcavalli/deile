@@ -1,35 +1,17 @@
 #!/usr/bin/env python3
 """_cli_worker_gen — geração de manifests de CLI worker a partir do adapter.
 
-``deploy.py k8s gen-worker <kind>`` delega a este módulo. A regra de ouro
-(plano §1.0) é que **adicionar um worker NÃO escreve YAML à mão**: o manifest é
-renderizado do template ``manifests/templates/cli-worker.yaml.tmpl`` preenchendo
-os placeholders ``$VAR`` a partir dos METADADOS do adapter
-(``cli_adapters/<kind>.py``) — porta, env de auth, dirs graváveis, egress hosts,
-storage mode. Single source of truth: o registro de adapters.
+``deploy.py k8s gen-worker <kind>`` renderiza o template
+``manifests/templates/cli-worker.yaml.tmpl`` preenchendo os placeholders ``$VAR``
+com os metadados do adapter (porta, env de auth, dirs graváveis, egress hosts,
+storage mode). Single source of truth: o registro de adapters em
+``cli_adapters/<kind>.py``.
 
-Blocos derivados do adapter:
+HOME_VOLUME_BLOCK usa PVC quando o adapter precisa persistir estado
+(``auth_mode=="oauth_file"`` para refresh in-pod ou ``supports_resume`` para a
+sessão JSONL); caso contrário, ``emptyDir`` efêmero (plano §1.13).
 
-* **AUTH_ENV_BLOCK** — para cada ``auth_env_keys`` do adapter, uma entrada
-  ``env`` que lê a chave do Secret compartilhado ``cli-worker-keys`` (plano
-  §1.9). Mantém ``optional: true`` para que a chave ausente não derrube o pod —
-  o ``/v1/health`` reporta ``ready=false`` e o painel sinaliza.
-* **OVERLAY_ENV_BLOCK** — env extras que o adapter exige por config
-  (``adapter.env_overlay(home=...)``), ex.: ``OPENCODE_CONFIG_CONTENT``,
-  ``GOOSE_DISABLE_KEYRING``. As ``auth_env_keys`` são REMOVIDAS daqui (vêm do
-  Secret, não como valor literal) — nunca se materializa segredo no manifest.
-* **HOME_VOLUME_BLOCK** — PVC ``<worker>-home`` quando o adapter precisa
-  persistir estado (``auth_mode=="oauth_file"`` para refresh in-pod, ou
-  ``supports_resume`` para a sessão JSONL); caso contrário ``emptyDir`` efêmero
-  (mais barato), conforme o storage map do plano §1.13.
-* **EGRESS_HOST_RULES / EGRESS_HOSTS_CSV** — derivados de ``adapter.egress_hosts``
-  + forges. O k3s CNI não resolve FQDN, então o egress 443 é aberto (mesma
-  limitação do manifest 40); os hosts ficam documentados na annotation para
-  auditoria e migração futura a um CNI FQDN-aware.
-
-Este módulo é puro (sem rede, sem kubectl): recebe metadados, devolve YAML como
-string. ``deploy.py`` cuida do I/O (escrever o arquivo, aplicar no cluster).
-Isso o torna trivialmente testável.
+Módulo puro (sem rede, sem kubectl): recebe metadados, devolve YAML como string.
 """
 
 from __future__ import annotations
@@ -42,19 +24,16 @@ from typing import Dict, List, Optional, Tuple
 
 _HERE = Path(__file__).resolve().parent
 TEMPLATE_PATH = _HERE / "manifests" / "templates" / "cli-worker.yaml.tmpl"
-#: Diretório onde os manifests gerados são escritos por ``gen-worker``.
 GENERATED_DIR = _HERE / "manifests" / "generated"
 
-#: Forges sempre permitidas no egress (qualquer worker que faz push precisa).
+#: Forges sempre presentes no egress de qualquer worker que faz push.
 _FORGE_HOSTS = ("github.com", "gitlab.com")
 
-#: Sufixos que marcam uma var de provider como SENSÍVEL (vai pro Secret, nunca
-#: literal no manifest). Complementa o casamento com ``auth_env_keys``.
+#: Vars de provider sensíveis — vão pro Secret, nunca literais no manifest.
 _SENSITIVE_SUFFIXES = ("_API_KEY", "_TOKEN")
 
-#: Timeout default do subprocess de um CLI worker (s). CLIs não têm cap de
-#: orçamento nativo (só o claude tem ``--max-budget-usd``); o controle de custo
-#: é timeout + modelo barato (plano §"Controle de custo").
+#: CLIs não têm cap de orçamento nativo (só o claude tem ``--max-budget-usd``);
+#: timeout é o único controle de custo (plano §"Controle de custo").
 _DEFAULT_TIMEOUT_S = 1800
 
 
@@ -81,17 +60,14 @@ def available_kinds() -> List[str]:
 
 
 def _provider_env_prefix(kind: str) -> str:
-    """Prefixo da convenção de provider-env de um *kind* (UPPERCASE)."""
     return f"DEILE_CLI_{kind.upper()}_ENV_"
 
 
 def parse_provider_env(kind: str, env_source: Dict[str, str]) -> Dict[str, str]:
-    """Extrai as vars de provider de *env_source* para o worker *kind* (função pura).
+    """Extrai vars ``DEILE_CLI_<KIND>_ENV_<VARNAME>`` → ``{VARNAME: valor}`` (função pura).
 
-    Convenção: ``DEILE_CLI_<KIND>_ENV_<VARNAME>=<valor>`` vira ``<VARNAME>=<valor>``
-    na env do Deployment do worker. Só considera chaves com valor não-vazio; o
-    ``<VARNAME>`` precisa ser não-vazio (``DEILE_CLI_QWEN_ENV_=x`` é ignorado).
-    Não lê ``os.environ`` — recebe a fonte explicitamente (testável).
+    ``<VARNAME>`` vazio (``DEILE_CLI_QWEN_ENV_=x``) é ignorado. Não lê
+    ``os.environ`` — recebe a fonte explicitamente para ser testável.
     """
     prefix = _provider_env_prefix(kind)
     out: Dict[str, str] = {}
@@ -106,11 +82,9 @@ def parse_provider_env(kind: str, env_source: Dict[str, str]) -> Dict[str, str]:
 
 
 def _is_sensitive_provider_var(varname: str, adapter) -> bool:
-    """True se a var de provider é sensível (vai pro Secret, não literal).
+    """True se a var é sensível (casa ``auth_env_keys`` ou sufixo ``_API_KEY``/``_TOKEN``).
 
-    Sensível = casa com uma ``auth_env_key`` do adapter OU termina em
-    ``_API_KEY``/``_TOKEN``. Conservador por desenho: na dúvida, trata como
-    segredo (não materializa no manifest).
+    Conservador: na dúvida trata como segredo — não materializa no manifest.
     """
     if varname in set(getattr(adapter, "auth_env_keys", []) or []):
         return True
@@ -120,10 +94,10 @@ def _is_sensitive_provider_var(varname: str, adapter) -> bool:
 def split_provider_env(
     provider_env: Dict[str, str], adapter,
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Particiona as vars de provider em ``(literais, sensíveis)`` (função pura).
+    """Particiona vars de provider em ``(literais, sensíveis)`` (função pura).
 
-    Literais → valor direto no manifest (ex.: ``OPENAI_BASE_URL``).
-    Sensíveis → ``secretKeyRef`` no manifest + valor no Secret ``cli-worker-keys``.
+    Literais → valor direto no manifest. Sensíveis → ``secretKeyRef`` em
+    ``cli-worker-keys``.
     """
     literals: Dict[str, str] = {}
     secrets: Dict[str, str] = {}
@@ -136,11 +110,9 @@ def split_provider_env(
 
 
 def read_env_sources() -> Dict[str, str]:
-    """Une ``.env`` da raiz do repo + ``os.environ`` (``os.environ`` prevalece).
+    """Une ``.env`` (raiz do repo) + ``os.environ``; ``os.environ`` prevalece.
 
-    Parse simples KEY=VALUE (sem ``python-dotenv`` — infra/k8s roda standalone),
-    tolerante a ausência. ``os.environ`` sobrepõe o ``.env`` (operador que
-    exportou a var na sessão tem prioridade).
+    Parse simples KEY=VALUE sem ``python-dotenv`` — infra/k8s roda standalone.
     """
     merged: Dict[str, str] = {}
     env_file = _HERE.parent.parent / ".env"
@@ -160,10 +132,9 @@ def read_env_sources() -> Dict[str, str]:
 def resolve_provider_env(
     kind: str, adapter, *, env_source: Optional[Dict[str, str]] = None,
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Resolve as vars de provider do *kind* particionadas em ``(literais, sensíveis)``.
+    """Vars de provider do *kind* particionadas em ``(literais, sensíveis)``.
 
-    Lê de *env_source* quando dado (testes), senão de :func:`read_env_sources`
-    (``.env`` + ``os.environ``).
+    Usa *env_source* quando fornecido (testes); senão :func:`read_env_sources`.
     """
     source = read_env_sources() if env_source is None else env_source
     provider_env = parse_provider_env(kind, source)
@@ -171,18 +142,17 @@ def resolve_provider_env(
 
 
 def _yaml_env_entry(name: str, value: str, indent: str) -> str:
-    """Uma entrada ``env`` literal ``{name: X, value: "Y"}`` indentada."""
-    # value escapado em aspas — cobre valores com ``:``/``{}`` (config inline).
+    """Entrada ``env`` literal ``{name: X, value: "Y"}`` indentada."""
+    # Escapa em aspas duplas — cobre values com ``:``/``{}`` (config inline).
     safe = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'{indent}- {{ name: {name}, value: "{safe}" }}'
 
 
 def _auth_env_block(adapter, *, indent: str = "            ") -> str:
-    """Bloco ``env`` que lê cada ``auth_env_keys`` do Secret ``cli-worker-keys``.
+    """Bloco ``env`` que lê ``auth_env_keys`` do Secret ``cli-worker-keys``.
 
-    ``optional: true``: a chave ausente NÃO derruba o pod (o ``/v1/health``
-    reporta ``ready=false``). Permite ao operador instalar o worker e só depois
-    popular a chave — paridade com o opt-in do claude-login.
+    ``optional: true`` — chave ausente não derruba o pod; ``/v1/health`` reporta
+    ``ready=false``. Permite instalar o worker antes de popular a chave.
     """
     keys = list(getattr(adapter, "auth_env_keys", []) or [])
     if not keys:
@@ -199,11 +169,10 @@ def _auth_env_block(adapter, *, indent: str = "            ") -> str:
 
 
 def _overlay_env_block(adapter, *, kind: str, indent: str = "            ") -> str:
-    """Env extras do adapter (``env_overlay``), excluindo as ``auth_env_keys``.
+    """Env extras de ``adapter.env_overlay``, excluindo ``auth_env_keys`` e ``HOME``.
 
-    Os segredos (``auth_env_keys``) NUNCA são materializados como valor literal
-    aqui — vêm do Secret (ver :func:`_auth_env_block`). Qualquer chave do overlay
-    que colida com uma ``auth_env_key`` é removida defensivamente.
+    ``auth_env_keys`` vêm do Secret via :func:`_auth_env_block`; colisões são
+    removidas defensivamente para nunca materializar segredo como valor literal.
     """
     home = f"/home/{kind}"
     try:
@@ -211,7 +180,7 @@ def _overlay_env_block(adapter, *, kind: str, indent: str = "            ") -> s
     except Exception:  # noqa: BLE001 — overlay defensivo; pod sobe sem extras
         overlay = {}
     secret_keys = set(getattr(adapter, "auth_env_keys", []) or [])
-    # HOME já é setado pelo template; não duplicar.
+    # HOME é definido pelo template — não duplicar.
     entries = [
         _yaml_env_entry(k, str(v), indent)
         for k, v in overlay.items()
@@ -223,7 +192,7 @@ def _overlay_env_block(adapter, *, kind: str, indent: str = "            ") -> s
 
 
 def _secret_ref_env_entry(name: str, indent: str) -> str:
-    """Entrada ``env`` que lê *name* do Secret ``cli-worker-keys`` (``optional``)."""
+    """Entrada ``env`` via ``secretKeyRef`` em ``cli-worker-keys`` (``optional``)."""
     return (
         f"{indent}- name: {name}\n"
         f"{indent}  valueFrom:\n"
@@ -241,19 +210,17 @@ def _provider_env_block(
     env_source: Optional[Dict[str, str]] = None,
     indent: str = "            ",
 ) -> str:
-    """Bloco ``env`` da config de provider por worker (convenção ``DEILE_CLI_*_ENV_*``).
+    """Bloco ``env`` das vars ``DEILE_CLI_<KIND>_ENV_*`` do worker.
 
-    Não-sensíveis (ex.: ``OPENAI_BASE_URL``/``OPENAI_MODEL``) entram como valor
-    literal; sensíveis (casam ``auth_env_keys`` ou terminam em ``_API_KEY``/
-    ``_TOKEN``) entram via ``secretKeyRef`` no Secret ``cli-worker-keys`` — o
-    valor NUNCA é materializado no manifest. Ausência total de
-    ``DEILE_CLI_<KIND>_ENV_*`` → comentário no-op (comportamento atual inalterado).
+    Não-sensíveis → valor literal no manifest. Sensíveis (``auth_env_keys`` ou
+    sufixo ``_API_KEY``/``_TOKEN``) → ``secretKeyRef`` em ``cli-worker-keys``; o
+    valor nunca é materializado. Sem vars → comentário no-op.
     """
     literals, secrets = resolve_provider_env(
         kind, adapter, env_source=env_source,
     )
-    # ``auth_env_keys`` já saem como ``secretKeyRef`` no AUTH_ENV_BLOCK; não
-    # duplicar a entrada (env name repetido vira ruído no Deployment).
+    # auth_env_keys já entram via AUTH_ENV_BLOCK; deduplicar evita env name
+    # repetido no Deployment.
     auth_keys = set(getattr(adapter, "auth_env_keys", []) or [])
     secrets = {k: v for k, v in secrets.items() if k not in auth_keys}
     if not literals and not secrets:
@@ -269,14 +236,11 @@ def _provider_env_block(
 def _auth_mode_env_block(
     adapter, *, kind: str, indent: str = "            ", oauth_mode: bool = False,
 ) -> str:
-    """Env ``DEILE_<KIND>_AUTH=oauth`` quando o worker é renderizado em modo OAuth.
+    """Emite ``DEILE_<KIND>_AUTH=oauth`` quando o worker roda em modo OAuth.
 
-    Só emitido quando o worker roda em OAuth — ``oauth_mode=True`` (opt-in de um
-    adapter oauth-capable env-default, ex.: codex) OU adapter ``oauth_file``
-    estático. Espelha o ``DEILE_<KIND>_AUTH=oauth`` que o ``cli-worker-login`` já
-    seta no Deployment via ``kubectl set env`` — tê-lo no manifest mantém a
-    seleção do modo OAuth durável a re-aplicações do manifest. Workers env-auth
-    (sem oauth_mode) não emitem nada — comportamento inalterado.
+    Espelha o que ``cli-worker-login`` seta via ``kubectl set env`` — tê-lo no
+    manifest garante que uma re-aplicação não desfaça o modo OAuth. Workers
+    env-auth sem ``oauth_mode`` não emitem nada.
     """
     if not _is_oauth_file(adapter, oauth_mode=oauth_mode):
         return f"{indent}# (worker env-auth — sem DEILE_{kind.upper()}_AUTH)"
@@ -284,12 +248,10 @@ def _auth_mode_env_block(
 
 
 def _needs_pvc(adapter, *, oauth_mode: bool = False) -> bool:
-    """True se o worker precisa persistir estado (oauth refresh ou resume).
+    """True se o worker precisa de PVC (oauth refresh in-pod ou resume de sessão).
 
-    ``oauth_mode=True`` força o caminho com PVC mesmo num adapter cujo
-    ``auth_mode`` default é ``env`` mas que tem ``OAuthSpec`` (opt-in via
-    ``DEILE_<KIND>_AUTH=oauth`` — ex.: codex): no modo OAuth a credencial é
-    refrescada in-pod e precisa do PVC para sobreviver ao restart.
+    ``oauth_mode=True`` força PVC mesmo quando ``auth_mode=="env"`` — no modo
+    OAuth a credencial é refrescada in-pod e precisa sobreviver ao restart.
     """
     return (
         _is_oauth_file(adapter, oauth_mode=oauth_mode)
@@ -298,25 +260,20 @@ def _needs_pvc(adapter, *, oauth_mode: bool = False) -> bool:
 
 
 def _is_oauth_file(adapter, *, oauth_mode: bool = False) -> bool:
-    """True se o worker deve ser renderizado em modo OAuth (credencial em arquivo).
+    """True quando o worker usa credencial em arquivo (``auth_mode="oauth_file"`` ou ``oauth_mode=True``).
 
-    Verdadeiro quando o adapter declara ``auth_mode="oauth_file"`` (estático) OU
-    quando o chamador força ``oauth_mode=True`` — caminho opt-in de um adapter
-    env-default mas oauth-capable (tem ``OAuthSpec``). O override é o que faz o
-    codex (``auth_mode="env"`` + ``oauth``) renderizar PVC + initContainer +
-    mount da credencial quando instalado via ``cli-worker-login``.
+    ``oauth_mode=True`` é o opt-in para adapters env-default mas oauth-capable
+    (ex.: codex instalado via ``cli-worker-login``).
     """
     return oauth_mode or getattr(adapter, "auth_mode", "env") == "oauth_file"
 
 
 def resolve_pod_cred_path(adapter, *, kind: str) -> str:
-    """Caminho ABSOLUTO da credencial OAuth dentro do pod (função pura).
+    """Caminho absoluto da credencial OAuth no pod (função pura).
 
-    Expande o ``~`` declarado em ``adapter.oauth.cred_path`` para o HOME do pod
-    deste worker (``/home/<kind>``), que é onde o PVC ``worker-home`` monta. Um
-    ``cred_path`` já absoluto é devolvido como veio. Sem ``oauth`` declarado,
-    cai no default ``<home>/.<kind>/auth.json`` (conservador; o adapter deveria
-    declarar o path).
+    Expande ``~`` de ``adapter.oauth.cred_path`` para ``/home/<kind>`` (onde o
+    PVC monta). Path já absoluto é devolvido como veio. Sem ``oauth`` declarado,
+    usa ``/home/<kind>/.<kind>/auth.json`` como fallback.
     """
     home = f"/home/{kind}"
     oauth = getattr(adapter, "oauth", None)
@@ -334,11 +291,7 @@ def resolve_pod_cred_path(adapter, *, kind: str) -> str:
 
 
 def cred_secret_name(adapter, *, kind: str) -> str:
-    """Nome do Secret que carrega a credencial OAuth capturada do host.
-
-    Reusa o ``secret_name`` declarado no :class:`OAuthSpec` do adapter quando
-    presente; senão deriva ``<kind>-worker-credentials`` (convenção da frota).
-    """
+    """Nome do Secret OAuth: ``adapter.oauth.secret_name`` ou ``<kind>-worker-credentials``."""
     oauth = getattr(adapter, "oauth", None)
     declared = getattr(oauth, "secret_name", None) if oauth else None
     if declared and str(declared).strip():
@@ -349,18 +302,12 @@ def cred_secret_name(adapter, *, kind: str) -> str:
 def _oauth_init_block(
     adapter, *, kind: str, indent: str = "      ", oauth_mode: bool = False,
 ) -> str:
-    """``initContainers`` ``bootstrap-creds`` para workers ``oauth_file``.
+    """``initContainers bootstrap-creds`` para workers ``oauth_file`` (espelha manifest 50).
 
-    Espelha o initContainer do claude-worker (manifest 50): copia a credencial
-    OAuth do Secret montado em ``/run/secrets/<kind>-oauth/<basename>`` para o
-    PVC no path que o CLI espera (``resolve_pod_cred_path``), mode ``0600``,
-    rodando como uid 10001 (PSS restricted). Idempotência por ``expiresAt``:
-    preserva o token do PVC quando ele é >= o do Secret (refresh in-pod),
-    copiando só quando o PVC não tem credencial OU o Secret é mais recente.
-
-    Workers ``env`` SEM ``oauth_mode`` NÃO geram initContainer — devolve "" (no-op,
-    sem regressão). Com ``oauth_mode=True`` (opt-in de um adapter oauth-capable) o
-    bloco é gerado normalmente.
+    Copia a credencial OAuth do Secret (``/run/secrets/<kind>-oauth/``) para o PVC
+    em ``resolve_pod_cred_path``, mode ``0600``, uid 10001. Idempotência por
+    ``expiresAt``: preserva o token do PVC quando já é mais recente (refresh
+    in-pod). Workers env-auth sem ``oauth_mode`` devolvem "".
     """
     if not _is_oauth_file(adapter, oauth_mode=oauth_mode):
         return ""
@@ -427,11 +374,9 @@ def _oauth_init_block(
 def _oauth_volume_block(
     adapter, *, kind: str, indent: str = "        ", oauth_mode: bool = False,
 ) -> str:
-    """Volume do Secret de credencial OAuth (workers ``oauth_file``) ou "".
+    """Volume do Secret de credencial OAuth, montado read-only no initContainer.
 
-    O Secret é montado read-only no initContainer; o nome do Secret é resolvido
-    de :func:`cred_secret_name`. Workers ``env`` sem ``oauth_mode`` não geram
-    volume — devolve "".
+    Workers env-auth sem ``oauth_mode`` devolvem "".
     """
     if not _is_oauth_file(adapter, oauth_mode=oauth_mode):
         return ""
@@ -463,12 +408,10 @@ def _home_volume_block(
 def _pvc_doc_block(
     adapter, *, worker: str, namespace: str, oauth_mode: bool = False,
 ) -> str:
-    """Objeto ``PersistentVolumeClaim`` quando o worker persiste estado.
+    """Objeto ``PersistentVolumeClaim`` para workers com PVC (plano §1.13).
 
-    O ``_home_volume_block`` referencia ``persistentVolumeClaim.claimName:
-    <worker>-home`` para workers ``oauth_file``/``supports_resume``; sem este
-    objeto a PVC ficaria *unbound* e o Pod travaria em ``Pending`` (plano §1.13).
-    Workers ``emptyDir`` (env-only, sem resume) não geram PVC — devolve "".
+    Sem este objeto o pod travaria em ``Pending`` (PVC unbound). Workers
+    ``emptyDir`` devolvem "".
     """
     if not _needs_pvc(adapter, oauth_mode=oauth_mode):
         return ""
@@ -492,12 +435,9 @@ def _pvc_doc_block(
 def _cleanup_cronjob_block(
     adapter, *, kind: str, worker: str, namespace: str, oauth_mode: bool = False,
 ) -> str:
-    """CronJob de cleanup do PVC quando o worker tem PVC (plano §1.13).
+    """CronJob diário de GC do PVC via ``cli_worker_server.run_cleanup`` (plano §1.13).
 
-    Reusa ``_worker_core.startup_cleanup`` (via ``cli_worker_server.run_cleanup``)
-    montando o PVC ``<worker>-home``. Workers ``emptyDir`` não precisam — o
-    filesystem some com o pod, e o server já faz cleanup periódico in-process;
-    devolve "" para eles.
+    Workers ``emptyDir`` não precisam — o filesystem some com o pod. Devolve "".
     """
     if not _needs_pvc(adapter, oauth_mode=oauth_mode):
         return ""
@@ -581,20 +521,17 @@ def _cleanup_cronjob_block(
 
 
 def egress_hosts(adapter) -> List[str]:
-    """Hosts de egress do worker = LLM (adapter) ∪ forges, deduplicados/ordenados."""
+    """Hosts de egress = LLM (adapter) ∪ forges, deduplicados preservando ordem."""
     llm = [h for h in (getattr(adapter, "egress_hosts", []) or []) if h]
-    merged = dict.fromkeys([*llm, *_FORGE_HOSTS])  # preserva ordem, dedup
+    merged = dict.fromkeys([*llm, *_FORGE_HOSTS])  # dedup preservando ordem
     return list(merged)
 
 
 def _egress_host_rules(adapter, *, port: int, indent: str = "    ") -> str:
-    """Regra(s) de egress 443.
+    """Regra de egress 443 (``to: []`` — k3s CNI não resolve FQDN, mesma limitação do manifest 40).
 
-    O CNI do k3s não resolve FQDN, então abre-se o egress 443 para qualquer
-    destino (mesma limitação aceita no manifest 40). Os hosts específicos ficam
-    documentados na annotation ``deile.io/egress-llm-hosts`` (ver template). Esta
-    função emite a regra ``- to: [] ports: [443]`` comentando os hosts cobertos
-    para o leitor do manifest gerado.
+    Hosts cobertos ficam documentados na annotation ``deile.io/egress-llm-hosts``
+    e como comentário inline no manifest gerado.
     """
     hosts = egress_hosts(adapter)
     host_comment = ", ".join(hosts) if hosts else "(nenhum host declarado)"
@@ -614,25 +551,15 @@ def render_manifests(
     timeout_s: Optional[int] = None,
     oauth_mode: bool = False,
 ) -> str:
-    """Renderiza o YAML completo (Deployment+Service+Secret+NetworkPolicy) do worker.
+    """Renderiza o YAML completo (Deployment+Service+Secret+NetworkPolicy) para *kind*.
 
-    Args:
-        kind: kind do adapter (deve estar registrado em ``cli_adapters.ADAPTERS``).
-        namespace: namespace k8s alvo (default ``deile``).
-        timeout_s: timeout do subprocess; default :data:`_DEFAULT_TIMEOUT_S`.
-        oauth_mode: força o caminho OAuth (PVC + initContainer ``bootstrap-creds``
-            + mount da credencial + env ``DEILE_<KIND>_AUTH=oauth``) mesmo num
-            adapter cujo ``auth_mode`` default é ``env`` mas que é oauth-capable
-            (tem ``OAuthSpec`` — ex.: codex). Workers env-auth sem este flag
-            renderizam inalterados (``emptyDir``, sem initContainer). Adapters
-            ``auth_mode="oauth_file"`` renderizam OAuth independentemente do flag.
-
-    Returns:
-        O documento multi-YAML como string, pronto para escrever/``kubectl apply``.
+    ``oauth_mode=True`` força PVC + initContainer + env ``DEILE_<KIND>_AUTH=oauth``
+    em adapters env-default mas oauth-capable (ex.: codex). Adapters
+    ``auth_mode="oauth_file"`` renderizam OAuth independentemente deste flag.
 
     Raises:
-        KeyError: *kind* não está registrado.
-        FileNotFoundError: o template não foi encontrado.
+        KeyError: *kind* não registrado.
+        FileNotFoundError: template ausente.
     """
     adapter = load_adapter(kind)
     port = int(getattr(adapter, "default_port", 0) or 0)
@@ -681,7 +608,7 @@ def render_manifests(
 
 
 def manifest_path(kind: str) -> Path:
-    """Caminho onde o manifest gerado de *kind* é escrito."""
+    """Caminho do manifest gerado para *kind*."""
     return GENERATED_DIR / f"{kind}-worker.yaml"
 
 
@@ -692,11 +619,7 @@ def write_manifests(
     timeout_s: Optional[int] = None,
     oauth_mode: bool = False,
 ) -> Path:
-    """Renderiza e GRAVA o manifest gerado em :func:`manifest_path`.
-
-    Returns:
-        O ``Path`` do arquivo escrito.
-    """
+    """Renderiza e grava o manifest em :func:`manifest_path`; devolve o ``Path``."""
     rendered = render_manifests(
         kind, namespace=namespace, timeout_s=timeout_s, oauth_mode=oauth_mode,
     )

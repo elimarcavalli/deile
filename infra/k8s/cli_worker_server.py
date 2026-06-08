@@ -1,32 +1,27 @@
 #!/usr/bin/env python3
 """cli_worker_server — servidor genérico de CLI worker da frota multi-worker.
 
-Espelha o contrato HTTP do ``claude_worker_server.py`` (lease, heartbeat,
-subprocess one-shot, ``/v1/dispatch``, ``/v1/health``, ``/v1/progress``) mas é
-**agnóstico do CLI concreto**: o comportamento que diverge entre CLIs
-(opencode, codex, qwen, aider, goose, ...) vive num *adapter* selecionado por
-``DEILE_CLI_WORKER_KIND`` e descoberto pelo registro ``cli_adapters.ADAPTERS``.
+Espelha o contrato HTTP do ``claude_worker_server.py`` mas é **agnóstico do CLI
+concreto**: o comportamento divergente (opencode, codex, qwen, aider, goose…)
+vive num *adapter* selecionado por ``DEILE_CLI_WORKER_KIND``.
 
 Toda a maquinaria genérica é REUSADA de :mod:`_worker_core` (sem duplicação):
-lease atômico multi-réplica, heartbeat, ``run_subprocess_with_progress`` com
-persistência de stdout/stderr no PVC, Bearer auth middleware e validação de
-task_id. O claude mantém seu server dedicado (por causa do OAuth); este server
-serve todos os demais CLIs e o claude conceitualmente vira "só mais um adapter".
+lease atômico multi-réplica, heartbeat, ``run_subprocess_with_progress``, Bearer
+auth middleware. O claude mantém seu server dedicado (OAuth); este serve todos os
+demais CLIs.
 
 Diferenças deliberadas em relação ao claude-worker:
 
-* **Modelo:** chega como ``cli_model`` (string livre, model-id nativo do CLI),
-  não ``preferred_model`` (``provider:model``). O adapter consome a string.
-* **Brief em arquivo:** o brief é gravado em ``<workdir>/.brief.md`` e o caminho
-  é passado ao ``build_argv`` (opencode ``-f``, aider ``--message-file``, etc.).
-* **Gate pós-run:** exit-code dos CLIs não é confiável → ``WorkResult.ok`` do
-  adapter é combinado com um gate de git (commit novo + push) conforme o
-  ``git_strategy`` do adapter, antes de declarar sucesso.
-* **``/v1/models``:** lista os modelos que o adapter suporta (catálogo ou
+* **Modelo:** ``cli_model`` (string livre, model-id nativo do CLI), não
+  ``preferred_model`` (``provider:model``).
+* **Brief em arquivo:** gravado em ``<workdir>/.brief.md``; caminho passado ao
+  ``build_argv`` (opencode ``-f``, aider ``--message-file``, etc.).
+* **Gate pós-run:** exit-code não é confiável → ``WorkResult.ok`` do adapter é
+  combinado com gate de git (commit novo + push).
+* **``/v1/models``:** lista modelos que o adapter suporta (catálogo ou
   dinâmico), alimentando o picker do painel.
 
-Sem OAuth, sem ``--max-budget-usd`` nativo (controle de custo = timeout do pod +
-modelo barato), sem ultracode/effort-jargon claude.
+Sem OAuth, sem ``--max-budget-usd`` nativo (controle de custo = timeout + modelo barato).
 """
 
 from __future__ import annotations
@@ -46,67 +41,55 @@ from aiohttp import web
 from cli_adapters import ADAPTERS, get_adapter
 from cli_adapters.base import CliAdapter, ResumeCtx, WorkResult
 
-# Harvester do ledger de custo (issue #445): parsing dos .progress (fonte única
-# em fleet_progress_parse) + tabela de preço (jsonl_cost). Import best-effort —
-# se ausente da imagem, o harvest é abortado (fail-safe: nunca poda sem colher).
+# Import best-effort: ausente → harvest no-op (fail-safe: nunca poda sem colher).
 try:
     import fleet_progress_parse as _fpp  # noqa: E402
-except Exception:  # noqa: BLE001 — módulo opcional; harvest degrada para no-op
+except Exception:  # noqa: BLE001
     _fpp = None
 
 logger = logging.getLogger("deile.cli_worker")
 
-#: Tamanho do task_id (hex) — alinhado ao claude-worker (``secrets.token_hex(8)``).
+#: Alinhado ao claude-worker (``secrets.token_hex(8)``).
 _TASK_ID_BYTES = 8
 
-#: Lease TTL/heartbeat — defaults do core, overridáveis por env (paridade com o
-#: claude-worker, que usa as mesmas semânticas). Constantes de módulo para
-#: permitir monkeypatch nos testes.
+#: Constantes de módulo para permitir monkeypatch nos testes.
 _LEASE_TTL_S: int = int(os.environ.get("DEILE_CLI_LEASE_TTL_S", "30"))
 _LEASE_HEARTBEAT_S: int = int(os.environ.get("DEILE_CLI_LEASE_HEARTBEAT_S", "5"))
 
-#: Cache de ``/v1/models`` (TTL) — list dinâmico pode tocar a rede.
+#: list_models pode tocar a rede — cache com TTL.
 _MODELS_CACHE_TTL_S: float = float(
     os.environ.get("DEILE_CLI_MODELS_CACHE_TTL_S", "600")
 )
 
-#: TTL do cache de ``GET /v1/models`` por kind: ``{kind: (fetched_at, [ModelInfo])}``.
+#: ``{kind: (fetched_at, [ModelInfo])}``
 _models_cache: dict = {}
 
-#: Limite de tail na resposta — paridade com o claude-worker.
 _STDOUT_TAIL = 50_000
 _STDERR_TAIL = 10_000
 
-#: Retenção de workdirs (dias) — workdir mais velho que isto é removido pelo
-#: cleanup (startup hook + task periódica + CronJob). Paridade com o claude.
+#: Retenção de workdirs (dias); paridade com o claude.
 _CLEANUP_RETENTION_DAYS: int = int(
     os.environ.get("DEILE_CLI_WORKER_CLEANUP_RETENTION_DAYS", "7")
 )
 
-#: Intervalo (s) entre execuções periódicas do cleanup (default 1 h).
 _CLEANUP_INTERVAL_S: float = float(
     os.environ.get("DEILE_CLI_WORKER_CLEANUP_INTERVAL_S", "3600")
 )
 
-#: Retenção dos logs de progresso (.progress/*.stdout.log), em DIAS (default 30).
-#: Espelha o ``DEILE_CLAUDE_JSONL_RETENTION_DAYS`` do claude — gatilho principal
-#: da poda dos logs DEPOIS de o custo ser colhido para o ledger durável. Os logs
-#: são volumosos (sessões de milhões de tokens); o ledger é minúsculo (~KB).
+#: Retenção dos logs de progresso — gatilho da poda DEPOIS de o custo ser
+#: colhido para o ledger durável. Logs volumosos; ledger minúsculo (~KB).
 _PROGRESS_RETENTION_DAYS: int = int(
     os.environ.get("DEILE_CLI_WORKER_PROGRESS_RETENTION_DAYS", "30")
 )
 
-#: Grace period (s, default 1 h) — piso TOCTOU: um log recém-modificado pode ter
-#: um resume agendado; nunca colhemos+podamos log modificado dentro dessa janela.
+#: Grace TOCTOU: log modificado recentemente pode ter resume agendado.
 _PROGRESS_GRACE_S: int = int(
     os.environ.get("DEILE_CLI_WORKER_PROGRESS_GRACE_S", "3600")
 )
 
 
 # --------------------------------------------------------------------------- #
-# Lease wrappers — finos, repassam as constantes monkeypatcháveis ao core.
-# (Mesmo padrão do claude_worker_server: o core recebe ttl/heartbeat por
-#  parâmetro; o server injeta a constante de módulo.)
+# Lease wrappers — injetam as constantes monkeypatcháveis no core.
 # --------------------------------------------------------------------------- #
 
 
@@ -128,7 +111,6 @@ async def _release_lease(lease_path: Path) -> None:
     await _core.release_lease(lease_path)
 
 
-# Re-binds diretos do core (genéricos, sem constante de módulo a injetar).
 SubprocessResult = _core.SubprocessResult
 run_subprocess_with_progress = _core.run_subprocess_with_progress
 
@@ -141,13 +123,9 @@ run_subprocess_with_progress = _core.run_subprocess_with_progress
 def _read_auth_token() -> str:
     """Lê o Bearer token do worker CLI.
 
-    Caminhos em ordem (primeiro existente e não-vazio vence):
-    1. ``/run/secrets/cli-worker/CLI_WORKER_BEARER_TOKEN`` (Secret montado).
-    2. ``DEILE_CLI_WORKER_AUTH_TOKEN_FILE`` env (override pra dev).
-    3. ``DEILE_CLI_WORKER_AUTH_TOKEN`` env (testes apenas).
-
-    Raises:
-        RuntimeError: nenhuma source disponível — server aborta no startup.
+    Ordem: Secret montado em ``/run/secrets/cli-worker/`` → env file →
+    ``DEILE_CLI_WORKER_AUTH_TOKEN`` (testes). Levanta ``RuntimeError`` se
+    nenhuma source disponível.
     """
     candidates = [
         Path("/run/secrets/cli-worker/CLI_WORKER_BEARER_TOKEN"),
@@ -169,12 +147,11 @@ def _read_auth_token() -> str:
 
 
 def _selected_kind() -> str:
-    """Kind do CLI deste pod, de ``DEILE_CLI_WORKER_KIND``."""
     return os.environ.get("DEILE_CLI_WORKER_KIND", "").strip()
 
 
 def _resolve_adapter() -> CliAdapter:
-    """Resolve o adapter ativo deste pod ou levanta ``KeyError``/``RuntimeError``."""
+    """Resolve o adapter ativo ou levanta ``KeyError``/``RuntimeError``."""
     kind = _selected_kind()
     if not kind:
         raise RuntimeError(
@@ -185,12 +162,7 @@ def _resolve_adapter() -> CliAdapter:
 
 
 def _worker_root() -> Path:
-    """Diretório raiz dos workdirs deste worker.
-
-    Default por kind (``/home/<kind>/work``); override por
-    ``DEILE_CLI_WORKER_ROOT``. Cai em ``/tmp/cli-worker`` quando o kind é
-    desconhecido (não deve acontecer em produção, mas evita crash em testes).
-    """
+    """Raiz dos workdirs: ``DEILE_CLI_WORKER_ROOT`` ou ``/home/<kind>/work``."""
     explicit = os.environ.get("DEILE_CLI_WORKER_ROOT", "").strip()
     if explicit:
         return Path(explicit)
@@ -199,7 +171,7 @@ def _worker_root() -> Path:
 
 
 def _worker_home(adapter: CliAdapter) -> str:
-    """HOME gravável deste worker (passado ao ``env_overlay`` do adapter)."""
+    """HOME gravável: ``DEILE_CLI_WORKER_HOME`` ou ``/home/<kind>``."""
     explicit = os.environ.get("DEILE_CLI_WORKER_HOME", "").strip()
     if explicit:
         return explicit
@@ -210,19 +182,15 @@ def _worker_home(adapter: CliAdapter) -> str:
 # Git post-run gate (exit-code não basta — plano §1.6)
 # --------------------------------------------------------------------------- #
 
-
-# Os helpers de git são GENÉRICOS e vivem no ``_worker_core``; expomos wrappers
-# de módulo (mesmos nomes) para que os testes possam monkeypatchá-los e para
-# manter o handler legível. Cada wrapper apenas delega ao core.
-
+# Wrappers de módulo para que os testes possam monkeypatchá-los.
 
 async def _git_head(workdir: Path) -> Optional[str]:
-    """SHA do HEAD do repo em ``workdir/repo`` (ou ``workdir``), ou ``None``."""
+    """SHA do HEAD ou ``None`` se sem repo."""
     return await _core.git_head(workdir)
 
 
 async def _git_branch_pushed(workdir: Path, branch: Optional[str]) -> bool:
-    """True se ``branch`` existe no remote ``origin`` (push confirmado)."""
+    """True se ``branch`` existe no remote ``origin``."""
     return await _core.git_branch_pushed(workdir, branch)
 
 
@@ -234,24 +202,19 @@ async def _post_run_gate(
     base_sha: Optional[str],
     branch: Optional[str],
 ) -> WorkResult:
-    """Combina o veredito do adapter com o gate de git (commit novo + push).
+    """Combina o veredito do adapter com gate de git (commit novo + push).
 
-    Regra (plano §1.6/§4): ``ok = adapter.ok AND gate``, onde o gate depende do
-    ``git_strategy`` — em ambos exige um commit novo desde ``base_sha`` E o
-    branch pushado. Quando o adapter já reprovou, o gate não roda (preserva o
-    ``error_code`` do adapter). Quando o adapter aprovou mas o gate falha,
-    devolve ``ok=False`` com ``error_code=NO_PUSH`` e mantém o ``result_text``.
-
-    Best-effort: se o repo não tem ``.git`` (impossível confirmar), o gate
-    reprova com ``NO_PUSH`` — nunca declara sucesso sem evidência de push.
+    Plano §1.6/§4: ``ok = adapter.ok AND gate``. Gate exige commit novo desde
+    ``base_sha`` E branch pushado. Adapter já reprovado: gate não roda.
+    Adapter aprovado + gate falha → ``ok=False, error_code=NO_PUSH``.
+    Sem ``.git``: reprova com ``NO_PUSH`` — nunca declara sucesso sem push.
     """
     if not work_result.ok:
         return work_result
 
     head = await _git_head(workdir)
     has_new_commit = bool(head and base_sha and head != base_sha)
-    # base_sha None (repo recém-clonado sem HEAD prévio capturado) → qualquer
-    # HEAD presente conta como commit novo (o agente criou histórico).
+    # base_sha None = repo recém-clonado → qualquer HEAD vale como commit novo.
     if has_new_commit is False and base_sha is None and head:
         has_new_commit = True
 
@@ -279,7 +242,7 @@ async def _post_run_gate(
 
 
 def _get_models(adapter: CliAdapter) -> List:
-    """Lista de modelos do adapter, com cache TTL (list pode tocar a rede)."""
+    """Lista de modelos do adapter com cache TTL."""
     now = time.monotonic()
     cached = _models_cache.get(adapter.kind)
     if cached is not None:
@@ -303,9 +266,8 @@ def _get_models(adapter: CliAdapter) -> List:
 async def health_handler(request: web.Request) -> web.Response:
     """``GET /v1/health`` — readiness: kind + auth_mode + ready.
 
-    ``ready`` é False se faltam as ``auth_env_keys`` (modo env) ou a credencial
-    OAuth (modo oauth_file) — assim o readinessProbe remove o pod do Service até
-    estar de fato apto a dispatchar.
+    ``ready=False`` quando as credenciais do adapter estão ausentes; o
+    readinessProbe remove o pod do Service até estar apto a dispatchar.
     """
     try:
         adapter = _resolve_adapter()
@@ -329,7 +291,7 @@ async def health_handler(request: web.Request) -> web.Response:
 
 
 async def models_handler(request: web.Request) -> web.Response:
-    """``GET /v1/models`` — modelos suportados pelo adapter deste worker."""
+    """``GET /v1/models`` — modelos suportados pelo adapter."""
     try:
         adapter = _resolve_adapter()
     except (KeyError, RuntimeError) as exc:
@@ -350,11 +312,7 @@ async def models_handler(request: web.Request) -> web.Response:
 
 
 async def progress_handler(request: web.Request) -> web.Response:
-    """``GET /v1/progress/{task_id}`` — tail do stdout/stderr persistido no PVC.
-
-    Lê os arquivos gravados por ``run_subprocess_with_progress`` em
-    ``<root>/.progress/<task_id>.<stream>.log`` (mesmo formato do claude-worker).
-    """
+    """``GET /v1/progress/{task_id}`` — tail do stdout/stderr em ``<root>/.progress/``."""
     task_id = request.match_info["task_id"]
     if not _core.validate_task_id_for_path(task_id):
         return web.json_response(
@@ -386,34 +344,20 @@ async def progress_handler(request: web.Request) -> web.Response:
 
 
 async def resume_info_handler(request: web.Request) -> web.Response:
-    """``GET /v1/dispatches/{task_id}/resume-info`` — LIVENESS da task.
+    """``GET /v1/dispatches/{task_id}/resume-info`` — liveness da task.
 
-    Espelha o contrato do ``claude_worker_server`` que o pipeline
-    (``DeileWorkerImplementer._resolve_resume_meta``) consome para decidir
-    *resume vs fresh vs skip*. O campo decisivo é ``claude_alive``: quando
-    ``True``, o pipeline NÃO re-despacha (mantém em andamento) — é o que impede
-    o **double-dispatch** de um CLI worker cujo subprocess ainda está rodando.
+    Consumido pelo pipeline para decidir *resume vs fresh vs skip*. Campo
+    decisivo: ``claude_alive=True`` → pipeline não re-despacha (anti-double-
+    dispatch para dispatches fire-and-forget ainda em execução).
 
-    Por que isto é essencial: o server ANTES não expunha este endpoint. O
-    pipeline recebia 404 (rota inexistente), o interpretava como "ledger stale →
-    fresh dispatch" e disparava uma SEGUNDA execução enquanto a primeira
-    (fire-and-forget) ainda processava — abrindo PR duplicada / falso
-    ``NO_PUSH``. Expor a liveness fecha esse buraco para qualquer worker.
-
-    Liveness = o ``.lease.json`` do workspace existe e NÃO está stale
-    (heartbeat fresco OU PID do subprocess vivo — ver ``_core.lease_is_stale``).
-
-    **Resume nativo (issue #445):** ``session_id`` traz o id nativo do CLI
-    capturado no dispatch anterior (``supports_resume=True`` em todos os 5
-    adapters). Quando a task NÃO está mais viva (``claude_alive=False``) e há
-    ``session_id``, o pipeline re-despacha com ``resume_session_id`` + reuso do
-    MESMO workdir — retomando o trabalho parcial em vez de re-gastar do zero.
-    Vazio (sessão não capturada) → fresh com retry limitado pelo teto.
+    ``session_id`` (issue #445): id nativo do CLI capturado no dispatch
+    anterior. Quando ``claude_alive=False`` e ``session_id`` não-vazio, o
+    pipeline re-despacha com ``resume_session_id`` + mesmo workdir (anti-
+    sangria). Vazio → fresh com retry.
 
     Respostas:
-      - ``400`` task_id fora de ``[0-9a-f]{16}`` (guard de path traversal).
-      - ``404`` workspace inexistente (task nunca rodou aqui / GCed) → o pipeline
-        limpa o ledger e segue fresh.
+      - ``400`` task_id fora de ``[0-9a-f]{16}`` (path traversal guard).
+      - ``404`` workspace inexistente → pipeline limpa ledger e segue fresh.
       - ``200`` ``{task_id, workdir, workdir_exists, session_id, claude_alive,
         last_result_summary, last_completed_at}``.
     """
@@ -436,16 +380,8 @@ async def resume_info_handler(request: web.Request) -> web.Response:
         return not _core.lease_is_stale(lease_path, ttl_s=_LEASE_TTL_S)
 
     alive = await asyncio.to_thread(_alive)
-    # Veredito persistido por ``_save_task_result`` quando a task concluiu. Enquanto
-    # roda (fire-and-forget), o meta ainda não existe → ``last_completed_at=None``
-    # (o reconcile lê isso como RUNNING). Concluída → meta traz ``last_completed_at``
-    # + ``last_result_full`` (que o ``parse_critique_verdict`` consome).
+    # Enquanto roda (fire-and-forget), meta ainda não existe → last_completed_at=None.
     meta = await asyncio.to_thread(_load_task_result, task_id) or {}
-    # ``session_id`` (issue #445): id nativo do CLI capturado no dispatch anterior.
-    # Quando o adapter suporta resume, é não-vazio e o pipeline re-despacha com
-    # ``resume_session_id`` + reuso do MESMO workdir, retomando o trabalho parcial
-    # em vez de re-gastar do zero. Vazio (adapter sem resume / sessão não
-    # capturada) → o pipeline cai em fresh quando a task não está mais viva.
     return web.json_response({
         "task_id": task_id,
         "workdir": meta.get("workdir") or str(workspace),
@@ -465,18 +401,8 @@ async def resume_info_handler(request: web.Request) -> web.Response:
 async def dispatch_handler(request: web.Request) -> web.Response:
     """``POST /v1/dispatch`` — executa o CLI do adapter num workdir isolado.
 
-    Fluxo:
-    1. Valida o payload (``brief`` obrigatório) e resolve o adapter.
-    2. Cria task_id + workdir + grava o brief em ``<workdir>/.brief.md``.
-    3. Adquire o lease, inicia o heartbeat.
-    4. Monta o argv via ``adapter.build_argv`` + env via ``adapter.env_overlay``.
-    5. Roda via ``run_subprocess_with_progress`` (PID no lease, progress no PVC).
-    6. ``adapter.parse_output`` + gate de git → ``WorkResult`` final.
-    7. Libera o lease e devolve a resposta no contrato unificado.
-
-    ``resume`` só é montado quando ``adapter.supports_resume`` E o payload trouxe
-    ``resume_session_id`` + ``prev_task_id``; senão roda fresh (o brief lê
-    ``.deile-progress.md`` para contexto natural).
+    Resume só quando ``adapter.supports_resume`` E o payload trouxe
+    ``resume_session_id`` + ``prev_task_id``; senão roda fresh.
     """
     try:
         adapter = _resolve_adapter()
@@ -503,10 +429,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     wait_for_result: bool = bool(payload.get("wait_for_result", True))
     _channel_id = str(payload.get("channel_id") or "").strip()
 
-    # Repo slug + branch base viajam no bloco ``resume`` (mesma fonte que o
-    # claude-worker — ``_build_resume_block`` no pipeline). Necessários para o
-    # ciclo de repo (clone + checkout do branch) que o CLI worker faz ANTES de
-    # rodar o subprocess — sem isso o CLI roda contra um diretório sem repo.
+    # repo/branch base viajam no bloco ``resume`` (mesma origem que o claude-worker).
     _resume_block = payload.get("resume") or {}
     repo_slug = str(_resume_block.get("repo") or "").strip()
     base_branch = str(_resume_block.get("main_branch") or "").strip()
@@ -521,7 +444,6 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         except (TypeError, ValueError):
             pass
 
-    # Resume só quando o adapter suporta E o payload trouxe os dois campos.
     resume_ctx: Optional[ResumeCtx] = None
     resume_session_id = payload.get("resume_session_id")
     prev_task_id = payload.get("prev_task_id")
@@ -544,7 +466,6 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             status=500,
         )
 
-    # Resume reusa o workdir anterior; fresh cria um novo.
     if resume_ctx is not None:
         task_id = resume_ctx.prev_task_id
         workspace = root / task_id
@@ -562,8 +483,6 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         workspace = root / task_id
     workspace.mkdir(parents=True, exist_ok=True)
 
-    # Grava o brief num arquivo do workdir; o adapter o referencia via flag ou
-    # lê o conteúdo conforme o CLI (opencode -f / aider --message-file / etc.).
     brief_path = workspace / ".brief.md"
     try:
         await asyncio.to_thread(brief_path.write_text, brief, "utf-8")
@@ -586,12 +505,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             "task_id": task_id,
         }, status=409)
 
-    # Ciclo de repo (plano §1.5): clona o repo e faz checkout/criação do branch
-    # ANTES de rodar o CLI — o subprocess precisa de um checkout real em ``cwd``.
-    # A identidade git + token já estão wirados no env do pod (wrapper.py modo
-    # cli-worker). Quando há repo, o CLI roda em ``<workspace>/repo``; sem slug
-    # (testes/uso degradado) cai no próprio ``workspace`` (o brief ainda pode
-    # clonar via shell, e o gate reprova se nada for pushado).
+    # Plano §1.5: clone + checkout ANTES do CLI. Sem slug o CLI roda no workspace
+    # cru e o gate reprova se nada for pushado.
     repo_ok = True
     repo_detail = "sem repo slug — CLI roda no workspace cru"
     if repo_slug:
@@ -622,16 +537,11 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         task_id=task_id,
     )
     overlay = adapter.env_overlay(home=home)
-    # Aplica o overlay do adapter no processo (HOME/XDG/config). As auth_env_keys
-    # já vêm do Secret no Deployment; o overlay não as inclui (contrato base).
     for k, v in overlay.items():
         os.environ[k] = v
-    # Cria os diretórios graváveis declarados pelo adapter (``writable_dirs`` é a
-    # lista de NOMES de env var cujo valor é um path, ex.: CODEX_HOME, HOME,
-    # XDG_CONFIG_HOME). Com ``readOnlyRootFilesystem``, esses dirs vivem sob o
-    # volume ``worker-home`` (gravável) mas o subdir pode não existir — o codex
-    # aborta com "CODEX_HOME ... does not exist" se não pré-criado (homologação
-    # E2E). Best-effort: falha de mkdir não derruba o dispatch (o CLI reporta).
+    # Cria dirs graváveis declarados pelo adapter: com ``readOnlyRootFilesystem``
+    # o subdir pode não existir e o CLI aborta (ex.: codex "CODEX_HOME does not
+    # exist"). Best-effort: falha de mkdir não derruba o dispatch.
     for _dir_var in getattr(adapter, "writable_dirs", None) or []:
         _dir_path = os.environ.get(_dir_var, "").strip()
         if _dir_path:
@@ -641,10 +551,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 logger.warning("não criei writable dir %s=%s: %s",
                                _dir_var, _dir_path, exc)
 
-    # Provisiona a credencial certa POR MODELO antes de invocar o CLI (Frente 4
-    # — codex dual-mode: modelos gpt-5*-codex exigem ChatGPT/OAuth, mini aceita
-    # API key). Default da base é no-op; o codex sobrescreve. Falha aborta o
-    # dispatch com erro tipado em vez de queimar tokens num auth errado.
+    # Provisiona a credencial por modelo antes do CLI (codex dual-mode: gpt-5*-codex
+    # exige OAuth, mini aceita API key). Falha aborta com erro tipado.
     provision = getattr(adapter, "provision_auth", None)
     if callable(provision):
         try:
@@ -673,11 +581,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 
     base_sha = await _git_head(workspace)
 
-    # Identidade de resume (issue #445): no resume reusamos o MESMO task_id/workdir
-    # (``resume_ctx.prev_task_id == task_id``); o ``attempt`` herda do meta anterior
-    # +1. No fresh, attempt=1 e prev_task_id é o que veio no payload (cadeia de
-    # tentativas anteriores, se houver). Lido ANTES da closure para o meta refletir
-    # a cadeia mesmo quando o adapter não tem session-id de servidor.
+    # Lido antes da closure para que o meta reflita a cadeia mesmo sem session-id.
     _prev_meta = await asyncio.to_thread(_load_task_result, task_id) or {}
     if resume_ctx is not None:
         attempt = int(_prev_meta.get("attempt", 1)) + 1
@@ -700,10 +604,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             work = adapter.parse_output(
                 stdout=result.stdout, stderr=result.stderr, rc=result.returncode,
             )
-            # Captura o session-id NATIVO do CLI a partir da saída (issue #445):
-            # opencode/qwen emitem no JSON; codex no thread.started; goose/aider
-            # retornam o task_id sentinela. Persistido no meta para o ``resume-info``
-            # devolver ao pipeline → próximo dispatch retoma a sessão (mesmo workdir).
+            # session_id nativo (issue #445): opencode/qwen no JSON; codex no
+            # thread.started; goose/aider retornam o task_id como sentinela.
             try:
                 session_id = adapter.extract_session_id(
                     stdout=result.stdout, stderr=result.stderr, task_id=task_id,
@@ -711,12 +613,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             except Exception as exc:  # noqa: BLE001 — extração nunca derruba o dispatch
                 logger.warning("extract_session_id falhou task_id=%s: %s", task_id, exc)
                 session_id = ""
-            # Etapa de git pós-run, ramificada por ``git_strategy`` (plano §1.5/§4):
-            #   * brief_driven: se o agente não commitou, o wrapper faz fallback
-            #     commit do working tree sujo (error_code WRAPPER_COMMITTED).
-            #   * ambos: o wrapper faz ``git push`` do branch (o aider commita
-            #     local mas não pusha; o brief_driven pode ter commitado sem push).
-            # Só roda quando o adapter aprovou a saída — saída reprovada já é falha.
+            # Git pós-run (plano §1.5/§4): só quando adapter aprovou.
             work = await _finalize_git(
                 adapter, work, workspace=workspace, branch=branch,
                 base_sha=base_sha, task_id=task_id,
@@ -724,11 +621,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             work = await _post_run_gate(
                 adapter, work, workdir=workspace, base_sha=base_sha, branch=branch,
             )
-            # Persiste o veredito + a metadata de sessão ANTES de retornar — no
-            # caminho fire-and-forget a resposta é descartada (202), então sem isto
-            # o ``resume-info`` ficaria sem ``session_id``/``last_completed_at`` e o
-            # reconcile trataria a task como RUNNING eternamente (crítica/refine
-            # presas) e nunca retomaria trabalho parcial.
+            # Persiste ANTES de retornar: no caminho fire-and-forget (202) a
+            # resposta é descartada; sem isto o resume-info ficaria sem
+            # session_id/last_completed_at e o reconcile trataria como RUNNING.
             await asyncio.to_thread(
                 _save_task_result, task_id, work,
                 session_id=session_id, workspace=workspace,
@@ -755,7 +650,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 async def _ensure_repo(
     workspace: Path, *, repo: str, branch: Optional[str], base_branch: str,
 ) -> tuple:
-    """Wrapper de módulo para o ciclo de repo do core (monkeypatchável nos testes)."""
+    """Wrapper monkeypatchável do ciclo de repo do core."""
     return await _core.ensure_repo_and_branch(
         workspace, repo=repo, branch=branch, base_branch=base_branch,
     )
@@ -770,19 +665,11 @@ async def _finalize_git(
     base_sha: Optional[str],
     task_id: str,
 ) -> WorkResult:
-    """Commit (fallback) + push pós-run, ramificado por ``adapter.git_strategy``.
+    """Commit (fallback) + push pós-run, por ``adapter.git_strategy`` (plano §1.5/§4).
 
-    Plano §1.5/§4:
-      * **brief_driven** — o brief instrui o agente a commitar. Se NÃO houve
-        commit novo desde ``base_sha``, o wrapper faz fallback commit do working
-        tree sujo e marca ``error_code=WRAPPER_COMMITTED`` (degradado, não
-        perdido). Em seguida faz push.
-      * **cli_autocommit** (aider) — o CLI commita sozinho; o wrapper só pusha.
-
-    Só atua quando ``work.ok`` (saída aprovada pelo adapter). O gate pós-run
-    (``_post_run_gate``) confirma commit-novo + push depois desta etapa e é quem
-    reprova com ``NO_PUSH`` se algo faltou. Best-effort: falha de push vira
-    ``error_code`` mas deixa o gate dar o veredito final.
+    ``brief_driven``: se não houve commit novo, faz fallback commit e marca
+    ``WRAPPER_COMMITTED``. ``cli_autocommit`` (aider): só pusha.
+    Só atua quando ``work.ok``. Best-effort: falha de push vira ``error_code``.
     """
     if not work.ok or not branch:
         return work
@@ -818,14 +705,13 @@ async def _finalize_git(
     return work
 
 
-#: Subdir do PVC/root onde o resultado de cada task é persistido (lido pelo
-#: ``resume-info`` para o reconcile do pipeline ler o veredito de crítica/refine
-#: e detectar a conclusão de dispatches fire-and-forget).
+#: Subdir onde o veredito de cada task é persistido (lido pelo ``resume-info``).
 _RESULT_SUBDIR = ".sessions"
 
 
 def _result_meta_path(task_id: str) -> Path:
     return _worker_root() / _RESULT_SUBDIR / f"{task_id}.json"
+
 
 
 def _save_task_result(
@@ -838,25 +724,18 @@ def _save_task_result(
     attempt: int = 1,
     cli_model: Optional[str] = None,
 ) -> None:
-    """Persiste o veredito + a metadata de sessão da task (write-tmp + replace).
+    """Persiste veredito + metadata da task (write-tmp + replace, issue #445).
 
-    Espelha o ``session.json`` do claude-worker (issue #445). Três propósitos:
+    Três propósitos:
+    1. **fire-and-forget (202):** sem isto o resume-info fica sem
+       ``last_completed_at`` e o reconcile trata como RUNNING para sempre.
+    2. **Resume nativo (anti-sangria):** persiste ``session_id``, ``workdir``,
+       ``prev_task_id``, ``attempt`` para o pipeline re-despachar com
+       ``resume_session_id`` + mesmo workdir.
+    3. **Modelo durável (anti model=unknown):** vários CLIs (goose, aider, codex)
+       não emitem o modelo no stdout — só no argv. Auditoria lê este meta.
 
-    1. **Conclusão fire-and-forget:** sem isto, um dispatch ``wait=False`` computa
-       o ``WorkResult`` e descarta a resposta (202), deixando o ``resume-info``
-       sem ``last_result_full``/``last_completed_at`` — o reconcile do pipeline
-       trataria a task como RUNNING para sempre (crítica/refine presas).
-    2. **Resume nativo (anti-sangria):** persiste ``session_id`` (nativo do CLI),
-       ``workdir``, ``prev_task_id`` e ``attempt`` para o ``resume-info`` devolver
-       ao pipeline — que então re-despacha com ``resume_session_id`` + reuso do
-       MESMO workdir, retomando o trabalho parcial em vez de re-gastar do zero.
-    3. **Modelo durável (anti model=unknown):** persiste o ``cli_model`` recebido
-       no payload do ``/v1/dispatch``. O stdout nativo de vários CLIs (goose,
-       aider sem ``Model:``, codex sem ``turn_context``) NÃO emite o modelo —
-       ele vive só no argv ``--model``. A auditoria de tokens lê este meta como
-       fonte de verdade do modelo (fallback para o parse da saída).
-
-    Best-effort: falha de I/O vira warning, não derruba o dispatch.
+    Best-effort: falha de I/O vira warning.
     """
     full = work.result_text or ""
     meta = {
@@ -884,7 +763,7 @@ def _save_task_result(
 
 
 def _load_task_result(task_id: str) -> Optional[dict]:
-    """Carrega o meta de resultado da task. ``None`` se ausente/ilegível."""
+    """Carrega o meta de resultado da task; ``None`` se ausente/ilegível."""
     path = _result_meta_path(task_id)
     try:
         if not path.is_file():
@@ -898,13 +777,10 @@ def _load_task_result(task_id: str) -> Optional[dict]:
 def _build_response(
     task_id: str, result, work: WorkResult, *, session_id: str = "",
 ) -> dict:
-    """Monta a resposta JSON do contrato unificado a partir do resultado.
+    """Monta a resposta JSON do contrato unificado (paridade com claude-worker).
 
-    Mesma forma do claude-worker: ``ok, stdout, stderr, task_id, session_id,
-    returncode, duration_seconds, total_cost_usd, error_code?, error?``.
-
-    ``session_id`` é o id nativo capturado do CLI (issue #445); ``None``/``""``
-    quando o adapter não suporta resume.
+    ``session_id`` = id nativo do CLI (issue #445); ``None`` quando o adapter
+    não suporta resume.
     """
     response = {
         "ok": work.ok,
@@ -924,8 +800,7 @@ def _build_response(
             result.returncode, result.stderr, result.stdout, work.result_text,
         )[:500]
     elif work.error_code:
-        # Sucesso degradado (ex.: WRAPPER_COMMITTED) — propaga o code sem marcar
-        # is_error, para o pipeline saber que houve fallback do wrapper.
+        # Sucesso degradado (ex.: WRAPPER_COMMITTED) — propaga sem marcar is_error.
         response["error_code"] = work.error_code
     return response
 
@@ -934,11 +809,7 @@ def _build_failure_reason(
     returncode: int, stderr: str, stdout: str, result_text: str,
     *, max_bytes: int = 1500,
 ) -> str:
-    """Motivo de falha legível (mesma prioridade do claude-worker).
-
-    Fonte, da mais para a menos confiável: ``result_text`` do adapter → tail do
-    stderr → tail do stdout → motivo genérico do returncode (124 = timeout).
-    """
+    """Motivo de falha: result_text → stderr → stdout → rc genérico (124=timeout)."""
     if result_text and result_text.strip():
         return result_text[:max_bytes]
     if stderr and stderr.strip():
@@ -956,27 +827,16 @@ def _build_failure_reason(
 # Wiring
 # --------------------------------------------------------------------------- #
 
-#: Bearer middleware com a whitelist de paths abertos deste server (readiness).
 _bearer_auth_mw = _core.make_bearer_auth_mw(("/v1/health",))
 
 
 # --------------------------------------------------------------------------- #
-# Ledger de custo durável da frota CLI (issue #445) — espelha o claude-worker.
-#
-# Os logs de progresso (``<root>/.progress/<task>.stdout.log``) carregam duas
-# responsabilidades com ciclos de vida opostos: continuidade/debug (volumoso,
-# efêmero — sessões de milhões de tokens) e auditoria de custo (minúscula,
-# permanente). O cleanup antes só podava WORKDIRS e deixava os logs acumularem
-# sem limite no PVC. Agora, ANTES de podar um log além da retenção, o harvester
-# colhe os tokens por modelo para um ledger append-only durável (~KB). O
-# ``fleet_tokens_audit.py`` lê o ledger (sessões podadas) + o ``.progress`` vivo
-# (recentes), dedup por task_id — exatamente como o ``session_tokens_audit`` faz
-# para o claude.
+# Ledger de custo durável da frota CLI (issue #445)
 # --------------------------------------------------------------------------- #
 
 
 def _cost_ledger_path() -> Path:
-    """Caminho do ledger de custo durável (no PVC, sobrevive à poda dos logs)."""
+    """Caminho do ledger durável (sobrevive à poda dos logs)."""
     env = os.environ.get("DEILE_CLI_WORKER_COST_LEDGER_PATH", "").strip()
     if env:
         return Path(env)
@@ -984,7 +844,7 @@ def _cost_ledger_path() -> Path:
 
 
 def _harvested_task_ids(ledger_path: Path) -> set:
-    """Conjunto de ``task_id`` já presentes no ledger (dedup do harvest)."""
+    """Conjunto de ``task_id`` já no ledger (dedup)."""
     ids: set = set()
     if not ledger_path.exists():
         return ids
@@ -1007,7 +867,7 @@ def _harvested_task_ids(ledger_path: Path) -> set:
 
 
 def _append_ledger(ledger_path: Path, record: dict) -> int:
-    """Anexa um registro ao ledger (append-only). Returns bytes escritos."""
+    """Anexa um registro ao ledger. Retorna bytes escritos."""
     line = json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n"
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     with open(ledger_path, "a", encoding="utf-8") as fh:
@@ -1016,7 +876,7 @@ def _append_ledger(ledger_path: Path, record: dict) -> int:
 
 
 def _meta_model_for(task_id: str) -> Optional[str]:
-    """``cli_model`` persistido no meta da task (fonte de verdade do modelo)."""
+    """``cli_model`` do meta (fonte de verdade do modelo para auditoria)."""
     meta = _load_task_result(task_id) or {}
     m = meta.get("cli_model")
     return m.strip() if isinstance(m, str) and m.strip() else None
@@ -1032,21 +892,18 @@ def harvest_progress_to_ledger(
     now: Optional[float] = None,
     dry_run: bool = False,
 ) -> dict:
-    """Colhe o custo dos logs de progresso para o ledger durável e poda.
+    """Colhe custo dos logs de progresso para o ledger durável e poda.
 
-    Para cada ``<root>/.progress/<task>.stdout.log`` além da retenção (e fora do
+    Para cada ``<root>/.progress/<task>.stdout.log`` além da retenção (fora do
     grace TOCTOU):
+    1. Parseia via ``fleet_progress_parse``; remapeia ``unknown`` → ``cli_model``
+       do meta (anti model=unknown).
+    2. Anexa ``{task_id, worker, models, native_cost, …}`` ao ledger (dedup por
+       task_id, idempotente).
+    3. Remove ``.stdout.log`` + ``.stderr.log`` SOMENTE após contabilizar.
 
-      1. Parseia o shape nativo via ``fleet_progress_parse`` (fonte única, mesma
-         lógica do parser in-pod), remapeando a chave ``unknown`` para o
-         ``cli_model`` persistido no meta (anti model=unknown).
-      2. Anexa um registro ``{task_id, worker, models, native_cost, ...}`` ao
-         ledger — pulando ``task_id`` já colhidos (idempotente, dedup por task_id).
-      3. Remove o ``.stdout.log`` (+ o ``.stderr.log`` irmão) só DEPOIS de o custo
-         ter sido contabilizado. Qualquer falha de parse/escrita preserva o log.
-
-    Fail-safe cardinal (mesmo do claude #445): sem o parser disponível, NÃO poda
-    — preserva tudo para não perder custo. ``dry_run`` só reporta os candidatos.
+    Fail-safe cardinal: sem o parser disponível, NÃO poda (preserva custo).
+    ``dry_run`` só reporta candidatos sem podar.
     """
     if ledger_path is None:
         ledger_path = _cost_ledger_path()
@@ -1068,7 +925,6 @@ def harvest_progress_to_ledger(
     if not progress_dir.is_dir():
         return result
 
-    # Cutoff = mais conservador entre retenção (gatilho principal) e grace TOCTOU.
     cutoff = now - max(max(0, retention_days) * 86400, grace_s)
     try:
         logs = sorted(progress_dir.glob("*.stdout.log"))
@@ -1089,7 +945,6 @@ def harvest_progress_to_ledger(
         result["candidates"] = [str(p) for p in candidates]
         return result
 
-    # Fail-safe: sem o parser não há como preservar o custo antes de deletar.
     if _fpp is None:
         result["errors"].append(
             "fleet_progress_parse indisponível — poda abortada (fail-safe)")
@@ -1113,10 +968,10 @@ def harvest_progress_to_ledger(
             result["errors"].append(f"parse {log}: {exc}")
             continue
         if parsed is None:
-            # Kind não usa .progress (claude/deile) — não é nosso para colher/podar.
+            # Kind não usa .progress (ex.: claude/deile) — não é nosso.
             continue
         models = dict(parsed.get("models") or {})
-        # Remap unknown → cli_model do meta (anti model=unknown durável).
+        # Remap unknown → cli_model do meta (anti model=unknown).
         meta_model = _meta_model_for(task_id)
         if meta_model and "unknown" in models:
             unk = models.pop("unknown")
@@ -1142,12 +997,11 @@ def harvest_progress_to_ledger(
                 })
             except OSError as exc:
                 result["errors"].append(f"ledger write {log}: {exc}")
-                continue  # preserva o log: custo não contabilizado
+                continue  # preserva o log: custo não contabilizado ainda
             result["ledger_bytes_written"] += written
             result["sessions_harvested"] += 1
             harvested.add(task_id)
 
-        # Poda o log (+ stderr irmão) — custo já contabilizado (ou zero tokens).
         freed = 0
         for sibling in (log, log.with_name(task_id + ".stderr.log")):
             try:
@@ -1170,17 +1024,10 @@ def harvest_progress_to_ledger(
 
 
 def run_cleanup() -> dict:
-    """Executa um ciclo de cleanup dos workdirs stale (síncrono, idempotente).
+    """Ciclo de cleanup síncrono: workdirs stale + harvest do ledger (issue #445).
 
-    Reusa ``_worker_core.startup_cleanup`` com o root deste worker. Workers da
-    frota CLI são fresh-only (``supports_resume=False``) — sem sessão JSONL a
-    preservar —, então ``has_session=None``: o critério de remoção é só lease-
-    morto + idade (``_CLEANUP_RETENTION_DAYS``). Isto evita o mesmo incidente do
-    claude-worker (issue #445) em que workdirs acumulavam indefinidamente.
-
-    Depois do cleanup de workdirs, colhe o custo dos logs de progresso para o
-    ledger durável e poda os logs além da retenção (issue #445) — best-effort:
-    falha do harvest é logada mas não derruba o cleanup de workdirs.
+    ``has_session=None`` porque workers CLI são fresh-only (sem JSONL a
+    preservar) — critério = lease morto + idade. Harvest é best-effort.
     """
     root = _worker_root()
     res = _core.startup_cleanup(
@@ -1196,11 +1043,7 @@ def run_cleanup() -> dict:
 
 
 async def _cleanup_loop(stop_event: asyncio.Event) -> None:
-    """Task periódica de cleanup: roda ``run_cleanup`` a cada intervalo.
-
-    Best-effort — uma falha é logada e a task continua. Encerra quando
-    ``stop_event`` é setado (on_cleanup do app).
-    """
+    """Roda ``run_cleanup`` periodicamente; encerra quando ``stop_event`` é setado."""
     while not stop_event.is_set():
         try:
             await asyncio.wait_for(
@@ -1217,12 +1060,10 @@ async def _cleanup_loop(stop_event: asyncio.Event) -> None:
 
 
 def build_app(auth_token: Optional[str] = None) -> web.Application:
-    """Monta a ``aiohttp.web.Application`` do CLI worker genérico.
+    """Monta a ``aiohttp.web.Application`` do CLI worker.
 
-    Bearer middleware ativo por default; ``auth_token`` opcional permite testes
-    in-process. Registra o cleanup de workdirs stale (issue #445): um varredura
-    no startup + uma task periódica (intervalo ``_CLEANUP_INTERVAL_S``), ambas
-    reusando :func:`_worker_core.startup_cleanup`.
+    ``auth_token`` opcional para testes in-process. Startup = cleanup de workdirs
+    stale (issue #445) + task periódica a cada ``_CLEANUP_INTERVAL_S``.
     """
     app = web.Application(
         middlewares=[_bearer_auth_mw],
@@ -1234,13 +1075,11 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
     app.router.add_get("/v1/models", models_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
     app.router.add_get("/v1/progress/{task_id}", progress_handler)
-    # Liveness pro pipeline decidir resume/fresh/skip (anti-double-dispatch).
     app.router.add_get(
         "/v1/dispatches/{task_id}/resume-info", resume_info_handler,
     )
 
     async def _on_startup(_app: web.Application) -> None:
-        # Varredura síncrona no boot (reaproveita workdirs órfãos de pod morto).
         try:
             res = await asyncio.to_thread(run_cleanup)
             logger.info("startup cleanup: %s", res)
@@ -1269,11 +1108,7 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
 
 
 def main(passthrough: Optional[List[str]] = None) -> int:
-    """Entry point do ``wrapper.py`` no mode ``cli-worker``.
-
-    Resolve o adapter por ``DEILE_CLI_WORKER_KIND`` (falha cedo se ausente/
-    desconhecido), cria o work root e sobe o servidor aiohttp.
-    """
+    """Entry point no mode ``cli-worker``: resolve adapter, cria work root, sobe aiohttp."""
     _log_level = os.environ.get("DEILE_CLI_WORKER_LOG_LEVEL", "INFO")
     os.environ.setdefault("DEILE_LOG_LEVEL", _log_level)
     try:
