@@ -18,6 +18,7 @@ inserido manualmente (convenção dos testes de infra).
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -585,6 +586,83 @@ class TestBuildCliWorkers:
             {"dry_run": True, "yes": True, "extra": ["--kind", "nope"]}
         )
         assert rc == 64
+
+
+# ===== test toolchain baked DRY — pytest + plugins + deps de runtime do deile ==
+
+
+class TestCliWorkerTestToolchainBaked:
+    """A imagem do CLI worker DEVE conseguir rodar ``pytest deile/tests/`` sobre
+    um clone do repo (DoD do brief #634: suíte completa verde antes de mergear).
+
+    O DoD ficava inverificável porque a imagem só tinha ``aiohttp`` — qualquer
+    ``implement``/``pr_review`` clonava o repo, rodava ``python3 -m pytest`` e
+    estourava ``No module named pytest``. A correção instala, no ``/venv``, o
+    pytest + plugins (extra ``[test]``) + as deps de runtime do deile
+    (``requirements.txt``), a partir da MESMA fonte que o deile-stack usa.
+
+    Estes testes provam a coerência por inspeção (não há build real no CI). A
+    prova de fumaça (``pip install -e ".[test]"`` em venv limpo) cobre o
+    princípio 14 do projeto e roda no CI de extras.
+    """
+
+    def _dockerfile_text(self) -> str:
+        df = _REPO / "infra" / "k8s" / "Dockerfile.cli-worker"
+        return df.read_text(encoding="utf-8")
+
+    def _pyproject(self) -> dict:
+        try:
+            import tomllib  # py311+
+        except ModuleNotFoundError:  # pragma: no cover - py<3.11
+            import tomli as tomllib  # type: ignore
+        return tomllib.loads(
+            (_REPO / "pyproject.toml").read_text(encoding="utf-8")
+        )
+
+    def test_runtime_deps_installed_from_requirements(self):
+        """Deps de runtime do deile vêm do MESMO ``requirements.txt`` do
+        deile-stack — sem lista de deps duplicada no Dockerfile."""
+        text = self._dockerfile_text()
+        assert "requirements.txt" in text
+        assert "pip install -r requirements.txt" in text
+        # README é exigido pelo build do pacote (readme = "README.md").
+        assert "COPY pyproject.toml requirements.txt README.md" in text
+
+    def test_test_extra_installed_dry_from_pyproject(self):
+        """O conjunto de plugins de teste vem do extra ``[test]`` (fonte única),
+        instalado via ``.[test]`` — nunca uma lista de plugins hardcoded."""
+        text = self._dockerfile_text()
+        assert 'pip install ".[test]"' in text
+        # O extra [test] precisa existir e resolver (princípio 14).
+        extras = self._pyproject()["project"]["optional-dependencies"]
+        assert "test" in extras
+        names = {
+            re.split(r"[<>=!~\[ ]", dep, 1)[0].lower()
+            for dep in extras["test"]
+        }
+        # O conjunto exigido pelo pytest.ini do projeto: runner + plugins que os
+        # addopts/markers/asyncio_mode/timeout dependem.
+        for required in {
+            "pytest", "pytest-asyncio", "pytest-cov",
+            "pytest-randomly", "pytest-timeout", "aiohttp",
+        }:
+            assert required in names, (
+                f"extra [test] sem {required!r} — pytest.ini do projeto o exige"
+            )
+
+    def test_builder_keeps_compiler_out_of_final_stage(self):
+        """``build-essential`` (compila grpcio/cryptography) só no builder; o
+        stage final permanece sem compilador (postura de segurança)."""
+        text = self._dockerfile_text()
+        builder, _, final = text.partition("FROM python:${PYTHON_VERSION}-slim AS final")
+        assert "build-essential" in builder
+        assert "build-essential" not in final
+
+    def test_aiohttp_not_installed_twice(self):
+        """aiohttp já vem pelo extra ``[test]`` — não pode haver um
+        ``pip install "aiohttp..."`` standalone duplicado no builder."""
+        text = self._dockerfile_text()
+        assert 'pip install "aiohttp' not in text
 
 
 # ===== gen-worker verb — dry-run + escrita ====================================

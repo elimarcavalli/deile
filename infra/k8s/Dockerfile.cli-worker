@@ -18,13 +18,42 @@
 # =============================================================================
 ARG PYTHON_VERSION=3.11.10
 
-# ---- builder: venv com aiohttp (o servidor genérico é aiohttp) --------------
+# ---- builder: venv com aiohttp + toolchain de teste do deile -----------------
+# O servidor genérico é aiohttp; ALÉM disso o /venv carrega pytest + plugins +
+# as deps de runtime do deile para que um CLI worker rode ``pytest deile/tests/``
+# sobre um clone do repo (DoD do brief: "SUÍTE COMPLETA verde antes de
+# mergear/abrir PR"). Sem isso, o clone roda ``python3 -m pytest`` e estoura
+# ``No module named pytest`` — o DoD fica inverificável e a frase "deps já
+# instaladas — NÃO rode pip install" do brief vira falsa (rootfs read-only).
+#
+# FONTE ÚNICA (DRY com o deile-stack): as deps de runtime vêm do MESMO
+# ``requirements.txt`` e o conjunto de plugins de teste vem do extra ``[test]``
+# do ``pyproject.toml`` (instalado via ``.[test]``). Nada de lista de deps
+# duplicada aqui. ``build-essential`` só no builder (compila wheels nativas como
+# grpcio/cryptography); o stage final permanece sem compilador.
 FROM python:${PYTHON_VERSION}-slim AS builder
 ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copiamos só os arquivos de metadados + o pacote deile (mesma ordem do
+# Dockerfile principal) para maximizar o cache de layer: alterar um arquivo
+# de teste sob deile/tests não invalida a layer de install das deps.
+COPY pyproject.toml requirements.txt README.md ./
+COPY deile ./deile
+
 RUN python -m venv /venv \
     && /venv/bin/pip install --upgrade pip wheel \
-    && /venv/bin/pip install "aiohttp>=3.9"
+    && /venv/bin/pip install -r requirements.txt \
+    && /venv/bin/pip install ".[test]" \
+    && find /venv -type d -name __pycache__ -exec rm -rf {} +
 
 # ---- final: base comum + install per-kind -----------------------------------
 FROM python:${PYTHON_VERSION}-slim AS final
