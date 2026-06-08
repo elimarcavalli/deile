@@ -5758,7 +5758,8 @@ class DispatchMatrixView(View):
     HOTKEYS = (
         "[↑/↓] linha   [←/→] coluna (Worker/Model/Timeout/Retries/Cost/Reasoning)   "
         "[enter] editar   [r] reset   "
-        "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
+        "[L] switch claude login   [O] login OAuth CLI worker (codex, in-pod)   "
+        "[I] install   [U] uninstall   [q] back   "
         "[s]caling row: enter digita réplicas (0-10)   "
         "[c] cleanup on-demand (preview + confirm)   "
         "[p] editar max_parallel (parallelism do pipeline)   "
@@ -6622,6 +6623,11 @@ class DispatchMatrixView(View):
                 self.last_ok = None
                 return ActionResult.refresh()
             return self._open_uninstall_modal()
+        if key in ("O",):
+            # [O] — login OAuth in-pod de um CLI worker oauth-capable (codex).
+            # Espelha o [L] do claude-worker, mas para a frota CLI: dispara o
+            # device-auth DENTRO do pod via `cli-worker-login --in-pod`.
+            return self._open_cli_oauth_login()
 
         return ActionResult()
 
@@ -7540,6 +7546,55 @@ class DispatchMatrixView(View):
             return False
         return kind in cli_adapters.ADAPTERS
 
+    @staticmethod
+    def _oauth_capable_kind(worker: Optional[str]) -> Optional[str]:
+        """``kind`` da frota CLI se ``worker`` é oauth-capable, senão ``None``.
+
+        Um worker é oauth-capable quando o adapter da frota declara um
+        ``OAuthSpec`` (atributo ``oauth`` não-None) — ex.: ``codex``. Isso é o
+        single-source-of-truth para "este worker faz login OAuth" (mesmo
+        critério do ``cli-worker-login``), independente do ``auth_mode`` default
+        do adapter. Workers env-auth puros (``oauth is None``) devolvem ``None``.
+
+        Devolve ``None`` também para ``deile-worker``/``claude-worker`` (núcleo —
+        o claude tem seu próprio fluxo ``[L]``) e para qualquer worker fora do
+        registro de adapters.
+        """
+        if not worker or not worker.endswith("-worker"):
+            return None
+        kind = worker[: -len("-worker")]
+        try:
+            import cli_adapters  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 — frota opcional; painel nunca crasha
+            return None
+        adapter = cli_adapters.ADAPTERS.get(kind)
+        if adapter is None:
+            return None
+        return kind if getattr(adapter, "oauth", None) is not None else None
+
+    def _selected_worker(self) -> Optional[str]:
+        """Worker do cell/row selecionado na matriz (ou ``None``).
+
+        - Row de stage → ``entry.worker`` (worker efetivo daquele stage).
+        - Row "Global default" → o dispatch-mode global resolvido (worker do
+          primeiro stage que herda do global, via ``source == 'global'/'default'``;
+          na prática o painel mostra o mesmo worker para todos os stages
+          herdados — basta o efetivo de qualquer stage). Como a row global não
+          carrega um worker próprio no provider, caímos no worker do primeiro
+          stage cuja ``source`` não seja override per-stage.
+        - Demais rows (scaling / max_parallel / monitor) → ``None``.
+        """
+        entries = self._entries()
+        n_stages = len(entries)
+        if self.cursor_row < n_stages:
+            return getattr(entries[self.cursor_row], "worker", None)
+        if self.cursor_row == n_stages:  # Global default row
+            for e in entries:
+                if getattr(e, "source", None) in ("global", "default"):
+                    return getattr(e, "worker", None)
+            return entries[0].worker if entries else None
+        return None
+
     def _cli_worker_installed(self, worker: str, *, namespace: str) -> bool:
         """True se o Deployment ``<worker>`` já existe no cluster.
 
@@ -7599,6 +7654,93 @@ class DispatchMatrixView(View):
         )
         self.last_ok = False
         return False
+
+    # --- CLI fleet OAuth login ([O], padrão claude-worker [L]) -----------
+
+    def _oauth_login_command(self, kind: str, namespace: str) -> List[str]:
+        """Monta o argv do ``cli-worker-login <kind> --in-pod`` (função pura).
+
+        O login OAuth da frota é INTERATIVO (device-auth via ``kubectl exec
+        -it`` dentro do pod): o operador vê a URL + código e autoriza no
+        browser. Rodá-lo inline congelaria o event loop do painel e corromperia
+        o terminal interativo do ``kubectl exec -it``. Por isso o painel o
+        executa via :meth:`ActionResult.suspend` — o mesmo mecanismo do
+        ``[t]okens`` —, que pausa o ``Live`` + cbreak, herda o terminal pro
+        subprocess e retoma o render ao fim.
+
+        ``--yes`` pula o ``announce_plan`` do ``deploy.py`` (o painel já é o
+        gate interativo do operador). ``--in-pod`` roda o device-auth dentro do
+        pod (não exige o CLI no host).
+        """
+        deploy_py = Path(__file__).resolve().parent / "deploy.py"
+        return [
+            sys.executable, str(deploy_py),
+            "--namespace", namespace, "--yes",
+            "k8s", "cli-worker-login", kind, "--in-pod",
+        ]
+
+    def _open_cli_oauth_login(self) -> ActionResult:
+        """Dispara o login OAuth in-pod do worker selecionado (tecla ``[O]``).
+
+        Roteia conforme o worker do cell/row selecionado:
+
+        - **CLI worker oauth-capable** (``adapter.oauth is not None`` — codex) →
+          suspende o painel e roda ``cli-worker-login <kind> --in-pod``
+          (device-auth interativo no terminal). Mensagem de "abrindo login"
+          antes; o resultado (sucesso/erro) aparece pós-retomada.
+        - **claude-worker** → aponta o fluxo dedicado ``[L]``.
+        - **CLI worker env-auth** (``oauth is None``) → informa que o worker usa
+          chave de API (não OAuth) e aponta ``[I]``.
+        - **deile-worker / linha sem worker** → mensagem informativa.
+        """
+        worker = self._selected_worker()
+        if worker == "claude-worker":
+            self.last_msg = (
+                "claude-worker tem fluxo OAuth próprio — use [L] para trocar "
+                "de conta ou [I] para instalar"
+            )
+            self.last_ok = None
+            return ActionResult.refresh()
+
+        kind = self._oauth_capable_kind(worker)
+        if kind is None:
+            if worker and worker.endswith("-worker") and self._is_cli_fleet_worker(
+                worker[: -len("-worker")]
+            ):
+                self.last_msg = (
+                    f"{worker} usa chave de API (env-auth), não OAuth — "
+                    "instale-o com [I]"
+                )
+            else:
+                self.last_msg = (
+                    "[O] aplica só a workers OAuth da frota CLI (ex.: "
+                    "codex-worker) — selecione a célula Worker de um stage que "
+                    "use um worker oauth-capable"
+                )
+            self.last_ok = None
+            return ActionResult.refresh()
+
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if (self.data is not None
+                and getattr(self.data, "context", None) is None):
+            ns = getattr(self.data, "namespace", None) or _NS_DEFAULT
+
+        if self.data is None:
+            self.last_msg = (
+                f"[demo] abriria login OAuth in-pod de {kind}-worker "
+                "(sem cluster, no-op)"
+            )
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        self.last_msg = (
+            f"abrindo login OAuth do {kind} — siga o device-auth no "
+            "terminal/browser; o painel retoma ao concluir"
+        )
+        self.last_ok = None
+        return ActionResult.suspend(self._oauth_login_command(kind, ns))
 
     # --- picker key handler ---------------------------------------------
 
