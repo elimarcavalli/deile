@@ -1,36 +1,152 @@
 # =============================================================================
-# Dockerfile.cli-worker — imagem PER-TOOL de um CLI worker da frota multi-CLI.
+# Dockerfile.cli-worker — imagem PER-TOOL de um CLI worker da frota multi-CLI,
+# construída como UM ÚNICO multi-stage (deps → base → final).
 #
 # Plano §1.8: runtimes divergem (node20 vs node22 vs pip vs binário) → NÃO cabe
 # imagem única. Esta imagem é parametrizada por ``--build-arg WORKER_KIND=<kind>``
 # e produz ``deile-cli-worker-<kind>:local``.
 #
-# DRY (footprint): as deps PESADAS e idênticas entre todos os kinds (venv com
-# requirements.txt + extra [test] + apt comuns + server/adapters/wrapper) vivem
-# em ``deile-cli-worker-base:local`` (``Dockerfile.cli-worker-base``), construído
-# UMA vez e COMPARTILHADO por layer no containerd. Esta imagem faz ``FROM`` a
-# base e instala SÓ a CLI do kind escolhido — nenhuma dep do deile é reinstalada
-# aqui. Antes (commit 66f411a1) cada imagem rebakava ~1 GB de deps duplicadas
-# (5×~1 GB), estourava o disco do Rancher Desktop e a GC do containerd evictava
-# 4 das 5 imagens. Agora: base ~1.3 GB + 5 camadas pequenas de CLI.
+# DRY/footprint SEM imagem base externa (nerdctl/buildkit do Rancher Desktop NÃO
+# resolve ``FROM`` de imagem LOCAL — sempre tenta pull do registry e falha com
+# ``pull access denied``). A base vira STAGE INTERNO deste Dockerfile:
+#
+#   * stage ``deps``  — venv ``/venv`` (requirements.txt + extra ``[test]``);
+#     ``build-essential`` só aqui. NENHUM uso de ``WORKER_KIND``.
+#   * stage ``base``  — runtime comum: apt (tini, git, curl, gh, glab, ...) +
+#     artefatos IDÊNTICOS entre kinds (server/core/adapters/wrapper em /app).
+#     NENHUM uso de ``WORKER_KIND``.
+#   * stage ``final`` — ``ARG WORKER_KIND``; instala SÓ a CLI do kind + cria o
+#     user. É aqui (e SÓ aqui) que ``WORKER_KIND`` aparece.
+#
+# Por que dedupa com nerdctl: como ``deps`` e ``base`` NÃO referenciam
+# ``WORKER_KIND``, suas instruções são IDÊNTICAS entre os 5 builds → o buildkit
+# constrói esses stages UMA vez e dá cache-hit nos outros 4 kinds; o containerd
+# dedupa as camadas idênticas por digest. Footprint: ~1.3 GB base + camadas
+# pequenas por kind, SEM ``FROM`` externo. Antes (commit 66f411a1) cada imagem
+# rebakava ~1 GB de deps duplicadas (5×~1 GB), estourava o disco do Rancher
+# Desktop e a GC do containerd evictava 4 das 5 imagens (``ErrImageNeverPull``).
 #
 # INVARIANTE: esta imagem só é construída sob demanda (``deploy.py k8s
 # build-cli-workers --kind <k>``); ``k8s up`` jamais a constrói nem a exige. Um
-# CLI worker é 100%% opt-in. O ``build-cli-workers`` garante a base ANTES (auto-
-# build se ausente), pois esta imagem depende dela em build-time.
+# CLI worker é 100%% opt-in.
 #
-# Build (a partir da RAIZ do repo; a base PRECISA existir antes):
-#   nerdctl --namespace k8s.io build -f infra/k8s/Dockerfile.cli-worker-base \
-#       -t deile-cli-worker-base:local .
+# Build (a partir da RAIZ do repo):
 #   nerdctl --namespace k8s.io build -f infra/k8s/Dockerfile.cli-worker \
 #       --build-arg WORKER_KIND=opencode -t deile-cli-worker-opencode:local .
 # =============================================================================
-ARG BASE_IMAGE=deile-cli-worker-base:local
+ARG PYTHON_VERSION=3.11.10
 
-# A base já carrega: venv (/venv com requirements.txt + extra [test]), apt
-# comuns (tini, git, curl, gh, glab, ...), server/core/adapters/wrapper em /app.
-# Esta imagem adiciona SÓ o runtime + binário da CLI do kind.
-FROM ${BASE_IMAGE} AS final
+# ---- deps: venv com aiohttp + toolchain de teste do deile --------------------
+# O servidor genérico é aiohttp; ALÉM disso o /venv carrega pytest + plugins +
+# as deps de runtime do deile para que um CLI worker rode ``pytest deile/tests/``
+# sobre um clone do repo (DoD do brief: "SUÍTE COMPLETA verde antes de
+# mergear/abrir PR"). Sem isso, o clone roda ``python3 -m pytest`` e estoura
+# ``No module named pytest`` — o DoD fica inverificável e a frase "deps já
+# instaladas — NÃO rode pip install" do brief vira falsa (rootfs read-only).
+#
+# FONTE ÚNICA (DRY com o deile-stack): as deps de runtime vêm do MESMO
+# ``requirements.txt`` e o conjunto de plugins de teste vem do extra ``[test]``
+# do ``pyproject.toml`` (instalado via ``.[test]``). Nada de lista de deps
+# duplicada aqui nem no per-kind. ``build-essential`` SÓ neste stage (compila
+# wheels nativas como grpcio/cryptography); ``base``/``final`` ficam sem
+# compilador. NENHUM uso de WORKER_KIND aqui → cache compartilhado entre kinds.
+FROM python:${PYTHON_VERSION}-slim AS deps
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copiamos só os arquivos de metadados + o pacote deile (mesma ordem do
+# Dockerfile principal) para maximizar o cache de layer: alterar um arquivo
+# de teste sob deile/tests não invalida a layer de install das deps.
+COPY pyproject.toml requirements.txt README.md ./
+COPY deile ./deile
+
+RUN python -m venv /venv \
+    && /venv/bin/pip install --upgrade pip wheel \
+    && /venv/bin/pip install -r requirements.txt \
+    && /venv/bin/pip install ".[test]" \
+    && find /venv -type d -name __pycache__ -exec rm -rf {} +
+
+# ---- base: runtime comum compartilhado por TODOS os kinds --------------------
+# IDÊNTICO entre os 5 builds (nenhum uso de WORKER_KIND) → buildkit cacheia este
+# stage e o reusa em cache-hit nos demais kinds. O que diverge (CLI + user) só
+# entra no stage ``final``.
+FROM python:${PYTHON_VERSION}-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/venv/bin:/usr/local/bin:${PATH}"
+
+# tini (zombie reaper — o worker faz shell-out via git/CLI), git, curl, gh, glab.
+# git/gh/glab são obrigatórios: o git_strategy de qualquer adapter precisa
+# commitar+pushar (brief_driven) ou só pushar (cli_autocommit).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tini git iputils-ping curl ca-certificates gnupg jq procps \
+    && mkdir -p -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | dd of=/etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# glab (GitLab CLI) — version PINNED + SHA256 verificado (paridade com o
+# Dockerfile principal). Forge-agnóstico: o worker pode pushar para GH ou GL.
+ARG GLAB_VERSION=1.45.0
+ARG GLAB_SHA256_AMD64=3efe5be6d5fd6c3346d2cabd2ca35d7f85a5ae5d97da8c90dff81557124dc519
+ARG GLAB_SHA256_ARM64=2bd45d6d0f7c6af15604720dc8d177a3a15661230bcee45334879c5928de57bc
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "$ARCH" in \
+        amd64) GLAB_ARCH=x86_64 ; EXPECTED_SHA="$GLAB_SHA256_AMD64" ;; \
+        arm64) GLAB_ARCH=arm64  ; EXPECTED_SHA="$GLAB_SHA256_ARM64" ;; \
+        *) echo "unsupported arch for glab: $ARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/glab.deb \
+        "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_Linux_${GLAB_ARCH}.deb" \
+    && echo "${EXPECTED_SHA}  /tmp/glab.deb" | sha256sum -c - \
+    && dpkg -i /tmp/glab.deb \
+    && rm /tmp/glab.deb \
+    && gh --version \
+    && glab --version
+
+# venv com aiohttp + deps de runtime do deile + toolchain de teste (FONTE ÚNICA).
+COPY --from=deps /venv /venv
+
+# Servidor genérico + core agnóstico + registro de adapters. O servidor importa
+# ``_worker_core``, ``cli_adapters`` (pacote), ``dispatch_logger`` e ``jsonl_cost``
+# por nome — todos precisam ficar em /app lado a lado. Vivem neste stage porque
+# são IDÊNTICOS entre os kinds (o que diverge é só a CLI instalada no ``final``).
+COPY infra/k8s/cli_worker_server.py /app/cli_worker_server.py
+COPY infra/k8s/_worker_core.py      /app/_worker_core.py
+COPY infra/k8s/_worker_resume.py    /app/_worker_resume.py
+COPY infra/k8s/dispatch_logger.py   /app/dispatch_logger.py
+COPY infra/k8s/jsonl_cost.py        /app/jsonl_cost.py
+COPY infra/k8s/cli_adapters         /app/cli_adapters
+# wrapper.py — launcher universal (modo cli-worker): carrega secrets montados,
+# wira GITHUB_TOKEN/GITLAB_TOKEN + identidade git e valida allowlist ANTES de
+# subir o server. O template do worker sobe via `wrapper.py cli-worker`, então
+# o arquivo PRECISA estar em /app (homologação E2E: pod crashava sem ele).
+COPY infra/k8s/wrapper.py           /app/wrapper.py
+RUN chmod -R 0555 /app/cli_worker_server.py /app/_worker_core.py \
+        /app/_worker_resume.py /app/dispatch_logger.py /app/jsonl_cost.py /app/wrapper.py \
+    && find /app/cli_adapters -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
+WORKDIR /app
+
+# ---- final: PER-CLI — instala SÓ a CLI do kind + cria o user -----------------
+# É AQUI (e só aqui) que WORKER_KIND aparece. Os stages ``deps``/``base`` acima
+# são agnósticos ao kind → cacheados/reusados entre os 5 builds (dedup).
+FROM base AS final
 
 ARG WORKER_KIND=opencode
 
@@ -43,7 +159,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # runtime + binário daquele CLI. Versões PINADAS (nunca ``upgrade`` em runtime).
 # Mantido em paridade com as specs da Parte 2 do plano (flags validadas via
 # context7 contra a doc oficial de cada CLI). NENHUMA dep do deile aqui —
-# requirements.txt + [test] já vêm da base (DRY).
+# requirements.txt + [test] já vêm do stage ``deps``/``base`` (DRY).
 # -----------------------------------------------------------------------------
 
 # opencode — binário standalone (Tier 1). Pin de versão; ``upgrade`` proibido.

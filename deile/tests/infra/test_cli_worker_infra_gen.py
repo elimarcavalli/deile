@@ -588,123 +588,6 @@ class TestBuildCliWorkers:
         assert rc == 64
 
 
-# ===== build-cli-base — base compartilhada + auto-build na orquestração ========
-
-
-class TestBuildCliBase:
-    """A base compartilhada é construída UMA vez e os kinds fazem ``FROM`` ela.
-
-    O verbo ``build-cli-base`` (idempotente) + o auto-build dentro de
-    ``build-cli-workers`` garantem que a base existe ANTES de qualquer build
-    per-kind (FROM em build-time). kubectl/runtime são mockados — sem build real.
-    """
-
-    def test_base_build_cmd_targets_base_image_and_dockerfile(self):
-        cmd = deploy._cli_worker_base_build_cmd()
-        if cmd is None:
-            pytest.skip("nenhum runtime de container disponível")
-        assert deploy.CLI_WORKER_BASE_IMAGE in cmd
-        assert "Dockerfile.cli-worker-base" in " ".join(cmd)
-        # A base NÃO recebe --build-arg WORKER_KIND (é agnóstica ao kind).
-        assert "WORKER_KIND" not in " ".join(cmd)
-
-    def test_per_kind_build_cmd_still_targets_per_kind_dockerfile(self):
-        kind = _FLEET_KINDS[0]
-        cmd = deploy._cli_worker_build_cmd(kind)
-        if cmd is None:
-            pytest.skip("nenhum runtime de container disponível")
-        assert "Dockerfile.cli-worker" in " ".join(cmd)
-        assert "Dockerfile.cli-worker-base" not in " ".join(cmd)
-        assert f"WORKER_KIND={kind}" in cmd
-
-    def test_build_cli_base_dry_run(self, capsys):
-        rc = deploy.k8s_build_cli_base({"dry_run": True, "yes": True, "extra": []})
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert deploy.CLI_WORKER_BASE_IMAGE in out
-
-    def test_ensure_base_is_noop_when_present(self, monkeypatch):
-        """Idempotência: base presente → nenhum build é disparado."""
-        ran: list = []
-        monkeypatch.setattr(deploy, "_cli_worker_base_exists", lambda: True)
-        monkeypatch.setattr(deploy, "_run", lambda *a, **kw: ran.append(a) or 0)
-        assert deploy._ensure_cli_worker_base(yes=True) is True
-        assert ran == []
-
-    def test_ensure_base_builds_when_absent(self, monkeypatch):
-        ran: list = []
-        monkeypatch.setattr(deploy, "_cli_worker_base_exists", lambda: False)
-        monkeypatch.setattr(
-            deploy, "_cli_worker_base_build_cmd",
-            lambda: ["nerdctl", "build", "-t", deploy.CLI_WORKER_BASE_IMAGE],
-        )
-        monkeypatch.setattr(deploy, "_run", lambda *a, **kw: ran.append(a) or 0)
-        assert deploy._ensure_cli_worker_base(yes=True) is True
-        assert len(ran) == 1
-
-    def test_ensure_base_force_rebuilds_even_if_present(self, monkeypatch):
-        ran: list = []
-        monkeypatch.setattr(deploy, "_cli_worker_base_exists", lambda: True)
-        monkeypatch.setattr(
-            deploy, "_cli_worker_base_build_cmd",
-            lambda: ["nerdctl", "build", "-t", deploy.CLI_WORKER_BASE_IMAGE],
-        )
-        monkeypatch.setattr(deploy, "_run", lambda *a, **kw: ran.append(a) or 0)
-        assert deploy._ensure_cli_worker_base(yes=True, force=True) is True
-        assert len(ran) == 1
-
-    def test_build_cli_workers_ensures_base_before_per_kind(self, monkeypatch):
-        """``build-cli-workers`` chama ``_ensure_cli_worker_base`` ANTES de buildar
-        qualquer kind (a base é dependência de build-time do FROM)."""
-        order: list = []
-        monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda yes: True)
-
-        def fake_ensure_base(yes, *, force=False):
-            order.append("base")
-            return True
-
-        def fake_per_kind_cmd(kind):
-            return ["nerdctl", "build", "-t", f"deile-cli-worker-{kind}:local"]
-
-        def fake_run(cmd, *a, **kw):
-            order.append(("kind", cmd[-1]))
-            return 0
-
-        monkeypatch.setattr(deploy, "_ensure_cli_worker_base", fake_ensure_base)
-        monkeypatch.setattr(deploy, "_cli_worker_build_cmd", fake_per_kind_cmd)
-        monkeypatch.setattr(deploy, "_run", fake_run)
-
-        kind = _FLEET_KINDS[0]
-        rc = deploy.k8s_build_cli_workers(
-            {"dry_run": False, "yes": True, "extra": ["--kind", kind]}
-        )
-        assert rc == 0
-        # "base" precede qualquer build de kind.
-        assert order[0] == "base"
-        assert any(item == ("kind", f"deile-cli-worker-{kind}:local") for item in order)
-
-    def test_build_cli_workers_aborts_if_base_build_fails(self, monkeypatch):
-        """Se a base falha, NÃO tenta buildar os kinds (FROM quebraria)."""
-        per_kind_called: list = []
-        monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda yes: True)
-        monkeypatch.setattr(
-            deploy, "_ensure_cli_worker_base", lambda yes, force=False: False
-        )
-        monkeypatch.setattr(
-            deploy, "_cli_worker_build_cmd",
-            lambda kind: per_kind_called.append(kind) or ["x"],
-        )
-        rc = deploy.k8s_build_cli_workers(
-            {"dry_run": False, "yes": True, "extra": [_FLEET_KINDS[0]]}
-        )
-        assert rc == 1
-        assert per_kind_called == []
-
-    def test_build_cli_base_verb_registered(self):
-        assert "build-cli-base" in deploy._K8S
-        assert deploy._K8S["build-cli-base"] is deploy.k8s_build_cli_base
-
-
 # ===== test toolchain baked DRY — pytest + plugins + deps de runtime do deile ==
 
 
@@ -716,39 +599,44 @@ class TestCliWorkerTestToolchainBaked:
     ``implement``/``pr_review`` clonava o repo, rodava ``python3 -m pytest`` e
     estourava ``No module named pytest``.
 
-    REFATORAÇÃO (footprint): as deps pesadas (pytest + plugins do extra
-    ``[test]`` + as deps de runtime do ``requirements.txt``) agora vivem na
-    imagem BASE COMPARTILHADA ``Dockerfile.cli-worker-base``, construída UMA vez
-    e compartilhada por layer entre todos os kinds. O ``Dockerfile.cli-worker``
-    faz ``FROM`` a base e NÃO reinstala dep nenhuma do deile — instala SÓ a CLI
-    do kind. Antes (commit 66f411a1) cada uma das 5 imagens rebakava ~1 GB de
-    deps duplicadas, estourava o disco do Rancher Desktop e a GC do containerd
-    evictava 4 das 5 imagens.
+    REFATORAÇÃO (footprint, SEM imagem base externa): as deps pesadas (pytest +
+    plugins do extra ``[test]`` + as deps de runtime do ``requirements.txt``)
+    vivem nos stages INTERNOS ``deps``/``base`` do ÚNICO ``Dockerfile.cli-worker``
+    multi-stage. Como esses stages NÃO referenciam ``WORKER_KIND``, suas
+    instruções são idênticas entre os 5 builds → o buildkit os constrói UMA vez
+    e dá cache-hit nos demais kinds; o containerd dedupa as camadas por digest.
+    O stage ``final`` (e SÓ ele) usa ``WORKER_KIND`` e instala apenas a CLI do
+    kind. O ``FROM`` de imagem LOCAL externa não funciona no nerdctl do Rancher
+    Desktop (tenta pull do registry) — daí a base ser stage interno, não imagem.
 
     Estes testes provam a coerência por inspeção (não há build real no CI). A
     prova de fumaça (``pip install -e ".[test]"`` em venv limpo) cobre o
     princípio 14 do projeto e roda no CI de extras.
     """
 
-    def _base_dockerfile_text(self) -> str:
-        df = _REPO / "infra" / "k8s" / "Dockerfile.cli-worker-base"
-        return df.read_text(encoding="utf-8")
-
-    def _kind_dockerfile_text(self) -> str:
+    def _dockerfile_text(self) -> str:
         df = _REPO / "infra" / "k8s" / "Dockerfile.cli-worker"
         return df.read_text(encoding="utf-8")
 
-    def _kind_instructions(self) -> str:
-        """Linhas de INSTRUÇÃO do Dockerfile per-kind (sem comentários).
-
-        Os comentários documentam o que a base traz (requirements.txt, server,
-        etc.) — só as instruções reais (RUN/COPY/FROM) importam para "não
-        reinstala / não recopia"."""
-        lines = [
-            ln for ln in self._kind_dockerfile_text().splitlines()
+    @staticmethod
+    def _instructions_only(text: str) -> str:
+        """Só as linhas de INSTRUÇÃO (sem comentários). Os comentários
+        documentam o que cada stage faz (citam WORKER_KIND/requirements.txt em
+        prosa) — só RUN/COPY/FROM/ARG/ENV importam para cache/dedup e DRY."""
+        return "\n".join(
+            ln for ln in text.splitlines()
             if ln.strip() and not ln.lstrip().startswith("#")
-        ]
-        return "\n".join(lines)
+        )
+
+    def _stage_split(self):
+        """Particiona o Dockerfile nos seus 3 stages (deps, base, final).
+
+        Retorna o texto ANTES do stage ``final`` (= deps+base, agnósticos ao
+        kind) e o texto A PARTIR do ``FROM base AS final`` (= per-kind)."""
+        text = self._dockerfile_text()
+        pre_final, sep, final = text.partition("FROM base AS final")
+        assert sep, "Dockerfile.cli-worker não tem o stage `FROM base AS final`"
+        return pre_final, sep + final
 
     def _pyproject(self) -> dict:
         try:
@@ -759,25 +647,54 @@ class TestCliWorkerTestToolchainBaked:
             (_REPO / "pyproject.toml").read_text(encoding="utf-8")
         )
 
-    def test_base_dockerfile_exists(self):
-        """A base compartilhada existe como Dockerfile próprio (SRP)."""
-        df = _REPO / "infra" / "k8s" / "Dockerfile.cli-worker-base"
-        assert df.is_file()
+    def test_dockerfile_has_single_multistage_no_external_base(self):
+        """Dockerfile ÚNICO multi-stage; SEM ``FROM`` de imagem externa local
+        (nerdctl do Rancher Desktop não a resolve) e SEM arquivo base separado."""
+        text = self._dockerfile_text()
+        # Os 3 stages internos, na ordem deps → base → final.
+        i_deps = text.index("FROM python:${PYTHON_VERSION}-slim AS deps")
+        i_base = text.index("FROM python:${PYTHON_VERSION}-slim AS base")
+        i_final = text.index("FROM base AS final")
+        assert i_deps < i_base < i_final
+        # Nenhum FROM de imagem base externa (deile-cli-worker-base) nem ARG dela.
+        assert "deile-cli-worker-base" not in text
+        assert "BASE_IMAGE" not in text
+        # O Dockerfile base separado não existe mais.
+        assert not (_REPO / "infra" / "k8s" / "Dockerfile.cli-worker-base").exists()
 
-    def test_runtime_deps_installed_from_requirements_in_base(self):
-        """Deps de runtime do deile vêm do MESMO ``requirements.txt`` do
-        deile-stack — instaladas SÓ na base (sem lista duplicada)."""
-        text = self._base_dockerfile_text()
-        assert "requirements.txt" in text
-        assert "pip install -r requirements.txt" in text
-        # README é exigido pelo build do pacote (readme = "README.md").
-        assert "COPY pyproject.toml requirements.txt README.md" in text
+    def test_worker_kind_only_appears_at_or_after_final_stage(self):
+        """GARANTIA DO DEDUP: ``WORKER_KIND`` não pode aparecer nos stages
+        ``deps``/``base`` (senão suas instruções divergem por kind e o buildkit
+        não cacheia/reusa entre os 5 builds). Só no/depois do stage ``final``."""
+        pre_final, final = self._stage_split()
+        assert "WORKER_KIND" not in self._instructions_only(pre_final), (
+            "WORKER_KIND vazou para instrução de deps/base — quebra cache/dedup"
+        )
+        assert "ARG WORKER_KIND" in final
+        # Cada kind registrado tem um bloco de install gated por WORKER_KIND no final.
+        for kind in _FLEET_KINDS:
+            assert f'WORKER_KIND" = "{kind}"' in final, (
+                f"stage final sem bloco de install para {kind!r}"
+            )
 
-    def test_test_extra_installed_dry_from_pyproject_in_base(self):
+    def test_deps_stage_installs_toolchain_before_final(self):
+        """O stage ``deps`` instala pytest + requirements + ``.[test]`` ANTES do
+        stage ``final`` — o venv resultante é copiado para ``base`` e herdado por
+        ``final``, então a CLI worker roda ``pytest`` sobre um clone do repo."""
+        pre_final, _ = self._stage_split()
+        # Tudo isso vive nos stages deps/base (antes do final).
+        assert "pip install -r requirements.txt" in pre_final
+        assert 'pip install ".[test]"' in pre_final
+        assert "COPY pyproject.toml requirements.txt README.md" in pre_final
+        # O stage deps vem ANTES do stage base, e o base copia o /venv do deps.
+        text = self._dockerfile_text()
+        assert text.index("FROM python:${PYTHON_VERSION}-slim AS deps") < \
+            text.index("COPY --from=deps /venv /venv")
+
+    def test_test_extra_installed_dry_from_pyproject(self):
         """O conjunto de plugins de teste vem do extra ``[test]`` (fonte única),
-        instalado via ``.[test]`` na BASE — nunca uma lista hardcoded."""
-        text = self._base_dockerfile_text()
-        assert 'pip install ".[test]"' in text
+        instalado via ``.[test]`` no stage ``deps`` — nunca lista hardcoded."""
+        assert 'pip install ".[test]"' in self._dockerfile_text()
         # O extra [test] precisa existir e resolver (princípio 14).
         extras = self._pyproject()["project"]["optional-dependencies"]
         assert "test" in extras
@@ -795,42 +712,41 @@ class TestCliWorkerTestToolchainBaked:
                 f"extra [test] sem {required!r} — pytest.ini do projeto o exige"
             )
 
-    def test_per_kind_dockerfile_does_not_reinstall_deile_deps(self):
-        """DRY: o per-kind faz ``FROM`` a base e NÃO reinstala as deps do deile
-        (requirements.txt nem ``.[test]``) — elas vêm UMA vez da base."""
-        assert "FROM ${BASE_IMAGE}" in self._kind_dockerfile_text()
-        instr = self._kind_instructions()
-        assert "requirements.txt" not in instr
-        assert 'pip install ".[test]"' not in instr
-        assert "pip install -r requirements.txt" not in instr
+    def test_deps_installed_once_not_reinstalled_in_final(self):
+        """DRY: as deps do deile (requirements.txt / ``.[test]``) são instaladas
+        UMA vez no stage ``deps``; o stage ``final`` NÃO as reinstala."""
+        _, final = self._stage_split()
+        final_instr = self._instructions_only(final)
+        assert "requirements.txt" not in final_instr
+        assert 'pip install ".[test]"' not in final_instr
+        assert "pip install -r requirements.txt" not in final_instr
 
-    def test_builder_keeps_compiler_out_of_final_base_stage(self):
-        """``build-essential`` (compila grpcio/cryptography) só no builder da
-        base; o stage final da base permanece sem compilador (segurança)."""
-        text = self._base_dockerfile_text()
-        builder, _, final = text.partition("FROM python:${PYTHON_VERSION}-slim AS final")
-        assert "build-essential" in builder
-        assert "build-essential" not in final
-        # O per-kind também não traz compilador.
-        assert "build-essential" not in self._kind_dockerfile_text()
+    def test_build_essential_only_in_deps_stage(self):
+        """``build-essential`` (compila grpcio/cryptography) só no stage ``deps``;
+        os stages ``base``/``final`` permanecem sem compilador (segurança)."""
+        text = self._dockerfile_text()
+        deps, _, rest = text.partition("FROM python:${PYTHON_VERSION}-slim AS base")
+        assert "build-essential" in deps
+        assert "build-essential" not in rest
 
     def test_aiohttp_not_installed_twice(self):
-        """aiohttp já vem pelo extra ``[test]`` na base — não pode haver um
-        ``pip install "aiohttp..."`` standalone duplicado em nenhum Dockerfile."""
-        assert 'pip install "aiohttp' not in self._base_dockerfile_text()
-        assert 'pip install "aiohttp' not in self._kind_dockerfile_text()
+        """aiohttp já vem pelo extra ``[test]`` no stage ``deps`` — não pode haver
+        um ``pip install "aiohttp..."`` standalone duplicado."""
+        assert 'pip install "aiohttp' not in self._dockerfile_text()
 
-    def test_server_and_adapters_live_in_base(self):
-        """server/core/adapters/wrapper são idênticos entre kinds → vivem na
-        base (COPY uma vez), não no per-kind."""
-        base = self._base_dockerfile_text()
+    def test_server_and_adapters_live_in_base_stage(self):
+        """server/core/adapters/wrapper são idênticos entre kinds → vivem no
+        stage ``base`` (COPY uma vez), não no stage ``final`` per-kind."""
+        pre_final, final = self._stage_split()
         for fname in (
             "cli_worker_server.py", "_worker_core.py", "_worker_resume.py",
             "dispatch_logger.py", "jsonl_cost.py", "cli_adapters", "wrapper.py",
         ):
-            assert f"COPY infra/k8s/{fname}" in base, f"base não copia {fname!r}"
-        # O per-kind não recopia esses artefatos (vêm da base).
-        assert "COPY infra/k8s/cli_worker_server.py" not in self._kind_instructions()
+            assert f"COPY infra/k8s/{fname}" in pre_final, (
+                f"stage base não copia {fname!r}"
+            )
+        # O stage final não recopia esses artefatos (vêm do stage base).
+        assert "COPY infra/k8s/cli_worker_server.py" not in final
 
 
 # ===== gen-worker verb — dry-run + escrita ====================================
