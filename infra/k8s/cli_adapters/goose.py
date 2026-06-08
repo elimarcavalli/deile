@@ -23,16 +23,19 @@ contra a doc oficial do Goose via context7 — ``goose run --no-session -t``,
 * **Brief (§2.5):** o conteúdo do brief é lido do arquivo e passado via ``-t``
   (texto da instrução). Goose também aceita ``--instructions <arquivo>``/``-i -``
   (stdin), mas ``-t`` com o texto inline é o caminho determinístico headless.
-* **Modelo (§2.5):** via env ``GOOSE_PROVIDER`` + ``GOOSE_MODEL`` (configuração
-  de Deployment) — NÃO entra no argv. ``build_argv`` aceita ``--provider``/
-  ``--model`` por invocação quando um ``model`` no formato ``provider/model`` é
-  passado, mapeando os dois lados; ``None`` deixa o env decidir.
+* **Modelo (§2.5):** o catálogo expõe ``id`` **provider-prefixado**
+  (``<provider>/<modelo>``, ex.: ``openrouter/deepseek/deepseek-v4-flash``). Esse
+  id viaja como ``cli_model`` bruto e ``build_argv`` faz o split no PRIMEIRO ``/``
+  → ``--provider``/``--model`` por invocação. Sem prefixo o Goose lê o 1º
+  segmento como provider e falha "Unknown provider" (não há ``GOOSE_PROVIDER``/
+  ``GOOSE_MODEL`` no Deployment). ``model`` sem ``/`` → só ``--model`` (provider
+  pelo env, fallback); ``None`` deixa o env decidir.
 * **Saída (§1.6):** ``--output-format json`` → JSON/JSONL de eventos;
   :meth:`parse_output` lê a resposta/erro. Exit-code não-confiável (§2.5 gotcha)
   → o gate de commit/push do server decide o sucesso final.
 * **list_models:** Goose não tem comando de listagem confiável → **catálogo
-  estático curado** (OpenRouter/OpenAI). Os IDs nativos dependem do
-  ``GOOSE_PROVIDER`` configurado.
+  estático curado** (OpenRouter/OpenAI), com ``id`` provider-prefixado
+  (``<provider>/<modelo>``) para o split do ``build_argv``.
 * **Resume:** ``supports_resume=True`` (issue #445 — anti-sangria de custo).
   Substitui o ``--no-session`` por sessão NOMEADA determinística
   (``--name <task_id>``); o resume reabre o mesmo nome com ``--resume``,
@@ -83,44 +86,49 @@ def _cap_verdict(text: str) -> str:
 
 #: Catálogo estático curado (Goose não tem ``list-models`` confiável — §2.5).
 #:
-#: Fonte: modelos OpenRouter/OpenAI de uso recorrente. Os IDs nativos dependem do
-#: ``GOOSE_PROVIDER`` configurado no Deployment; o catálogo cobre a rota
-#: recomendada (OpenRouter). Garante picker não-vazio no painel.
+#: Fonte: modelos OpenRouter/OpenAI de uso recorrente. **O ``id`` é
+#: provider-prefixado** (``<goose-provider>/<modelo-nativo>``) porque é o valor
+#: que o painel grava em ``DEILE_PIPELINE_MODEL_<STAGE>`` e que viaja como
+#: ``cli_model`` bruto até o ``build_argv``, que faz o split no PRIMEIRO ``/``
+#: para ``--provider``/``--model``. Sem o prefixo, o Goose interpreta o primeiro
+#: segmento (``deepseek``/``qwen``/...) como provider e falha com
+#: "Unknown provider" (não há ``GOOSE_PROVIDER`` no Deployment). Garante picker
+#: não-vazio no painel.
 _MODELS: List[ModelInfo] = [
     ModelInfo(
-        id="deepseek/deepseek-v4-flash",
+        id="openrouter/deepseek/deepseek-v4-flash",
         label="DeepSeek V4 Flash (OpenRouter)",
         provider="openrouter",
         price_in=0.0983, price_out=0.1966, context=1_048_576,
-        notes="MAIS BARATO de coding; default recomendado (GOOSE_PROVIDER=openrouter)",
+        notes="MAIS BARATO de coding; default recomendado",
     ),
     ModelInfo(
-        id="deepseek/deepseek-v4-pro",
+        id="openrouter/deepseek/deepseek-v4-pro",
         label="DeepSeek V4 Pro (OpenRouter)",
         provider="openrouter",
         price_in=0.435, price_out=0.87, context=1_048_576,
         notes="MELHOR custo-benefício de coding (promo)",
     ),
     ModelInfo(
-        id="anthropic/claude-sonnet-4.6",
+        id="openrouter/anthropic/claude-sonnet-4.6",
         label="Claude Sonnet 4.6 (OpenRouter)",
         provider="openrouter",
         price_in=3.00, price_out=15.00, context=1_000_000,
         notes="premium; review crítico / arquitetura",
     ),
     ModelInfo(
-        id="qwen/qwen3-coder",
+        id="openrouter/qwen/qwen3-coder",
         label="Qwen3 Coder 480B (OpenRouter)",
         provider="openrouter",
         price_in=0.22, price_out=1.80, context=1_000_000,
         notes="bom custo-benefício p/ implementação",
     ),
     ModelInfo(
-        id="gpt-5.4",
+        id="openai/gpt-5.4",
         label="GPT-5.4 (OpenAI)",
         provider="openai",
         price_in=2.50, price_out=15.00,
-        notes="rota GOOSE_PROVIDER=openai; gpt-4o é geração anterior",
+        notes="rota provider=openai; gpt-4o é geração anterior",
     ),
 ]
 

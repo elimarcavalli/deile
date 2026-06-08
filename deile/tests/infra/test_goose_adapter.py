@@ -210,6 +210,30 @@ def test_list_models_returns_copy(adapter):
 
 
 @pytest.mark.unit
+def test_catalog_ids_are_provider_prefixed_and_route(adapter, brief):
+    """Regressão (homologação resume 08/jun): o ``id`` do catálogo é o valor BRUTO
+    que o painel grava em ``DEILE_PIPELINE_MODEL_<STAGE>`` e que chega ao
+    ``build_argv``. Como o Goose não tem ``GOOSE_PROVIDER`` no Deployment, cada
+    ``id`` PRECISA ser provider-prefixado (``<provider>/<modelo>``); senão o split
+    no 1º ``/`` joga o 1º segmento (deepseek/qwen/...) em ``--provider`` e o Goose
+    falha "Unknown provider". Aqui travamos: todo id roteia para um provider
+    conhecido e bate com ``ModelInfo.provider``.
+    """
+    known = {"openrouter", "openai"}
+    for m in adapter.list_models():
+        assert "/" in m.id, f"id sem provider-prefixo: {m.id!r}"
+        argv = adapter.build_argv(
+            brief_path=brief, model=m.id, reasoning=None, workdir="/w", resume=None,
+        )
+        prov = argv[argv.index("--provider") + 1]
+        assert prov in known, f"provider desconhecido p/ {m.id!r}: {prov!r}"
+        assert prov == m.provider, (
+            f"prefixo do id ({prov}) diverge de ModelInfo.provider ({m.provider}) "
+            f"em {m.id!r}"
+        )
+
+
+@pytest.mark.unit
 def test_parse_output_messages_shape_extracts_verdict_at_end(adapter):
     """Regressão (homologação E2E refine): goose run --output-format json emite
     ``{"messages":[...],"metadata":{...}}``; o veredito conclui no FIM da última
