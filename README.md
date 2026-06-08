@@ -782,3 +782,7 @@ Projeto licenciado sob [**MIT License**](LICENSE).
 ---
 
 **DEILE 5.1.0** — `python3 deile.py`
+
+## Frota Multi-CLI (planejada)
+
+Está **planejada** uma frota de workers CLI — aider, goose, opencode, codex e qwen —, um por etapa do pipeline (classify, refine, implement, pr_review, follow_ups). A implementação está em andamento na PR #614 e **ainda não foi mergeada na `main`**.
