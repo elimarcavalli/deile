@@ -71,6 +71,8 @@ from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
 from _panel_data import _ROLE_COLOR_MAP as _ACTIVITY_COLOR_MAP  # noqa: F401
 from _panel_data import _ERROR_DETAIL_RE as _ACTIVITY_ERROR_RE  # noqa: F401
+from _panel_data import WorkerProviderError  # noqa: F401  # issue #445
+from _panel_data import provider_error_label  # noqa: F401  # issue #445
 from _panel_data import \
     _audit_dispatch_mode_change as pd_audit_dispatch_mode_change
 from _panel_data import \
@@ -720,10 +722,111 @@ def _alerts_from_data(data: Optional[PanelData]) -> List[Alert]:
             "warn", "🙋",
             f"{len(awaiting)} issue(s) aguardando você: {nums}",
         ))
-    # Provider errors.
+    # Corte por provedor LLM por worker (issue #445) — crédito esgotado/rate-
+    # limit/5xx. VERMELHO (crit) para crédito, AMARELO (warn) para os demais.
+    # Vem ANTES dos provider errors genéricos: é o alerta mais acionável.
+    for err in _provider_errors(data):
+        sev = err.severity
+        icon = "⛔" if sev == "crit" else "⚠"
+        when = (f" ({_fmt_age(err.age_s)} atrás)"
+                if err.age_s is not None else "")
+        out.append(Alert(
+            sev, icon,
+            f"{_worker_group_label(err.role)}: {err.label} [{err.code}]{when}",
+        ))
+    # Saldo proativo OpenRouter baixo/zerado (issue #445, bônus).
+    bal_alert = _openrouter_alert(data)
+    if bal_alert is not None:
+        out.append(bal_alert)
+    # Provider errors (falha de fetch dos providers do painel — não é o mesmo
+    # que corte de provedor LLM acima; este é "não consegui ler o cluster").
     for name, err in data.errors():
         out.append(Alert("warn", "⚠", f"provider {name}: {err.split(':', 1)[0]}"))
     return out
+
+
+def _provider_errors(data: Optional[PanelData]) -> List["WorkerProviderError"]:
+    """Erros de provedor LLM ativos na frota (ordenados: crédito primeiro).
+
+    Single source: o ``ProviderHealthProvider``. Vazio quando o provider está
+    ausente (local-only/demo) ou nenhum worker bateu corte. Crédito (``crit``)
+    vem antes de rate-limit/5xx (``warn``) para o operador agir no pior caso.
+    """
+    if data is None or getattr(data, "provider_health", None) is None:
+        return []
+    raw = data.provider_health.get()
+    if not isinstance(raw, dict):
+        return []
+    errs = [e for e in raw.values() if isinstance(e, WorkerProviderError)]
+    errs.sort(key=lambda e: (0 if e.severity == "crit" else 1, e.pod_name))
+    return errs
+
+
+def _openrouter_alert(data: Optional[PanelData]) -> Optional[Alert]:
+    """Alerta de saldo OpenRouter baixo/zerado, ou ``None`` se ok/indisponível.
+
+    Usa ``peek()`` (valor cacheado, sem disparar rede no render thread). O
+    ``BackgroundRefresher`` mantém o cache fresco.
+    """
+    if data is None or getattr(data, "openrouter_balance", None) is None:
+        return None
+    bal = data.openrouter_balance.peek()
+    from _panel_data import OpenRouterBalance as _ORB  # noqa: PLC0415
+    if not isinstance(bal, _ORB) or not bal.available:
+        return None
+    sev = bal.severity
+    if sev is None:
+        return None
+    rem = bal.remaining
+    rem_txt = f"${rem:.2f}" if rem is not None else "?"
+    icon = "⛔" if sev == "crit" else "⚠"
+    return Alert(sev, icon, f"OpenRouter: saldo {rem_txt} restante — recarregar")
+
+
+def _provider_alert_banner(data: Optional[PanelData]) -> Optional[Panel]:
+    """Banner VERMELHO global de corte por provedor (issue #445).
+
+    Renderizado no TOPO de TODA tela quando QUALQUER worker está em corte por
+    crédito/provedor (ou o saldo OpenRouter zerou) — não pode passar
+    despercebido. ``None`` quando a frota está saudável (sem banner, sem ruído).
+
+    Crédito esgotado → moldura/texto VERMELHO; só rate-limit/5xx → AMARELO.
+    """
+    errs = _provider_errors(data)
+    bal_alert = _openrouter_alert(data)
+    if not errs and bal_alert is None:
+        return None
+    has_crit = any(e.severity == "crit" for e in errs) or (
+        bal_alert is not None and bal_alert.severity == "crit"
+    )
+    border = "red" if has_crit else "yellow"
+    title_style = "bold white on red" if has_crit else "bold black on yellow"
+    head = "⛔ CORTE POR PROVEDOR LLM" if has_crit else "⚠ DEGRADAÇÃO DE PROVEDOR"
+    lines: List[RenderableType] = []
+    for err in errs:
+        style = "bold red" if err.severity == "crit" else "bold yellow"
+        when = (f"  ·  {_fmt_age(err.age_s)} atrás"
+                if err.age_s is not None else "")
+        lines.append(Text.assemble(
+            (f"{'⛔' if err.severity == 'crit' else '⚠'} ", style),
+            (f"{_worker_group_label(err.role)} ", "bold"),
+            (f"[{err.pod_name}]", "dim"),
+            ("  →  ", "dim"),
+            (f"{err.label} ({err.code})", style),
+            (when, "dim"),
+        ))
+    if bal_alert is not None:
+        bstyle = "bold red" if bal_alert.severity == "crit" else "bold yellow"
+        lines.append(Text.assemble(
+            (f"{bal_alert.icon} ", bstyle), (bal_alert.msg, bstyle),
+        ))
+    return Panel(
+        Group(*lines),
+        title=Text(head, style=title_style),
+        title_align="left",
+        border_style=border,
+        box=box.HEAVY,
+    )
 
 
 # ===== activity feed ========================================================
@@ -819,6 +922,10 @@ class PodRow:
     # Idade do heartbeat quando há um (claude-worker). Quando > 15s a UI marca
     # ``⚠ stale`` em amarelo no lugar de mostrar a ação como se fosse atual.
     stale_s: Optional[float] = None
+    # Corte por provedor LLM detectado na última task deste pod (issue #445).
+    # Code canônico (``INSUFFICIENT_CREDIT``/``RATE_LIMIT``/...) ou ``None`` se
+    # saudável. Pinta a linha de VERMELHO (crédito) / AMARELO (transitório).
+    provider_error_code: Optional[str] = None
 
 
 # Limiar (s) acima do qual o heartbeat é considerado stale na coluna doing-now.
@@ -1027,6 +1134,16 @@ def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodR
         ]
     workers = data.workers.get()
     ps = data.pipeline.get()
+    # Mapa pod_name → code de corte por provedor (issue #445). Vazio quando o
+    # provider está ausente (local-only) ou a frota está saudável.
+    prov_errs: Dict[str, "WorkerProviderError"] = {}
+    if getattr(data, "provider_health", None) is not None:
+        _raw_pe = data.provider_health.get()
+        if isinstance(_raw_pe, dict):
+            prov_errs = {
+                k: v for k, v in _raw_pe.items()
+                if isinstance(v, WorkerProviderError)
+            }
     # Pares (age_s para sort, row) — age_s None significa "sem dado" (vai pro fim).
     pairs: List[Any] = []
     for p in data.pods.get():
@@ -1053,12 +1170,14 @@ def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodR
         if p.status == "Running" and not p.ready:
             ready_label = "NotReady"
 
+        prov_err = prov_errs.get(p.name)
         row = PodRow(
             icon=icon, name=p.name, role=p.role,
             status=ready_label, age=_fmt_age(p.age_s),
             restarts=str(p.restarts), last_activity=last,
             doing_now=doing, busy=busy,
             stale_s=stale_s if p.role == "claude-worker" else None,
+            provider_error_code=prov_err.code if prov_err is not None else None,
         )
         pairs.append((age_s, row))
 
@@ -1156,16 +1275,40 @@ def _read_deployment_replicas(ns: str, deploy_name: str) -> Optional[int]:
         return None
 
 
+#: Selo + estilo por severidade do corte de provedor na linha de pod (#445).
+def _provider_badge(code: Optional[str]) -> Tuple[Optional[Text], Optional[str]]:
+    """``(selo, row_style)`` para o code, ou ``(None, None)`` se saudável.
+
+    Crédito esgotado → selo ``⛔`` e linha VERMELHA; transitório (rate-limit/
+    5xx/conexão) → selo ``⚠`` e linha AMARELA. Single source da rotulagem:
+    :func:`provider_error_label` (importado do ``_panel_data``).
+    """
+    if not code:
+        return None, None
+    if code == "INSUFFICIENT_CREDIT":
+        return Text(f"⛔ {provider_error_label(code)}", style="bold white on red"), "bold red"
+    return Text(f"⚠ {provider_error_label(code)}", style="bold black on yellow"), "bold yellow"
+
+
 def _emit_pod_row(tbl, p: "PodRow", restart_fn, doing_fn,
                   *, indent: bool = False) -> None:
     """Adiciona uma linha de pod à tabela (com indentação opcional sob grupo).
 
     Reusado pela tela [1] (Dashboard), PodPicker e PodWatch para que as três
     renderizem pods com o mesmo estilo — sem duplicar a montagem da linha.
+
+    Corte por provedor LLM (issue #445): a linha inteira é pintada de VERMELHO
+    (crédito) / AMARELO (transitório) e um selo claro aparece na coluna
+    doing-now, sobrepondo o "doing now" normal — o operador não pode não ver.
     """
     icon_style = "bold yellow" if p.busy else "green"
     status_style = "green" if p.status == "Running" else "red"
-    doing_text, _ = doing_fn(p)
+    badge, row_style = _provider_badge(p.provider_error_code)
+    if badge is not None:
+        doing_text: RenderableType = badge
+        icon_style = "bold red" if row_style == "bold red" else "bold yellow"
+    else:
+        doing_text, _ = doing_fn(p)
     name = (f"  └ {p.name.split('-')[-1]}" if indent else p.name)
     tbl.add_row(
         Text(p.icon, style=icon_style),
@@ -1175,6 +1318,7 @@ def _emit_pod_row(tbl, p: "PodRow", restart_fn, doing_fn,
         restart_fn(p.restarts),
         Text(p.last_activity, style="dim"),
         doing_text,
+        style=row_style,
     )
 
 
@@ -1205,12 +1349,25 @@ def _render_grouped_pods(tbl, rows: List["PodRow"], restart_fn, doing_fn) -> Non
         ready = sum(1 for p in group if p.status == "Running")
         active = sum(1 for p in group if p.busy)
         label = _worker_group_label(role)
+        # Corte por provedor no grupo (issue #445): se QUALQUER pod do tipo
+        # bateu crédito esgotado, o cabeçalho do grupo fica VERMELHO com selo;
+        # rate-limit/5xx → AMARELO. Pior severidade do grupo ganha.
+        group_codes = [p.provider_error_code for p in group if p.provider_error_code]
+        if any(c == "INSUFFICIENT_CREDIT" for c in group_codes):
+            head_icon, head_icon_style = "⛔", "bold red"
+            head_style, group_badge = "bold red", "  ⛔ CRÉDITO ESGOTADO"
+        elif group_codes:
+            head_icon, head_icon_style = "⚠", "bold yellow"
+            head_style, group_badge = "bold yellow", "  ⚠ PROVIDER DEGRADADO"
+        else:
+            head_icon, head_icon_style = "●", "cyan"
+            head_style, group_badge = "bold cyan", ""
         tbl.add_row(
-            Text("●", style="cyan"),
+            Text(head_icon, style=head_icon_style),
             Text(
                 f"{label} ({len(group)} réplica(s) · {ready} ready · "
-                f"{active} ativa(s))",
-                style="bold cyan",
+                f"{active} ativa(s)){group_badge}",
+                style=head_style,
             ),
             "", "", "", "", "",
         )
@@ -8889,6 +9046,36 @@ class PanelApp:
             self._memdebug_last_sample_at = now
         return self._memdebug_summary
 
+    # --- frame composition ---
+
+    def _compose_frame(self) -> RenderableType:
+        """Render da view atual, com o banner global de provedor no topo.
+
+        Ponto único de composição (issue #445): o banner VERMELHO de corte por
+        crédito/provedor fica VISÍVEL em QUALQUER tela — não só no dashboard.
+        Quando a frota está saudável, devolve a view sem moldura extra (zero
+        ruído / zero custo de layout). Best-effort: qualquer falha ao montar o
+        banner cai no render normal da view, nunca derruba o painel.
+        """
+        view_render = self.current_view.render(self)
+        try:
+            banner = _provider_alert_banner(self.data)
+        except Exception:  # noqa: BLE001 — banner nunca quebra o frame
+            banner = None
+        if banner is None:
+            return view_render
+        layout = Layout()
+        # ``size`` cresce com o número de linhas do banner (1 head + N erros);
+        # cap defensivo para não engolir a view em incidentes amplos.
+        rows = banner.renderable
+        n = len(getattr(rows, "renderables", [])) if rows is not None else 1
+        banner_h = min(max(n, 1) + 2, 10)
+        layout.split_column(
+            Layout(banner, name="provider_banner", size=banner_h),
+            Layout(view_render, name="view"),
+        )
+        return layout
+
     # --- snapshots ---
 
     def _snapshot(self) -> Optional[str]:
@@ -8899,7 +9086,7 @@ class PanelApp:
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"panel-{time.strftime('%Y%m%d-%H%M%S')}.txt"
         capture = Console(record=True, width=self.console.size.width)
-        capture.print(self.current_view.render(self))
+        capture.print(self._compose_frame())
         path.write_text(capture.export_text(), encoding="utf-8")
         self._purge_old_snapshots(out_dir)
         return str(path)
@@ -9021,7 +9208,7 @@ class PanelApp:
 
     def _run_loop(self, refresher: Optional["BackgroundRefresher"]) -> int:
         with KeyReader() as keys, Live(
-            self.current_view.render(self),
+            self._compose_frame(),
             console=self.console,
             screen=True,
             # 10 FPS é suficiente pra UI fluida (TUI não é jogo). 30 FPS
@@ -9071,7 +9258,7 @@ class PanelApp:
                     and (now - self._last_render) >= self.current_refresh_s
                 )
                 if consumed or self._last_render == 0.0 or cadence_due:
-                    live.update(self.current_view.render(self))
+                    live.update(self._compose_frame())
                     self._last_render = time.monotonic()
         return 0
 
