@@ -79,12 +79,25 @@ class ResumeCtx:
     """Contexto de retomada de uma sessão anterior.
 
     Passado a :meth:`CliAdapter.build_argv` apenas quando o adapter declara
-    ``supports_resume=True`` E o pipeline pediu resume. Adapters sem resume
-    recebem ``None`` e sempre rodam fresh (o brief lê ``.deile-progress.md``
-    para contexto natural).
+    ``supports_resume=True`` E o pipeline pediu resume (workdir reaproveitado).
+    Adapters sem resume recebem ``None`` e sempre rodam fresh.
+
+    Resume nativo por CLI (issue #445 — anti-sangria de custo). Sempre que há
+    trabalho começado (workdir reusado + sessão anterior), o adapter retoma a
+    conversa nativa do CLI em vez de re-gastar tokens do zero:
+
+    * **opencode**: ``--session <id>`` (sessionID emitido no NDJSON).
+    * **codex**: ``codex exec resume <thread_id>`` (thread.started no JSONL).
+    * **qwen**: ``--resume <session_id>`` (session_id nos eventos JSON).
+    * **goose**: ``goose run --name <task_id> --resume`` (sessão nomeada SQLite;
+      o session_id É o task_id, determinístico — nós o controlamos).
+    * **aider**: ``--restore-chat-history`` (lê ``.aider.chat.history.md`` no
+      workdir reusado; continuidade keyed-by-workdir, sem session_id nativo —
+      o session_id sentinela é o task_id).
 
     Attributes:
-        session_id: identificador da sessão a retomar (semântica nativa do CLI).
+        session_id: identificador da sessão a retomar (semântica nativa do CLI;
+            para CLIs workdir-keyed é o task_id sentinela).
         prev_task_id: task_id do dispatch anterior (hex 16) — localiza o
             workdir/metadata reaproveitados.
     """
@@ -217,6 +230,7 @@ class CliAdapter(Protocol):
         reasoning: Optional[str],
         workdir: str,
         resume: Optional[ResumeCtx],
+        task_id: str = "",
     ) -> List[str]:
         """Monta o argv headless do CLI para um dispatch.
 
@@ -230,6 +244,10 @@ class CliAdapter(Protocol):
             workdir: diretório de trabalho do repositório (cwd do subprocess).
             resume: contexto de retomada ou ``None`` (sempre ``None`` se
                 ``supports_resume=False``).
+            task_id: task_id deste dispatch (hex 16). Default ``""`` para
+                retrocompat com dublês antigos. Adapters cuja semântica de sessão
+                é keyed por nome determinístico (goose ``--name``) usam-no para
+                que fresh e resume compartilhem a MESMA sessão; demais ignoram.
 
         Returns:
             Lista de tokens do argv para ``asyncio.create_subprocess_exec``.
@@ -279,6 +297,34 @@ class CliAdapter(Protocol):
 
         Returns:
             Lista de :class:`ModelInfo`.
+        """
+        ...
+
+    def extract_session_id(
+        self, *, stdout: str, stderr: str, task_id: str,
+    ) -> str:
+        """Deriva o session-id NATIVO do CLI a partir da saída do dispatch.
+
+        Chamado pelo ``cli_worker_server`` após ``parse_output`` para persistir
+        o session-id no meta da task (``.sessions/<task_id>.json``). Esse id é o
+        que viaja de volta ao pipeline via ``resume-info`` e, num re-dispatch
+        sobre trabalho começado, volta em ``resume_session_id`` para que o
+        adapter retome a conversa nativa (issue #445 — anti-sangria de custo).
+
+        Cada adapter sabe onde o seu CLI emite o id (campo NDJSON ``sessionID``
+        no opencode, ``thread.started.thread.id`` no codex, ``session_id`` nos
+        eventos do qwen). CLIs workdir-keyed (goose nomeado, aider) retornam o
+        ``task_id`` sentinela — a continuidade vem do workdir reusado, não de um
+        id de servidor. Default da base: o ``task_id`` (sentinela seguro).
+
+        Args:
+            stdout: saída padrão completa do subprocess.
+            stderr: saída de erro completa do subprocess.
+            task_id: task_id deste dispatch (hex 16) — sentinela/fallback.
+
+        Returns:
+            session-id nativo extraído, ou ``""`` quando o adapter não suporta
+            resume / não conseguiu extrair (o server não persiste id vazio).
         """
         ...
 
@@ -339,6 +385,7 @@ class BaseCliAdapter:
         reasoning: Optional[str],
         workdir: str,
         resume: Optional[ResumeCtx],
+        task_id: str = "",
     ) -> List[str]:
         raise NotImplementedError(
             f"adapter {self.kind!r} must implement build_argv"
@@ -354,6 +401,17 @@ class BaseCliAdapter:
 
     def list_models(self) -> List[ModelInfo]:
         return []
+
+    def extract_session_id(
+        self, *, stdout: str, stderr: str, task_id: str,
+    ) -> str:
+        """Default: sem resume → string vazia (o server não persiste id vazio).
+
+        Adapters com ``supports_resume=True`` sobrescrevem para extrair o
+        session-id nativo da saída (ou retornar o ``task_id`` sentinela quando a
+        continuidade é keyed-by-workdir).
+        """
+        return ""
 
     def provision_auth(
         self, *, model: Optional[str], home: str, env: dict,

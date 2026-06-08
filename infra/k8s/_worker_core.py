@@ -63,6 +63,100 @@ def validate_task_id_for_path(task_id: str) -> bool:
     return bool(TASK_ID_RE.fullmatch(task_id)) if task_id else False
 
 
+# --------------------------------------------------------------------------- #
+# Classificação de erro de provider (anti-sangria de custo — issue #445)
+# --------------------------------------------------------------------------- #
+#
+# O problema: quando o provider LLM corta uma task no meio (402/crédito esgotado,
+# 429/rate-limit, 5xx, conexão), os CLIs headless frequentemente saem com rc=0 e
+# uma mensagem de erro no stdout/stderr — o adapter lê "sem veredito" e marca a
+# task como concluída limpa (``last_is_error=False``). O re-dispatch trata como
+# DONE e o trabalho parcial é jogado fora; o próximo recomeça do zero, re-gastando
+# todos os tokens (comprovado: opencode #629 cortado por 402, marcado completo).
+#
+# Esta função é a FONTE ÚNICA da detecção de corte por provider, chamada por todo
+# adapter no início do ``parse_output``. Quando casa, o adapter retorna
+# ``ok=False`` com o ``error_code`` específico → o server NÃO marca conclusão
+# limpa → o pipeline (``_resolve_resume_meta``/reconcile) trata como resumível e
+# RETOMA (mesmo workdir + sessão nativa), em vez de re-gastar do zero.
+
+#: Codes de erro de provider, em ordem de prioridade de match (o mais específico
+#: ganha). Cada um casa um conjunto de padrões (regex case-insensitive) que
+#: aparecem na saída quando o provider corta a task.
+_PROVIDER_ERROR_PATTERNS: tuple = (
+    # 402 / crédito esgotado / pagamento — o corte mais comum em produção.
+    ("INSUFFICIENT_CREDIT", (
+        r"\b402\b",
+        r"payment\s+required",
+        r"insufficient\s+(?:credit|funds|balance|quota)",
+        r"insufficient_quota",
+        r"out\s+of\s+credit",
+        r"add\s+(?:more\s+)?credits?",
+        r"billing\s+(?:hard\s+)?limit",
+        r"exceeded\s+your\s+current\s+quota",
+    )),
+    # 429 / rate-limit / overloaded — retomável após espera.
+    ("RATE_LIMIT", (
+        r"\b429\b",
+        r"rate[\s_-]?limit",
+        r"too\s+many\s+requests",
+        r"overloaded",
+        r"\boverloaded_error\b",
+    )),
+    # 5xx / erro do servidor do provider — transitório, retomável.
+    ("PROVIDER_ERROR", (
+        r"\b5\d{2}\b\s*(?:error|status|internal|server|bad\s+gateway|"
+        r"service\s+unavailable|gateway\s+timeout)",
+        r"internal\s+server\s+error",
+        r"service\s+unavailable",
+        r"bad\s+gateway",
+        r"gateway\s+time(?:d\s+)?out",
+        r"api\s+error\s*:?\s*5\d{2}",
+    )),
+    # Conexão / rede / timeout de socket com o provider — transitório.
+    ("PROVIDER_CONN", (
+        r"connection\s+(?:error|reset|refused|aborted|timed?\s*out)",
+        r"connection\s+closed",
+        r"econnreset",
+        r"etimedout",
+        r"econnrefused",
+        r"network\s+error",
+        r"socket\s+hang\s*up",
+    )),
+)
+
+#: Pré-compila os padrões uma vez (são fixos por módulo).
+_PROVIDER_ERROR_COMPILED: tuple = tuple(
+    (code, tuple(re.compile(p, re.IGNORECASE) for p in pats))
+    for code, pats in _PROVIDER_ERROR_PATTERNS
+)
+
+
+def classify_provider_error(text: str) -> Optional[str]:
+    """Classifica *text* (stdout+stderr) num ``error_code`` de provider, ou None.
+
+    Retorna o code específico (``INSUFFICIENT_CREDIT``/``RATE_LIMIT``/
+    ``PROVIDER_ERROR``/``PROVIDER_CONN``) quando a saída sinaliza um corte por
+    provider, ou ``None`` quando nada casa (a saída é uma execução normal, e o
+    adapter segue sua heurística usual).
+
+    Prioridade: crédito > rate-limit > 5xx > conexão (o crédito esgotado é o
+    corte mais caro de re-gastar; checado primeiro). Best-effort e barato — só um
+    scan de regex pré-compiladas sobre a saída.
+
+    Esta é a peça anti-sangria (issue #445): um ``error_code`` retornado aqui faz
+    o adapter marcar ``ok=False`` em vez de "conclusão limpa", levando o pipeline
+    a RETOMAR o trabalho parcial (mesmo workdir + sessão nativa) sem re-gastar.
+    """
+    if not text:
+        return None
+    for code, patterns in _PROVIDER_ERROR_COMPILED:
+        for rx in patterns:
+            if rx.search(text):
+                return code
+    return None
+
+
 def pid_alive(pid: int) -> bool:
     """True se o PID ainda está vivo neste sistema (POSIX)."""
     try:
@@ -845,6 +939,7 @@ __all__ = [
     "DEFAULT_LEASE_TTL_S",
     "DEFAULT_LEASE_HEARTBEAT_S",
     "validate_task_id_for_path",
+    "classify_provider_error",
     "pid_alive",
     "dir_bytes",
     "acquire_lease",

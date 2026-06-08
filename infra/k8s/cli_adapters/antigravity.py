@@ -120,6 +120,7 @@ class _AntigravityAdapterDraft(BaseCliAdapter):
         reasoning: Optional[str],
         workdir: str,
         resume: Optional[ResumeCtx],
+        task_id: str = "",
     ) -> List[str]:
         """Rascunho do argv ``agy`` headless (a confirmar contra o binário)."""
         brief_text = self._read_brief(brief_path)
