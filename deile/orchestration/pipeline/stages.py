@@ -1187,7 +1187,11 @@ async def reconcile_critique_issues(monitor: "PipelineMonitor") -> None:
         if not task_id:
             ledger.clear(key)
             continue
-        state, info = await _fetch_reconcile_state(monitor, task_id, "refine")
+        # Lockstep com o dispatch da crítica (implementer.critique usa
+        # stage="classify"): o reconcile precisa resolver o MESMO worker pelo
+        # stage="classify", senão consultaria o endpoint errado (404 → fresh →
+        # double-dispatch). Refine continua em stage="refine".
+        state, info = await _fetch_reconcile_state(monitor, task_id, "classify")
         if state == _RECON_RUNNING:
             continue
         if state == _RECON_GONE:

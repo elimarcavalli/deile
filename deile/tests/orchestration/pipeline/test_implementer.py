@@ -454,12 +454,14 @@ class TestCritiqueRefineNowait:
         assert record is not None
         assert record["task_id"] == "ref-t3"
 
-    async def test_critique_stage_e_persona_preservados(self):
-        """critique() deve continuar usando stage='refine' e persona da issue."""
+    async def test_critique_usa_stage_classify_e_persona(self):
+        """critique() roteia pelo stage='classify' (knob próprio, distinto do
+        refine) e mantém a persona do tipo da issue. São duas chamadas LLM
+        separadas — a crítica julga CLARO/VAGO; o refine reescreve."""
         client = _FakeClient({"task_id": "crit-t4", "status": "running"})
         impl = WorkerImplementer(client=client)
         await impl.critique(_make_monitor_with_forge(), _issue_with_labels(number=10, labels=("intent",)))
-        assert client.last_payload["stage"] == "refine"
+        assert client.last_payload["stage"] == "classify"
         # 'intent' → persona 'analyst'
         assert client.last_payload["persona"] == "analyst"
 

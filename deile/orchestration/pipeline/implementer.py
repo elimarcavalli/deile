@@ -1372,9 +1372,15 @@ class WorkerImplementer(PipelineImplementer):
             forge=monitor.forge.config,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        # A crítica (julgar CLARO/VAGO) é o PRIMEIRO passo LLM e roteia pelo stage
+        # ``classify`` — distinto do ``refine`` (reescrever o corpo). São duas
+        # chamadas LLM separadas em ticks distintos (briefs distintos), então
+        # cada uma pode ter worker/modelo próprios: classify→juízo barato,
+        # refine→reescrita com modelo melhor. O ``classify_new_issues`` em
+        # ``stages.py`` é só a admissão Python (label ~workflow:nova), não LLM.
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
-            persona=persona_for_type(issue_type), stage="refine",
+            persona=persona_for_type(issue_type), stage="classify",
             ledger_key=DispatchLedger.key_for_issue(issue.number), nowait=True,
         )
 

@@ -125,7 +125,11 @@ class TestStageModelPropagation:
         assert client.last_payload["preferred_model"] == \
             "anthropic:claude-sonnet-4-6"
 
-    async def test_critique_refine_decompose_use_refine_stage(self, monkeypatch):
+    async def test_critique_uses_classify_refine_decompose_use_refine(self, monkeypatch):
+        """critique roteia pelo stage ``classify`` (knob próprio); refine e
+        decompose continuam no ``refine``. Modelos independentes por stage."""
+        monkeypatch.setenv("DEILE_PIPELINE_MODEL_CLASSIFY",
+                           "deepseek:deepseek-v4-flash")
         monkeypatch.setenv("DEILE_PIPELINE_MODEL_REFINE",
                            "deepseek:deepseek-v4-pro")
         reset_settings()
@@ -133,7 +137,7 @@ class TestStageModelPropagation:
         client = _FakeClient({"ok": True, "summary": "VEREDITO: CLARO"})
         impl = WorkerImplementer(client=client)
         await impl.critique(_make_monitor(), issue)
-        assert client.last_payload["preferred_model"] == "deepseek:deepseek-v4-pro"
+        assert client.last_payload["preferred_model"] == "deepseek:deepseek-v4-flash"
         await impl.refine(_make_monitor(), issue)
         assert client.last_payload["preferred_model"] == "deepseek:deepseek-v4-pro"
         await impl.decompose(_make_monitor(), issue)
