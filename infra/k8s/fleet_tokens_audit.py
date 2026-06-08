@@ -526,10 +526,9 @@ class TokenCollector:
     def nocache_for_model(self, tk: dict, model: str) -> float:
         """Custo hipotético sem cache (todo input a preço cheio)."""
         decl = self.declared_prices.get(model)
-        p = fleet_cost_of_model
         fresh = {"in": tk.get("in", 0) + tk.get("cc", 0) + tk.get("cr", 0),
                  "out": tk.get("out", 0)}
-        return p(fresh, model, declared=decl)
+        return fleet_cost_of_model(fresh, model, declared=decl)
 
 
 class ClaudeCollector(TokenCollector):

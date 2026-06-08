@@ -86,9 +86,10 @@ def _is_sensitive_provider_var(varname: str, adapter) -> bool:
 
     Conservador: na dúvida trata como segredo — não materializa no manifest.
     """
-    if varname in set(getattr(adapter, "auth_env_keys", []) or []):
-        return True
-    return varname.upper().endswith(_SENSITIVE_SUFFIXES)
+    return (
+        varname in set(getattr(adapter, "auth_env_keys", []) or [])
+        or varname.upper().endswith(_SENSITIVE_SUFFIXES)
+    )
 
 
 def split_provider_env(

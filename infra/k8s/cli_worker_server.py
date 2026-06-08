@@ -111,7 +111,6 @@ async def _release_lease(lease_path: Path) -> None:
     await _core.release_lease(lease_path)
 
 
-SubprocessResult = _core.SubprocessResult
 run_subprocess_with_progress = _core.run_subprocess_with_progress
 
 
@@ -813,10 +812,10 @@ def _build_failure_reason(
     if result_text and result_text.strip():
         return result_text[:max_bytes]
     if stderr and stderr.strip():
-        tail = stderr[-max_bytes:] if len(stderr) > max_bytes else stderr
+        tail = stderr[-max_bytes:]
         return f"rc={returncode} stderr: {tail.strip()}"
     if stdout and stdout.strip():
-        tail = stdout[-max_bytes:] if len(stdout) > max_bytes else stdout
+        tail = stdout[-max_bytes:]
         return f"rc={returncode} stdout: {tail.strip()}"
     if returncode == 124:
         return "subprocess timed out (rc=124)"

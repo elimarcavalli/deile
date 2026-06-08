@@ -128,9 +128,7 @@ def _kubectl_apply_keys_secret(
         pass  # Secret ausente/illegível — começa do zero com os novos valores.
     merged.update(values)
 
-    literals: List[str] = []
-    for k, v in merged.items():
-        literals.append(f"--from-literal={k}={v}")
+    literals: List[str] = [f"--from-literal={k}={v}" for k, v in merged.items()]
     try:
         dry = subprocess.run(
             ["kubectl", "create", "secret", "generic", "cli-worker-keys",

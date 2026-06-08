@@ -202,7 +202,7 @@ class AiderAdapter(BaseCliAdapter):
             return []
 
         models: List[ModelInfo] = []
-        seen: set = set()
+        seen = set()
         for raw in proc.stdout.splitlines():
             line = raw.strip()
             # O Aider lista com prefixo "- " e linhas-cabeçalho; descarta ruído.

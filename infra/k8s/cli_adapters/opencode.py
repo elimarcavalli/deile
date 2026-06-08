@@ -302,7 +302,7 @@ class OpenCodeAdapter(BaseCliAdapter):
             return []
 
         models: List[ModelInfo] = []
-        seen: set = set()
+        seen = set()
         for raw in proc.stdout.splitlines():
             mid = raw.strip()
             if not mid or "/" not in mid or mid in seen:
