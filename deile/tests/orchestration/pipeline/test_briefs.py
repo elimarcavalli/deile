@@ -269,6 +269,12 @@ class TestBriefInvariants:
         # causando flood de re-review. Estas substrings travam ambas as regras.
         "RESOLVER AGORA, nunca re-revisar",  # anti-loop: PR própria com REQUEST_CHANGES
         "PASSO 0 — Checkout",               # checkout obrigatório antes de qualquer ação
+        # Endurecimento do pr_review (homologação multi-CLI): mesmo no merge-direto
+        # de PR própria, o reviewer DEVE (a) validar afirmações da PR contra o código
+        # e (b) postar uma justificativa substantiva — não só o marcador. Sem
+        # reintroduzir loop (justificativa única, no merge/review).
+        "VALIDAÇÃO DE AFIRMAÇÕES",          # confronta claim do doc/README vs código real
+        "tem que ser SUBSTANTIVO",          # comentário de justificativa obrigatório
     ]
 
     def _load_briefs_source(self) -> str:
