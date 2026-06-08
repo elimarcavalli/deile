@@ -737,12 +737,46 @@ class PodInfo:
 
 _ROLE_BY_APP = {
     "deile-pipeline": "pipeline",
+    "deile-monitor":  "monitor",
     "deile-worker":   "worker",
     "deilebot":       "bot",
     "deile-shell":    "shell",
     # issue #396: claude-worker pods are now observable in PodWatchView
     "claude-worker":  "claude-worker",
 }
+
+
+def _cli_fleet_worker_apps() -> frozenset:
+    """Apps dos workers da frota CLI (``<kind>-worker``) DERIVADOS do registro.
+
+    Single source of truth: ``cli_adapters.ADAPTERS``. Cada adapter registrado
+    contribui um app ``<kind>-worker`` cujo Deployment gerado (``gen-worker``)
+    carrega o label ``app: <kind>-worker``. Registrar um adapter novo já faz o
+    pod ser reconhecido como worker-class no painel — sem editar este módulo.
+
+    Tolerante a falha (registro ausente → ``frozenset()``): o painel nunca
+    crasha por causa da frota CLI opcional.
+    """
+    try:
+        import cli_adapters  # noqa: PLC0415 — pacote opcional em infra/k8s
+    except Exception:  # noqa: BLE001
+        return frozenset()
+    return frozenset(f"{kind}-worker" for kind in cli_adapters.ADAPTERS)
+
+
+def _role_for_app(app: str) -> str:
+    """Resolve o ``role`` de um pod a partir do seu label ``app``.
+
+    Workers núcleo + infra usam o mapa estático :data:`_ROLE_BY_APP`; os
+    workers da frota CLI (``<kind>-worker``) recebem o próprio app como role
+    (derivado do registro de adapters). Qualquer outro app → ``"other"``.
+    """
+    static = _ROLE_BY_APP.get(app)
+    if static is not None:
+        return static
+    if app in _cli_fleet_worker_apps():
+        return app  # role == "<kind>-worker"
+    return "other"
 
 
 class PodsProvider(_KubectlProviderMixin):
@@ -780,7 +814,7 @@ class PodsProvider(_KubectlProviderMixin):
             meta = item.get("metadata", {})
             labels = meta.get("labels", {})
             app = labels.get("app", "")
-            role = _ROLE_BY_APP.get(app, "other")
+            role = _role_for_app(app)
             status = item.get("status", {})
             phase = status.get("phase", "Unknown")
             container_statuses = status.get("containerStatuses", []) or []

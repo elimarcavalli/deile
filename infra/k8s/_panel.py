@@ -1075,6 +1075,95 @@ def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodR
     return [row for _, row in pairs]
 
 
+def _is_worker_class_role(role: str) -> bool:
+    """True se *role* é um worker que recebe dispatch (agrupável na tela [1]).
+
+    Cobre o ``deile-worker`` (role ``worker``), o ``claude-worker`` e qualquer
+    worker da frota CLI (role ``<kind>-worker``, derivado do registro de
+    adapters). Pods de infra (pipeline/monitor/bot/shell) NÃO são worker-class.
+    """
+    return role == "worker" or role == "claude-worker" or (
+        role.endswith("-worker") and role != "claude-worker"
+    )
+
+
+def _worker_group_label(role: str) -> str:
+    """Rótulo legível do tipo de worker para o cabeçalho de grupo."""
+    if role == "worker":
+        return "deile-worker"
+    return role  # "claude-worker" / "<kind>-worker"
+
+
+#: Ordem determinística dos grupos de worker na tela [1]: núcleo primeiro
+#: (deile-worker, claude-worker), depois a frota CLI em ordem alfabética.
+def _ordered_worker_roles(roles) -> List[str]:
+    core = [r for r in ("worker", "claude-worker") if r in roles]
+    extra = sorted(r for r in roles if r not in ("worker", "claude-worker"))
+    return [*core, *extra]
+
+
+def _emit_pod_row(tbl, p: "PodRow", restart_fn, doing_fn,
+                  *, indent: bool = False) -> None:
+    """Adiciona uma linha de pod à tabela (com indentação opcional sob grupo).
+
+    Reusado pela tela [1] (Dashboard), PodPicker e PodWatch para que as três
+    renderizem pods com o mesmo estilo — sem duplicar a montagem da linha.
+    """
+    icon_style = "bold yellow" if p.busy else "green"
+    status_style = "green" if p.status == "Running" else "red"
+    doing_text, _ = doing_fn(p)
+    name = (f"  └ {p.name.split('-')[-1]}" if indent else p.name)
+    tbl.add_row(
+        Text(p.icon, style=icon_style),
+        name,
+        Text(p.status, style=status_style),
+        p.age,
+        restart_fn(p.restarts),
+        Text(p.last_activity, style="dim"),
+        doing_text,
+    )
+
+
+def _render_grouped_pods(tbl, rows: List["PodRow"], restart_fn, doing_fn) -> None:
+    """Preenche *tbl* com os pods agrupados por classe de worker (Frente 5).
+
+    Pods de infra (pipeline/monitor/bot/shell e quaisquer ``other``) vêm flat
+    primeiro, na ordem recebida. Em seguida, CADA tipo de worker (deile-worker,
+    claude-worker e os da frota CLI) vira um grupo: 1 cabeçalho
+    ``<tipo> (N réplicas · R ready · A ativa(s))`` + os pods do tipo indentados.
+
+    Single source da detecção de worker-class: :func:`_is_worker_class_role`
+    (derivado do registro de adapters). Adicionar um worker novo agrupa
+    automaticamente, sem editar esta função.
+    """
+    infra_rows = [p for p in rows if not _is_worker_class_role(p.role)]
+    worker_rows = [p for p in rows if _is_worker_class_role(p.role)]
+
+    for p in infra_rows:
+        _emit_pod_row(tbl, p, restart_fn, doing_fn)
+
+    by_role: Dict[str, List["PodRow"]] = {}
+    for p in worker_rows:
+        by_role.setdefault(p.role, []).append(p)
+
+    for role in _ordered_worker_roles(by_role.keys()):
+        group = by_role[role]
+        ready = sum(1 for p in group if p.status == "Running")
+        active = sum(1 for p in group if p.busy)
+        label = _worker_group_label(role)
+        tbl.add_row(
+            Text("●", style="cyan"),
+            Text(
+                f"{label} ({len(group)} réplica(s) · {ready} ready · "
+                f"{active} ativa(s))",
+                style="bold cyan",
+            ),
+            "", "", "", "", "",
+        )
+        for p in group:
+            _emit_pod_row(tbl, p, restart_fn, doing_fn, indent=True)
+
+
 # ===== renderers reaproveitáveis ============================================
 #
 # Mantidos no nível de módulo para que as views da Fase 3+ reusem o mesmo
@@ -1249,38 +1338,11 @@ class DashboardView(View):
                        ratio=3)
         tbl.add_column("doing now", no_wrap=True, overflow="ellipsis", ratio=5)
 
-        # Pods não-claude-worker em ordem; réplicas claude-worker agrupadas
-        # sob um cabeçalho (requisito #3 da proposta).
-        cw_rows = [p for p in rows if p.role == "claude-worker"]
-        other_rows = [p for p in rows if p.role != "claude-worker"]
-
-        def _emit(p: PodRow, *, indent: bool = False) -> None:
-            icon_style = "bold yellow" if p.busy else "green"
-            status_style = "green" if p.status == "Running" else "red"
-            doing_text, _ = _doing_now_render(p)
-            name = (f"  └ {p.name.split('-')[-1]}" if indent else p.name)
-            tbl.add_row(
-                Text(p.icon, style=icon_style),
-                name,
-                Text(p.status, style=status_style),
-                p.age,
-                _restart_text(p.restarts),
-                Text(p.last_activity, style="dim"),
-                doing_text,
-            )
-
-        for p in other_rows:
-            _emit(p)
-        if cw_rows:
-            running = sum(1 for p in cw_rows if p.busy)
-            tbl.add_row(
-                Text("●", style="cyan"),
-                Text(f"claude-worker ({len(cw_rows)} réplicas · {running} ativa(s))",
-                     style="bold cyan"),
-                "", "", "", "", "",
-            )
-            for p in cw_rows:
-                _emit(p, indent=True)
+        # Pods de infra (pipeline/monitor/bot/shell) renderizam flat primeiro;
+        # TODO tipo de worker (deile-worker, claude-worker e os 5 da frota CLI)
+        # é agrupado sob um cabeçalho próprio com contagem ready/total
+        # (Frente 5 — generaliza o agrupamento que existia só p/ claude-worker).
+        _render_grouped_pods(tbl, rows, _restart_text, _doing_now_render)
 
         return Panel(tbl, title="[bold]PODS[/bold]",
                      title_align="left", border_style="cyan",
@@ -1808,14 +1870,22 @@ class PodPickerView(View):
     def _rows(self) -> List[PodRow]:
         """Lista pods do cluster + processos locais (na ordem natural).
 
-        Réplicas ``claude-worker`` são reagrupadas contíguas (antes dos
-        processos locais) para o render desenhar um cabeçalho de grupo sem
-        desalinhar o cursor — ``handle_key`` indexa esta MESMA lista.
+        Os pods worker-class (deile-worker, claude-worker e a frota CLI) são
+        reagrupados contíguos por tipo (antes dos processos locais) para o
+        render desenhar um cabeçalho por grupo sem desalinhar o cursor —
+        ``handle_key`` indexa esta MESMA lista. Reusa a detecção/ordenação de
+        grupos do Dashboard (Frente 5), sem duplicar a regra.
         """
         pods = _pod_rows(self.data)
-        cw = [p for p in pods if p.role == "claude-worker"]
-        other = [p for p in pods if p.role != "claude-worker"]
-        return other + cw + _local_process_rows(self.data)
+        infra = [p for p in pods if not _is_worker_class_role(p.role)]
+        worker_rows = [p for p in pods if _is_worker_class_role(p.role)]
+        by_role: Dict[str, List[PodRow]] = {}
+        for p in worker_rows:
+            by_role.setdefault(p.role, []).append(p)
+        grouped: List[PodRow] = []
+        for role in _ordered_worker_roles(by_role.keys()):
+            grouped.extend(by_role[role])
+        return infra + grouped + _local_process_rows(self.data)
 
     @staticmethod
     def _deployment_for_role(role: str) -> Optional[str]:
@@ -1825,12 +1895,19 @@ class PodPickerView(View):
         sinal para o handler de ``r`` recusar a ação.
         """
         mapping = {
-            "pipeline": "deile-pipeline",
-            "worker":   "deile-worker",
-            "bot":      "deilebot",
-            "shell":    "deile-shell",
+            "pipeline":      "deile-pipeline",
+            "monitor":       "deile-monitor",
+            "worker":        "deile-worker",
+            "claude-worker": "claude-worker",
+            "bot":           "deilebot",
+            "shell":         "deile-shell",
         }
-        return mapping.get(role)
+        if role in mapping:
+            return mapping[role]
+        # Workers da frota CLI: role == "<kind>-worker" == nome do Deployment.
+        if role.endswith("-worker"):
+            return role
+        return None
 
     @staticmethod
     def _pid_from_local_row(row: PodRow) -> Optional[int]:
@@ -1867,20 +1944,34 @@ class PodPickerView(View):
                        ratio=3)
         tbl.add_column("doing now", no_wrap=True, overflow="ellipsis", ratio=5)
 
-        cw_total = sum(1 for p in rows if p.role == "claude-worker")
-        cw_running = sum(1 for p in rows if p.role == "claude-worker" and p.busy)
-        cw_header_done = False
+        # Contagens por grupo de worker-class (p/ cabeçalho ready/total/ativo).
+        group_total: Dict[str, int] = {}
+        group_ready: Dict[str, int] = {}
+        group_active: Dict[str, int] = {}
+        for p in rows:
+            if _is_worker_class_role(p.role):
+                group_total[p.role] = group_total.get(p.role, 0) + 1
+                if p.status == "Running":
+                    group_ready[p.role] = group_ready.get(p.role, 0) + 1
+                if p.busy:
+                    group_active[p.role] = group_active.get(p.role, 0) + 1
+        cw_total = group_total.get("claude-worker", 0)
+        headers_done: set = set()
         for i, p in enumerate(rows):
-            # Cabeçalho do grupo claude-worker (linha visual, fora do cursor).
-            if p.role == "claude-worker" and not cw_header_done:
+            # Cabeçalho do grupo de worker (linha visual, fora do cursor) —
+            # emitido na primeira linha de CADA tipo de worker (Frente 5).
+            if _is_worker_class_role(p.role) and p.role not in headers_done:
+                label = _worker_group_label(p.role)
                 tbl.add_row(
                     "", Text("●", style="cyan"),
-                    Text(f"claude-worker ({cw_total} réplicas · "
-                         f"{cw_running} ativa(s))", style="bold cyan"),
+                    Text(f"{label} ({group_total[p.role]} réplica(s) · "
+                         f"{group_ready.get(p.role, 0)} ready · "
+                         f"{group_active.get(p.role, 0)} ativa(s))",
+                         style="bold cyan"),
                     "", "", "", "", "", "",
                 )
-                cw_header_done = True
-            indent = p.role == "claude-worker"
+                headers_done.add(p.role)
+            indent = _is_worker_class_role(p.role)
             name = f"  └ {p.name.split('-')[-1]}" if indent else p.name
             marker = "▶" if i == self.cursor else " "
             row_style = "bold cyan on grey15" if i == self.cursor else ""
