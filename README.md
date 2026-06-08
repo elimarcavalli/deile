@@ -782,3 +782,7 @@ Projeto licenciado sob [**MIT License**](LICENSE).
 ---
 
 **DEILE 5.1.0** — `python3 deile.py`
+
+## Frota Multi-CLI (implementada)
+
+A frota multi-CLI **já está implementada e em produção na `main`**: cinco workers CLI (aider, goose, opencode, codex, qwen) executam as cinco etapas do pipeline. Resumo do que entregamos: o subpacote `infra/k8s/cli_adapters/`, o servidor genérico `infra/k8s/cli_worker_server.py`, o roteamento per-stage e a auth dual-mode do codex — tudo ativo na branch principal.
