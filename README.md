@@ -782,3 +782,5 @@ Projeto licenciado sob [**MIT License**](LICENSE).
 ---
 
 **DEILE 5.1.0** — `python3 deile.py`
+
+> O monitor do pipeline faz polling do forge a cada **120 segundos** por padrão (ajustável via `DEILE_PIPELINE_POLL_INTERVAL`).
