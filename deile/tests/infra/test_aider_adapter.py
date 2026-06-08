@@ -41,7 +41,7 @@ def test_metadata_matches_plan(adapter):
     assert adapter.kind == "aider"
     assert adapter.default_port == 8774              # §1.13
     assert adapter.auth_mode == "env"
-    assert adapter.supports_resume is False
+    assert adapter.supports_resume is True       # issue #445 — --restore-chat-history
     assert adapter.supports_reasoning is False
     assert adapter.git_strategy == "cli_autocommit"  # §2.4 — ÚNICO da frota
     assert adapter.oauth is None
@@ -90,14 +90,41 @@ def test_build_argv_no_model_omits_flag(adapter):
 
 
 @pytest.mark.unit
-def test_build_argv_ignores_resume(adapter):
+def test_build_argv_fresh_no_restore(adapter):
+    argv = adapter.build_argv(
+        brief_path="/w/.brief.md", model=None, reasoning=None,
+        workdir="/w", resume=None,
+    )
+    assert "--restore-chat-history" not in argv
+
+
+@pytest.mark.unit
+def test_build_argv_resume_restores_chat_history(adapter):
+    # issue #445: resume → --restore-chat-history (continuidade keyed-by-workdir).
     resume = base.ResumeCtx(session_id="sX", prev_task_id="0123456789abcdef")
     argv = adapter.build_argv(
         brief_path="/w/.brief.md", model=None, reasoning="high",
         workdir="/w", resume=resume,
     )
-    assert "sX" not in argv
-    assert "--restore-chat-history" not in argv
+    assert "--restore-chat-history" in argv
+
+
+@pytest.mark.unit
+def test_extract_session_id_is_task_id_sentinel(adapter):
+    # Aider é keyed-by-workdir → session-id sentinela = task_id (sinaliza
+    # "há sessão" para o pipeline reusar o MESMO workdir).
+    sid = adapter.extract_session_id(stdout="", stderr="", task_id="0123456789abcdef")
+    assert sid == "0123456789abcdef"
+
+
+@pytest.mark.unit
+def test_parse_output_provider_402_is_not_clean_completion(adapter):
+    # issue #445: corte por 402 NUNCA vira conclusão limpa → resumível.
+    wr = adapter.parse_output(
+        stdout="litellm: 402 insufficient credit", stderr="", rc=0,
+    )
+    assert wr.ok is False
+    assert wr.error_code == "INSUFFICIENT_CREDIT"
 
 
 @pytest.mark.unit

@@ -87,3 +87,59 @@ def test_has_session_predicate_collects_workdir_without_session(tmp_path):
     )
     assert res["workdirs_removed"] == 1
     assert not (root / _TASK).exists()
+
+
+# --------------------------------------------------------------------------- #
+# classify_provider_error — detecção de corte por provider (issue #445)
+# --------------------------------------------------------------------------- #
+
+
+class TestClassifyProviderError:
+    """A fonte única de detecção anti-sangria: corte por provider vira um
+    ``error_code`` específico (resumível) em vez de conclusão limpa."""
+
+    def test_402_insufficient_credit(self):
+        assert core.classify_provider_error(
+            "Error: 402 Payment Required"
+        ) == "INSUFFICIENT_CREDIT"
+        assert core.classify_provider_error(
+            "insufficient credit on your account"
+        ) == "INSUFFICIENT_CREDIT"
+        assert core.classify_provider_error(
+            "You exceeded your current quota"
+        ) == "INSUFFICIENT_CREDIT"
+        assert core.classify_provider_error(
+            "insufficient_quota"
+        ) == "INSUFFICIENT_CREDIT"
+
+    def test_429_rate_limit(self):
+        assert core.classify_provider_error("HTTP 429") == "RATE_LIMIT"
+        assert core.classify_provider_error("rate limit exceeded") == "RATE_LIMIT"
+        assert core.classify_provider_error("Too Many Requests") == "RATE_LIMIT"
+        assert core.classify_provider_error("overloaded_error") == "RATE_LIMIT"
+
+    def test_5xx_provider_error(self):
+        assert core.classify_provider_error(
+            "internal server error"
+        ) == "PROVIDER_ERROR"
+        assert core.classify_provider_error("502 Bad Gateway") == "PROVIDER_ERROR"
+        assert core.classify_provider_error(
+            "service unavailable"
+        ) == "PROVIDER_ERROR"
+
+    def test_connection_errors(self):
+        assert core.classify_provider_error("ECONNRESET") == "PROVIDER_CONN"
+        assert core.classify_provider_error(
+            "connection reset by peer"
+        ) == "PROVIDER_CONN"
+        assert core.classify_provider_error("socket hang up") == "PROVIDER_CONN"
+
+    def test_clean_output_is_none(self):
+        assert core.classify_provider_error("all tests passed, PR opened") is None
+        assert core.classify_provider_error("") is None
+        assert core.classify_provider_error("commit 402abc done") is None  # não é \b402\b
+
+    def test_credit_wins_over_rate_limit_priority(self):
+        # 402 + 429 no mesmo texto → o mais caro de re-gastar (crédito) ganha.
+        txt = "got 429 then 402 payment required insufficient credit"
+        assert core.classify_provider_error(txt) == "INSUFFICIENT_CREDIT"

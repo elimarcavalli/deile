@@ -49,7 +49,7 @@ def test_metadata_matches_plan(adapter):
     assert adapter.kind == "goose"
     assert adapter.default_port == 8775          # §1.13
     assert adapter.auth_mode == "env"
-    assert adapter.supports_resume is False      # --no-session
+    assert adapter.supports_resume is True       # issue #445 — sessão nomeada + --resume
     assert adapter.supports_reasoning is False
     assert adapter.git_strategy == "brief_driven"
     assert adapter.oauth is None
@@ -63,7 +63,8 @@ def test_satisfies_protocol(adapter):
 
 
 @pytest.mark.unit
-def test_build_argv_form(adapter, brief):
+def test_build_argv_form_no_task_id_degrades_to_no_session(adapter, brief):
+    # Sem task_id (dublê antigo) e sem resume → efêmero --no-session.
     argv = adapter.build_argv(
         brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
     )
@@ -73,6 +74,18 @@ def test_build_argv_form(adapter, brief):
     assert argv[argv.index("--output-format") + 1] == "json"  # §1.6
     assert "--max-turns" in argv                              # teto de custo
     assert argv[argv.index("-t") + 1] == "REFATORE O MÓDULO Z"  # conteúdo
+
+
+@pytest.mark.unit
+def test_build_argv_fresh_uses_named_session(adapter, brief):
+    # issue #445: fresh com task_id → sessão nomeada determinística (resumível).
+    argv = adapter.build_argv(
+        brief_path=brief, model=None, reasoning=None, workdir="/w",
+        resume=None, task_id="0123456789abcdef",
+    )
+    assert argv[argv.index("--name") + 1] == "0123456789abcdef"
+    assert "--no-session" not in argv
+    assert "--resume" not in argv  # fresh não reabre
 
 
 @pytest.mark.unit
@@ -103,13 +116,23 @@ def test_build_argv_no_model_omits_flags(adapter, brief):
 
 
 @pytest.mark.unit
-def test_build_argv_ignores_resume(adapter, brief):
-    resume = base.ResumeCtx(session_id="sQ", prev_task_id="0123456789abcdef")
+def test_build_argv_resume_reopens_named_session(adapter, brief):
+    # issue #445: resume → reabre a MESMA sessão nomeada (= session_id) + --resume.
+    resume = base.ResumeCtx(session_id="0123456789abcdef", prev_task_id="0123456789abcdef")
     argv = adapter.build_argv(
-        brief_path=brief, model=None, reasoning="high", workdir="/w", resume=resume,
+        brief_path=brief, model=None, reasoning="high", workdir="/w",
+        resume=resume, task_id="0123456789abcdef",
     )
-    assert "sQ" not in argv
-    assert "--resume" not in argv
+    assert argv[argv.index("--name") + 1] == "0123456789abcdef"
+    assert "--resume" in argv
+    assert "--no-session" not in argv
+
+
+@pytest.mark.unit
+def test_extract_session_id_is_task_id(adapter):
+    # Sessão nomeada determinística: o session-id É o task_id.
+    sid = adapter.extract_session_id(stdout="", stderr="", task_id="0123456789abcdef")
+    assert sid == "0123456789abcdef"
 
 
 @pytest.mark.unit

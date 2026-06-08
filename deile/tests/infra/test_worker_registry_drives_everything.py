@@ -59,7 +59,7 @@ def synthetic_adapter(monkeypatch):
 
 
             class SynthAdapter(BaseCliAdapter):
-                def build_argv(self, *, brief_path, model, reasoning, workdir, resume):
+                def build_argv(self, *, brief_path, model, reasoning, workdir, resume, task_id=""):
                     return ["true"]
 
                 def parse_output(self, *, stdout, stderr, rc):
@@ -164,7 +164,7 @@ def test_adapter_without_port_is_skipped(monkeypatch):
 
 
             class NoPortAdapter(BaseCliAdapter):
-                def build_argv(self, *, brief_path, model, reasoning, workdir, resume):
+                def build_argv(self, *, brief_path, model, reasoning, workdir, resume, task_id=""):
                     return ["true"]
 
                 def parse_output(self, *, stdout, stderr, rc):

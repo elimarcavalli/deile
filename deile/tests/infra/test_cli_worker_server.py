@@ -46,7 +46,7 @@ def mock_adapter(tmp_path, monkeypatch):
 
 
         class MockAdapter(BaseCliAdapter):
-            def build_argv(self, *, brief_path, model, reasoning, workdir, resume):
+            def build_argv(self, *, brief_path, model, reasoning, workdir, resume, task_id=""):
                 # Comando trivial: cria um marcador no workdir e imprime OK.
                 return ["sh", "-c",
                         f"echo dispatched model={model}; touch {workdir}/.ran"]
@@ -219,7 +219,7 @@ def mock_adapter_auth_fail(tmp_path, monkeypatch):
 
 
         class MockAuthFailAdapter(BaseCliAdapter):
-            def build_argv(self, *, brief_path, model, reasoning, workdir, resume):
+            def build_argv(self, *, brief_path, model, reasoning, workdir, resume, task_id=""):
                 return ["sh", "-c", f"touch {workdir}/.ran"]
 
             def parse_output(self, *, stdout, stderr, rc):
@@ -426,6 +426,204 @@ def test_resolve_adapter_requires_kind(monkeypatch):
     monkeypatch.delenv("DEILE_CLI_WORKER_KIND", raising=False)
     with pytest.raises(RuntimeError):
         cws._resolve_adapter()
+
+
+# --------------------------------------------------------------------------- #
+# Resume nativo end-to-end (issue #445 — anti-sangria de custo)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def mock_resume_adapter(tmp_path, monkeypatch):
+    """Adapter mock com ``supports_resume=True`` que registra o argv num arquivo.
+
+    O ``build_argv`` grava o argv lógico em ``<workdir>/.argv.json`` (para o
+    teste inspecionar resume flags) e cria um marcador. ``extract_session_id``
+    devolve um id fixo ``ses_mock`` (simula a captura do id nativo do CLI).
+    """
+    pkg_dir = Path(cli_adapters.__path__[0])
+    mod_path = pkg_dir / "zzz_mock_resume.py"
+    mod_path.write_text(textwrap.dedent('''\
+        from cli_adapters.base import BaseCliAdapter, WorkResult, ModelInfo
+
+
+        class MockResumeAdapter(BaseCliAdapter):
+            def build_argv(self, *, brief_path, model, reasoning, workdir,
+                           resume, task_id=""):
+                import json
+                flag = []
+                if resume is not None and resume.session_id:
+                    flag = ["--session", resume.session_id]
+                argv = ["sh", "-c", "touch " + workdir + "/.ran"]
+                try:
+                    with open(workdir + "/.argv.json", "w") as fh:
+                        json.dump({"resume_flag": flag, "task_id": task_id,
+                                   "session": resume.session_id if resume else ""}, fh)
+                except OSError:
+                    pass
+                return argv
+
+            def parse_output(self, *, stdout, stderr, rc):
+                import _worker_core as _core
+                code = _core.classify_provider_error(stdout + "\\n" + stderr)
+                if code:
+                    return WorkResult(ok=False, result_text=stdout.strip()[:200],
+                                      error_code=code)
+                return WorkResult(ok=(rc == 0), result_text=stdout.strip()[:200])
+
+            def extract_session_id(self, *, stdout, stderr, task_id):
+                return "ses_mock"
+
+            def list_models(self):
+                return [ModelInfo(id="m", provider="openrouter")]
+
+
+        ADAPTER = MockResumeAdapter(
+            kind="mockresume", default_port=8797, supports_resume=True,
+            auth_env_keys=["MOCK_API_KEY"], writable_dirs=["HOME"],
+        )
+    '''), encoding="utf-8")
+    cli_adapters.reload_adapters()
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "mockresume")
+    monkeypatch.setenv("DEILE_CLI_WORKER_ROOT", str(tmp_path / "work"))
+    try:
+        yield tmp_path / "work"
+    finally:
+        mod_path.unlink(missing_ok=True)
+        sys.modules.pop("cli_adapters.zzz_mock_resume", None)
+        cli_adapters.reload_adapters()
+        cws._models_cache.clear()
+
+
+def _commit_pushed_git(monkeypatch):
+    """Faz o gate de git passar: cada chamada a HEAD devolve um sha único (logo
+    base_sha != head pós-run → commit novo), push confirmado, e ``_finalize_git``
+    é um no-op (não toca git real)."""
+    counter = {"n": 0}
+
+    async def _fake_head(_workdir):
+        counter["n"] += 1
+        return f"sha-{counter['n']}"
+
+    async def _passthrough_finalize(adapter, work, **_kw):
+        return work
+
+    monkeypatch.setattr(cws, "_git_head", _fake_head)
+    monkeypatch.setattr(cws, "_git_branch_pushed", _async_return(True))
+    monkeypatch.setattr(cws, "_finalize_git", _passthrough_finalize)
+
+
+async def test_fresh_dispatch_persists_session_id(mock_resume_adapter, monkeypatch):
+    """Fresh dispatch captura o session-id nativo e o devolve em resume-info."""
+    _commit_pushed_git(monkeypatch)
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "do it", "branch": "auto/issue-1", "cli_model": "m"},
+        )
+        body = await resp.json()
+        assert body["ok"] is True
+        assert body["session_id"] == "ses_mock"
+        task_id = body["task_id"]
+
+        ri = await client.get(
+            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+        )
+        ri_body = await ri.json()
+        assert ri_body["session_id"] == "ses_mock"
+        assert ri_body["attempt"] == 1
+        assert ri_body["claude_alive"] is False
+
+
+async def test_provider_error_is_not_clean_completion(
+    mock_resume_adapter, monkeypatch,
+):
+    """402 mid-task -> ok=False + error_code, NUNCA last_is_error=False (bug #629)."""
+    monkeypatch.setattr(cws, "_git_head", _async_return("h"))
+    monkeypatch.setattr(cws, "_git_branch_pushed", _async_return(True))
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        adapter = cws._resolve_adapter()
+
+        def _argv_402(**kw):
+            wd = kw["workdir"]
+            return ["sh", "-c",
+                    f"echo 'Error: 402 Payment Required insufficient credit'; "
+                    f"touch {wd}/.ran"]
+
+        monkeypatch.setattr(adapter, "build_argv", _argv_402)
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "x", "branch": "auto/issue-1", "cli_model": "m"},
+        )
+        body = await resp.json()
+        assert body["ok"] is False
+        assert body["error_code"] == "INSUFFICIENT_CREDIT"
+        assert body["is_error"] is True
+
+        ri = await client.get(
+            f"/v1/dispatches/{body['task_id']}/resume-info", headers=_AUTH_HEADERS,
+        )
+        ri_body = await ri.json()
+        assert ri_body["last_is_error"] is True
+        assert ri_body["last_error_code"] == "INSUFFICIENT_CREDIT"
+
+
+async def test_resume_reuses_workdir_and_passes_session(
+    mock_resume_adapter, monkeypatch,
+):
+    """Re-dispatch com resume REUSA o workdir e passa --session no argv."""
+    import json
+    _commit_pushed_git(monkeypatch)
+    root = mock_resume_adapter
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        r1 = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "passo 1", "branch": "auto/issue-1", "cli_model": "m"},
+        )
+        b1 = await r1.json()
+        task_id = b1["task_id"]
+        workdir = root / task_id
+        assert workdir.is_dir()
+        (workdir / ".witness").write_text("eu-sobrevivi")
+
+        r2 = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "continue", "branch": "auto/issue-1", "cli_model": "m",
+                  "resume_session_id": "ses_mock", "prev_task_id": task_id},
+        )
+        b2 = await r2.json()
+        assert b2["task_id"] == task_id
+        assert (workdir / ".witness").read_text() == "eu-sobrevivi"
+        argv_meta = json.loads((workdir / ".argv.json").read_text())
+        assert argv_meta["session"] == "ses_mock"
+        assert argv_meta["resume_flag"] == ["--session", "ses_mock"]
+
+        ri = await client.get(
+            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+        )
+        assert (await ri.json())["attempt"] == 2
+
+
+async def test_resume_with_missing_workdir_degrades_to_fresh(
+    mock_resume_adapter, monkeypatch,
+):
+    """prev_task_id cujo workdir sumiu -> degrada para fresh (novo task_id)."""
+    _commit_pushed_git(monkeypatch)
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "x", "branch": "auto/issue-1", "cli_model": "m",
+                  "resume_session_id": "ses_mock",
+                  "prev_task_id": "0000000000000000"},
+        )
+        body = await resp.json()
+        assert body["task_id"] != "0000000000000000"
+        assert body["ok"] is True
+
 
 
 # --------------------------------------------------------------------------- #

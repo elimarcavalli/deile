@@ -59,7 +59,7 @@ def test_metadata_matches_plan(adapter):
     assert adapter.kind == "codex"
     assert adapter.default_port == 8772          # §1.13
     assert adapter.auth_mode == "env"            # §2.2 — OPENAI_API_KEY default
-    assert adapter.supports_resume is False      # fresh-only na frota
+    assert adapter.supports_resume is True       # issue #445 — codex exec resume
     assert adapter.supports_reasoning is True    # §1.10 — model_reasoning_effort
     assert adapter.git_strategy == "brief_driven"
     assert "OPENAI_API_KEY" in adapter.auth_env_keys
@@ -125,13 +125,24 @@ def test_build_argv_no_model_omits_flag(adapter, brief):
 
 
 @pytest.mark.unit
-def test_build_argv_ignores_resume(adapter, brief):
-    resume = base.ResumeCtx(session_id="s1", prev_task_id="0123456789abcdef")
+def test_build_argv_fresh_has_no_resume_subcommand(adapter, brief):
+    argv = adapter.build_argv(
+        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
+    )
+    assert argv[:2] == ["codex", "exec"]
+    assert "resume" not in argv
+
+
+@pytest.mark.unit
+def test_build_argv_resume_uses_exec_resume(adapter, brief):
+    # issue #445: resume → `codex exec resume <thread_id> ...`.
+    resume = base.ResumeCtx(session_id="thr_xyz", prev_task_id="0123456789abcdef")
     argv = adapter.build_argv(
         brief_path=brief, model=None, reasoning=None, workdir="/w", resume=resume,
     )
-    assert "s1" not in argv
-    assert "--resume" not in argv and "-c" not in argv
+    assert argv[:4] == ["codex", "exec", "resume", "thr_xyz"]
+    assert "--cd" in argv  # ainda passa o workdir
+    assert argv[-1] == "IMPLEMENTE A FEATURE X"  # brief continua o prompt posicional
 
 
 @pytest.mark.unit
@@ -191,11 +202,32 @@ def test_parse_output_nested_msg_type(adapter):
 
 @pytest.mark.unit
 def test_parse_output_error_event_fails(adapter):
-    stdout = json.dumps({"type": "error", "message": "rate limit excedido"})
+    stdout = json.dumps({"type": "error", "message": "tool execution failed"})
     wr = adapter.parse_output(stdout=stdout, stderr="", rc=0)
     assert wr.ok is False
-    assert "rate limit" in wr.result_text
+    assert "tool execution failed" in wr.result_text
     assert wr.error_code == "CLI_REPORTED_ERROR"
+
+
+@pytest.mark.unit
+def test_parse_output_provider_402_is_not_clean_completion(adapter):
+    # issue #445: corte por 402 NUNCA vira conclusão limpa → resumível.
+    wr = adapter.parse_output(
+        stdout='{"type":"error","message":"insufficient_quota"}', stderr="", rc=0,
+    )
+    assert wr.ok is False
+    assert wr.error_code == "INSUFFICIENT_CREDIT"
+
+
+@pytest.mark.unit
+def test_extract_session_id_from_thread_started(adapter):
+    stdout = "\n".join([
+        json.dumps({"type": "thread.started", "thread": {"id": "thr_999"}}),
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "agent_message", "text": "ok"}}),
+    ])
+    sid = adapter.extract_session_id(stdout=stdout, stderr="", task_id="t")
+    assert sid == "thr_999"
 
 
 @pytest.mark.unit

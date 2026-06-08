@@ -235,13 +235,34 @@ class TestPvcWorkerGeneratesPvcAndCron:
         assert "run_cleanup" in args
 
     def test_env_only_worker_has_no_pvc_no_cron(self):
-        # Sanity: um worker env-only não emite PVC nem CronJob.
-        env_kind = next(
-            k for k in _FLEET_KINDS if not _needs_pvc(cli_adapters.ADAPTERS[k])
+        # Sanity: um worker env-only SEM resume não emite PVC nem CronJob.
+        # Desde a issue #445 todos os adapters da frota têm supports_resume=True
+        # (PVC obrigatório para o workdir sobreviver entre dispatches), então
+        # registramos um adapter sintético fresh-only para exercitar o caminho
+        # emptyDir.
+        from cli_adapters.base import BaseCliAdapter, ModelInfo, WorkResult
+
+        class _EnvOnlyAdapter(BaseCliAdapter):
+            def build_argv(self, **_kw):
+                return ["true"]
+
+            def parse_output(self, **_kw):
+                return WorkResult(ok=True)
+
+            def list_models(self):
+                return [ModelInfo(id="x")]
+
+        kind = "envonlyprobe"
+        cli_adapters.ADAPTERS[kind] = _EnvOnlyAdapter(
+            kind=kind, default_port=8796, auth_mode="env",
+            supports_resume=False, auth_env_keys=["X_KEY"],
         )
-        kinds = [
-            d["kind"] for d in yaml.safe_load_all(gen.render_manifests(env_kind)) if d
-        ]
+        try:
+            kinds = [
+                d["kind"] for d in yaml.safe_load_all(gen.render_manifests(kind)) if d
+            ]
+        finally:
+            cli_adapters.ADAPTERS.pop(kind, None)
         assert "PersistentVolumeClaim" not in kinds
         assert "CronJob" not in kinds
 
@@ -404,14 +425,18 @@ class TestOauthModeOverride:
         rendered = gen.render_manifests("codex", namespace="deile")
         docs = self._docs(rendered)
         kinds = [d["kind"] for d in docs]
-        assert "PersistentVolumeClaim" not in kinds
-        assert "CronJob" not in kinds
+        # Desde a issue #445 o codex tem supports_resume=True → PVC + CronJob são
+        # esperados MESMO no modo default (resume exige workdir persistente). O
+        # que o modo default NÃO deve trazer são os blocos OAuth abaixo.
+        assert "PersistentVolumeClaim" in kinds
+        assert "CronJob" in kinds
         dep = next(d for d in docs if d["kind"] == "Deployment")
         spec = dep["spec"]["template"]["spec"]
         assert spec.get("initContainers") in (None, [])
         vols = {v["name"]: v for v in spec["volumes"]}
         assert "oauth-cred" not in vols
-        assert "emptyDir" in vols["worker-home"]
+        # worker-home é PVC (resume) — não mais emptyDir.
+        assert "persistentVolumeClaim" in vols["worker-home"]
         env = self._container_env(dep)
         assert "DEILE_CODEX_AUTH" not in env
 

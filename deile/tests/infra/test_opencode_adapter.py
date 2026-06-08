@@ -54,7 +54,7 @@ def test_metadata_matches_plan(adapter):
     assert adapter.kind == "opencode"
     assert adapter.default_port == 8771          # §1.13
     assert adapter.auth_mode == "env"            # §1.11 — API key, não expira
-    assert adapter.supports_resume is False      # §2.1 — fresh-only
+    assert adapter.supports_resume is True       # issue #445 — resume via --session
     assert adapter.supports_reasoning is False
     assert adapter.git_strategy == "brief_driven"  # §1.5
     assert adapter.oauth is None
@@ -109,16 +109,25 @@ def test_build_argv_no_model_omits_flag(adapter):
 
 
 @pytest.mark.unit
-def test_build_argv_ignores_resume_fresh_only(adapter):
-    # supports_resume=False → mesmo passando resume, o argv não ganha -c/-s.
+def test_build_argv_fresh_has_no_session_flag(adapter):
+    # Sem resume → argv fresh não ganha --session.
+    argv = adapter.build_argv(
+        brief_path="/w/.brief.md", model=None, reasoning=None,
+        workdir="/w", resume=None,
+    )
+    assert "--session" not in argv
+
+
+@pytest.mark.unit
+def test_build_argv_resume_passes_session(adapter):
+    # issue #445: resume → --session <session_id> para retomar a conversa nativa.
     resume = base.ResumeCtx(session_id="sess-123", prev_task_id="0123456789abcdef")
     argv = adapter.build_argv(
         brief_path="/w/.brief.md", model=None, reasoning=None,
         workdir="/w", resume=resume,
     )
-    assert "-c" not in argv and "--continue" not in argv
-    assert "-s" not in argv and "--session" not in argv
-    assert "sess-123" not in argv
+    assert "--session" in argv
+    assert argv[argv.index("--session") + 1] == "sess-123"
 
 
 @pytest.mark.unit
@@ -181,12 +190,46 @@ def test_parse_output_last_text_event(adapter):
 def test_parse_output_error_event_fails(adapter):
     stdout = "\n".join([
         json.dumps({"type": "step_start"}),
-        json.dumps({"type": "error", "message": "rate limit excedido"}),
+        json.dumps({"type": "error", "message": "tool execution failed"}),
     ])
     wr = adapter.parse_output(stdout=stdout, stderr="", rc=0)
     assert wr.ok is False
-    assert "rate limit" in wr.result_text
+    assert "tool execution failed" in wr.result_text
     assert wr.error_code == "CLI_REPORTED_ERROR"
+
+
+@pytest.mark.unit
+def test_parse_output_provider_402_is_not_clean_completion(adapter):
+    # issue #445: corte por 402 NUNCA vira conclusão limpa → resumível.
+    wr = adapter.parse_output(
+        stdout="Error: 402 Payment Required — insufficient credit",
+        stderr="", rc=0,
+    )
+    assert wr.ok is False
+    assert wr.error_code == "INSUFFICIENT_CREDIT"
+
+
+@pytest.mark.unit
+def test_parse_output_provider_429_classified(adapter):
+    wr = adapter.parse_output(stdout="", stderr="429 Too Many Requests", rc=1)
+    assert wr.ok is False
+    assert wr.error_code == "RATE_LIMIT"
+
+
+@pytest.mark.unit
+def test_extract_session_id_from_ndjson(adapter):
+    stdout = "\n".join([
+        json.dumps({"type": "step_start", "sessionID": "ses_abc123"}),
+        json.dumps({"type": "text", "text": "done"}),
+    ])
+    sid = adapter.extract_session_id(stdout=stdout, stderr="", task_id="t")
+    assert sid == "ses_abc123"
+
+
+@pytest.mark.unit
+def test_extract_session_id_empty_when_no_event(adapter):
+    sid = adapter.extract_session_id(stdout="no json here", stderr="", task_id="t")
+    assert sid == ""
 
 
 @pytest.mark.unit

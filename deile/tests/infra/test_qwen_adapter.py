@@ -49,7 +49,7 @@ def test_metadata_matches_plan(adapter):
     assert adapter.kind == "qwen"
     assert adapter.default_port == 8773          # §1.13
     assert adapter.auth_mode == "env"            # §2.3 — OPENAI_API_KEY (tríade)
-    assert adapter.supports_resume is False
+    assert adapter.supports_resume is True       # issue #445 — qwen --resume
     assert adapter.supports_reasoning is False
     assert adapter.git_strategy == "brief_driven"
     assert adapter.oauth is None
@@ -82,13 +82,43 @@ def test_build_argv_form(adapter, brief):
 
 
 @pytest.mark.unit
-def test_build_argv_ignores_resume(adapter, brief):
+def test_build_argv_fresh_has_no_resume(adapter, brief):
+    argv = adapter.build_argv(
+        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
+    )
+    assert "--resume" not in argv
+
+
+@pytest.mark.unit
+def test_build_argv_resume_passes_session(adapter, brief):
+    # issue #445: resume → --resume <session_id>; reasoning segue ignorado.
     resume = base.ResumeCtx(session_id="s9", prev_task_id="0123456789abcdef")
     argv = adapter.build_argv(
         brief_path=brief, model=None, reasoning="high", workdir="/w", resume=resume,
     )
-    assert "s9" not in argv
+    assert argv[argv.index("--resume") + 1] == "s9"
     assert "--variant" not in argv  # reasoning não suportado → ignorado
+
+
+@pytest.mark.unit
+def test_extract_session_id_from_events(adapter):
+    import json
+    stdout = json.dumps([
+        {"type": "system", "subtype": "session_start", "session_id": "qwen-1"},
+        {"type": "result", "session_id": "qwen-1", "result": "ok", "is_error": False},
+    ])
+    assert adapter.extract_session_id(stdout=stdout, stderr="", task_id="t") == "qwen-1"
+
+
+@pytest.mark.unit
+def test_parse_output_provider_429_classified(adapter):
+    import json
+    stdout = json.dumps([
+        {"type": "result", "is_error": True, "result": "429 rate limit exceeded"},
+    ])
+    wr = adapter.parse_output(stdout=stdout, stderr="", rc=0)
+    assert wr.ok is False
+    assert wr.error_code == "RATE_LIMIT"
 
 
 @pytest.mark.unit

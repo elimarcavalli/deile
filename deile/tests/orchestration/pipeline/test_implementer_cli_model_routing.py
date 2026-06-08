@@ -49,7 +49,7 @@ def cli_worker_adapter(monkeypatch):
 
 
             class CliRouterAdapter(BaseCliAdapter):
-                def build_argv(self, *, brief_path, model, reasoning, workdir, resume):
+                def build_argv(self, *, brief_path, model, reasoning, workdir, resume, task_id=""):
                     return ["true"]
 
                 def parse_output(self, *, stdout, stderr, rc):

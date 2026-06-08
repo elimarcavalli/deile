@@ -119,7 +119,7 @@ def repo_adapter(tmp_path, monkeypatch, patched_clone):
 
 
         class RepoMock(BaseCliAdapter):
-            def build_argv(self, *, brief_path, model, reasoning, workdir, resume):
+            def build_argv(self, *, brief_path, model, reasoning, workdir, resume, task_id=""):
                 # Em workdir (= checkout), cria um arquivo. Commit só se o
                 # git_strategy do teste pedir (env MOCK_DO_COMMIT=1).
                 script = (
