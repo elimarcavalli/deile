@@ -1102,6 +1102,60 @@ def _ordered_worker_roles(roles) -> List[str]:
     return [*core, *extra]
 
 
+def _scale_deployment(ns: str, deploy_name: str, replicas: int) -> Tuple[bool, str]:
+    """``kubectl scale deployment/<name> --replicas=N`` → ``(ok, msg)``.
+
+    Single source da operação de scale do painel — reusado pela
+    ``WorkerScalingView`` (Frente 6) e pelo legado ``DispatchMatrixView``.
+    Verifica a existência do Deployment antes (msg clara se ausente) e roda
+    inline (chamada de API ~100ms). Best-effort: kubectl ausente → erro
+    legível, nunca exceção que derrube o painel.
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado — scale impossível"
+    check = subprocess.run(
+        [kubectl, "-n", ns, "get", "deployment", deploy_name],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if check.returncode != 0:
+        return False, (
+            f"deployment/{deploy_name} não encontrado em `{ns}` — "
+            "instale-o primeiro"
+        )
+    result = subprocess.run(
+        [kubectl, "-n", ns, "scale",
+         f"deployment/{deploy_name}", f"--replicas={replicas}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+    )
+    if result.returncode == 0:
+        return True, f"deployment/{deploy_name} → {replicas} réplica(s)"
+    return False, f"scale {deploy_name} falhou: {result.stderr.strip()[:120]}"
+
+
+def _read_deployment_replicas(ns: str, deploy_name: str) -> Optional[int]:
+    """Lê ``spec.replicas`` desejado de um Deployment; ``None`` se ausente.
+
+    Usado pela ``WorkerScalingView`` para mostrar o alvo atual de réplicas
+    por worker. Best-effort (kubectl ausente / deployment não existe → None).
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return None
+    try:
+        r = subprocess.run(
+            [kubectl, "-n", ns, "get", "deployment", deploy_name,
+             "-o", "jsonpath={.spec.replicas}"],
+            capture_output=True, text=True, timeout=8,
+        )
+        if r.returncode != 0:
+            return None
+        val = r.stdout.strip()
+        return int(val) if val else None
+    except Exception:  # noqa: BLE001 — kubectl/parse falham → desconhecido
+        return None
+
+
 def _emit_pod_row(tbl, p: "PodRow", restart_fn, doing_fn,
                   *, indent: bool = False) -> None:
     """Adiciona uma linha de pod à tabela (com indentação opcional sob grupo).
@@ -1261,12 +1315,12 @@ class DashboardView(View):
             return (
                 "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
                 "[t]okens  [M]onitor  [n]otifier  [a]ctivity:[↑↓/enter/esc]  "
-                f"[m]odel/runtime  [d]ispatch  [s]ort:{self.sort_mode}  [?]help  [q]uit"
+                f"[m]odel/runtime  [d]ispatch  [S]caling  [s]ort:{self.sort_mode}  [?]help  [q]uit"
             )
         return (
             "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
             "[t]okens  [M]onitor  [n]otifier  [a]ctivity  [m]odel/runtime  "
-            f"[d]ispatch  [s]ort:{self.sort_mode}  [?]help  [q]uit"
+            f"[d]ispatch  [S]caling  [s]ort:{self.sort_mode}  [?]help  [q]uit"
         )
 
     def render(self, app: "PanelApp") -> RenderableType:
@@ -1726,6 +1780,9 @@ class DashboardView(View):
             # única view. As views legadas continuam no código (não foram
             # deletadas) mas saíram do registry — limpeza fica para FU PR.
             "d": "dispatch-mode-matrix",
+            # [S] MAIÚSCULO → tela dedicada de Worker Scaling (Frente 6).
+            # [s] minúsculo continua sendo o ciclo de sort (tratado abaixo).
+            "S": "worker-scaling",
             # [M] MAIÚSCULO → view dedicada do deile-monitor.
             # [m] minúsculo continua sendo model-switcher (mapeado acima).
             # O KeyReader distingue maiúsculo/minúsculo via termios cbreak —
@@ -5807,6 +5864,254 @@ class DispatchModeView(View):
         self.last_msg = msg
 
 
+class WorkerScalingView(View):
+    """Tela dedicada de escalonamento de réplicas por TIPO de worker (Frente 6).
+
+    Tira a edição de réplicas da ``DispatchMatrixView`` (que misturava dispatch
+    config com scaling) e dá a ela uma tela própria, navegável e clara:
+
+    - Uma linha por worker (os dispatchers de ``get_valid_dispatchers`` — os 2
+      núcleo + a frota CLI; o role do worker == nome do Deployment), com as
+      réplicas DESEJADAS (``spec.replicas``) e os pods READY do cluster.
+    - ``[↑/↓]`` move o cursor; ``[+]/[-]`` incrementa/decrementa réplicas e
+      aplica via ``kubectl scale`` na hora; ``[enter]`` abre prompt numérico
+      para setar um valor exato (0-N); ``[esc]``/``[q]`` volta ao dashboard.
+
+    Single source: a lista de workers vem do registro de adapters (idem
+    ``DispatchMatrixView._canonical_workers``); o scale reusa
+    :func:`_scale_deployment`.
+    """
+
+    name = "worker-scaling"
+    title = "Worker Scaling ([S])"
+    refresh_s = 2.0
+
+    HOTKEYS = (
+        "[↑/↓] worker   [+/-] -/+ 1 réplica (aplica já)   "
+        "[enter] setar valor exato (0-20)   [r] refresh   [q]/[esc] back"
+    )
+
+    _MAX_REPLICAS = 20
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.cursor: int = 0
+        # Prompt numérico de valor exato. None = navegando; ("scale", deploy,
+        # [buffer]) = digitando réplicas.
+        self.mode: Optional[tuple] = None
+        self.last_msg: str = ""
+        self.last_ok: Optional[bool] = None
+
+    def on_unmount(self, app) -> None:
+        self.mode = None
+
+    def intercepts_key(self, key: str) -> bool:
+        # ESC dentro do prompt fecha o modal (não pop a view).
+        return key == "ESC" and self.mode is not None
+
+    # --- data ------------------------------------------------------------
+
+    def _ns(self) -> str:
+        return (self.data.context.namespace
+                if self.data is not None and getattr(self.data, "context", None)
+                else _NS_DEFAULT)
+
+    def _worker_deployments(self) -> List[str]:
+        """Deployments worker = dispatchers válidos (role == nome do Deployment).
+
+        Derivado do registro de adapters via ``DispatchMatrixView`` (mesma
+        fonte da coluna Worker da matriz) — registrar um worker novo já o lista
+        aqui sem editar esta view.
+        """
+        return DispatchMatrixView._canonical_workers()
+
+    def _ready_by_role(self) -> Dict[str, int]:
+        """Conta pods Running por role (worker == role) — display de ready."""
+        if self.data is None or getattr(self.data, "pods", None) is None:
+            return {}
+        counts: Dict[str, int] = {}
+        try:
+            pods = self.data.pods.get()
+        except Exception:  # noqa: BLE001
+            return {}
+        for p in pods:
+            if p.status == "Running":
+                counts[p.role] = counts.get(p.role, 0) + 1
+        return counts
+
+    # --- render ----------------------------------------------------------
+
+    def render(self, app) -> RenderableType:
+        workers = self._worker_deployments()
+        if workers:
+            self.cursor = max(0, min(self.cursor, len(workers) - 1))
+        ready = self._ready_by_role()
+        ns = self._ns()
+
+        tbl = Table(show_header=True, box=box.SIMPLE_HEAVY, expand=True)
+        tbl.add_column(" ", no_wrap=True)
+        tbl.add_column("Worker", style="bold cyan", min_width=14)
+        tbl.add_column("Desired", justify="right")
+        tbl.add_column("Ready", justify="right")
+        tbl.add_column("Deployment", style="dim")
+
+        for i, worker in enumerate(workers):
+            # worker == role == nome do Deployment ("deile-worker" mapeia o role
+            # interno "worker", mas o Deployment se chama "deile-worker").
+            desired = (_read_deployment_replicas(ns, worker)
+                       if self.data is not None else None)
+            role = "worker" if worker == "deile-worker" else worker
+            ready_n = ready.get(role, 0)
+            desired_txt = str(desired) if desired is not None else "—"
+            marker = "▶" if i == self.cursor else " "
+            name_cell = (f"[reverse]{worker}[/reverse]"
+                         if i == self.cursor else worker)
+            tbl.add_row(
+                Text(marker, style="bold cyan"),
+                name_cell,
+                desired_txt,
+                str(ready_n),
+                worker,
+            )
+
+        parts: List[RenderableType] = [tbl]
+        if self.mode is not None:
+            parts.append(self._render_prompt())
+        if self.last_msg:
+            border = "green" if self.last_ok else (
+                "red" if self.last_ok is False else "yellow")
+            parts.append(Panel(
+                Text(self.last_msg,
+                     style="bold green" if self.last_ok else (
+                         "bold red" if self.last_ok is False else "yellow")),
+                title="[bold]ÚLTIMA AÇÃO[/bold]",
+                title_align="left", border_style=border,
+            ))
+        parts.append(Text(self.HOTKEYS, style="dim"))
+        return Panel(
+            Group(*parts),
+            title="[bold]WORKER SCALING[/bold]  (réplicas por tipo de worker)",
+            title_align="left", border_style="cyan",
+        )
+
+    def _render_prompt(self) -> RenderableType:
+        _, deploy, buf = self.mode  # type: ignore[misc]
+        cur = buf[0] if buf else ""
+        return Panel(
+            Group(
+                Text(f"› {cur}_", style="bold cyan"),
+                Text(""),
+                Text("[0-9] digita réplicas   [backspace] apaga   "
+                     "[enter] confirma   [esc] cancela",
+                     style="dim cyan"),
+            ),
+            title=f"[bold yellow]RÉPLICAS PARA '{deploy}' (0-{self._MAX_REPLICAS})[/bold yellow]",
+            title_align="left", border_style="yellow",
+        )
+
+    # --- input -----------------------------------------------------------
+
+    def handle_key(self, key: str, app) -> ActionResult:
+        try:
+            return self._handle_key_safe(key, app)
+        except Exception as exc:  # noqa: BLE001 — input nunca derruba o painel
+            self.last_msg = f"erro no handler {key!r}: {type(exc).__name__}: {exc}"
+            self.last_ok = False
+            self.mode = None
+            return ActionResult.refresh()
+
+    def _handle_key_safe(self, key: str, app) -> ActionResult:
+        if self.mode is not None:
+            return self._handle_prompt_key(key)
+
+        workers = self._worker_deployments()
+        n = len(workers)
+        if key in ("q", "ESC"):
+            return ActionResult.nav("dashboard")
+        if key == "r":
+            if self.data is not None:
+                try:
+                    self.data.pods.get(force=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            return ActionResult.refresh()
+        if not n:
+            return ActionResult()
+        if key in ("UP", "k"):
+            self.cursor = (self.cursor - 1) % n
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.cursor = (self.cursor + 1) % n
+            return ActionResult.refresh()
+        if key in ("+", "="):  # '=' = '+' sem shift em muitos teclados
+            return self._adjust(workers[self.cursor], +1)
+        if key in ("-", "_"):
+            return self._adjust(workers[self.cursor], -1)
+        if key in ("\r", "\n"):
+            self.mode = ("scale", workers[self.cursor], [""])
+            self.last_msg = ""
+            self.last_ok = None
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _adjust(self, deploy: str, delta: int) -> ActionResult:
+        """Lê o desired atual, soma *delta* (clamp 0..MAX) e aplica."""
+        if self.data is None:
+            self.last_msg = f"[demo] {deploy} {delta:+d} réplica (sem cluster)"
+            self.last_ok = False
+            return ActionResult.refresh()
+        ns = self._ns()
+        cur = _read_deployment_replicas(ns, deploy)
+        if cur is None:
+            cur = 0
+        target = max(0, min(self._MAX_REPLICAS, cur + delta))
+        if target == cur:
+            self.last_msg = (
+                f"{deploy} já em {cur} (limite {0 if delta < 0 else self._MAX_REPLICAS})"
+            )
+            self.last_ok = None
+            return ActionResult.refresh()
+        ok, msg = _scale_deployment(ns, deploy, target)
+        self.last_ok = ok
+        self.last_msg = msg
+        return ActionResult.refresh()
+
+    def _handle_prompt_key(self, key: str) -> ActionResult:
+        kind, deploy, buf = self.mode  # type: ignore[misc]
+        cur = buf[0] if buf else ""
+        if key == "ESC":
+            self.mode = None
+            self.last_msg = "scale cancelado"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("BACKSPACE", "\x7f", "\b"):
+            self.mode = (kind, deploy, [cur[:-1]])
+            return ActionResult.refresh()
+        if key.isdigit():
+            candidate = cur + key
+            # Limita a 2 dígitos (max 20); evita buffer absurdo.
+            if len(candidate) <= 2:
+                self.mode = (kind, deploy, [candidate])
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            if not cur:
+                self.mode = None
+                self.last_msg = "scale cancelado (vazio)"
+                self.last_ok = None
+                return ActionResult.refresh()
+            target = max(0, min(self._MAX_REPLICAS, int(cur)))
+            self.mode = None
+            if self.data is None:
+                self.last_msg = f"[demo] scale {deploy} → {target} (sem cluster)"
+                self.last_ok = False
+                return ActionResult.refresh()
+            ok, msg = _scale_deployment(self._ns(), deploy, target)
+            self.last_ok = ok
+            self.last_msg = msg
+            return ActionResult.refresh()
+        return ActionResult()
+
+
 class DispatchMatrixView(View):
     """Pipeline Stage Configuration unificada (issue #309 fase 2 — Task 18).
 
@@ -5851,19 +6156,14 @@ class DispatchMatrixView(View):
         "[enter] editar   [r] reset   "
         "[L] switch claude login   [O] login OAuth CLI worker (codex, in-pod)   "
         "[I] install   [U] uninstall   [q] back   "
-        "[s]caling row: enter digita réplicas (0-10)   "
         "[c] cleanup on-demand (preview + confirm)   "
         "[p] editar max_parallel (parallelism do pipeline)   "
         "[J] editar retenção JSONL em dias (claude-worker + cron, default 30d)   "
         "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run) 5=Reasoning   "
         "retries=0 EXIGE confirmação: digite '0!' (fail-fast, sem retry)   "
+        "réplicas de worker: use a tela [S] (Worker Scaling)   "
         "linha monitor: Worker=in-pod (não editável)  Model=DEILE_PREFERRED_MODEL do deile-monitor"
     )
-
-    # Índice de row constante para a linha de scaling (após Global default).
-    # Calculado em runtime como ``len(entries) + 1`` — mantido aqui só como
-    # documentação da convenção.
-    _SCALING_ROW_OFFSET = 1  # offset relativo ao len(entries): global=+0, scaling=+1
 
     # Source of truth do conjunto de stages — espelha
     # ``deile.orchestration.pipeline.dispatch_resolver.PIPELINE_STAGES``.
@@ -5916,7 +6216,7 @@ class DispatchMatrixView(View):
         # exibe — captura o estado da row no momento de abertura para
         # que mudar de row durante a navegação do picker não troque a
         # lista de opções (UX previsível). Para timeout/retries o picker
-        # usa ``scale_prompt`` style (entrada numérica livre em vez de lista).
+        # usa entrada numérica livre (buffer) em vez de lista.
         self.mode: Optional[tuple] = None
         self.picker_cursor: int = 0
         # Decoração visual do picker: mapeia o VALOR de uma opção (que é o
@@ -6278,26 +6578,12 @@ class DispatchMatrixView(View):
         tbl.add_row("Global default", global_w_txt, global_m_txt,
                     global_t_txt, global_r_txt, "—", global_z_txt, "env")
 
-        # Linha "Worker Scaling" — edita réplicas de deile-worker / claude-worker
-        # via prompt numérico [enter] (issue #309 fase 3 Task 4).
-        # ``cursor_row == len(entries) + 1`` aponta aqui.
-        scaling_idx = len(entries) + 1
-        highlight_sw = (self.cursor_row == scaling_idx and self.cursor_col == 0)
-        highlight_sm = (self.cursor_row == scaling_idx and self.cursor_col == 1)
-        scale_w_txt = "(réplicas deile-worker)"
-        scale_m_txt = "(réplicas claude-worker)"
-        if highlight_sw:
-            scale_w_txt = f"[reverse]{scale_w_txt}[/reverse]"
-        if highlight_sm:
-            scale_m_txt = f"[reverse]{scale_m_txt}[/reverse]"
-        tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt,
-                    "", "", "—", "—", "kubectl")
-
         # Linha "Max Parallel" — edita DEILE_PIPELINE_MAX_PARALLEL no
         # Deployment deile-pipeline (issue #408). [p] ou [enter] nesta row
         # abre prompt numérico/auto.
-        # ``cursor_row == len(entries) + 2`` aponta aqui.
-        max_parallel_idx = len(entries) + 2
+        # ``cursor_row == len(entries) + 1`` aponta aqui (Frente 6 removeu a
+        # linha de Worker Scaling — agora vive na ``WorkerScalingView`` [S]).
+        max_parallel_idx = len(entries) + 1
         highlight_mp = (self.cursor_row == max_parallel_idx
                         and self.cursor_col == 0)
         mp_current = self._read_max_parallel_env()
@@ -6312,11 +6598,11 @@ class DispatchMatrixView(View):
                     "─" * 9, "─" * 6, style="dim")
 
         # Linha "monitor" — modelo aplicado ao Deployment deile-monitor.
-        # ``cursor_row == len(entries) + 3`` aponta aqui.
+        # ``cursor_row == len(entries) + 2`` aponta aqui.
         # Coluna Worker é sempre "— (in-pod)": o monitor roda em loop shell
         # dentro do próprio pod e NÃO recebe dispatch externo. Bloqueamos
         # a edição com tooltip no feedback quando o operador tentar.
-        monitor_idx = len(entries) + 3
+        monitor_idx = len(entries) + 2
         highlight_mon_m = (self.cursor_row == monitor_idx and self.cursor_col == 1)
         monitor_model = self._read_monitor_model_env()
         mon_model_txt = monitor_model if monitor_model else "(default)"
@@ -6455,8 +6741,6 @@ class DispatchMatrixView(View):
             title = "TROCAR CONTA DO CLAUDE-WORKER?"
         elif kind == "uninstall_confirm":
             title = "DESINSTALAR CLAUDE-WORKER?"
-        elif kind == "scale_prompt":
-            title = f"RÉPLICAS PARA '{stage}' (0-10)"
         elif kind == "cleanup_confirm":
             title = "CLEANUP ON-DEMAND — CONFIRMAR?"
         elif kind == "max_parallel_prompt":
@@ -6596,9 +6880,10 @@ class DispatchMatrixView(View):
         if self.mode is not None:
             return self._handle_picker_key(key)
 
-        # Última linha editável é "monitor" (len+3).
-        # Global=len, Scaling=len+1, Max Parallel=len+2, Monitor=len+3.
-        max_row = len(self._stages()) + 3  # +3 = Global + Scaling + Max Parallel + Monitor
+        # Última linha editável é "monitor" (len+2).
+        # Global=len, Max Parallel=len+1, Monitor=len+2 (Worker Scaling saiu
+        # da matriz na Frente 6 — agora é a WorkerScalingView [S]).
+        max_row = len(self._stages()) + 2  # +2 = Global + Max Parallel + Monitor
 
         # --- back / quit --------------------------------------------------
         if key == "q" or key == "ESC":
@@ -6642,9 +6927,8 @@ class DispatchMatrixView(View):
             entries = self._entries()
             n_stages = len(entries)
             global_idx = n_stages           # "Global default"
-            scaling_idx = n_stages + 1      # "Worker Scaling"
-            max_parallel_idx = n_stages + 2  # "Max Parallel" (issue #408)
-            monitor_idx = n_stages + 3       # "monitor" (in-pod, só Model editável)
+            max_parallel_idx = n_stages + 1  # "Max Parallel" (issue #408)
+            monitor_idx = n_stages + 2       # "monitor" (in-pod, só Model editável)
             if self.cursor_row == monitor_idx:
                 if self.cursor_col == 0:
                     # Worker do monitor é sempre in-pod — não despacha externamente.
@@ -6663,14 +6947,6 @@ class DispatchMatrixView(View):
             if self.cursor_row == max_parallel_idx:
                 # Linha "Max Parallel" → prompt numérico/auto (issue #408).
                 return self._open_max_parallel_prompt()
-            if self.cursor_row == scaling_idx:
-                # Linha de scaling → prompt numérico de réplicas (Task 4).
-                # Cols 2/3 (timeout/retries) não se aplicam à scaling row.
-                if self.cursor_col >= 2:
-                    self.last_msg = "timeout/retries não se aplicam à linha de scaling"
-                    self.last_ok = None
-                    return ActionResult.refresh()
-                return self._open_scaling_prompt()
             # Row na linha "Global default" → picker global (worker/model/reasoning).
             if self.cursor_row == global_idx:
                 if self.cursor_col == 0:
@@ -6836,10 +7112,10 @@ class DispatchMatrixView(View):
     def _open_timeout_prompt(self, entry) -> ActionResult:
         """Abre prompt numérico de timeout_s para o stage da entry.
 
-        Reutiliza o ``scale_prompt`` style (entrada numérica livre) — a
-        :meth:`_render_picker` renderiza com prompt de texto e
-        :meth:`_handle_picker_key` captura dígitos + [backspace] + [enter].
-        ``options`` carrega o valor atual para pré-preencher o prompt.
+        Entrada numérica livre (buffer) — a :meth:`_render_picker` renderiza
+        com prompt de texto e :meth:`_handle_picker_key` captura dígitos +
+        [backspace] + [enter]. ``options`` carrega o valor atual para
+        pré-preencher o prompt.
         """
         current = str(entry.timeout_s) if entry.timeout_s is not None else ""
         self.mode = ("timeout", entry.stage, [current])
@@ -6975,17 +7251,15 @@ class DispatchMatrixView(View):
             else:
                 # col 5 = Reasoning reset
                 ok, msg = pd_clear_stage_reasoning(stage, namespace=ns)
-        elif self.cursor_row == n_stages + 3:  # Monitor row — só model é resetável
+        elif self.cursor_row == n_stages + 2:  # Monitor row — só model é resetável
             if self.cursor_col == 0:
                 ok, msg = (None, "Worker do monitor não é editável (in-pod)")
             elif self.cursor_col == 1:
                 ok, msg = self._apply_monitor_model_clear(ns)
             else:
                 ok, msg = (None, "timeout/retries/cost-cap não se aplicam ao monitor")
-        elif self.cursor_row == n_stages + 2:  # Pipeline Parallelism row (issue #408)
+        elif self.cursor_row == n_stages + 1:  # Pipeline Parallelism row (issue #408)
             ok, msg = pd_set_pipeline_max_parallel(None, namespace=ns)
-        elif self.cursor_row == n_stages + 1:  # Worker Scaling row — no reset
-            ok, msg = (None, "scaling row não tem reset — ajuste manualmente")
         else:  # Global default row (n_stages)
             if self.cursor_col == 0:
                 ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
@@ -7072,76 +7346,6 @@ class DispatchMatrixView(View):
         self.last_ok = None
         return ActionResult.refresh()
 
-    # --- Worker Scaling prompt (issue #309 fase 3 Task 4) ---------------
-
-    def _open_scaling_prompt(self) -> ActionResult:
-        """Abre o modal de edição numérica de réplicas.
-
-        Reusa o slot ``self.mode`` com kind ``"scale_prompt"``. O campo
-        ``stage`` carrega qual coluna está sendo editada:
-        ``"deile-worker"`` (col 0) ou ``"claude-worker"`` (col 1).
-        ``options`` carrega as opções numéricas [0..10] como strings.
-        """
-        deploy_name = ("deile-worker" if self.cursor_col == 0
-                       else "claude-worker")
-        opts = [str(n) for n in range(11)]  # 0 a 10
-        self.mode = ("scale_prompt", deploy_name, opts)
-        self.picker_cursor = 1  # default: 1 réplica
-        self.last_msg = ""
-        self.last_ok = None
-        return ActionResult.refresh()
-
-    def _apply_scaling(self, deploy_name: str, replicas: int) -> ActionResult:
-        """Executa ``kubectl scale deployment/<name> --replicas=N``.
-
-        Roda inline (síncrono) — operação rápida (~100ms kubectl API call).
-        Para install/uninstall (que podem bloquear minutos), usamos thread;
-        scale é fire-and-forget com retorno imediato do API server.
-        """
-        ns = (self.data.context.namespace
-              if self.data is not None and getattr(self.data, "context", None)
-              else _NS_DEFAULT)
-        if self.data is None:
-            self.last_msg = (
-                f"[demo] scale {deploy_name} → {replicas} (sem cluster, no-op)"
-            )
-            self.last_ok = False
-            return ActionResult.refresh()
-
-        kubectl = kubectl_bin()
-        if kubectl is None:
-            self.last_msg = "kubectl não encontrado — scale impossível"
-            self.last_ok = False
-            return ActionResult.refresh()
-
-        # Verifica se o deployment existe antes de tentar.
-        check = subprocess.run(
-            [kubectl, "-n", ns, "get", "deployment", deploy_name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if check.returncode != 0:
-            self.last_msg = (
-                f"deployment/{deploy_name} não encontrado em `{ns}` — "
-                "instale-o primeiro ([I] para claude-worker)"
-            )
-            self.last_ok = False
-            return ActionResult.refresh()
-
-        result = subprocess.run(
-            [kubectl, "-n", ns, "scale",
-             f"deployment/{deploy_name}", f"--replicas={replicas}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-        )
-        if result.returncode == 0:
-            self.last_msg = f"deployment/{deploy_name} → {replicas} réplica(s)"
-            self.last_ok = True
-        else:
-            self.last_msg = (
-                f"scale {deploy_name} falhou: "
-                f"{result.stderr.strip()[:120]}"
-            )
-            self.last_ok = False
-        return ActionResult.refresh()
 
     def _handle_uninstall_confirm(self, key: str) -> ActionResult:
         """Roteia Y/N (+ enter sobre o cursor) no modal de uninstall."""
@@ -7314,45 +7518,6 @@ class DispatchMatrixView(View):
                 delta = -1 if key in ("UP", "k") else 1
                 self.picker_cursor = (self.picker_cursor + delta) % n
             return ActionResult.refresh()
-        return ActionResult()
-
-    def _handle_scale_prompt_key(self, key: str) -> ActionResult:
-        """Roteia teclas no modal de escala numérica (0-10 réplicas).
-
-        ↑/↓: navega nas opções numéricas.
-        Enter: aplica kubectl scale.
-        ESC/N: cancela.
-        """
-        if self.mode is None:
-            return ActionResult()
-        _kind, deploy_name, options = self.mode
-
-        if key in ("N", "n", "ESC"):
-            self.mode = None
-            self.picker_cursor = 0
-            self.last_msg = "escala cancelada"
-            self.last_ok = None
-            return ActionResult.refresh()
-
-        if key in ("UP", "k"):
-            n = len(options)
-            self.picker_cursor = (self.picker_cursor - 1) % n if n else 0
-            return ActionResult.refresh()
-
-        if key in ("DOWN", "j"):
-            n = len(options)
-            self.picker_cursor = (self.picker_cursor + 1) % n if n else 0
-            return ActionResult.refresh()
-
-        if key in ("\r", "\n"):
-            try:
-                replicas = int(options[self.picker_cursor])
-            except (IndexError, ValueError):
-                replicas = 1
-            self.mode = None
-            self.picker_cursor = 0
-            return self._apply_scaling(str(deploy_name), replicas)
-
         return ActionResult()
 
     def _handle_numeric_prompt_key(self, key: str) -> ActionResult:
@@ -7885,7 +8050,6 @@ class DispatchMatrixView(View):
           fecha o modal e invalida o cache do provider.
         - install_confirm / switch_login_confirm / uninstall_confirm →
           handlers dedicados (Y/N + enter sobre cursor).
-        - scale_prompt → handler de escala numérica (0-10 réplicas).
         """
         if self.mode is not None and self.mode[0] == "install_confirm":
             return self._handle_install_confirm(key)
@@ -7893,8 +8057,6 @@ class DispatchMatrixView(View):
             return self._handle_switch_login_confirm(key)
         if self.mode is not None and self.mode[0] == "uninstall_confirm":
             return self._handle_uninstall_confirm(key)
-        if self.mode is not None and self.mode[0] == "scale_prompt":
-            return self._handle_scale_prompt_key(key)
         if self.mode is not None and self.mode[0] in ("timeout", "retries"):
             return self._handle_numeric_prompt_key(key)
         if self.mode is not None and self.mode[0] == "cleanup_confirm":
@@ -8988,6 +9150,9 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         # ``StageModelsView`` (#305, key ``stage-models``) — ambas saíram do
         # registry mas as classes ainda existem no módulo (FU cleanup).
         "dispatch-mode-matrix": DispatchMatrixView(data=data),
+        # Frente 6 — escalonamento de réplicas por tipo de worker em tela
+        # própria (hotkey [S] MAIÚSCULO), tirado da DispatchMatrixView.
+        "worker-scaling": WorkerScalingView(data=data),
         # Tela dedicada do deile-monitor (hotkey [M] MAIÚSCULO no dashboard).
         # Separada em _panel_monitor.py para manter _panel.py gerenciável.
         "monitor-view": MonitorView(data=data),
