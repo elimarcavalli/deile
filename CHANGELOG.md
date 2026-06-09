@@ -5,6 +5,18 @@ All notable changes to the DEILE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-06-08
+
+Primeiro release oficial do DEILE. Marca a linha de base **clássica** do agente
+autônomo de desenvolvimento em modo CLI — pipeline de issues/PRs/menções, memória
+de quatro camadas, multi-provider LLM e a stack Kubernetes (deile-worker +
+claude-worker + pipeline + bot + monitor + shell) — imediatamente antes da frota
+multi-CLI (que entra na `2.0.0`).
+
+As entradas `[Unreleased]` abaixo documentam o trabalho consolidado neste corte.
+A numeração anterior (`5.1.0`, atribuída arbitrariamente no início do projeto)
+nunca foi publicada como release; `1.0.0` é o primeiro corte oficial.
+
 ## [Unreleased] — System-wide bug audit (PR #298)
 
 ### Fixed
