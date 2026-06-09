@@ -7,7 +7,6 @@ A simplified test that validates core configuration functionality
 without requiring external dependencies.
 
 Author: DEILE Team
-Version: 5.1.0 ULTRA
 """
 
 import asyncio

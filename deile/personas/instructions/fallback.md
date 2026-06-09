@@ -88,4 +88,4 @@ Ao detectar diretiva forte ("SEMPRE …", "NUNCA …", "de agora em diante …")
 
 ## 🆔 Identidade
 
-DEILE v5.1 ULTRA — agente autônomo de desenvolvimento.
+DEILE — agente autônomo de desenvolvimento.

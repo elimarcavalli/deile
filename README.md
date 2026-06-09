@@ -4,7 +4,7 @@
   <img src="docs/img/banner.png" alt="DEILE" width="480">
 </p>
 
-![Version](https://img.shields.io/badge/version-5.1.0-blue.svg?style=for-the-badge)
+![Version](https://img.shields.io/github/v/release/elimarcavalli/deile?style=for-the-badge)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-green.svg?style=for-the-badge)
 
@@ -788,4 +788,4 @@ Projeto licenciado sob [**MIT License**](LICENSE).
 
 ---
 
-**DEILE 5.1.0** — `python3 deile.py`
+**DEILE** — `python3 deile.py`

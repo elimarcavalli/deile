@@ -379,6 +379,8 @@ Multi-forge in one **CLI** session via the `ForgeRouter` singleton (both tokens 
 - **Add a tool/command/parser/persona/skill/provider** → §3.5 map + templates in `12-PADROES-CODIGO.md`; then full suite (mind ordering pollution, §4).
 - **Add a CLI worker to the fleet** → write **one** adapter `infra/k8s/cli_adapters/<kind>.py` (CLI Adapter Development template in `12-PADROES-CODIGO.md`) + tests; **no consumer is edited** (`test_worker_registry_drives_everything.py` proves it). Then `k8s build-cli-workers --kind <k>` → `k8s cli-worker-install <kind>` (or `cli-worker-login` if OAuth) → panel `[d]` to route a stage to it. Details §5.8.
 - **Commit & integrate** → commit **per phase**; **full green suite + self-review before every commit**; **review the staged diff against `README.md`/touched pillars and rewrite stale sections in the same commit** — code and docs must never disagree; English title / PT-BR body; no `Co-Authored-By`. Finished branch → `superpowers:finishing-a-development-branch`.
+- **Bump the version** → `deile/__version__.py` is the single source (everything derives: `pyproject.toml` dynamic, `__init__`/settings/UI/personas by import; guard test `test_no_hardcoded_version.py`). Tool: `python3 scripts/bump_version.py --part {major,minor,patch}` (SemVer reset) · `--set X.Y.Z` · `--dry-run` (preview) · `--suggest` (reads Conventional Commits, only suggests). Writes **only** `deile/__version__.py`; never touches git.
+  - **NUNCA rodar o bump nem criar release/tag sem o Humano PEDIR explicitamente.**
 - **Restart the bot** → kill old instances/pods first; two live bots double-process events.
 - **Visual panel change** (`_panel*.py`) → **offer the Human a screenshot** (SVG via `Console.save_svg`) — don't auto-generate.
 

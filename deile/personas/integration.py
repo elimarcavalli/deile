@@ -9,12 +9,13 @@ This integration layer uses the PersonaMemoryLayer from the unified memory syste
 to ensure all persona operations work through DEILE's core memory infrastructure.
 
 Author: DEILE Team
-Version: 5.1.0 ULTRA
 """
 
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from ..__version__ import __version__
 
 # TYPE_CHECKING imports to avoid circular dependencies
 if TYPE_CHECKING:
@@ -284,7 +285,7 @@ class PersonaEnhancedAgent:
                 'persona_enhanced': True,
                 'persona_id': current_persona.persona_id,
                 'persona_name': current_persona.name,
-                'integration_version': '5.1.0'
+                'integration_version': __version__
             })
 
             # Store interaction in persona memory if available

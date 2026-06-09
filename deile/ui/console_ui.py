@@ -16,6 +16,7 @@ from rich.status import Status
 from rich.table import Table
 from rich.text import Text
 
+from ..__version__ import __version__
 from .base import UIManager, UIMessage, UIStatus, UITheme
 from .completers import HybridCompleter
 from .markdown_table import DeileMarkdown as Markdown
@@ -384,9 +385,9 @@ class ConsoleUIManager(UIManager):
                 box=box.DOUBLE,
                 padding=(0, 1),
             ))
-            self.console.print("  [dim]DEILE v5.1 ULTRA[/dim]\n")
+            self.console.print(f"  [dim]DEILE v{__version__} ULTRA[/dim]\n")
         except Exception:
-            print("DEILE v5.1 ULTRA")
+            print(f"DEILE v{__version__} ULTRA")
             print(f"  ✦ {self._SLOGAN_FIXED}")
             print(f"  ✦ {slogan_random}")
             print(f"Provider: {provider_label} | Model: {model_label}")

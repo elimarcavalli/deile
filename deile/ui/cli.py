@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 
+from ..__version__ import __version__
 from ..core.agent import DeileAgent
 from ..storage.logs import get_logger
 from .markdown_table import DeileMarkdown as Markdown
@@ -27,7 +28,7 @@ class CLI:
     
     def print_header(self) -> None:
         """Imprime cabeçalho da aplicação"""
-        self.console.rule("[bold #4285F4]DEILE[/][bold #7B68EE] AI AGENT[/] [cyan]v5.1[/]", style="#4285F4")
+        self.console.rule(f"[bold #4285F4]DEILE[/][bold #7B68EE] AI AGENT[/] [cyan]v{__version__}[/]", style="#4285F4")
         self.console.print("✨ [bold]Agente de IA modular e extensível![/bold]", justify="center")
         self.console.print("Digite 'help' para comandos disponíveis ou 'exit' para sair.", justify="center")
         self.console.rule(style="#4285F4")

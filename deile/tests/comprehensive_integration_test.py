@@ -7,7 +7,6 @@ This comprehensive test suite validates the complete integration of the
 unified configuration system with real-world scenarios and edge cases.
 
 Author: DEILE Team
-Version: 5.1.0 ULTRA
 """
 
 import asyncio

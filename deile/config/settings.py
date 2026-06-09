@@ -19,6 +19,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from deile.__version__ import __version__
+
 logger = logging.getLogger(__name__)
 
 
@@ -427,7 +429,7 @@ class Settings:
 
     # Básicas
     app_name: str = "DEILE"
-    version: str = "5.1.0"
+    version: str = __version__
     debug: bool = False
 
     # Diretórios (cwd-bound, não configuráveis via JSON)
