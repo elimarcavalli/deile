@@ -83,3 +83,5 @@ costs_export_*.json
 EXPORTS/
 opendeile/
 audit-out/
+# sandbox de intelligence-tests do DEILE (não é produto)
+test-your-might/
