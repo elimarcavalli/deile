@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deile"
-version = "2.0.0"
+version = "1.1.0"
 description = "DEILE — autonomous CLI AI agent"
 authors = [{ name = "elimarcavalli" }]
 readme = "README.md"

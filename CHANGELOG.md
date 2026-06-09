@@ -5,7 +5,7 @@ All notable changes to the DEILE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - 2026-06-08 — DEILE-One (frota multi-CLI)
+## [1.1.0] - 2026-06-09 — DEILE-One (frota multi-CLI)
 
 ### Added
 - **Frota de CLI workers plugáveis (Decisão #51)** — além de `deile-worker` e `claude-worker`, qualquer CLI de codificação vira um worker despachável escrevendo **um adapter** (`infra/k8s/cli_adapters/<kind>.py`) que satisfaz o Protocol `CliAdapter` (`infra/k8s/cli_adapters/base.py`). O auto-discovery em `cli_adapters/__init__.py` monta `ADAPTERS = {kind: adapter}` como **fonte única**, que dirige `dispatch_resolver`, painel e geração de manifest/NetworkPolicy — adicionar worker não edita nenhum consumidor.
@@ -25,7 +25,7 @@ Primeiro release oficial do DEILE. Marca a linha de base **clássica** do agente
 autônomo de desenvolvimento em modo CLI — pipeline de issues/PRs/menções, memória
 de quatro camadas, multi-provider LLM e a stack Kubernetes (deile-worker +
 claude-worker + pipeline + bot + monitor + shell) — imediatamente antes da frota
-multi-CLI (que entra na `2.0.0`).
+multi-CLI (que entra na `1.1.0`).
 
 As entradas `[Unreleased]` abaixo documentam o trabalho consolidado neste corte.
 A numeração anterior (`5.1.0`, atribuída arbitrariamente no início do projeto)
