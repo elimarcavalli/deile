@@ -1,7 +1,7 @@
 """DEILE Version Information"""
 
-__version__ = "5.1.0"
-__version_info__ = (5, 1, 0)
+__version__ = "2.0.0"
+__version_info__ = (2, 0, 0)
 
 # Release Information
 __title__ = "DEILE"
@@ -12,7 +12,7 @@ __license__ = "MIT"
 __copyright__ = "Copyright (c) 2025 @elimarcavalli"
 
 # Build Information
-__build_date__ = "2025-09-14"
+__build_date__ = "2026-06-08"
 __build_number__ = "20250914"
 
 # Feature Flags
