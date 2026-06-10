@@ -88,7 +88,7 @@ async def test_outcome_error_non_auth_does_not_fast_finish():
 
     cfg = PipelineConfig(
         repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0,
+        use_pid_lock=False, reaper_stale_seconds=0, reaper_arch_hard_seconds=0,
         enable_resume=False,  # garante caminho legacy
     )
     github = MagicMock()
@@ -154,7 +154,8 @@ async def test_proof_of_work_blocks_legacy_finish_without_evidence():
 
     cfg = PipelineConfig(
         repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0, enable_resume=False,
+        use_pid_lock=False, reaper_stale_seconds=0, reaper_arch_hard_seconds=0,
+        enable_resume=False,
     )
     github = MagicMock()
     pr = MagicMock()

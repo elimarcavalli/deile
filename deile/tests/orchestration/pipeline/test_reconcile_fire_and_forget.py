@@ -497,6 +497,10 @@ class TestReaperRefineExtended:
             client, label_map={WORKFLOW_ARCHITECTURE: [issue]},
         )
         monitor.config.reaper_stale_seconds = 60
+        # Desliga o ramo sem-ledger (#427) para que a reapagem prove o ramo
+        # COM ledger isoladamente — sem ser silenciosamente resgatada pelo
+        # ramo de arch_hard caso o skip-when-task_id regrida no futuro.
+        monitor.config.reaper_arch_hard_seconds = 0
         ledger.record(DispatchLedger.key_for_issue(50), task_id="stuck", session_id="")
         github.label_applied_at = AsyncMock(return_value=int(time.time()) - 9999)
         await reap_orphan_claims(monitor)

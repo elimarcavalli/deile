@@ -344,7 +344,7 @@ async def test_review_one_open_pr_skips_concluded_pr_without_new_commits():
 
     cfg = PipelineConfig(
         repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0,
+        use_pid_lock=False, reaper_stale_seconds=0, reaper_arch_hard_seconds=0,
     )
     forge = MagicMock()
     forge.list_open_prs = AsyncMock(return_value=[])
@@ -390,7 +390,7 @@ async def test_review_one_open_pr_invalidates_concluded_with_new_code_commits():
 
     cfg = PipelineConfig(
         repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0,
+        use_pid_lock=False, reaper_stale_seconds=0, reaper_arch_hard_seconds=0,
     )
     forge = MagicMock()
     forge.list_issues_with_label = AsyncMock(return_value=[])
