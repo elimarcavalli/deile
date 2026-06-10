@@ -190,6 +190,9 @@ def sync_bearer_secret(
         return True  # não-fatal
     return apply_generic_secret(
         target_secret, {target_key: token}, namespace=namespace,
+        # Apply curto (15s) preserva o timing original do `_kubectl_sync_bearer`
+        # (paridade com o call-site das keys-secret).
+        apply_timeout_s=15,
     )
 
 
