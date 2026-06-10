@@ -110,13 +110,30 @@ class TestImplementBriefDefinitionOfDone:
         assert '. Refs #5."' in out
         assert '. Closes #5."' not in out
 
+    def test_spike_resume_brief_create_pr_uses_refs(self):
+        # O mesmo invariante de spike vale no brief de resume (briefs.py).
+        out = _render_worker_implement_resume_brief(
+            "o/r", "main", "b", 13, "[SPIKE] Provar Z", "retoma o spike"
+        )
+        assert '. Refs #13."' in out
+        assert '. Closes #13."' not in out
+
+    def test_normal_resume_brief_create_pr_uses_closes(self):
+        out = _render_worker_implement_resume_brief(
+            "o/r", "main", "b", 14, "Add widget", "retoma"
+        )
+        assert '. Closes #14."' in out
+        assert '. Refs #14."' not in out
+
     def test_is_spike_detection(self):
         assert _is_spike("[SPIKE] foo", "")
         assert _is_spike("[spike] foo", "")  # case-insensitive
+        assert _is_spike("[ spike ] foo", "")  # whitespace-tolerant
         assert _is_spike("foo", "## Condição de Saída\n...")
         assert _is_spike("foo", "Critérios de Aprovação do Spike: ...")
         assert not _is_spike("[FEATURE] foo", "implementa um botão")
         assert not _is_spike("Add spike-resistant retry", "feature normal")  # 'spike' solto no título não conta
+        assert not _is_spike(None, None)  # None-safe
 
     def test_gitlab_forge_dod_and_spike_refs(self):
         """Cobertura GitLab do gate: o brief renderiza comandos `glab` e o

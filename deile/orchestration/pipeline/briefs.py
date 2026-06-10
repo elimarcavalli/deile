@@ -25,6 +25,7 @@ the legacy byte-exact GH output.
 
 from __future__ import annotations
 
+import re
 import shutil
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -108,8 +109,8 @@ _DOD_EVIDENCE_BLOCK = (
     "com o AC EXECUTADO e o NÚMERO real anexado ao corpo da PR/relatório. Scaffolding/harness "
     "escrito ≠ AC cumprido.\n"
     "   b) Teste `@pytest.mark.integration` que PULA (skip por falta de credencial/env) NÃO "
-    "satisfaz o AC — rode-o com a credencial disponível no pod (ex.: `ANTHROPIC_AUTH_TOKEN` / "
-    "`~/.claude/credentials.json`) ou marque o AC como NÃO-VERIFICADO no corpo da PR.\n"
+    "satisfaz o AC — rode-o com a credencial de LLM disponível no pod (a do worker que te "
+    "despachou) ou marque o AC como NÃO-VERIFICADO no corpo da PR.\n"
     "   c) AC duro que você NÃO conseguiu provar (bloqueado): NÃO feche a issue. Abra a PR como "
     "DRAFT (`{mark_draft_cmd}` após criar), use `Refs #{number}` (não `Closes`) no --body, "
     "registre a causa do bloqueio e escale ao autor (`{comment_issue_cmd}`). Nunca uma PR "
@@ -120,17 +121,21 @@ _DOD_EVIDENCE_BLOCK = (
 )
 
 
+_SPIKE_TAG_RE = re.compile(r"\[\s*spike\s*\]")
+
+
 def _is_spike(title: str, body: str) -> bool:
     """True when the issue's deliverable is empirical evidence, not production code.
 
     A spike's Definition-of-Done is measured ACs (numbers/verdict), so its PR must
     reference (``Refs``) — never auto-close (``Closes``) — the issue, and should
     stay draft until every AC is green. Detected by the conventional ``[SPIKE]``
-    title tag or a spike-style exit-condition section in the body (the headings the
-    architect/analyst personas emit for spike issues, e.g. issue #529's
-    "## Condição de Saída"). Conservative on purpose: a missed spike (defaults to
-    ``Closes``) is the dangerous direction, so we only require an explicit,
-    unambiguous signal.
+    title tag (whitespace-tolerant: ``[ spike ]`` also matches) or a spike-style
+    exit-condition section in the body (the headings the architect/analyst personas
+    emit for spike issues, e.g. issue #529's "## Condição de Saída"). Deliberately
+    conservative — it fires only on an explicit, unambiguous signal: a false-positive
+    ``Refs`` on a real feature would leave that issue open forever, so on any doubt we
+    keep the default ``Closes``.
 
     Detection reads the FULL untruncated body (so a marker past
     ``ISSUE_BODY_MAX_CHARS`` still classifies correctly, even if it won't appear in
@@ -140,7 +145,7 @@ def _is_spike(title: str, body: str) -> bool:
     """
     t = (title or "").lower()
     b = (body or "").lower()
-    if "[spike]" in t:
+    if _SPIKE_TAG_RE.search(t):
         return True
     return any(
         marker in b
