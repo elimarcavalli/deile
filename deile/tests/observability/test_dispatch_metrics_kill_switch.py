@@ -13,6 +13,12 @@ from deile.observability import dispatch_metrics as dm
 from deile.observability import (reset_dispatch_metrics,
                                  reset_observability_config)
 
+# Os testes deste módulo instanciam um MeterProvider real do SDK OTel. O extra
+# ``[otel]`` é opcional (DEILE roda em no-op sem ele), então sem o SDK o módulo
+# inteiro é PULADO — mesmo contrato do conftest e dos demais testes de
+# observability — em vez de hard-fail com ModuleNotFoundError.
+pytest.importorskip("opentelemetry.sdk.metrics")
+
 pytestmark = pytest.mark.unit
 
 
