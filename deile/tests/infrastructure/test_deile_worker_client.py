@@ -17,7 +17,30 @@ from deile.infrastructure import deile_worker_client as wc
 from deile.infrastructure.deile_worker_client import (
     DEFAULT_TIMEOUT_S, DeileWorkerClient, DispatchPayload, WorkerDispatchError,
     _read_token, _resolve_endpoint, _validate_token_charset,
-    validate_dispatch_payload)
+    reset_circuit_breaker, validate_dispatch_payload)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_resilience(monkeypatch):
+    """Isola a resiliência entre testes (issue #620 AC4/AC5).
+
+    O circuit breaker é singleton de processo, então estado de um teste
+    vazaria para o seguinte; resetamos antes de cada teste. O ``asyncio.sleep``
+    do backoff é neutralizado para que os testes de caminho-de-falha não
+    durmam de verdade (a contagem de tentativas é o que importa, não o
+    tempo de parede; o cálculo real do backoff tem teste dedicado). Note
+    que patchamos o sleep — não o ``_backoff_delay`` — para que o teste do
+    backoff exercite a fórmula real.
+    """
+    reset_circuit_breaker()
+
+    async def _no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(wc.asyncio, "sleep", _no_sleep)
+    yield
+    reset_circuit_breaker()
+
 
 # ----- endpoint resolution -----
 
@@ -459,3 +482,124 @@ async def test_get_progress_non_dict_body(monkeypatch):
             monkeypatch, handler, fn="get_progress", path="/v1/progress"
         )
     assert ei.value.error_code == "WORKER_BAD_RESPONSE"
+
+
+# ----- AC4: retry com exponential backoff (issue #620) --------------------
+#
+# A FIAÇÃO real (cliente → MockTransport) é exercitada contando os hits do
+# handler: a função de dispatch tem de re-tentar APENAS falhas transientes
+# (timeout/unreachable/5xx) e NUNCA 4xx (incl. 409/429). O backoff já é
+# zerado pelo fixture autouse ``_isolate_resilience`` (sem sleeps reais);
+# o timing fica no teste dedicado de fake clock.
+
+
+async def test_retry_worker_timeout_three_attempts(monkeypatch):
+    """WORKER_TIMEOUT é transiente → 3 tentativas antes de desistir (AC4)."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        raise httpx.TimeoutException("simulated")
+
+    with pytest.raises(WorkerDispatchError) as ei:
+        await _run_with_transport(monkeypatch, handler)
+    assert ei.value.error_code == "WORKER_TIMEOUT"
+    assert calls["n"] == 3
+
+
+async def test_retry_unreachable_three_attempts(monkeypatch):
+    """WORKER_UNREACHABLE também é transiente → 3 tentativas (AC4)."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        raise httpx.ConnectError("nope")
+
+    with pytest.raises(WorkerDispatchError) as ei:
+        await _run_with_transport(monkeypatch, handler)
+    assert ei.value.error_code == "WORKER_UNREACHABLE"
+    assert calls["n"] == 3
+
+
+async def test_retry_http_500_three_attempts(monkeypatch):
+    """HTTP 500 (>= 500) é transiente → 3 tentativas (AC4)."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(500, json={"error": {"code": "BOOM", "message": "x"}})
+
+    with pytest.raises(WorkerDispatchError):
+        await _run_with_transport(monkeypatch, handler)
+    assert calls["n"] == 3
+
+
+async def test_no_retry_http_409(monkeypatch):
+    """HTTP 409 (duplicate in-flight) é 4xx → 0 retry, falha na 1ª (AC4)."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(
+            409, json={"error": {"code": "duplicate_in_flight", "message": "x"}}
+        )
+
+    with pytest.raises(WorkerDispatchError) as ei:
+        await _run_with_transport(monkeypatch, handler)
+    assert ei.value.error_code == "duplicate_in_flight"
+    assert calls["n"] == 1
+
+
+async def test_no_retry_http_429(monkeypatch):
+    """HTTP 429 (rate-limited) é 4xx → 0 retry (AC4)."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(
+            429, json={"error": {"code": "rate_limited", "message": "slow down"}}
+        )
+
+    with pytest.raises(WorkerDispatchError):
+        await _run_with_transport(monkeypatch, handler)
+    assert calls["n"] == 1
+
+
+async def test_retry_succeeds_on_second_attempt(monkeypatch):
+    """Falha transiente seguida de sucesso → retorna o sucesso (AC4)."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.TimeoutException("first fails")
+        return httpx.Response(200, json={"ok": True, "task_id": "T-2"})
+
+    data = await _run_with_transport(monkeypatch, handler)
+    assert data["task_id"] == "T-2"
+    assert calls["n"] == 2
+
+
+async def test_max_retries_payload_caps_attempts(monkeypatch):
+    """``max_retries=0`` no payload força 1 tentativa só, mesmo em 5xx (AC4)."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(503, json={})
+
+    cli = _install_mock_transport(monkeypatch, handler)
+    payload = {**_good_payload(), "max_retries": 0}
+    with pytest.raises(WorkerDispatchError):
+        await cli.dispatch(payload, wait=False)
+    assert calls["n"] == 1
+
+
+def test_backoff_delay_grows_exponentially_with_jitter():
+    """Backoff base=1s, factor=2, jitter=±0.3s para retry_index 0/1/2 (AC4)."""
+    # retry_index 0 → ~1s (±0.3), 1 → ~2s (±0.3), 2 → ~4s (±0.3).
+    for retry_index, center in ((0, 1.0), (1, 2.0), (2, 4.0)):
+        for _ in range(50):
+            d = DeileWorkerClient._backoff_delay(retry_index)
+            assert center - 0.3 <= d <= center + 0.3
+            assert d >= 0.0
