@@ -45,14 +45,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from aiohttp import web
-
-import dispatch_logger as dlog
-
 # Núcleo agnóstico-de-CLI (lease/heartbeat, subprocess, HTTP helpers) — sibling
 # stdlib-puro no mesmo dir, no sys.path in-pod como dispatch_logger. Compartilhado
 # com o servidor genérico cli_worker_server.py (multi-CLI worker fleet, Fase A1).
 import _worker_core as _core
+import dispatch_logger as dlog
+from aiohttp import web
 
 try:
     # Sibling stdlib-puro (mesmo dir, no sys.path in-pod como dispatch_logger).
@@ -2119,8 +2117,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 "ok": False,
                 "error_code": "RESUME_SESSION_MISMATCH",
                 "error": (
-                    f"resume_session_id no payload não bate com session_id "
-                    f"persistido no prev_task_id (corrupção do mini-ledger?)"
+                    "resume_session_id no payload não bate com session_id "
+                    "persistido no prev_task_id (corrupção do mini-ledger?)"
                 ),
             }, status=409)
         task_id = prev_task_id
@@ -2594,7 +2592,6 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 
     ok = _run["ok"]
     error_code = _run["error_code"]
-    auth_expired = _run["auth_expired"]
     result = _run["result"]
     claude_result = _run["claude_result"]
 
@@ -3029,11 +3026,9 @@ async def sessions_command_handler(request: web.Request) -> web.Response:
             )
         # Audit the raw access before returning.
         try:
-            from deile.security.audit_logger import (
-                AuditEventType,
-                AuditLogger,
-                SeverityLevel,
-            )
+            from deile.security.audit_logger import (AuditEventType,
+                                                     AuditLogger,
+                                                     SeverityLevel)
             _audit = AuditLogger()
             _audit.log_event(
                 event_type=AuditEventType.RAW_PROMPT_ACCESS,

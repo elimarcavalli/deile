@@ -250,12 +250,8 @@ def bootstrap_cli_worker_oauth(
     # 4-7. Bearer + auth_env_keys + manifest + auth-mode env + scale (reusa _cli_worker_install).
     _ensure_on_path()
     from _cli_worker_install import (  # noqa: PLC0415
-        _kubectl_apply_keys_secret,
-        _kubectl_apply_manifest,
-        _kubectl_scale,
-        _kubectl_sync_bearer,
-        _resolve_auth_keys,
-    )
+        _kubectl_apply_keys_secret, _kubectl_apply_manifest, _kubectl_scale,
+        _kubectl_sync_bearer, _resolve_auth_keys)
 
     auth_values = _resolve_auth_keys(adapter, kind=kind)
     declared = list(getattr(adapter, "auth_env_keys", []) or [])

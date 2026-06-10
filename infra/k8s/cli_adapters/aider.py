@@ -26,9 +26,8 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-from typing import List, Optional
-
 from dataclasses import replace
+from typing import List, Optional
 
 from ._catalog import (OPENROUTER_CLAUDE_SONNET_4_6,
                        OPENROUTER_DEEPSEEK_V4_FLASH,

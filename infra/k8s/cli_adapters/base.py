@@ -20,7 +20,8 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Iterator, List, Literal, Optional, Protocol, Tuple, runtime_checkable
+from typing import (Iterator, List, Literal, Optional, Protocol, Tuple,
+                    runtime_checkable)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,12 @@ def classify_provider_cutoff(
     estruturado normal. Helper compartilhado por opencode/qwen/goose/codex/aider
     (todos com este mesmo trecho verbatim antes do extra-parsing).
     """
-    import _worker_core as _core  # lazy: _worker_core não está em sys.path no import-time dos testes
+    # Import lazy (call-time, não no topo do módulo como faziam os adapters
+    # originais): mover o helper para cá só é seguro porque ``_worker_core`` não
+    # está em ``sys.path`` no import-time dos testes unitários dos adapters —
+    # importar no topo de ``base.py`` quebraria a coleta. A resolução é
+    # intencionalmente adiada para o momento da chamada.
+    import _worker_core as _core
     provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
     if not provider_err:
         return None

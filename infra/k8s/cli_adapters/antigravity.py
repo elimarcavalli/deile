@@ -43,7 +43,8 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from .base import BaseCliAdapter, ModelInfo, OAuthSpec, ResumeCtx, WorkResult, read_brief_or_fallback
+from .base import (BaseCliAdapter, ModelInfo, OAuthSpec, ResumeCtx, WorkResult,
+                   read_brief_or_fallback)
 
 logger = logging.getLogger("deile.cli_adapters.antigravity")
 
