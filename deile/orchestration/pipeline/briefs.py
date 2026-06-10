@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import unicodedata
 from typing import TYPE_CHECKING, Any, Optional
 
 from deile.orchestration.forge.base import ForgeConfig, ForgeKind
@@ -139,12 +140,13 @@ def _is_spike(title: str, body: str) -> bool:
 
     Detection reads the FULL untruncated body (so a marker past
     ``ISSUE_BODY_MAX_CHARS`` still classifies correctly, even if it won't appear in
-    the rendered brief) and is accent-sensitive by design — the canonical headings
-    carry their accents, and an accent-stripped variant safely falls back to
-    ``Closes`` rather than risking a false positive on incidental prose.
+    the rendered brief). The body is normalised to Unicode NFC before matching —
+    it arrives from an external forge and may carry decomposed accents (NFD), which
+    would otherwise miss the canonical NFC headings; an accent-*stripped* variant
+    still falls back to ``Closes`` rather than risking a false positive on prose.
     """
     t = (title or "").lower()
-    b = (body or "").lower()
+    b = unicodedata.normalize("NFC", body or "").lower()
     if _SPIKE_TAG_RE.search(t):
         return True
     return any(
@@ -172,6 +174,7 @@ def _build_brief_params(
     forge: Optional[ForgeConfig],
     issue_template: str = "feature_request.md",
     close_keyword: str = "Closes",
+    include_dod: bool = False,
     extras: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Assemble the full ``{key: value}`` map for ``.format()`` on a template.
@@ -184,9 +187,11 @@ def _build_brief_params(
 
     ``close_keyword`` flows down to :func:`render_brief_cmds` so spike briefs
     render ``create_pr_cmd`` with ``Refs`` instead of ``Closes`` (a spike PR
-    must reference, never auto-close, its issue). The ``dod_block`` placeholder
-    (Definition-of-Done evidence gate) is pre-formatted here because it embeds
-    the per-forge ``mark_draft_cmd``/``comment_issue_cmd`` and the issue number.
+    must reference, never auto-close, its issue). ``include_dod`` pre-formats the
+    ``dod_block`` placeholder (Definition-of-Done evidence gate) — only the
+    implement / implement-resume briefs consume it, so every other brief skips the
+    work and never depends on the per-forge ``mark_draft_cmd``/``comment_issue_cmd``
+    keys it embeds.
     """
     cfg = forge or _default_forge_config(repo)
     cmds = render_brief_cmds(
@@ -201,11 +206,12 @@ def _build_brief_params(
         "number": number,
     })
     params.update(cmds)
-    params["dod_block"] = _DOD_EVIDENCE_BLOCK.format(
-        number=number,
-        mark_draft_cmd=cmds["mark_draft_cmd"],
-        comment_issue_cmd=cmds["comment_issue_cmd"],
-    )
+    if include_dod:
+        params["dod_block"] = _DOD_EVIDENCE_BLOCK.format(
+            number=number,
+            mark_draft_cmd=cmds["mark_draft_cmd"],
+            comment_issue_cmd=cmds["comment_issue_cmd"],
+        )
     if extras:
         params.update(extras)
     return params
@@ -565,6 +571,7 @@ def _render_worker_implement_brief(
     params = _build_brief_params(
         repo=repo, main=main, branch=branch, number=number, forge=forge,
         close_keyword=_close_keyword(title, body),
+        include_dod=True,
         extras={
             "title": title,
             "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]
@@ -649,6 +656,7 @@ def _render_worker_implement_resume_brief(
     params = _build_brief_params(
         repo=repo, main=main, branch=branch, number=number, forge=forge,
         close_keyword=_close_keyword(title, body),
+        include_dod=True,
         extras={
             "title": title,
             "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]

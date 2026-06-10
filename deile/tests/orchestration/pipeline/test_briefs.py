@@ -135,6 +135,14 @@ class TestImplementBriefDefinitionOfDone:
         assert not _is_spike("Add spike-resistant retry", "feature normal")  # 'spike' solto no título não conta
         assert not _is_spike(None, None)  # None-safe
 
+    def test_is_spike_nfc_normalizes_decomposed_body(self):
+        # Corpo vindo de forge externo pode chegar em NFD (acento combinante);
+        # a normalização NFC garante o match com o marcador canônico (NFC).
+        import unicodedata
+        decomposed = unicodedata.normalize("NFD", "## Condição de Saída\nACs")
+        assert decomposed != unicodedata.normalize("NFC", decomposed)  # de fato NFD
+        assert _is_spike("foo", decomposed)
+
     def test_gitlab_forge_dod_and_spike_refs(self):
         """Cobertura GitLab do gate: o brief renderiza comandos `glab` e o
         spike usa `Refs` no `glab mr create` + o draft cmd no dod_block."""
