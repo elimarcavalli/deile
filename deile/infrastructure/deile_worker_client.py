@@ -134,6 +134,15 @@ class DispatchPayload(BaseModel):
     # The pipeline uses it to give each stage (classify/refine/implement/
     # pr_review/follow_ups) a different model; tools/CLI callers leave it None.
     preferred_model: Optional[str] = Field(default=None, max_length=128)
+    # CLI-worker model override (frota multi-CLI). Diferente de
+    # ``preferred_model``, este é o **model-id NATIVO do CLI** — string LIVRE
+    # (ex.: ``openrouter/deepseek/deepseek-chat``, ``qwen3-coder-plus``), sem o
+    # regex ``provider:model`` do deile-worker (relaxar aquele validator
+    # quebraria a fronteira de wire do deile-worker; por isso é campo separado).
+    # Só é populado quando o stage roteia para um worker CLI (``*-worker``); o
+    # deile-worker/claude-worker IGNORAM este campo (consomem ``preferred_model``).
+    # Resolvido por ``model_resolver.resolve_stage_cli_model``.
+    cli_model: Optional[str] = Field(default=None, max_length=256)
     # Per-turn reasoning-effort override. Resolvido por
     # ``reasoning_resolver.resolve_stage_reasoning``; o deile-worker injeta em
     # ``session.context_data["reasoning_effort"]`` (provider traduz para o
@@ -210,6 +219,21 @@ class DispatchPayload(BaseModel):
                 f"preferred_model must match 'provider:model' (got {stripped!r})"
             )
         return stripped
+
+    @field_validator("cli_model")
+    @classmethod
+    def _validate_cli_model(cls, v: Optional[str]) -> Optional[str]:
+        """Strip e colapsa vazio para ``None`` — string LIVRE (sem slug regex).
+
+        O ``cli_model`` é o id nativo do CLI worker; sua validade depende do CLI
+        de destino (catálogo do adapter), não da fronteira de wire. Aqui só
+        garantimos que não vai vazio/whitespace (que viraria override falso) —
+        ``None`` colapsado é dropado por ``model_dump(exclude_none=True)``.
+        """
+        if v is None:
+            return None
+        stripped = v.strip()
+        return stripped or None
 
     @field_validator("preferred_reasoning")
     @classmethod
@@ -319,6 +343,9 @@ def build_dispatch_payload(
     attachments: Optional[List[Dict[str, Any]]] = None,
     history: Optional[str] = None,
     preferred_model: Optional[str] = None,
+    # CLI-worker model override (frota multi-CLI) — string livre; omitida do
+    # wire quando ``None``. Exclusivo de stages roteados para ``*-worker`` CLI.
+    cli_model: Optional[str] = None,
     # --- Pipeline context (issue #309 fase 2) -------------------------------
     # Todos opcionais e adicionados ao FINAL para preservar a ordem dos kwargs
     # existentes (callers que dependem da assinatura por posição continuam
@@ -375,6 +402,8 @@ def build_dispatch_payload(
         payload["history"] = str(history)
     if preferred_model:
         payload["preferred_model"] = str(preferred_model)
+    if cli_model:
+        payload["cli_model"] = str(cli_model)
     if preferred_reasoning:
         payload["preferred_reasoning"] = str(preferred_reasoning)
     if stage:

@@ -45,12 +45,13 @@ from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
 from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.dispatch_resolver import (
-    get_endpoint_for, resolve_stage_dispatcher, resolve_stage_max_retries,
-    resolve_stage_timeout_s)
+    BUILTIN_DISPATCHERS, get_endpoint_for, resolve_stage_dispatcher,
+    resolve_stage_max_retries, resolve_stage_timeout_s)
 from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  persona_for_type,
                                                  template_for_type)
-from deile.orchestration.pipeline.model_resolver import resolve_stage_model
+from deile.orchestration.pipeline.model_resolver import (
+    resolve_stage_cli_model, resolve_stage_model)
 from deile.orchestration.pipeline.reasoning_resolver import \
     resolve_stage_reasoning
 
@@ -423,6 +424,22 @@ def _review_was_blocked(text: str) -> bool:
     if not text:
         return False
     return bool(_BLOCKED_VERDICT_RE.search(text[-8000:]))
+
+
+def _worker_kind_from_url(url: str) -> str:
+    """Deriva o ``worker_kind`` (telemetria de custo) do endpoint do dispatch.
+
+    Os dispatchers são canônicos ``<kind>-worker`` e cada um responde num
+    endpoint ``http://<kind>-worker:<porta>`` (ver ``dispatch_resolver``). O
+    ``worker_kind`` gravado no ledger é o ``<kind>`` — extraído do hostname
+    (strip de scheme/porta/path) com o sufixo ``-worker`` removido. Genérico:
+    cobre toda a frota CLI (``opencode-worker`` → ``opencode``) sem hardcode de
+    kinds. Fallback ``deile`` quando o hostname não casa o padrão.
+    """
+    m = re.search(r"//([^:/]+)", url or "")
+    host = m.group(1) if m else ""
+    kind = host.removesuffix("-worker")
+    return kind or "deile"
 
 
 def _estimate_session_tokens_from_jsonl(jsonl_text: str) -> int:
@@ -891,12 +908,23 @@ class WorkerImplementer(PipelineImplementer):
                     "resume_block truncado por cap de tamanho — "
                     "channel_id=%s stage=%s", channel_id, stage,
                 )
-        # Per-stage model override (issue #305). ``stage`` is the canonical
-        # pipeline-stage name (see :data:`PIPELINE_STAGES`); when set, the
-        # resolver returns ``None`` if no override is configured (the worker
-        # then falls back to its own ``DEILE_PREFERRED_MODEL``), or a
-        # ``provider:model`` slug to pin THIS turn only.
-        preferred_model = resolve_stage_model(stage) if stage else None
+        # Roteamento do campo de modelo pelo dispatcher do stage. ``stage`` é o
+        # nome canônico (ver :data:`PIPELINE_STAGES`); sem override configurado,
+        # os resolvers devolvem ``None`` (o worker usa seu próprio default).
+        #   - ``deile-worker``/``claude-worker`` (núcleo) consomem
+        #     ``preferred_model`` no formato ``provider:model`` (issue #305).
+        #   - workers da frota CLI (``*-worker``) consomem ``cli_model`` — id
+        #     nativo do CLI, string livre.
+        # Esta é a ÚNICA ramificação nova no cliente HTTP: escolher qual campo de
+        # modelo preencher conforme o destino, sem relaxar o validator
+        # ``provider:model`` do deile-worker.
+        is_cli_worker = bool(stage) and resolve_stage_dispatcher(stage) not in BUILTIN_DISPATCHERS
+        if is_cli_worker:
+            preferred_model = None
+            cli_model = resolve_stage_cli_model(stage)
+        else:
+            preferred_model = resolve_stage_model(stage) if stage else None
+            cli_model = None
         # Per-stage reasoning effort (espelha o per-stage model). ``None`` quando
         # nem a etapa nem o global têm override — o worker/provider usa o default.
         preferred_reasoning = resolve_stage_reasoning(stage) if stage else None
@@ -946,7 +974,8 @@ class WorkerImplementer(PipelineImplementer):
         # para dar ao operator controle granular sem editar manifests.
         payload_kwargs: Dict[str, Any] = dict(
             brief=brief, channel_id=channel_id, persona=persona, wait=not nowait,
-            preferred_model=preferred_model, stage=stage, branch=branch,
+            preferred_model=preferred_model, cli_model=cli_model,
+            stage=stage, branch=branch,
             preferred_reasoning=preferred_reasoning,
             timeout_s=resolve_stage_timeout_s(stage) if stage else None,
             max_retries=resolve_stage_max_retries(stage) if stage else None,
@@ -1012,6 +1041,38 @@ class WorkerImplementer(PipelineImplementer):
                     stage, _cap_exc,
                 )
 
+        # Scale-to-zero on-demand (plano B5): os CLI workers da frota nascem
+        # ``replicas: 0``. Antes de despachar para um deles, garantimos ≥1
+        # réplica (kubectl scale via SA do pipeline, com cooldown anti-flapping).
+        # Workers núcleo (deile/claude) nascem com 1 réplica → NOT_APPLICABLE.
+        # Falha de scale (sem kubectl/RBAC) vira erro tipado WORKER_SCALED_TO_ZERO
+        # instruindo o scale manual — em vez do connection-refused genérico.
+        if is_cli_worker:
+            from deile.orchestration.pipeline.cli_worker_scaler import \
+                ensure_replica  # noqa: PLC0415
+            dispatcher = resolve_stage_dispatcher(stage)
+            scale_outcome = await ensure_replica(dispatcher)
+            if not scale_outcome.ok_to_dispatch:
+                logger.warning(
+                    "dispatch bloqueado — %s sem réplica e scale falhou: %s",
+                    dispatcher, scale_outcome.detail,
+                )
+                return WorkOutcome(
+                    ok=False, text="",
+                    error=f"WORKER_SCALED_TO_ZERO: {scale_outcome.detail}"[:500],
+                )
+            if scale_outcome.result.value in ("scaled", "cooldown"):
+                # Pod subindo (cold-start): pula este tick; o reconcile do
+                # próximo tick redispatcha quando o readinessProbe liberar.
+                logger.info(
+                    "dispatch adiado — %s subindo on-demand: %s",
+                    dispatcher, scale_outcome.detail,
+                )
+                return WorkOutcome(
+                    ok=False, text="",
+                    error=f"DISPATCH_DEFERRED_WORKER_STARTING: {scale_outcome.detail}",
+                )
+
         # Issue #373: ``nowait`` dispatches the task fire-and-forget — the
         # worker returns 202 + task_id immediately and processes the task
         # in the background. The pipeline does NOT block on the result;
@@ -1073,7 +1134,7 @@ class WorkerImplementer(PipelineImplementer):
             # implement. Sem isso o task_id se perde antes do reconcile poder
             # fazer resume na próxima janela.
             if ledger_key and task_id:
-                worker_kind = "claude" if "claude-worker" in url else "deile"
+                worker_kind = _worker_kind_from_url(url)
                 self._ledger.record(
                     ledger_key,
                     task_id=task_id,
@@ -1113,7 +1174,7 @@ class WorkerImplementer(PipelineImplementer):
         # • ok=False (erro, timeout, etc.): grava entrada pra retry com
         #   resume no próximo tick.
         if ledger_key and outcome.task_id:
-            worker_kind = "claude" if "claude-worker" in url else "deile"
+            worker_kind = _worker_kind_from_url(url)
             blocked_by_verdict = (
                 stage == "pr_review" and outcome.ok
                 and _review_was_blocked(outcome.text)
@@ -1327,9 +1388,15 @@ class WorkerImplementer(PipelineImplementer):
             forge=monitor.forge.config,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        # A crítica (julgar CLARO/VAGO) é o PRIMEIRO passo LLM e roteia pelo stage
+        # ``classify`` — distinto do ``refine`` (reescrever o corpo). São duas
+        # chamadas LLM separadas em ticks distintos (briefs distintos), então
+        # cada uma pode ter worker/modelo próprios: classify→juízo barato,
+        # refine→reescrita com modelo melhor. O ``classify_new_issues`` em
+        # ``stages.py`` é só a admissão Python (label ~workflow:nova), não LLM.
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
-            persona=persona_for_type(issue_type), stage="refine",
+            persona=persona_for_type(issue_type), stage="classify",
             ledger_key=DispatchLedger.key_for_issue(issue.number), nowait=True,
         )
 

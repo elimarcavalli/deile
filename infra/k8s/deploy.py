@@ -2277,6 +2277,587 @@ def k8s_scale(args: dict) -> int:
     return do_scale(cfg)
 
 
+# ===== k8s: frota multi-CLI (gen-worker / build-cli-workers) =================
+#
+# Geração e build de CLI workers ON-DEMAND. Nenhum dos dois é tocado por
+# ``k8s up`` — a frota é 100%% opt-in (invariante do plano §1.0). Adicionar um
+# worker = adapter (Fase 5) + ``gen-worker`` (gera manifest do template) +
+# bloco no Dockerfile.cli-worker + ``build-cli-workers`` + o operador escala.
+
+def _parse_kind_flag(extra: List[str]) -> Optional[str]:
+    """Extrai ``--kind <k>`` (ou ``<k>`` posicional) de ``args["extra"]``."""
+    i = 0
+    positional: Optional[str] = None
+    while i < len(extra):
+        tok = extra[i]
+        if tok == "--kind" and i + 1 < len(extra):
+            return extra[i + 1]
+        if not tok.startswith("-") and positional is None:
+            positional = tok
+        i += 1
+    return positional
+
+
+def _cli_worker_kinds() -> List[str]:
+    """Kinds de CLI worker descobertos no registro de adapters (ordenados).
+
+    Degrada para ``[]`` se o pacote ``cli_adapters`` não estiver disponível —
+    a frota é opcional e o ``deploy.py`` continua operando os workers núcleo.
+    """
+    try:
+        from _cli_worker_gen import available_kinds  # noqa: PLC0415
+        return available_kinds()
+    except Exception as exc:  # noqa: BLE001 — frota opcional
+        ui.warn(f"registro de adapters CLI indisponível: {exc}")
+        return []
+
+
+def k8s_gen_worker(args: dict) -> int:
+    """``k8s gen-worker <kind>`` — gera o manifest de um CLI worker do template.
+
+    Renderiza ``manifests/templates/cli-worker.yaml.tmpl`` preenchendo porta,
+    env de auth, dirs graváveis, storage e egress hosts a partir dos METADADOS
+    do adapter ``cli_adapters/<kind>.py`` — NUNCA YAML à mão. Escreve em
+    ``manifests/generated/<kind>-worker.yaml``. Idempotente; sem efeito no
+    cluster (só gera o arquivo).
+    """
+    ns = _ns(args)
+    extra = args.get("extra") or []
+    kind = _parse_kind_flag(extra)
+    kinds = _cli_worker_kinds()
+    if not kind:
+        ui.err("uso: k8s gen-worker <kind> (ou --kind <kind>)")
+        if kinds:
+            ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+    if kinds and kind not in kinds:
+        ui.err(f"kind desconhecido: {kind!r}")
+        ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+
+    try:
+        from _cli_worker_gen import manifest_path, render_manifests, write_manifests  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o gerador de manifests: {exc}")
+        return 1
+
+    out = manifest_path(kind)
+    if not announce_plan(
+        args, "k8s gen-worker", f"CLI worker `{kind}` (namespace `{ns}`)",
+        [
+            f"renderiza o template a partir dos metadados do adapter {kind!r}",
+            f"escreve o manifest em {out}",
+            "NÃO aplica no cluster (use o painel/`k8s scale` para instalar)",
+        ],
+    ):
+        # dry-run: ainda mostra o YAML renderizado para inspeção.
+        try:
+            rendered = render_manifests(kind, namespace=ns)
+        except Exception as exc:  # noqa: BLE001
+            ui.err(f"falha ao renderizar manifest de {kind!r}: {exc}")
+            return 1
+        ui.section(f"manifest renderizado (dry-run) — {kind}-worker")
+        ui.plain(rendered)
+        return 0
+
+    try:
+        written = write_manifests(kind, namespace=ns)
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"falha ao gerar manifest de {kind!r}: {exc}")
+        return 1
+    ui.ok(f"manifest gerado: {written}")
+    ui.info(
+        f"para instalar: `k8s build-cli-workers --kind {kind}` + "
+        f"kubectl apply -f {written} + escalar via painel/`k8s scale`."
+    )
+    return 0
+
+
+def _container_runtime() -> Optional[str]:
+    """Prefixo do runtime de container (nerdctl/colima/docker) ou None.
+
+    Fonte única do dispatch nerdctl→colima→docker, reusada pelos builds de
+    imagem da frota CLI. Cada item é o prefixo de comando completo antes do
+    verbo ``build``.
+    """
+    nerdctl = _resolve("nerdctl")
+    if nerdctl:
+        return [nerdctl, "--namespace", "k8s.io"]
+    if which("colima"):
+        return ["colima", "nerdctl", "--", "--namespace", "k8s.io"]
+    if which("docker"):
+        return ["docker"]
+    return None
+
+
+def _cli_worker_build_cmd(kind: str) -> Optional[List[str]]:
+    """Monta o comando de build da imagem ``deile-cli-worker-<kind>:local``.
+
+    Usa o ``Dockerfile.cli-worker`` (multi-stage ÚNICO: stages ``deps``/``base``
+    agnósticos ao kind + stage ``final`` per-kind) com ``--build-arg
+    WORKER_KIND=<kind>``. As deps pesadas vivem nos stages ``deps``/``base`` —
+    como NÃO usam ``WORKER_KIND``, o buildkit os constrói UMA vez e dá cache-hit
+    nos demais kinds (dedup por digest no containerd). SEM ``FROM`` de imagem
+    externa (nerdctl do Rancher Desktop não resolve imagem local). Tag por kind
+    (runtimes divergem, §1.8).
+    """
+    runtime = _container_runtime()
+    if runtime is None:
+        return None
+    if which("docker") and runtime[0] == "docker":
+        ui.warn("usando `docker build` — num cluster k3s a imagem pode "
+                "precisar de import manual no containerd.")
+    dockerfile = str(HERE / "Dockerfile.cli-worker")
+    image = f"deile-cli-worker-{kind}:local"
+    build_arg = ["--build-arg", f"WORKER_KIND={kind}"]
+    return [*runtime, "build", *build_arg, "-f", dockerfile, "-t", image, str(ROOT)]
+
+
+def k8s_build_cli_workers(args: dict) -> int:
+    """``k8s build-cli-workers [--kind <k>]`` — builda imagem(ns) per-tool.
+
+    Sem ``--kind``, builda TODOS os kinds registrados. Com ``--kind <k>``, só
+    aquele. Cada build produz ``deile-cli-worker-<kind>:local`` via
+    ``Dockerfile.cli-worker`` (build-arg ``WORKER_KIND``). ON-DEMAND — nunca
+    chamado por ``k8s up``.
+    """
+    extra = args.get("extra") or []
+    requested = _parse_kind_flag(extra)
+    kinds = _cli_worker_kinds()
+    if not kinds:
+        ui.err("nenhum adapter CLI registrado — nada a buildar.")
+        return 1
+    if requested:
+        if requested not in kinds:
+            ui.err(f"kind desconhecido: {requested!r}")
+            ui.info("kinds disponíveis: " + ", ".join(kinds))
+            return 64
+        targets = [requested]
+    else:
+        targets = kinds
+
+    steps = [f"build de deile-cli-worker-{k}:local" for k in targets]
+    if not announce_plan(
+        args, "k8s build-cli-workers",
+        ", ".join(f"{k}-worker" for k in targets), steps,
+    ):
+        return 0
+    if not ensure_container_prereqs(args["yes"]):
+        return 1
+
+    rc = 0
+    for kind in targets:
+        cmd = _cli_worker_build_cmd(kind)
+        if cmd is None:
+            ui.err("nenhum runtime de container encontrado (nerdctl/colima/docker).")
+            return 1
+        ui.info(f"buildando deile-cli-worker-{kind}:local")
+        if _run(cmd) != 0:
+            ui.err(f"build de {kind}-worker falhou.")
+            rc = 1
+            continue
+        ui.ok(f"imagem deile-cli-worker-{kind}:local construída.")
+    if rc == 0:
+        ui.info("imagens prontas; gere manifests com `k8s gen-worker <kind>` e "
+                "escale via painel/`k8s scale`.")
+    return rc
+
+
+def k8s_cli_worker_install(args: dict) -> int:
+    """``k8s cli-worker-install <kind>`` — instala um CLI worker ON-DEMAND.
+
+    Generaliza ``claude-login`` para os workers ``env``: propaga as chaves de
+    API do ``.env`` ao Secret ``cli-worker-keys``, sincroniza o bearer, gera +
+    aplica o manifest e escala a 1 réplica. Mesmo caminho usado pelo painel
+    quando o operador seleciona o worker. ON-DEMAND — nunca chamado por ``k8s up``.
+    """
+    ns = _ns(args)
+    extra = args.get("extra") or []
+    kind = _parse_kind_flag(extra)
+    kinds = _cli_worker_kinds()
+    if not kind:
+        ui.err("uso: k8s cli-worker-install <kind> (ou --kind <kind>)")
+        if kinds:
+            ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+    if kinds and kind not in kinds:
+        ui.err(f"kind desconhecido: {kind!r}")
+        ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+
+    if not announce_plan(
+        args, "k8s cli-worker-install", f"{kind}-worker (namespace `{ns}`)",
+        [
+            "propaga as chaves de API do .env → Secret cli-worker-keys",
+            f"sincroniza o bearer {kind}-worker-bearer (reusa worker-bearer)",
+            "gera + aplica o manifest (Deployment/Service/NetworkPolicy)",
+            "escala o worker a 1 réplica",
+        ],
+    ):
+        return 0
+
+    try:
+        from _cli_worker_install import install_cli_worker  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o instalador: {exc}")
+        return 1
+    res = install_cli_worker(kind, namespace=ns)
+    if res.missing_keys:
+        ui.warn(
+            f"chaves de API ausentes no .env: {', '.join(res.missing_keys)} — "
+            f"o worker subirá not-ready até elas existirem"
+        )
+    if res.ok:
+        ui.ok(f"{kind}-worker instalado e escalado a 1 réplica.")
+        ui.info("acompanhe o rollout: "
+                f"kubectl -n {ns} rollout status deployment/{kind}-worker")
+        return 0
+    ui.err(f"install de {kind}-worker falhou: {res.error}")
+    return 1
+
+
+def _parse_cli_worker_login_flags(extra: List[str]) -> Dict[str, object]:
+    """Decodifica flags de ``k8s cli-worker-login`` (sem o ``<kind>`` posicional).
+
+    Reconhece ``--switch``/``--force-relogin``, ``--no-interactive`` e ``--in-pod``
+    (espelha o ``claude-login``). ``--in-pod`` roda o device-auth DENTRO do pod
+    via ``kubectl exec`` — para o operador que não tem o CLI no host. Devolve
+    ``{"_error": msg}`` em flag desconhecida. O kind e o ``--namespace`` são
+    resolvidos fora daqui.
+    """
+    parsed: Dict[str, object] = {
+        "force_relogin": False, "interactive": True, "in_pod": False,
+    }
+    for token in extra:
+        if token in ("--switch", "--force-relogin"):
+            parsed["force_relogin"] = True
+            continue
+        if token == "--no-interactive":
+            parsed["interactive"] = False
+            continue
+        if token == "--in-pod":
+            parsed["in_pod"] = True
+            continue
+        if token == "--kind":
+            continue  # consumido por _parse_kind_flag
+        if token.startswith("-"):
+            return {"_error": f"flag desconhecido: `{token}`"}
+    return parsed
+
+
+def _k8s_in_pod_cli_worker_login(
+    kind: str, *, ns: str, force_relogin: bool = False,
+) -> int:
+    """``cli-worker-login <kind> --in-pod`` — device-auth DENTRO do pod.
+
+    Para o operador que NÃO tem o CLI do worker no host (ex.: ``codex``).
+    Espelha ``_k8s_in_pod_claude_login``, mas o login do codex é um device-auth
+    interativo simples (sem servidor HTTP de OAuth): o pod imprime a URL + o
+    código de device-auth no terminal e o operador autoriza no browser.
+
+    Sequência (cada etapa idempotente):
+
+    1. resolve o adapter (oauth-capable) + o path da credencial no pod;
+    2. aplica Secret de credencial placeholder + bearer + keys + manifest OAUTH
+       (PVC + initContainer + mount) para o pod subir;
+    3. escala a 1 réplica e aguarda o pod ficar Running;
+    4. ``kubectl exec -it`` rodando o ``login_cmd`` do OAuthSpec — device-auth
+       interativo (o operador completa no browser);
+    5. lê a credencial gerada no pod (``kubectl exec cat``) — NUNCA loga o valor;
+    6. atualiza o Secret de credencial com o conteúdo real;
+    7. rollout restart para o initContainer copiar a credencial real ao PVC.
+
+    Retorna 0 em sucesso, !=0 em falha (com mensagem clara).
+    """
+    sys.path.insert(0, str(HERE))
+    try:
+        from _cli_worker_gen import resolve_pod_cred_path  # noqa: PLC0415
+        from _cli_worker_install import (  # noqa: PLC0415
+            _kubectl_apply_keys_secret,
+            _kubectl_apply_manifest,
+            _kubectl_scale,
+            _kubectl_sync_bearer,
+            _resolve_auth_keys,
+        )
+        from _cli_worker_login import (  # noqa: PLC0415
+            _adapter,
+            _kubectl_apply_cred_secret,
+            _kubectl_set_auth_mode,
+            build_cred_secret_payload,
+            cred_secret_name,
+        )
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o fluxo de login OAuth in-pod: {exc}")
+        return 1
+    finally:
+        if str(HERE) in sys.path:
+            sys.path.remove(str(HERE))
+
+    try:
+        adapter = _adapter(kind)
+    except KeyError as exc:
+        ui.err(f"kind desconhecido: {exc}")
+        return 64
+
+    oauth = getattr(adapter, "oauth", None)
+    if oauth is None or not getattr(oauth, "login_cmd", None):
+        ui.err(
+            f"adapter {kind!r} não é oauth-capable (sem OAuthSpec/login_cmd) — "
+            "use `cli-worker-install` (auth por chave de API)."
+        )
+        return 64
+
+    worker = f"{kind}-worker"
+    cred_pod_path = resolve_pod_cred_path(adapter, kind=kind)
+    cred_basename = cred_pod_path.rsplit("/", 1)[-1]
+    secret_name = cred_secret_name(kind, adapter)
+    login_cmd = list(oauth.login_cmd)
+
+    ui.section(f"k8s cli-worker-login {kind} --in-pod")
+    ui.info(f"namespace={ns}, cred no pod={cred_pod_path}")
+
+    # 1. Secret de credencial placeholder — o initContainer não falha por Secret
+    #    ausente; o conteúdo real é escrito no passo 6 após o device-auth.
+    ui.info("Aplicando Secret de credencial placeholder...")
+    placeholder = build_cred_secret_payload(
+        '{"placeholder": "in-pod-oauth-pending"}', cred_path=Path(cred_pod_path),
+    )
+    if not _kubectl_apply_cred_secret(secret_name, placeholder, namespace=ns):
+        ui.err("Falha ao aplicar Secret de credencial placeholder — aborting")
+        return 1
+
+    # 2. keys + bearer + manifest OAUTH.
+    auth_values = _resolve_auth_keys(adapter, kind=kind)
+    if not _kubectl_apply_keys_secret(auth_values, namespace=ns):
+        ui.err("Falha ao aplicar Secret cli-worker-keys — aborting")
+        return 1
+    if not _kubectl_sync_bearer(worker, namespace=ns):
+        ui.err(f"Falha ao sincronizar {worker}-bearer — aborting")
+        return 1
+    ui.info("Aplicando manifest OAuth (PVC + initContainer + mount)...")
+    try:
+        if not _kubectl_apply_manifest(kind, namespace=ns, oauth_mode=True):
+            ui.err(f"Falha ao aplicar manifest de {worker} — aborting")
+            return 1
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"Erro ao gerar/aplicar manifest: {exc}")
+        return 1
+    if not _kubectl_set_auth_mode(worker, kind, namespace=ns):
+        ui.err(f"Falha ao setar DEILE_{kind.upper()}_AUTH=oauth — aborting")
+        return 1
+
+    # 3. escala + aguarda Running.
+    if not _kubectl_scale(worker, 1, namespace=ns):
+        ui.err(f"Falha ao escalar {worker} — aborting")
+        return 1
+    ui.info(f"Aguardando pod {worker} ficar Running (até 120s)...")
+    pod_running = False
+    for _ in range(24):  # 24 × 5s = 120s
+        try:
+            chk = subprocess.run(
+                ["kubectl", "-n", ns, "get", f"deploy/{worker}",
+                 "-o", "jsonpath={.status.availableReplicas}"],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            break
+        if (chk.stdout or "").strip() not in ("", "0"):
+            pod_running = True
+            break
+        time.sleep(5)
+    if not pod_running:
+        ui.warn(
+            f"{worker} não reportou réplica disponível em 120s — tentando o "
+            "device-auth mesmo assim (o pod pode estar Running not-ready)."
+        )
+
+    # 4. device-auth interativo DENTRO do pod (kubectl exec -it). O pod imprime
+    #    a URL + código; o operador autoriza no browser. NÃO captura stdout
+    #    (pode conter o código de device-auth) — stdio herdado pro terminal.
+    ui.ok(
+        f"\nRodando `{' '.join(login_cmd)}` DENTRO do pod {worker}.\n"
+        "Siga a URL + código de device-auth que o pod imprimir e autorize no "
+        "seu browser. Este processo aguarda o login concluir."
+    )
+    try:
+        exec_rc = subprocess.run(
+            ["kubectl", "-n", ns, "exec", "-it", f"deploy/{worker}",
+             "-c", worker, "--", *login_cmd],
+            check=False, timeout=600,
+        ).returncode
+    except subprocess.TimeoutExpired:
+        ui.err("device-auth in-pod excedeu 10min — não foi completado.")
+        return 1
+    except FileNotFoundError:
+        ui.err("kubectl não encontrado no PATH")
+        return 1
+    if exec_rc != 0:
+        ui.err(f"`{' '.join(login_cmd)}` no pod retornou rc={exec_rc} — aborting")
+        return 1
+
+    # 5. lê a credencial gerada no pod (NUNCA loga o conteúdo).
+    ui.info("Lendo a credencial gerada no pod...")
+    try:
+        cat = subprocess.run(
+            ["kubectl", "-n", ns, "exec", f"deploy/{worker}",
+             "-c", worker, "--", "cat", cred_pod_path],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        ui.err(f"Falha ao ler a credencial do pod: {exc}")
+        return 1
+    if cat.returncode != 0 or not cat.stdout.strip():
+        ui.err(
+            f"Credencial não encontrada em {cred_pod_path} após o device-auth "
+            "— aborting"
+        )
+        return 1
+
+    # 6. atualiza o Secret de credencial com o valor real (chave = basename).
+    ui.info(f"Atualizando Secret {secret_name} com a credencial real...")
+    real_payload = {cred_basename: cat.stdout}
+    if not _kubectl_apply_cred_secret(secret_name, real_payload, namespace=ns):
+        ui.err("Falha ao atualizar o Secret com a credencial real — aborting")
+        return 1
+
+    # 7. rollout restart (initContainer copia a credencial real do Secret ao PVC).
+    ui.info(f"Rollout restart do {worker}...")
+    try:
+        subprocess.run(
+            ["kubectl", "-n", ns, "rollout", "restart", f"deployment/{worker}"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        ui.err(f"Falha no rollout restart: {exc}")
+        return 1
+
+    ui.ok(f"{worker} pronto (OAuth in-pod).")
+    ui.info("acompanhe o rollout: "
+            f"kubectl -n {ns} rollout status deployment/{worker}")
+    return 0
+
+
+def k8s_cli_worker_login(args: dict) -> int:
+    """``k8s cli-worker-login <kind>`` — captura credencial OAuth + instala worker.
+
+    Espelha ``claude-login`` para os workers da frota com ``auth_mode="oauth_file"``
+    (hoje: ``codex`` no caminho opt-in ``DEILE_CODEX_AUTH=oauth``). O OPERADOR
+    completa o device-auth do CLI no host (ex.: ``codex login --device-auth``);
+    este verb captura a credencial gravada, cria o Secret, gera+aplica o manifest
+    (PVC + initContainer ``bootstrap-creds`` + mount), seta ``DEILE_<KIND>_AUTH=oauth``
+    e escala a 1 réplica. Idempotente.
+
+    Flags: ``--switch`` (força novo login) e ``--no-interactive`` (CI: falha se a
+    credencial estiver ausente, não roda o device-auth). Para workers env-auth
+    use ``cli-worker-install``.
+    """
+    ns = _ns(args)
+    extra = args.get("extra") or []
+    kind = _parse_kind_flag(extra)
+    kinds = _cli_worker_kinds()
+    if not kind:
+        ui.err("uso: k8s cli-worker-login <kind> (flags: --switch, --no-interactive)")
+        if kinds:
+            ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+    if kinds and kind not in kinds:
+        ui.err(f"kind desconhecido: {kind!r}")
+        ui.info("kinds disponíveis: " + ", ".join(kinds))
+        return 64
+
+    flags = _parse_cli_worker_login_flags(extra)
+    if "_error" in flags:
+        ui.err(str(flags["_error"]))
+        ui.info(
+            "flags válidos: --switch (--force-relogin), --no-interactive, --in-pod"
+        )
+        return 64
+    force_relogin = bool(flags["force_relogin"])
+    interactive = bool(flags["interactive"])
+    in_pod = bool(flags["in_pod"])
+
+    if in_pod:
+        if not announce_plan(
+            args, "k8s cli-worker-login --in-pod",
+            f"{kind}-worker (namespace `{ns}`)",
+            [
+                "aplica Secret placeholder + manifest OAuth para o pod subir",
+                f"roda o device-auth DENTRO do pod (kubectl exec): {kind} login",
+                "lê a credencial gerada no pod e atualiza o Secret com o valor real",
+                "rollout restart para o initContainer copiar a credencial real",
+            ],
+        ):
+            return 0
+        return _k8s_in_pod_cli_worker_login(
+            kind, ns=ns, force_relogin=force_relogin,
+        )
+
+    if not announce_plan(
+        args, "k8s cli-worker-login", f"{kind}-worker (namespace `{ns}`)",
+        [
+            f"detecta a credencial OAuth de {kind!r} no host (ou roda o device-auth)",
+            "cria/atualiza o Secret de credencial OAuth do worker",
+            "sincroniza o bearer + propaga chaves env ao Secret cli-worker-keys",
+            "gera + aplica o manifest (PVC + initContainer bootstrap-creds + mount)",
+            f"seta DEILE_{kind.upper()}_AUTH=oauth no Deployment e escala a 1 réplica",
+        ],
+    ):
+        return 0
+
+    try:
+        from _cli_worker_login import bootstrap_cli_worker_oauth  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o fluxo de login OAuth: {exc}")
+        return 1
+
+    ui.section(f"k8s cli-worker-login {kind}")
+    ui.info(f"namespace={ns}, switch={force_relogin}, interactive={interactive}")
+    res = bootstrap_cli_worker_oauth(
+        kind, namespace=ns, force_relogin=force_relogin, interactive=interactive,
+    )
+    if res.missing_keys:
+        ui.warn(
+            f"chaves env ausentes no .env: {', '.join(res.missing_keys)} — "
+            "o worker subirá not-ready até elas existirem (se exigidas)"
+        )
+    if res.ok:
+        ui.ok(f"{kind}-worker instalado (OAuth) e escalado a 1 réplica.")
+        ui.info("acompanhe o rollout: "
+                f"kubectl -n {ns} rollout status deployment/{kind}-worker")
+        return 0
+    ui.err(f"cli-worker-login de {kind} falhou: {res.error}")
+    return 1
+
+
+def k8s_cli_worker_uninstall(args: dict) -> int:
+    """``k8s cli-worker-uninstall <kind>`` — remove um CLI worker (idempotente)."""
+    ns = _ns(args)
+    extra = args.get("extra") or []
+    kind = _parse_kind_flag(extra)
+    if not kind:
+        ui.err("uso: k8s cli-worker-uninstall <kind> (ou --kind <kind>)")
+        return 64
+    if not announce_plan(
+        args, "k8s cli-worker-uninstall", f"{kind}-worker (namespace `{ns}`)",
+        [
+            "deleta Deployment + Service + NetworkPolicy + bearer Secret",
+            "NÃO toca em cli-worker-keys (compartilhado) nem allowed-repos",
+        ],
+    ):
+        return 0
+    try:
+        from _cli_worker_install import uninstall_cli_worker  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        ui.err(f"não consegui carregar o instalador: {exc}")
+        return 1
+    res = uninstall_cli_worker(kind, namespace=ns)
+    if res.ok:
+        ui.ok(f"{kind}-worker desinstalado.")
+        return 0
+    ui.err(f"uninstall de {kind}-worker falhou: {res.error}")
+    return 1
+
+
 _K8S = {
     "up": k8s_up, "down": k8s_down, "start": k8s_start, "stop": k8s_stop,
     "restart": k8s_restart, "status": k8s_status, "logs": k8s_logs,
@@ -2287,6 +2868,11 @@ _K8S = {
     "renew-daemon": k8s_renew_daemon,
     "create-namespace": k8s_create_namespace,
     "scale": k8s_scale,
+    "gen-worker": k8s_gen_worker,
+    "build-cli-workers": k8s_build_cli_workers,
+    "cli-worker-install": k8s_cli_worker_install,
+    "cli-worker-login": k8s_cli_worker_login,
+    "cli-worker-uninstall": k8s_cli_worker_uninstall,
 }
 _LOCAL = {
     "start": local_start, "stop": local_stop, "restart": local_restart,
@@ -2315,6 +2901,17 @@ _K8S_ACTIONS = [
      " --from-env-only, --in-pod)"),
     ("claude-renew",
      "renovar OAuth do claude-worker (lightweight: Secret + restart, sem manifests)"),
+    ("gen-worker",
+     "gerar manifest de um CLI worker do template (gen-worker <kind>) — opt-in"),
+    ("build-cli-workers",
+     "buildar imagem(ns) per-tool da frota CLI (--kind <k> ou todos) — opt-in"),
+    ("cli-worker-install",
+     "instalar um CLI worker on-demand (cli-worker-install <kind>) — opt-in"),
+    ("cli-worker-login",
+     "instalar CLI worker OAuth via device-auth (cli-worker-login <kind>;"
+     " flags: --switch, --no-interactive, --in-pod) — opt-in"),
+    ("cli-worker-uninstall",
+     "remover um CLI worker do cluster (cli-worker-uninstall <kind>)"),
     ("down", "APAGAR o namespace e TODOS os dados"),
 ]
 _LOCAL_ACTIONS = [

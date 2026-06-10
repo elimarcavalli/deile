@@ -288,8 +288,8 @@ async def test_no_ledger_key_skips_ledger_ops(tmp_path):
 
 @pytest.mark.asyncio
 async def test_resume_records_worker_kind_based_on_url(tmp_path):
-    """worker_kind no ledger é derivado da URL — 'claude' se aponta pra
-    claude-worker, senão 'deile'."""
+    """worker_kind no ledger é derivado do hostname do endpoint —
+    ``<kind>-worker`` → ``<kind>`` (claude, opencode, ...); fallback 'deile'."""
     ledger = DispatchLedger(path=tmp_path / "l.json")
     client = _fake_client({
         "ok": False, "error": "x", "task_id": "t", "session_id": "s",
@@ -302,6 +302,36 @@ async def test_resume_records_worker_kind_based_on_url(tmp_path):
         stage="pr_review", ledger_key="pr:100",
     )
     assert ledger.get("pr:100")["worker_kind"] == "claude"
+
+
+@pytest.mark.asyncio
+async def test_records_worker_kind_for_cli_fleet_worker(tmp_path):
+    """FIX C: dispatch a um worker da frota CLI grava o kind correto, não
+    'deile' (que era o ramo-else hardcode antigo)."""
+    ledger = DispatchLedger(path=tmp_path / "l.json")
+    client = _fake_client({
+        "ok": False, "error": "x", "task_id": "t", "session_id": "s",
+    })
+    impl = WorkerImplementer(client=client,
+                              endpoint_override="http://opencode-worker:8771",
+                              ledger=ledger)
+    await impl._dispatch(
+        "x", channel_id="pipeline-pr-200",
+        stage="implement", ledger_key="pr:200",
+    )
+    assert ledger.get("pr:200")["worker_kind"] == "opencode"
+
+
+def test_worker_kind_from_url_helper():
+    """FIX C: _worker_kind_from_url strip de scheme/porta/path + sufixo -worker."""
+    from deile.orchestration.pipeline.implementer import _worker_kind_from_url
+    assert _worker_kind_from_url("http://claude-worker:8767") == "claude"
+    assert _worker_kind_from_url("http://deile-worker:8766") == "deile"
+    assert _worker_kind_from_url("http://opencode-worker:8771/v1/dispatch") == "opencode"
+    assert _worker_kind_from_url("http://goose-worker:8774") == "goose"
+    # Fallback conservador quando o host não casa o padrão.
+    assert _worker_kind_from_url("") == "deile"
+    assert _worker_kind_from_url("http://localhost:8766") == "localhost"
 
 
 # --------------------------------------------------------------------------- #

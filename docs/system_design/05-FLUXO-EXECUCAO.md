@@ -84,6 +84,28 @@ O ciclo autônomo (`stages.py` + `monitor.py`) emite eventos estruturados via `p
 
 > Ver [`15-PIPELINE-LOGGER.md`](15-PIPELINE-LOGGER.md) para o formato canônico, API completa das 15 funções e garantias formais.
 
+### Roteamento per-stage do dispatch (frota multi-CLI)
+
+Cada etapa do ciclo autônomo (`classify`/`refine`/`implement`/`pr_review`/`follow_ups`) é despachada a um worker resolvido independentemente — o pipeline não está mais preso a um único alvo. Os três eixos de configuração por stage são resolvidos por módulos dedicados em `deile/orchestration/pipeline/`, cada um com a mesma cadeia de fallback (env var per-stage → settings.json per-stage → global → default):
+
+| Eixo | Resolver | Env var per-stage / global | Default |
+|---|---|---|---|
+| Worker (qual pod recebe o `POST /v1/dispatch`) | `dispatch_resolver.resolve_stage_dispatcher` | `DEILE_PIPELINE_DISPATCH_<STAGE>` / `DEILE_PIPELINE_DISPATCH_MODE` | `deile-worker` |
+| Modelo | `model_resolver.resolve_stage_model` (formato `provider:model` do deile/claude-worker) e `resolve_stage_cli_model` (id nativo livre dos CLI workers) | `DEILE_PIPELINE_MODEL_<STAGE>` / `DEILE_PREFERRED_MODEL` | sem override (worker decide) |
+| Reasoning | `reasoning_resolver.resolve_stage_reasoning` (defaults opinados por stage — ver [`07-INTEGRACOES-LLM.md`](07-INTEGRACOES-LLM.md)) | `DEILE_PIPELINE_REASONING_<STAGE>` / `DEILE_REASONING_EFFORT` | default por stage |
+
+> O conjunto de workers válidos (`dispatch_resolver.get_valid_dispatchers`) é **derivado em runtime** do registro de adapters (`infra/k8s/cli_adapters/`) — os dois workers núcleo (`deile-worker`, `claude-worker`) somados à frota CLI plugável. Nenhuma lista é hardcodada. Ver Decisão #51 e [`07-INTEGRACOES-LLM.md`](07-INTEGRACOES-LLM.md) para a camada de execução CLI.
+
+### Scale-to-zero on-demand dos CLI workers
+
+Os workers da frota CLI nascem `replicas: 0` (custo zero ocioso). Antes de despachar a um deles, o pipeline **garante ≥1 réplica** via `cli_worker_scaler.ensure_replica` (`kubectl scale --replicas=1`, com cooldown in-memory anti-flapping, reusando a SA do pipeline pod). Os workers núcleo nascem com 1 réplica e são `NOT_APPLICABLE` para o scaler. Falha de scale (sem `kubectl`/RBAC) vira erro tipado instruindo o scale manual.
+
+### Resume nativo por worker (anti-sangria, issue #445)
+
+Quando há trabalho começado (workdir reusado + sessão anterior), o worker **retoma a sessão nativa do CLI no MESMO workdir** em vez de re-gastar tokens do zero (cada adapter conhece a flag de resume do seu CLI; ver `cli_adapters/base.py:ResumeCtx`). O pipeline consulta `GET /v1/dispatches/{task_id}/resume-info` (liveness + `session_id` capturado) para decidir *resume vs fresh vs skip*.
+
+A peça anti-sangria é a classificação de **corte por provider**: `_worker_core.classify_provider_error` varre stdout/stderr e, ao detectar `INSUFFICIENT_CREDIT`/`RATE_LIMIT`/`PROVIDER_ERROR`/`PROVIDER_CONN` (402/429/5xx/conexão), faz o adapter marcar `ok=False` (INCOMPLETO) em vez de "conclusão limpa" — os CLIs frequentemente saem com rc=0 mesmo cortados no meio. Isso leva o pipeline a retomar o trabalho parcial em vez de dar a task como completa pela metade.
+
 ## Tratamento de erros estruturados
 
 Erros que devem aparecer ao usuário com formatação especial são marcados via `metadata` em `AgentResponse`:

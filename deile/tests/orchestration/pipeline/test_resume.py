@@ -401,6 +401,23 @@ class TestResumeSweep:
         notifier.implementation_resumed.assert_not_called()
         assert monitor.stats.resume_dispatches == 0
 
+    async def test_resume_skips_when_open_pr_exists(self):
+        """Ground-truth guard (anti-double-dispatch): se já existe PR aberta
+        para a issue, o resume NÃO re-despacha — o worker já concluiu. Isola o
+        guard de :func:`resume_in_progress_issues` chamando-o direto (sem o
+        reconcile, que noutro caminho já a teria promovido a em_pr)."""
+        from deile.orchestration.pipeline import stages
+        monitor, notifier, client = _make_monitor(
+            issues_in_progress=[_in_progress()],
+            worker_responses=[_worker_response(ended="incompleto")],
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        await stages.resume_in_progress_issues(monitor)
+        await _drain_bg(monitor)
+        notifier.implementation_resumed.assert_not_called()
+        assert monitor.stats.resume_dispatches == 0
+        assert client.payloads == []  # nenhum dispatch saiu
+
     async def test_resume_disabled_skips_sweep(self):
         monitor, notifier, _ = _make_monitor(
             issues_in_progress=[_in_progress()],

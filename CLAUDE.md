@@ -74,11 +74,12 @@ Hexagonal, registry-driven, **async-first** (no sync I/O inside `async def`). Ad
 
 **A CLI turn (core loop):** `_DeileCLI` → `DeileAgent`; parsers extract file/command refs; slash commands dispatch via `CommandRegistry`, else `ModelRouter`/`TierRouter` picks provider/model; the provider streams `UnifiedStreamEvent`s (`TEXT_DELTA`, `TOOL_USE_START`/`TOOL_USE_END`, …); on a tool-use `ToolLoopExecutor` runs it and feeds the `ToolResult` back (cap `max_tool_iterations`=100, `DEILE_MAX_TOOL_ITERATIONS`); `StreamingRenderer` paints via `rich.live.Live`; `EventBus` publishes telemetry/persona/tool events. Streaming-first (`process_input_stream`) is default.
 
-### 3.2 The two execution engines (per-stage selectable)
+### 3.2 The worker fleet (per-stage selectable execution engines)
 - **`deile-worker`** — **DEILE Python in-process** (`wrapper.py worker` → `infra/k8s/worker_server.py`); DEILE's own provider routing.
 - **`claude-worker`** — **`claude -p`** (Claude Code CLI) in an isolated **workdir per task_id** (`gh repo clone` → `/home/claude/work/<task_id>/repo`); OAuth creds on a PVC.
+- **CLI worker fleet (Decisão #51)** — 5 pluggable coding CLIs, each a pod with its own Service: **`opencode-worker` :8771 · `codex-worker` :8772 · `qwen-worker` :8773 · `aider-worker` :8774 · `goose-worker` :8775**. One generic server (`infra/k8s/cli_worker_server.py` over `_worker_core.py`); each CLI is plugged by **one adapter** `infra/k8s/cli_adapters/<kind>.py` satisfying the `CliAdapter` Protocol — auto-discovery builds `ADAPTERS` (single source of truth driving the resolver, panel, manifest/NetworkPolicy gen). Born `replicas:0` (scale-to-zero); scaled 0→1 on demand by `cli_worker_scaler.py`. Adding a worker = **one adapter, no consumer edited** (§5.8, §3.5). (Antigravity exists only as a documented GATE — not active.)
 
-Engine picked **per stage** via `dispatch_resolver.py`. **5 stages × 3 axes**, each with a global fallback + env/settings persistence:
+Engine picked **per stage** via `dispatch_resolver.py` (`VALID_DISPATCHERS` derived from `ADAPTERS` + the two built-ins). **5 stages × 3 axes**, each with a global fallback + env/settings persistence:
 
 | Stage | Worker (`dispatch`) | Model | Reasoning |
 |---|---|---|---|
@@ -186,7 +187,7 @@ Every loaded **skill** also becomes `/<name>` (bundled-library skills are auto-t
 
 Cluster = **Rancher Desktop (k3s/containerd)**, single image **`deile-stack:local`** (`imagePullPolicy: Never`). `/app` is **baked at build time** (`COPY`, not mounted) → **code changes live only after rebuild + restart**. `kubectl` at `~/.rd/bin/kubectl` (may not be on `PATH`). Dockerfile (Python 3.11 slim) installs `gh`, `glab` (SHA256-verified), `kubectl` v1.31.4, `procps`, `tini`, **`claude` CLI pinned 2.1.158**.
 
-### 5.1 The 6 pods
+### 5.1 The 6 core pods + the CLI worker fleet
 | Pod | Port | Role |
 |---|---|---|
 | `deilebot` | `:8765` | Discord (and other channels) I/O bridge — **separate repo** (`elimarcavalli/deilebot`) |
@@ -196,7 +197,17 @@ Cluster = **Rancher Desktop (k3s/containerd)**, single image **`deile-stack:loca
 | `deile-monitor` | `:8769` | **24/7 deterministic cluster supervisor** (distinct from pipeline tick); main process `monitor_command_server.py` serves a Bearer command/status/ask control plane on `:8769` for `deilebot` — §5.5 |
 | `deile-shell` | — | `kubectl exec`-only sandbox; full toolset; prompt comes from the Human (`wrapper.py deile`) |
 
-> **Only `deile-pipeline` runs the autonomous forge monitor.** `deile-monitor` runs a separate supervisory tick; workers/bot/shell never autostart anything.
+**CLI worker fleet** (Decisão #51 — §5.8) — pluggable coding-CLI pods, **opt-in, born `replicas:0`**. Each is `<kind>-worker` running `infra/k8s/cli_worker_server.py` (generic server over `_worker_core.py`) driven by `cli_adapters/<kind>.py`:
+
+| Pod | Port | CLI / auth | resume |
+|---|---|---|---|
+| `opencode-worker` | `:8771` | opencode · `env` (`OPENROUTER_API_KEY`) | yes (`--session`) |
+| `codex-worker` | `:8772` | codex · `env` (`OPENAI_API_KEY`), OAuth opt-in (`DEILE_CODEX_AUTH=oauth`) | yes (`exec resume`) |
+| `qwen-worker` | `:8773` | qwen · `env` (OpenAI-compat triad) | yes (`--resume`) |
+| `aider-worker` | `:8774` | aider · `env` (`OPENROUTER_API_KEY`) — **`cli_autocommit`** (`--no-attribute-*`) | yes (`--restore-chat-history`) |
+| `goose-worker` | `:8775` | goose · `env` (`OPENROUTER_API_KEY`) | yes (named-session `--resume`) |
+
+> **Only `deile-pipeline` runs the autonomous forge monitor.** `deile-monitor` runs a separate supervisory tick; workers/bot/shell never autostart anything. CLI workers stay at 0 until the pipeline scales them on demand (`cli_worker_scaler.py`).
 
 **Pod entrypoints & tool whitelists (`infra/k8s/wrapper.py`).** `wrapper.py <role>` — roles `deile` · `bot` · `worker` · `claude-worker` · `pipeline` · `monitor` (last hard-defaults `DEILE_DEFAULT_PERSONA=monitor`). `DEILE_WRAPPER_TOOL_WHITELIST` = **three distinct regimes — don't conflate:**
 - **`all`** (deile-shell) — full toolset.
@@ -222,6 +233,9 @@ Prints a plan before mutating; `--yes` skips the prompt, `--dry-run` shows it on
 | Logs | `... k8s logs [bot\|worker\|shell\|<deployment-name>]` — aliases `bot`→deilebot, `worker`→deile-worker, `shell`→deile-shell; any other token = literal deployment (`deile-pipeline`, `claude-worker`, `deile-monitor`); no arg = bot+worker |
 | One-shot Job / clone repo into shell | `... k8s test` / `... k8s clone <owner/repo>` |
 | Bootstrap / renew claude-worker OAuth | `... k8s claude-login [--switch\|--no-interactive]` / `... k8s claude-renew` |
+| **Build CLI worker image(s)** (opt-in) | `... k8s build-cli-workers [--kind <k>]` — single `Dockerfile.cli-worker` (multi-stage `deps`→`base`→`final`; `WORKER_KIND` build-arg only in `final`) |
+| Gen / install / uninstall a CLI worker | `... k8s gen-worker <kind>` (render manifest) · `... k8s cli-worker-install <kind>` (env auth) · `... k8s cli-worker-uninstall <kind>` |
+| Install an OAuth-capable CLI worker | `... k8s cli-worker-login <kind> [--switch\|--no-interactive\|--in-pod]` (only adapters with an `OAuthSpec` — e.g. codex; §5.4) |
 | **Teardown** (DELETES the namespace + data) | `... k8s down` |
 
 Direct kubectl (always pass `-n`):
@@ -255,6 +269,42 @@ The 6 core deployments are namespace-agnostic; **caveat:** some auxiliary manife
 
 **Threat model:** ingress to `:8767` restricted to `deile-pipeline` only. **Egress is NOT host-whitelisted at L3/L4** — NetworkPolicy allows generic TCP 443 anywhere (`to: []`) + DNS (k3s has no FQDN-aware CNI). The host/repo allowlist (`api.anthropic.com`, `github.com`, `gitlab.com`, per-repo) is enforced **only in `wrapper.py`** via ConfigMap `claude-worker-allowed-repos` (a `git` guard). Known gap (spec §7): prompt injection could exfiltrate creds via legitimate channels (`docs/superpowers/specs/2026-05-26-claude-worker-design.md`). *(Decisão #43 mislabels this an L3/L4 whitelist — the real control is application-level.)*
 
+#### Configurar provider de workers OpenAI-compatible (qwen etc.)
+Workers OpenAI-compatible (qwen e afins) escolhem o **provider** pela tríade `OPENAI_BASE_URL` + `OPENAI_API_KEY` + `OPENAI_MODEL`. Em vez de `kubectl set env` manual (não reproduzível), declare-a no **`.env`** com a convenção `DEILE_CLI_<KIND>_ENV_<VARNAME>=<valor>` — `_cli_worker_gen.py` injeta cada uma como env var `<VARNAME>` no Deployment do worker `<kind>` ao renderizar o manifest, e `_cli_worker_install.py` propaga as sensíveis ao Secret. Sensível (casa `auth_env_keys` **ou** termina em `_API_KEY`/`_TOKEN`) → `secretKeyRef` no Secret `cli-worker-keys`, **nunca** literal no manifest; não-sensível (ex.: `OPENAI_BASE_URL`, `OPENAI_MODEL`) → valor literal. Ausência total das vars → comportamento atual inalterado (sem override). Aplica-se via `deploy.py k8s cli-worker-install <kind>` (ou re-render do manifest).
+
+Três rotas (`<KIND>` = `QWEN`):
+```dotenv
+# Dashscope nativo
+DEILE_CLI_QWEN_ENV_OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DEILE_CLI_QWEN_ENV_OPENAI_API_KEY=<key Dashscope>     # → Secret cli-worker-keys
+DEILE_CLI_QWEN_ENV_OPENAI_MODEL=qwen3-coder-plus
+
+# OpenRouter (barato)
+DEILE_CLI_QWEN_ENV_OPENAI_BASE_URL=https://openrouter.ai/api/v1
+DEILE_CLI_QWEN_ENV_OPENAI_API_KEY=<key OpenRouter>    # → Secret cli-worker-keys
+DEILE_CLI_QWEN_ENV_OPENAI_MODEL=qwen/qwen3-coder
+
+# OpenAI direto (sem base_url → default do CLI)
+DEILE_CLI_QWEN_ENV_OPENAI_API_KEY=<key OpenAI>        # → Secret cli-worker-keys
+DEILE_CLI_QWEN_ENV_OPENAI_MODEL=<modelo OpenAI>
+```
+
+#### Instalar um CLI worker OAuth — `k8s cli-worker-login <kind>`
+A maioria dos workers da frota autentica por chave de API (env) e sobe via `cli-worker-install <kind>`. Workers **oauth-capable** — aqueles cujo adapter declara um `OAuthSpec` (atributo `oauth` não-None), **independente do `auth_mode` default** — usam OAuth/device-auth em vez de chave, e sobem via `cli-worker-login` (o espelho genérico do `claude-login`). Dois casos cabem aqui: adapters `auth_mode="oauth_file"` (claude-like) e adapters env-default mas oauth-capable como o **codex** (`auth_mode="env"` + `OAuthSpec`), cujo OAuth é **opt-in** (`DEILE_CODEX_AUTH=oauth`). Instalar o codex por este verb o coloca em **modo OAuth**: o manifest é renderizado com os blocos OAuth (PVC + initContainer + mount da `auth.json`) e o env `DEILE_CODEX_AUTH=oauth` é setado no Deployment. Workers SEM `OAuthSpec` são recusados (vão para `cli-worker-install`).
+
+```bash
+python3 infra/k8s/deploy.py k8s cli-worker-login codex            # instala o codex-worker via OAuth (CLI no host)
+python3 infra/k8s/deploy.py k8s cli-worker-login codex --switch   # força novo device-auth (trocar conta)
+python3 infra/k8s/deploy.py k8s cli-worker-login codex --no-interactive  # CI: falha se a credencial não estiver no host
+python3 infra/k8s/deploy.py k8s cli-worker-login codex --in-pod   # device-auth DENTRO do pod (operador SEM o CLI no host)
+```
+
+**Host-capture (sem `--in-pod`):** detecta a credencial OAuth no host no path do `OAuthSpec` (`~/.codex/auth.json`, ou `$CODEX_HOME/auth.json`); **se ausente E interativo, roda o `login_cmd` do adapter (`codex login --device-auth`) no host** — o operador completa o device-auth no browser; captura a credencial, cria o Secret, gera+aplica o manifest (modo OAuth), seta `DEILE_<KIND>_AUTH=oauth` e escala a 1.
+
+**`--in-pod` (operador sem o CLI no host):** aplica Secret placeholder + manifest OAuth para o pod subir; roda o `login_cmd` **dentro do pod** via `kubectl exec -it` — o pod imprime a URL + código de device-auth, o operador autoriza no browser; lê a `auth.json` gerada no `CODEX_HOME` do pod, atualiza o Secret de credencial com o valor real e faz rollout restart (o initContainer copia a credencial real ao PVC mode `0600`).
+
+Ambos os modos: idempotentes; **nunca logam o conteúdo da credencial** (só o comprimento). **Quando usar OAuth vs env:** OAuth para consumir a assinatura ChatGPT do codex (o `gpt-5-codex` via Responses API retorna 401 com project API key — exige `codex login`); env (`OPENAI_API_KEY` via `cli-worker-install`) para automação robusta sem expiração. Módulos: `infra/k8s/_cli_worker_login.py` (host-capture) + `_k8s_in_pod_cli_worker_login` em `deploy.py` (in-pod); render OAuth em `_cli_worker_gen.render_manifests(..., oauth_mode=True)`.
+
 ### 5.5 deile-monitor — the 24/7 cluster supervisor (6th pod)
 Two-phase deterministic tick (PR #504): **Phase A** = mechanical sweep, **zero LLM** — 8 "vigias" (OAuth health, error pods, orphan issues, `auto/*` PR attempt N/3, awaiting-stakeholder, failed Jobs, pipeline-pod health, follow-ups); **Phase B** invokes the `monitor` persona **only** when Phase-A candidates survive (via state file). Steady state = **no tokens** (was ~3.5M/tick as a tool-loop — #504 fix). Tick 30 min; RBAC `deile-monitor-sa` (read pods/jobs + `pods/exec` for OAuth renew). Persona-driven (`personas/instructions/monitor.md`, hot-reload). Main process `monitor_command_server.py` (`args:`, tini-wrapped) runs the tick as a subprocess AND serves a Bearer control plane on `:8769` (status, `pause`/`resume`/`ack`/`force-tick`, read-only Q&A via `monitor_qa` in-pod — the only pod seeing kubectl + forge + `/state`). `deilebot` `/monitor` cog + cluster-question auto-route consume it; `/v1/health` 503 on stale tick → restart.
 
@@ -269,8 +319,21 @@ Two-phase deterministic tick (PR #504): **Phase A** = mechanical sweep, **zero L
 - **claude-worker `:8767`** — `health` · `auth/start|status` · `pod-status` · `POST dispatch` · `progress/{id}` · `dispatches/{id}/resume-info` · `sessions`(+`/command,/chat,/stdout,/kill,/cleanup`) · `GET|POST cleanup`
 - **deile-pipeline-status `:8768`** — `health` · `pipeline-status[/backlog|/recent|/ledger|/reaper-preview]` · `POST pipeline/force-tick`
 - **deile-monitor `:8769`** — `health`(503 stale) · `monitor-status` · `POST command` · `POST ask` · `ask/{id}`
+- **CLI workers `:8771`–`:8775`** (`cli_worker_server.py`) — `health` · `GET models` · `POST dispatch` · `progress/{id}` · `dispatches/{id}/resume-info` · `GET\|POST cleanup`
 
 ---
+
+### 5.8 The CLI worker fleet (Decisão #51 — pluggable coding CLIs)
+The fleet generalizes claude-worker into N pluggable CLI workers. **claude-worker is untouched — one worker among several.** Architecture in `00-VISAO-GERAL.md` Decisão #51; adapter authoring template in `12-PADROES-CODIGO.md` (**CLI Adapter Development**). Operational notes:
+
+- **Single source of truth = the adapter registry.** `infra/k8s/cli_adapters/__init__.py` scans the package and builds `ADAPTERS = {kind: adapter}`; every consumer (`dispatch_resolver` → `VALID_DISPATCHERS`, panel, `deploy.py gen-worker`, NetworkPolicy egress) iterates it. **Add a worker = drop `cli_adapters/<kind>.py`; no consumer edited** (guarded by `test_worker_registry_drives_everything.py`).
+- **Success gate, not exit-code.** CLI exit-codes are unreliable: `WorkResult.ok = adapter.parse_output(...).ok AND wrapper_gate()` — the post-run gate (new commit + push, or green tests when the brief demands) is the final authority. `git_strategy`: `brief_driven` (opencode/codex/qwen/goose — the brief drives `git add/commit/push`) vs `cli_autocommit` (aider commits itself, with `--no-attribute-*` so no "(aider)"/`Co-Authored-By`).
+- **Native resume per worker (#445, anti-cost-bleed).** Each worker resumes its **native session in the same workdir** instead of re-spending: opencode `run --session <id>`; codex `exec resume <id>` (does NOT accept `--cd`); qwen `--resume <id>`; goose `run --name <id> --resume` (deterministic named session — id = task_id); aider `--restore-chat-history` (workdir-keyed). `supports_resume=True` → the manifest gen provisions a **per-worker PVC `<kind>-worker-home`** + a cleanup CronJob. A provider error (402/429/insufficient) is classified **INCOMPLETE** (`_worker_core.classify_provider_error`) so the pipeline resumes rather than declaring "complete".
+- **Durable cost + audit.** `cli_worker_server` harvests each session's cost into a durable ledger (`<root>/.cost-ledger.jsonl`, **dedup by task_id**, env `DEILE_CLI_WORKER_COST_LEDGER_PATH`) **BEFORE pruning** the bulky `.progress/*.stdout.log` (mirrors claude #445). `infra/k8s/jsonl_cost.py` (`FLEET_PRICING_BY_SUBSTRING` + aggregation) is the single pricing source; `infra/k8s/fleet_progress_parse.py` is the single source of the per-kind `.progress` parsers; `infra/k8s/fleet_tokens_audit.py` (panel **`[T]`okens** screen) reads ledger (pruned) + live `.progress`, dedup by task_id. **Never prune without harvesting** (the cost-ledger incident: 337 transcripts deleted).
+- **Auth — two modes.** `env` (API key, doesn't expire — preferred for automation, default) and `oauth_file` (mounted OAuth cred, opt-in via `DEILE_<KIND>_AUTH=oauth`). codex prefers OpenAI direct (`wire_api=responses` rules out most of OpenRouter); qwen via the `OPENAI_*` triad (Dashscope/OpenRouter — §5.4 "Configurar provider…" recipe); aider/goose via OpenRouter. Keys live in Secret `cli-worker-keys`; the worker bearer in Secret file `/run/secrets/cli-worker/CLI_WORKER_BEARER_TOKEN`. OAuth-capable adapters install via `cli-worker-login` (§5.4).
+- **goose model gotcha.** The goose catalog `id` is **provider-prefixed** (`openrouter/deepseek/...`): `build_argv` splits on the **first `/`** → `--provider`/`--model`. Without the prefix goose reads the 1st segment as the provider and fails "Unknown provider" (there is no `GOOSE_PROVIDER` in the Deployment). `--max-turns` is env-overridable via `DEILE_GOOSE_MAX_TURNS`. (`cli_adapters/goose.py`.)
+- **Image.** Single `Dockerfile.cli-worker`, multi-stage `deps`→`base`→`final`; `WORKER_KIND` build-arg only in `final` (buildkit caches deps/base once, containerd dedups by digest). Build via `k8s build-cli-workers [--kind <k>]`; generated manifests in `manifests/generated/` are gitignored/ephemeral.
+- **Known gaps (open issues — follow-up, NOT done):** **#638** push-central cost via `UsageRepository` (today: pull-via-exec + per-PVC ledger); **#639** repo allowlist NOT enforced at dispatch (exfil risk — production pre-req); **#640** 3 pre-existing red tests in `orchestration/pipeline` (dirty baseline).
 
 ## 6. Configuration — where each thing lives
 
@@ -284,7 +347,7 @@ Config in **5 coexisting places**. Canonical per-variable ref = **[`.env.example
 | **Manifest `env:` blocks** | per-pod hardcoded: ports, paths, autostart flags, whitelists. | PR in repo. |
 | **`~/.deile/settings.json`** (layered) | migratable runtime config (many vars are `[DEPRECATED → settings.json]`). Layers: **project > user > defaults** (no "system" layer; project layer opt-in via `trust.project_layer_dirs`). | `/settings set <k> <v>` or edit JSON. |
 
-**Macro env categories** (full list in `.env.example`): LLM keys (`ANTHROPIC_/OPENAI_/DEEPSEEK_/GOOGLE_API_KEY`, ≥1 required) · forges (`GITHUB_TOKEN`, `GITLAB_TOKEN`/`GL_TOKEN`, `DEILE_FORGE_{KIND,REPO}`, `DEILE_*_HOST`) · bot (`DEILE_BOT_*`) · workers (`DEILE_WORKER_*`, `DEILE_CLAUDE_WORKER_*`; `DEILE_WORKER_TASK_TIMEOUT_S=7200`) · per-stage `DEILE_PIPELINE_{DISPATCH,MODEL,REASONING}_<STAGE>` · subagents (`DEILE_SUBAGENT_*`) · loop guard (`DEILE_MAX_TOOL_ITERATIONS`=100) · cron (`DEILE_CRON_*`) · OTLP (`DEILE_OTLP_*`) · status (`DEILE_PIPELINE_STATUS_*`) · `DEILE_K8S_{NAMESPACE,DEPLOY_PROFILE}`, `DEILE_RUNTIME_DIR`.
+**Macro env categories** (full list in `.env.example`): LLM keys (`ANTHROPIC_/OPENAI_/DEEPSEEK_/GOOGLE_API_KEY`, ≥1 required) · forges (`GITHUB_TOKEN`, `GITLAB_TOKEN`/`GL_TOKEN`, `DEILE_FORGE_{KIND,REPO}`, `DEILE_*_HOST`) · bot (`DEILE_BOT_*`) · workers (`DEILE_WORKER_*`, `DEILE_CLAUDE_WORKER_*`; `DEILE_WORKER_TASK_TIMEOUT_S=7200`) · CLI fleet (`DEILE_CLI_WORKER_{PORT,HOST,ROOT,HOME,TASK_TIMEOUT_S,CLEANUP_INTERVAL_S,CLEANUP_RETENTION_DAYS,PROGRESS_RETENTION_DAYS,PROGRESS_GRACE_S,COST_LEDGER_PATH}`, `DEILE_<KIND>_AUTH` (oauth opt-in), `DEILE_CLI_<KIND>_ENV_<VAR>` (per-worker env injection, §5.4), `DEILE_GOOSE_MAX_TURNS`, `OPENROUTER_API_KEY`) · per-stage `DEILE_PIPELINE_{DISPATCH,MODEL,REASONING}_<STAGE>` · subagents (`DEILE_SUBAGENT_*`) · loop guard (`DEILE_MAX_TOOL_ITERATIONS`=100) · cron (`DEILE_CRON_*`) · OTLP (`DEILE_OTLP_*`) · status (`DEILE_PIPELINE_STATUS_*`) · `DEILE_K8S_{NAMESPACE,DEPLOY_PROFILE}`, `DEILE_RUNTIME_DIR`.
 
 **Bootstrap:** `k8s up` auto-generates missing bearer tokens (`secrets.token_urlsafe(32)`) and **persists them back to `.env`** (#354). Discord token only for `full`. Remaining gap = the **spread itself** (no unified "where is config X" viewer). Two `config/` dirs: `./config/` (runtime YAML/JSON) vs `./deile/config/` (package + `settings.py` + YAMLs) — don't conflate.
 
@@ -314,7 +377,10 @@ Multi-forge in one **CLI** session via the `ForgeRouter` singleton (both tokens 
 - **Work on a brief / the quality gate** → briefs in `briefs.py`; remember implement=subset, PR=full suite, no cov gate; after editing run `pytest deile/tests/orchestration/pipeline/test_briefs* -v` (invariants test-guarded).
 - **Tune per-stage routing/model/reasoning** → panel `[d]` matrix, or env `DEILE_PIPELINE_{DISPATCH,MODEL,REASONING}_<STAGE>` (rollout `deile-pipeline`, no rebuild).
 - **Add a tool/command/parser/persona/skill/provider** → §3.5 map + templates in `12-PADROES-CODIGO.md`; then full suite (mind ordering pollution, §4).
+- **Add a CLI worker to the fleet** → write **one** adapter `infra/k8s/cli_adapters/<kind>.py` (CLI Adapter Development template in `12-PADROES-CODIGO.md`) + tests; **no consumer is edited** (`test_worker_registry_drives_everything.py` proves it). Then `k8s build-cli-workers --kind <k>` → `k8s cli-worker-install <kind>` (or `cli-worker-login` if OAuth) → panel `[d]` to route a stage to it. Details §5.8.
 - **Commit & integrate** → commit **per phase**; **full green suite + self-review before every commit**; **review the staged diff against `README.md`/touched pillars and rewrite stale sections in the same commit** — code and docs must never disagree; English title / PT-BR body; no `Co-Authored-By`. Finished branch → `superpowers:finishing-a-development-branch`.
+- **Bump the version** → `deile/__version__.py` is the single source (everything derives: `pyproject.toml` dynamic, `__init__`/settings/UI/personas by import; guard test `test_no_hardcoded_version.py`). Tool: `python3 scripts/bump_version.py --part {major,minor,patch}` (SemVer reset) · `--set X.Y.Z` · `--dry-run` (preview) · `--suggest` (reads Conventional Commits, only suggests). Writes **only** `deile/__version__.py`; never touches git.
+  - **NUNCA rodar o bump nem criar release/tag sem o Humano PEDIR explicitamente.**
 - **Restart the bot** → kill old instances/pods first; two live bots double-process events.
 - **Visual panel change** (`_panel*.py`) → **offer the Human a screenshot** (SVG via `Console.save_svg`) — don't auto-generate.
 
@@ -357,4 +423,4 @@ You may invoke `python3 deile.py` (or call the agent programmatically) to test a
 
 ## 12. SQL / database operations
 
-All SQL scripts are the Human's to run. On a DB error during a task, **stop and tell the operator which script to execute** — never run migrations or schema changes yourself. DEILE's own stores are SQLite, auto-created at runtime (no versioned SQL): tasks `./.deile/db/tasks.db`, usage `~/.deile/db/usage.db`, episodic `episodes.db`, cron `data/cron.db`; the claude-worker cost ledger is JSONL at `~/.claude/cost-ledger.jsonl`.
+All SQL scripts are the Human's to run. On a DB error during a task, **stop and tell the operator which script to execute** — never run migrations or schema changes yourself. DEILE's own stores are SQLite, auto-created at runtime (no versioned SQL): tasks `./.deile/db/tasks.db`, usage `~/.deile/db/usage.db`, episodic `episodes.db`, cron `data/cron.db`; the claude-worker cost ledger is JSONL at `~/.claude/cost-ledger.jsonl`, and each CLI fleet worker keeps its own JSONL ledger at `<root>/.cost-ledger.jsonl` on its PVC (§5.8).

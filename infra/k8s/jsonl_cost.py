@@ -2,20 +2,15 @@
 
 Centraliza o que antes vivia duplicado/embutido em ``session_tokens_audit.py``:
 
-* Tabela de preços oficial (``PRICING``) e o mapeamento modelo → preço.
-* Cálculo de custo de um bloco de tokens (``cost_of_model`` /
-  ``nocache_cost_of_model``).
-* ``aggregate_jsonl`` — agrega UM arquivo JSONL de sessão no dicionário de
-  tokens por modelo, com a MESMA dedup ``(message.id, requestId)`` provada
-  contra o ``last_total_cost_usd`` do fornecedor (erro < 0,1%).
+* Tabela de preços oficial (``PRICING``) + frota multi-worker
+  (``FLEET_PRICING_BY_SUBSTRING``) e o mapeamento modelo → preço.
+* Cálculo de custo: ``cost_of_model`` / ``fleet_cost_of_model`` /
+  ``nocache_cost_of_model``.
+* ``aggregate_jsonl`` / ``summarize_jsonl`` — agregam um JSONL com dedup
+  ``(message.id, requestId)`` provada contra ``last_total_cost_usd`` (erro < 0,1%).
 
-Stdlib-pura de propósito: roda tanto no host (``session_tokens_audit.py``)
-quanto dentro do pod (``claude_worker_server.py`` importa ``aggregate_jsonl``
-para o harvester do ledger de custo). Sem dependências externas.
-
-O ledger de custo (issue #445) usa ``aggregate_jsonl`` para colher os tokens
-de uma sessão ANTES de a poda remover o JSONL volumoso — o custo histórico
-sobrevive em escala de KB mesmo após o transcript ser removido.
+Stdlib-pura: roda no host (``session_tokens_audit.py``) e dentro do pod
+(``claude_worker_server.py``). Sem dependências externas.
 """
 
 from __future__ import annotations
@@ -40,7 +35,7 @@ PRICING = {
 
 
 def pricing_for(model: str) -> dict:
-    """Mapeia um nome de modelo para a sua tabela de preços."""
+    """Retorna a tabela de preços para um modelo claude."""
     m = (model or "").lower()
     if "haiku" in m:
         return PRICING["haiku_legacy"] if ("3-5" in m or "3.5" in m) else PRICING["haiku"]
@@ -59,12 +54,10 @@ def pricing_for(model: str) -> dict:
     return PRICING["free"]  # <synthetic> e desconhecidos não são cobrados
 
 
-# --------------------------------------------------------------------------- #
-# Janela de contexto (tokens) por família/versão de modelo. Fonte única para o #
-# threshold de promoção-a-fresh do resume (claude_worker_server). Opus 4.5+ e   #
-# Sonnet 4.6+ têm 1M; Opus 4.0/4.1, Sonnet <=4.5 e Haiku têm 200K. Conservador  #
-# (200K) para desconhecidos: subestimar nunca arrisca estourar a janela real.   #
-# --------------------------------------------------------------------------- #
+# Janela de contexto por família/versão. Fonte única para o threshold de
+# promoção-a-fresh do resume (claude_worker_server).
+# Opus 4.5+/Sonnet 4.6+ = 1M; demais = 200K. Conservador para desconhecidos:
+# subestimar nunca arrisca estourar a janela real.
 CONTEXT_WINDOW_1M = 1_000_000
 CONTEXT_WINDOW_200K = 200_000
 
@@ -115,14 +108,84 @@ def nocache_cost_of_model(tk: dict, model: str) -> float:
     return (fresh * p["in"] + tk.get("out", 0) * p["out"]) / 1_000_000.0
 
 
-# --------------------------------------------------------------------------- #
-# Agregação de um JSONL de sessão.                                            #
-#                                                                             #
-# NOTA DE PARIDADE: este laço de dedup+soma é a fonte única da agregação de   #
-# custo. O parser in-pod embutido em ``session_tokens_audit.IN_POD_PARSER``   #
-# (caminho live) implementa o MESMO algoritmo documentado; a paridade é       #
-# travada por ``test_jsonl_cost.test_aggregate_parity_with_inpod_reference``. #
-# --------------------------------------------------------------------------- #
+# FONTE ÚNICA de preço dos workers não-claude da frota (opencode/codex/qwen/
+# goose/aider). Preços em USD/MTok (verif. jun/2026): OpenRouter, OpenAI Codex,
+# Dashscope. Quando o adapter declara preço no ``ModelInfo`` ele PREVALECE
+# (mais fresco) — ver ``fleet_tokens_audit.fleet_pricing``.
+# Match por substring do model-id normalizado, do mais específico ao genérico.
+FLEET_PRICING_BY_SUBSTRING = (
+    # (substring, {in, out, read}) — ordem: específico → genérico.
+    # OpenAI Codex (developers.openai.com/codex; cached = 0.1x input).
+    ("gpt-5.3-codex",        {"in": 1.75, "out": 14.0, "read": 0.175}),
+    ("gpt-5.2-codex",        {"in": 1.75, "out": 14.0, "read": 0.175}),
+    ("gpt-5.1-codex-mini",   {"in": 0.25, "out": 2.0,  "read": 0.025}),
+    ("gpt-5.1-codex-max",    {"in": 1.25, "out": 10.0, "read": 0.125}),
+    ("gpt-5.1-codex",        {"in": 1.25, "out": 10.0, "read": 0.125}),
+    ("gpt-5-codex",          {"in": 1.25, "out": 10.0, "read": 0.125}),
+    ("codex-mini",           {"in": 1.50, "out": 6.0,  "read": 0.375}),
+    # OpenAI GPT (gpt-5.5 / gpt-5.4 — rota OpenAI direta / OpenRouter).
+    ("gpt-5.5",              {"in": 2.50, "out": 15.0, "read": 0.25}),
+    ("gpt-5.4",              {"in": 2.50, "out": 15.0, "read": 0.25}),
+    # DeepSeek (OpenRouter / api.deepseek.com) — o grosso barato da frota.
+    ("deepseek-v4-flash",    {"in": 0.0983, "out": 0.1966, "read": 0.00983}),
+    ("deepseek-v4-pro",      {"in": 0.435,  "out": 0.87,   "read": 0.0435}),
+    ("deepseek-chat",        {"in": 0.27,   "out": 1.10,   "read": 0.027}),
+    ("deepseek",             {"in": 0.27,   "out": 1.10,   "read": 0.027}),
+    # Qwen3 Coder (Dashscope / OpenRouter).
+    ("qwen3-coder-next",     {"in": 0.11, "out": 0.80, "read": 0.011}),
+    ("qwen3-coder-plus",     {"in": 1.00, "out": 5.0,  "read": 0.10}),
+    ("qwen3-coder-480b",     {"in": 0.22, "out": 1.80, "read": 0.022}),
+    ("qwen3-coder",          {"in": 0.22, "out": 1.80, "read": 0.022}),
+    ("qwen",                 {"in": 0.22, "out": 1.80, "read": 0.022}),
+    # Claude via OpenRouter (anthropic/claude-*) — preço público OpenRouter.
+    ("claude-sonnet-4.6",    {"in": 3.0,  "out": 15.0, "read": 0.30}),
+    ("claude-sonnet",        {"in": 3.0,  "out": 15.0, "read": 0.30}),
+    ("claude-3.7-sonnet",    {"in": 3.0,  "out": 15.0, "read": 0.30}),
+    ("claude-opus",          {"in": 5.0,  "out": 25.0, "read": 0.50}),
+)
+
+#: Fallback quando o model-id não casa nenhuma substring. ~DeepSeek Pro —
+#: conservador para não subestimar grosseiramente. ``read`` = 0.1x input.
+FLEET_PRICING_DEFAULT = {"in": 0.435, "out": 0.87, "read": 0.0435}
+
+
+def fleet_pricing_for(model: str, *, declared: Optional[dict] = None) -> dict:
+    """Retorna ``{in, out, read}`` (USD/MTok) para um modelo da frota.
+
+    Precedência: ``declared`` (do ``ModelInfo`` do adapter, mais fresco)
+    → :data:`FLEET_PRICING_BY_SUBSTRING` → :data:`FLEET_PRICING_DEFAULT`.
+    """
+    if declared:
+        return {
+            "in": float(declared.get("in") or 0.0),
+            "out": float(declared.get("out") or 0.0),
+            "read": float(
+                declared["read"] if declared.get("read") is not None
+                else (declared.get("in") or 0.0) * 0.1
+            ),
+        }
+    m = (model or "").lower()
+    for needle, price in FLEET_PRICING_BY_SUBSTRING:
+        if needle in m:
+            return dict(price)
+    return dict(FLEET_PRICING_DEFAULT)
+
+
+def fleet_cost_of_model(tk: dict, model: str, *, declared: Optional[dict] = None) -> float:
+    """Custo USD de {in,out,cc,cr} com a tabela da frota (cache-write soma ao input)."""
+    p = fleet_pricing_for(model, declared=declared)
+    return (
+        tk.get("in", 0) * p["in"]
+        + tk.get("out", 0) * p["out"]
+        + tk.get("cc", 0) * p["in"]
+        + tk.get("cr", 0) * p["read"]
+    ) / 1_000_000.0
+
+
+# NOTA DE PARIDADE: este laço de dedup+soma é a fonte única da agregação de
+# custo. O parser in-pod em ``session_tokens_audit.IN_POD_PARSER`` implementa
+# o MESMO algoritmo; paridade travada por
+# ``test_jsonl_cost.test_aggregate_parity_with_inpod_reference``.
 def _empty_model() -> Dict[str, int]:
     return {"in": 0, "out": 0, "cc": 0, "cr": 0, "cc_5m": 0, "cc_1h": 0}
 
@@ -148,22 +211,17 @@ def _text_of(content) -> str:
 def summarize_jsonl(path: str) -> dict:
     """Resumo COMPLETO de uma sessão ``claude -p`` — superset de :func:`aggregate_jsonl`.
 
-    Extrai os MESMOS campos que o parser in-pod do ``session_tokens_audit``
-    usa para renderizar a tabela e o detalhe — tokens por modelo, tools,
-    rodadas, mensagens, brief, título IA, PR, versão, erros, stop reasons —
-    EXCETO o git status (que depende do ``cwd`` vivo, já removido na poda).
-
-    É a fonte única do harvest rico do ledger de custo (issue #445): a sessão
-    colhida para o ledger antes da poda fica IDÊNTICA à viva na tela de tokens,
-    não uma casca só com tokens. A agregação de custo (dedup por
-    ``(message.id, requestId)`` + soma) é a mesma de :func:`aggregate_jsonl`.
+    Fonte única do harvest rico do ledger (issue #445): a sessão colhida antes
+    da poda fica IDÊNTICA à viva na tela de tokens. Extrai os mesmos campos do
+    parser in-pod (tokens/tools/mensagens/brief/erros/stop_reasons), exceto
+    git status (depende do ``cwd`` vivo, já removido na poda).
 
     Returns:
-        dict com ``session_id``, ``models`` (model -> {in,out,cc,cr,cc_5m,
-        cc_1h}), ``tools``, ``assistant_rounds``, ``user_msgs``, ``tool_calls``,
-        ``cwd``, ``git_branch``, ``version``, ``permission_mode``,
-        ``entrypoint``, ``ai_title``, ``pr_number``, ``pr_url``, ``pr_repo``,
-        ``first_ts``, ``last_ts``, ``brief``, ``errors`` e ``stop_reasons``.
+        dict com ``session_id``, ``models`` (model → {in,out,cc,cr,cc_5m,cc_1h}),
+        ``tools``, ``assistant_rounds``, ``user_msgs``, ``tool_calls``, ``cwd``,
+        ``git_branch``, ``version``, ``permission_mode``, ``entrypoint``,
+        ``ai_title``, ``pr_number``, ``pr_url``, ``pr_repo``, ``first_ts``,
+        ``last_ts``, ``brief``, ``errors``, ``stop_reasons``.
     """
     session_id = os.path.splitext(os.path.basename(path))[0]
     models: Dict[str, Dict[str, int]] = {}
@@ -297,14 +355,11 @@ def summarize_jsonl(path: str) -> dict:
 def aggregate_jsonl(path: str) -> dict:
     """Subset de custo de :func:`summarize_jsonl` (back-compat + paridade #445).
 
-    Conta cada resposta da API uma única vez por ``(message.id, requestId)``
-    — o claude grava o mesmo registro assistant repetido (deltas de
-    streaming) com o ``usage`` final idêntico; sem dedup os totais inflam
-    13-32x. Respostas sem ``id``/``requestId`` recebem chave sintética.
+    Dedup por ``(message.id, requestId)`` — sem dedup os totais inflam 13-32x
+    (claude repete o mesmo registro assistant em cada delta de streaming).
 
     Returns:
-        dict com ``session_id`` (stem do arquivo), ``models`` (model ->
-        {in,out,cc,cr,cc_5m,cc_1h}), ``first_ts``, ``last_ts`` e
+        dict com ``session_id``, ``models``, ``first_ts``, ``last_ts``,
         ``assistant_rounds``.
     """
     s = summarize_jsonl(path)

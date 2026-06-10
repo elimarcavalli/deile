@@ -30,9 +30,13 @@ def test_stages_canonical_order():
 
 
 def test_valid_dispatchers_frozen():
+    # Núcleo (servers dedicados) sempre presente.
     assert "deile-worker" in VALID_DISPATCHERS
     assert "claude-worker" in VALID_DISPATCHERS
-    assert len(VALID_DISPATCHERS) == 2
+    # O snapshot inclui a frota CLI descoberta do registro de adapters — o
+    # opencode-worker (piloto) é membro. Não se fixa um tamanho: cada adapter
+    # novo entra automaticamente (a derivação dinâmica é o ponto).
+    assert "opencode-worker" in VALID_DISPATCHERS
 
 
 def test_resolve_default_returns_deile_worker(monkeypatch):

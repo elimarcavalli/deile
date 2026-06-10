@@ -5,13 +5,27 @@ All notable changes to the DEILE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-06-09 — DEILE-One (frota multi-CLI)
+
+### Added
+- **Frota de CLI workers plugáveis (Decisão #51)** — além de `deile-worker` e `claude-worker`, qualquer CLI de codificação vira um worker despachável escrevendo **um adapter** (`infra/k8s/cli_adapters/<kind>.py`) que satisfaz o Protocol `CliAdapter` (`infra/k8s/cli_adapters/base.py`). O auto-discovery em `cli_adapters/__init__.py` monta `ADAPTERS = {kind: adapter}` como **fonte única**, que dirige `dispatch_resolver`, painel e geração de manifest/NetworkPolicy — adicionar worker não edita nenhum consumidor.
+- **Server genérico de worker** — `infra/k8s/cli_worker_server.py` reusa `infra/k8s/_worker_core.py` (lease/heartbeat/subprocess one-shot/HTTP bearer/cleanup/gate pós-run de commit+push+test). Endpoints: `GET /v1/health`, `GET /v1/models`, `POST /v1/dispatch`, `GET /v1/progress/{task_id}`, `GET /v1/dispatches/{task_id}/resume-info`. O gate de sucesso é `parse_output().ok AND wrapper_gate()` — o exit-code do CLI não é confiável.
+- **Roteamento per-estágio** — `deile/orchestration/pipeline/dispatch_resolver.py` resolve o worker de cada estágio (`classify`/`refine`/`implement`/`pr_review`/`follow_ups`) via `DEILE_PIPELINE_DISPATCH_<STAGE>` > global `DEILE_PIPELINE_DISPATCH_MODE` (default `deile-worker`); `get_valid_dispatchers()` deriva a lista válida do registro de adapters. Modelo/reasoning per-estágio via `DEILE_PIPELINE_MODEL_<STAGE>` / `DEILE_PIPELINE_REASONING_<STAGE>`.
+- **Resume nativo por worker (anti-sangria)** — cada worker retoma a sessão nativa no mesmo workdir em vez de re-gastar tokens; erro de provider (402/429/insufficient) é classificado INCOMPLETO (`_worker_core.classify_provider_error`) para o pipeline retomar. Workers com `supports_resume=True` ganham PVC por worker (`<kind>-worker-home`) + CronJob de cleanup.
+- **Custo durável + auditoria de frota** — `infra/k8s/cli_worker_server.py` colhe o custo de cada sessão para um ledger durável (`<root>/.cost-ledger.jsonl`, dedup por `task_id`) antes de podar o log volumoso; `infra/k8s/jsonl_cost.py` é a fonte única de preço, `infra/k8s/fleet_progress_parse.py` a dos parsers de `.progress` por kind, e `infra/k8s/fleet_tokens_audit.py` (tela `[T]okens` do painel) agrega tokens/custo por worker × modelo.
+- **Scale-to-zero on-demand** — workers nascem `replicas:0` (custo zero ocioso); `deile/orchestration/pipeline/cli_worker_scaler.py` escala 0→1 sob demanda com cooldown. Gerador `infra/k8s/_cli_worker_gen.py` + template `infra/k8s/manifests/templates/cli-worker.yaml.tmpl` (manifests gerados são efêmeros/gitignored).
+- **Verbos novos do `deploy.py`** — `k8s build-cli-workers [--kind <k>]` (imagem via `Dockerfile.cli-worker` multi-stage), `k8s gen-worker <kind>`, `k8s cli-worker-install <kind>`, `k8s cli-worker-login <kind>`, `k8s cli-worker-uninstall <kind>`.
+
+### Changed
+- **Painel TUI** — `DispatchMatrixView` (`[d]`) passa a matriz de estágios × {Worker, Model, Reasoning}; tela `[T]okens` vira auditoria da frota.
+
 ## [1.0.0] - 2026-06-08
 
 Primeiro release oficial do DEILE. Marca a linha de base **clássica** do agente
 autônomo de desenvolvimento em modo CLI — pipeline de issues/PRs/menções, memória
 de quatro camadas, multi-provider LLM e a stack Kubernetes (deile-worker +
 claude-worker + pipeline + bot + monitor + shell) — imediatamente antes da frota
-multi-CLI (que entra na `2.0.0`).
+multi-CLI (que entra na `1.1.0`).
 
 As entradas `[Unreleased]` abaixo documentam o trabalho consolidado neste corte.
 A numeração anterior (`5.1.0`, atribuída arbitrariamente no início do projeto)

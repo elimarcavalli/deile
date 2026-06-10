@@ -275,6 +275,14 @@ RUN chmod 0555 /app/monitor_core.py /app/monitor_vigias.py /app/monitor_tick.py
 COPY --chown=deile:deile infra/k8s/monitor_command_server.py /app/monitor_command_server.py
 RUN chmod 0555 /app/monitor_command_server.py
 
+# cli_adapters — registro de adapters CLI (auto-discovery). O PIPELINE importa
+# `cli_adapters.ADAPTERS` para derivar VALID_DISPATCHERS/endpoints ("registry
+# drives everything"). A imagem cli-worker já o copia; a imagem principal — onde
+# o pipeline RESOLVE dispatchers — também precisa, senão o pipeline não conhece
+# os CLI workers (homologação E2E: ValueError unknown dispatcher 'opencode-worker').
+COPY --chown=deile:deile infra/k8s/cli_adapters /app/cli_adapters
+RUN find /app/cli_adapters -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
 WORKDIR /app
 USER deile:deile
 

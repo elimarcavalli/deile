@@ -89,6 +89,45 @@ A pipeline e o worker autenticam contra GitHub e GitLab via **tokens estáticos*
 
 `wrapper._setup_forge_credentials()` é a função única — `_setup_git_credentials` e `_setup_gh_auth` são wrappers retro-compatíveis que delegam a ela. Subprocessos (`bash_tool`, `python_execute`) **nunca** veem os tokens em `/proc/self/environ`. Operação dual (DEILE servindo GH e GL simultaneamente) é só popular os dois Secrets — todo o resto é transparente.
 
+## Frota de CLI workers (Decisão #51)
+
+A frota multi-CLI (opencode/codex/qwen/aider/goose, ao lado do `claude-worker`)
+herda o mesmo modelo de isolamento de Pod ([`14-CONTAINERIZACAO.md`](14-CONTAINERIZACAO.md))
+e adiciona estes pontos de segurança próprios:
+
+| Aspecto | Detalhe |
+|---|---|
+| Bearer como **file** | O token do worker é lido de `/run/secrets/cli-worker/CLI_WORKER_BEARER_TOKEN` (Secret `<kind>-worker-bearer` montado read-only, `defaultMode: 0o400`) — nunca como env var (não vaza em `/proc/<pid>/environ`). API keys do LLM vivem no Secret `cli-worker-keys`, declaradas por `auth_env_keys` do adapter |
+| Bearer auth constant-time | `_worker_core.make_bearer_auth_mw` compara o token com `hmac.compare_digest` (resiste a timing-attack); só `/v1/health` dispensa token. Mesma fábrica usada por `claude_worker_server` |
+| NetworkPolicy | Gerada nas DUAS pontas: a do worker permite **ingress só do `deile-pipeline`**; a `pipeline-egress-to-<worker>` abre o egress do pipeline para o worker (o pipeline tem egress default-deny). Egress do worker = DNS + 443. **Limitação CNI:** o k3s não resolve FQDN, então o egress 443 fica `0.0.0.0/0` (mesma limitação aceita no manifest 40); os hosts LLM do adapter (`egress_hosts`) ficam só na annotation `deile.io/egress-llm-hosts` para auditoria e migração futura a um CNI FQDN-aware (Cilium) |
+| Modos de auth | `env` (API key, default, não expira — preferido para automação) vs `oauth_file` (cred OAuth montada, opt-in via `DEILE_<KIND>_AUTH=oauth`). No modo OAuth o initContainer `bootstrap-creds` copia o Secret → PVC writable mode `0600`, com refresh in-pod (espelha o claude-worker); codex é dual-mode por modelo (`OPENAI_API_KEY` env ou ChatGPT OAuth `~/.codex/auth.json`) e o `provision_auth` faz backup antes de sobrescrever a credencial |
+| Gate de sucesso ≠ exit-code | Exit-code dos CLIs não é confiável. O veredito final é `WorkResult.ok = adapter.parse_output(...).ok AND wrapper_gate()`, onde o gate pós-run exige **commit novo desde o `base_sha` + branch pushado** (`brief_driven`) ou commit do próprio CLI + push (`cli_autocommit`, só aider). Um corte por provider (402/429/5xx) é classificado como INCOMPLETO (`_worker_core.classify_provider_error`) → o pipeline RETOMA o trabalho parcial em vez de jogá-lo fora (anti-sangria, issue #445) |
+
+### Gap aberto — allowlist de repos sem enforcement no dispatch (issue #639)
+
+**Risco aberto, pré-requisito de produção.** O `wrapper.py cli-worker` carrega a
+allowlist regex (`claude-worker-allowed-repos`) e faz fail-fast se ela estiver
+ausente/vazia (`_load_allowed_repo_patterns`), mas o `_install_git_repo_guard`
+hoje só publica um **marcador** (`DEILE_CLAUDE_ALLOWED_REPOS_LOADED`) — diferente
+do `deile-shell`, ele **não instala** o guard `~/bin/git` que bloqueia clone/push
+para URL fora da lista, e o `cli_worker_server` **não reverifica** o slug do repo
+no path de `/v1/dispatch` (nenhuma referência à allowlist no server). Consequência:
+um agente CLI vítima de prompt-injection pode exfiltrar via `git push` para um
+repo arbitrário usando o token de forge wirado no pod. Mitigação V1 = isolamento
+de Pod (NetworkPolicy ingress-só-do-pipeline, host inalcançável) + o gate de
+sucesso, mas **não** há contenção do destino do push. Fechar antes de produção:
+pre-receive/clone guard efetivo no modo `cli-worker` + reverificação do slug no
+dispatch.
+
+### Antigravity GATED
+
+`cli_adapters/antigravity.py` é um **gate documentado**, não um adapter funcional:
+auth headless por API-key não suportada no consumer (issue oficial #78), login
+default via keyring (hostil a `readOnlyRootFilesystem`), closed-source e
+Google-locked. O auto-discovery o ignora (não exporta `ADAPTER`), então
+`antigravity-worker` não vira dispatcher nem sobe Pod. Só sai do gate quando um
+spike provar uma rota de auth headless no pod. Detalhe em Decisão #51.
+
 ## Mensageria proativa (deile → deilebot)
 
 | Aspecto | Detalhe |

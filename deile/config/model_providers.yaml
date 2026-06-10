@@ -1,7 +1,7 @@
 # Multi-Provider Model Router configuration.
 # API keys are NEVER stored here — only the name of the environment variable.
 #
-# Pricing/context-window/capabilities verificados em 2026-05-25 contra:
+# Pricing/context-window/capabilities verificados em 2026-06-07 contra:
 #   - Anthropic:  https://platform.claude.com/docs/en/about-claude/pricing
 #                 https://platform.claude.com/docs/en/about-claude/models/overview
 #   - OpenAI:     https://developers.openai.com/api/docs/models/<id>
@@ -193,11 +193,12 @@ models:
     capabilities: [function_calling, streaming, caching, vision, thinking]
 
   # === DEEPSEEK ===
-  # ATENÇÃO: deepseek-v4-pro e v4-flash estão sob promo de -75% no off-peak.
-  # Pre-promo (tabela): v4-pro $1.74/$3.48; v4-flash $0.56/$1.12.
-  # Pós-promo (atual): v4-pro $0.435/$0.87; v4-flash $0.14/$0.28.
-  # Cache hit: v4-pro $0.003625; v4-flash $0.0028.
-  # deepseek-chat e deepseek-reasoner serão deprecados — usar v4-flash (thinking mode = reasoner).
+  # Preços oficiais pós-promo (vigentes desde 2026-05-31; a promo de -75% expirou):
+  #   v4-pro $0.435/$0.87; v4-flash $0.14/$0.28 por 1M tokens.
+  #   Cache hit: v4-pro $0.003625/1M; v4-flash $0.0028/1M.
+  # DEPRECAÇÃO (2026-07-24 15:59 UTC): deepseek-chat → deepseek-v4-flash
+  #   (non-thinking); deepseek-reasoner → deepseek-v4-flash (thinking mode).
+  # Fonte: https://api-docs.deepseek.com/quick_start/pricing (verif. 2026-06-07)
   - provider_id: deepseek
     model_id: deepseek-v4-pro
     tier: tier_1
@@ -223,30 +224,65 @@ models:
   # FALLBACK quando a API não reporta custo. Valores OpenRouter ~2026-06; o
   # markup/roteamento dinâmico do OpenRouter pode divergir — por isso o custo
   # reportado pela resposta tem prioridade.
+  # DEPRECATED (2026-07-24): deepseek-chat/reasoner são aliases do v4-flash.
+  # Mantidos só para compat de configs existentes; evitar novas integrações.
   - provider_id: openrouter
     model_id: deepseek/deepseek-chat
     tier: tier_3
-    label: ultra-cheap
-    display_name: DeepSeek Chat (OpenRouter)
-    pricing: { input_per_1m_usd: 0.28, output_per_1m_usd: 0.88 }
-    context_window: 163840
+    label: ultra-cheap-deprecated
+    display_name: DeepSeek Chat (OpenRouter) [DEPRECATED 2026-07-24]
+    pricing: { input_per_1m_usd: 0.14, output_per_1m_usd: 0.28 }
+    context_window: 1048576
     capabilities: [function_calling, streaming, json_output]
 
   - provider_id: openrouter
     model_id: deepseek/deepseek-reasoner
     tier: tier_3
-    label: cheap-reasoning
-    display_name: DeepSeek Reasoner (OpenRouter)
-    pricing: { input_per_1m_usd: 0.55, output_per_1m_usd: 2.19 }
-    context_window: 163840
+    label: cheap-reasoning-deprecated
+    display_name: DeepSeek Reasoner (OpenRouter) [DEPRECATED 2026-07-24]
+    pricing: { input_per_1m_usd: 0.14, output_per_1m_usd: 0.28 }
+    context_window: 1048576
+    capabilities: [function_calling, streaming, json_output, thinking]
+
+  # deepseek-v4 via OpenRouter (rota da frota CLI com chave única). v4-pro também
+  # existe via provider DeepSeek direto (deepseek:deepseek-v4-pro); estas entradas
+  # adicionam a rota OpenRouter p/ os CLI workers (opencode/aider/goose) usarem.
+  - provider_id: openrouter
+    model_id: deepseek/deepseek-v4-pro
+    tier: tier_1
+    label: deepseek-pro
+    display_name: DeepSeek V4 Pro (OpenRouter)
+    pricing: { input_per_1m_usd: 0.435, output_per_1m_usd: 0.870 }
+    context_window: 1048576
+    capabilities: [function_calling, streaming, json_output, thinking]
+
+  - provider_id: openrouter
+    model_id: deepseek/deepseek-v4-flash
+    tier: tier_4
+    label: ultra-cheap
+    display_name: DeepSeek V4 Flash (OpenRouter)
+    pricing: { input_per_1m_usd: 0.0983, output_per_1m_usd: 0.1966 }
+    context_window: 1048576
     capabilities: [function_calling, streaming, json_output, thinking]
 
   - provider_id: openrouter
     model_id: qwen/qwen3-coder
     tier: tier_3
     label: cheap-coder
-    display_name: Qwen3 Coder (OpenRouter)
-    pricing: { input_per_1m_usd: 0.30, output_per_1m_usd: 1.20 }
+    display_name: Qwen3 Coder 480B (OpenRouter)
+    # Fonte: https://openrouter.ai/qwen/qwen3-coder (verif. 2026-06-07); ctx real 1M.
+    pricing: { input_per_1m_usd: 0.22, output_per_1m_usd: 1.80 }
+    context_window: 1048576
+    capabilities: [function_calling, streaming, json_output]
+
+  - provider_id: openrouter
+    model_id: qwen/qwen3-coder-next
+    tier: tier_3
+    label: cheap-coder-efficient
+    display_name: Qwen3 Coder Next (OpenRouter)
+    # Lançado 2026-02-04; MoE 80B/3B; mais barato que o 480B. Fonte:
+    # https://openrouter.ai/qwen/qwen3-coder-next (verif. 2026-06-07)
+    pricing: { input_per_1m_usd: 0.11, output_per_1m_usd: 0.80 }
     context_window: 262144
     capabilities: [function_calling, streaming, json_output]
 

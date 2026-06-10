@@ -1,0 +1,248 @@
+# =============================================================================
+# TEMPLATE — manifest de um CLI worker da frota multi-CLI (plano §1.0/§1.9).
+#
+# NÃO editar manifests de CLI worker à mão. Este template é renderizado por
+# ``deploy.py k8s gen-worker <kind>`` (módulo ``_cli_worker_gen.py``), que
+# preenche os placeholders ``$$VAR`` a partir dos METADADOS do adapter
+# (``cli_adapters/<kind>.py``) — porta, env, dirs graváveis, egress hosts,
+# auth mode, storage. Single source of truth: o registro de adapters.
+#
+# Placeholders (string.Template; ``$$`` = ``$$`` literal):
+#   $$KIND          kind do adapter (ex.: opencode)
+#   $$WORKER        nome do worker/Deployment/Service (``<kind>-worker``)
+#   $$PORT          default_port do adapter
+#   $$NAMESPACE     namespace k8s alvo
+#   $$TIMEOUT_S     timeout do subprocess (DEILE_CLI_WORKER_TASK_TIMEOUT_S)
+#   $$AUTH_ENV_BLOCK   linhas ``- {name: KEY, valueFrom: secretKeyRef...}`` (env)
+#   $$AUTH_MODE_ENV_BLOCK env ``DEILE_<KIND>_AUTH=oauth`` (modo OAuth) ou comentário
+#   $$OVERLAY_ENV_BLOCK linhas de env extras declaradas pelo adapter (env_overlay)
+#   $$PROVIDER_ENV_BLOCK env de provider por worker (DEILE_CLI_<KIND>_ENV_<VAR>):
+#                       não-sensíveis como valor literal, sensíveis via secretKeyRef
+#   $$HOME_VOLUME_BLOCK volume do HOME (PVC ou emptyDir, por storage mode)
+#   $$OAUTH_INIT_BLOCK  initContainer ``bootstrap-creds`` (workers oauth_file) ou ""
+#   $$OAUTH_VOLUME_BLOCK volume do Secret de credencial OAuth (oauth_file) ou ""
+#   $$EGRESS_HOST_RULES regras de egress (uma por host) da NetworkPolicy
+#
+# INVARIANTE: workers nascem ``replicas: 0`` (scale-to-zero, opt-in). ``k8s up``
+# NÃO aplica este template — só ``gen-worker`` (gera) + o operador (instala via
+# painel ou ``k8s scale``). Nenhum CLI worker é obrigatório para subir a stack.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: $WORKER
+  namespace: $NAMESPACE
+  labels:
+    app: $WORKER
+    role: deile
+    deile.io/cli-worker: "$KIND"
+spec:
+  # Scale-to-zero por desenho — o worker só sobe quando o operador o seleciona
+  # num stage (painel) ou roda ``k8s scale --$KIND-worker N``. Custo zero ocioso.
+  replicas: 0
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      app: $WORKER
+      role: deile
+  template:
+    metadata:
+      labels:
+        app: $WORKER
+        role: deile
+        deile.io/cli-worker: "$KIND"
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: "OnRootMismatch"
+        seccompProfile: { type: RuntimeDefault }
+$OAUTH_INIT_BLOCK
+      containers:
+        - name: $WORKER
+          image: deile-cli-worker-$KIND:local
+          imagePullPolicy: Never
+          workingDir: /home/$KIND
+          # Sobe via wrapper.py (modo cli-worker): carrega secrets, wira o
+          # GITHUB_TOKEN/GITLAB_TOKEN + identidade git global, valida a allowlist
+          # de repos e SÓ ENTÃO delega ao cli_worker_server. Rodar o server
+          # direto pularia esse setup (clone/commit/push falhariam sem credencial
+          # nem identidade git).
+          args: ["python3", "/app/wrapper.py", "cli-worker"]
+          env:
+            - { name: DEILE_CLI_WORKER_KIND, value: "$KIND" }
+            - { name: HOME, value: /home/$KIND }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+            - { name: DEILE_CLI_WORKER_HOST, value: "0.0.0.0" }
+            - { name: DEILE_CLI_WORKER_PORT, value: "$PORT" }
+            - { name: DEILE_CLI_WORKER_HOME, value: /home/$KIND }
+            - { name: DEILE_CLI_WORKER_ROOT, value: /home/$KIND/work }
+            - { name: DEILE_CLI_WORKER_TASK_TIMEOUT_S, value: "$TIMEOUT_S" }
+            - { name: DEILE_CLI_WORKER_LOG_LEVEL, value: "INFO" }
+            - { name: DEILE_CLAUDE_ALLOWED_REPOS_FILE,
+                value: "/etc/cli-worker/allowed_repos.regex" }
+$AUTH_ENV_BLOCK
+$AUTH_MODE_ENV_BLOCK
+$OVERLAY_ENV_BLOCK
+$PROVIDER_ENV_BLOCK
+          ports:
+            - { name: cli-api, containerPort: $PORT, protocol: TCP }
+          volumeMounts:
+            - { name: cli-worker-bearer, mountPath: /run/secrets/cli-worker, readOnly: true }
+            - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
+            - { name: worker-home, mountPath: /home/$KIND }
+            - { name: tmp, mountPath: /tmp }
+            - name: allowed-repos
+              mountPath: /etc/cli-worker
+              readOnly: true
+          readinessProbe:
+            httpGet: { path: /v1/health, port: cli-api }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            failureThreshold: 4
+          livenessProbe:
+            httpGet: { path: /v1/health, port: cli-api }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: { cpu: "100m", memory: "512Mi" }
+            limits:   { cpu: "2000m", memory: "4Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: cli-worker-bearer
+          secret:
+            secretName: $WORKER-bearer
+            defaultMode: 0o400
+        - name: deile-secrets
+          secret:
+            secretName: deile-secrets
+            defaultMode: 0o400
+$HOME_VOLUME_BLOCK
+$OAUTH_VOLUME_BLOCK
+        - name: tmp
+          emptyDir: { sizeLimit: "5Gi" }
+        - name: allowed-repos
+          configMap:
+            name: claude-worker-allowed-repos
+            defaultMode: 0o444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: $WORKER
+  namespace: $NAMESPACE
+  labels:
+    app: $WORKER
+spec:
+  type: ClusterIP
+  selector:
+    app: $WORKER
+  ports:
+    - { name: cli-api, port: $PORT, targetPort: cli-api, protocol: TCP }
+---
+# Bearer Secret — STUB (stringData vazio). O token real é injetado
+# programaticamente por ``deploy.py`` (mesmo padrão do claude-worker-bearer):
+# aplicar este YAML cru zeraria o token, então o instalador cria o Secret
+# ANTES de aplicar o Deployment.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $WORKER-bearer
+  namespace: $NAMESPACE
+  labels:
+    app: $WORKER
+type: Opaque
+stringData:
+  CLI_WORKER_BEARER_TOKEN: ""
+---
+# NetworkPolicy — ingress só do deile-pipeline; egress DNS + forges + os hosts
+# LLM declarados em ``adapter.egress_hosts`` (gerado, não hardcoded). Como o CNI
+# do k3s não resolve FQDN, o egress 443 é aberto (mesma limitação aceita no
+# manifest 40); os hosts ficam documentados aqui para auditoria/migração futura
+# a um CNI FQDN-aware (ex.: Cilium).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: $WORKER-netpol
+  namespace: $NAMESPACE
+  labels:
+    app: $WORKER
+  annotations:
+    # Hosts LLM declarados pelo adapter (auditoria; enforcement por FQDN exige
+    # CNI compatível). Egress 443 aberto enquanto o CNI não resolve hostname.
+    deile.io/egress-llm-hosts: "$EGRESS_HOSTS_CSV"
+spec:
+  podSelector:
+    matchLabels:
+      app: $WORKER
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Só o deile-pipeline despacha para este worker.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: deile-pipeline
+      ports:
+        - protocol: TCP
+          port: $PORT
+  egress:
+    # DNS (kube-system :53).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS :443 — LLM ($EGRESS_HOSTS_CSV) + forges (github.com/gitlab.com).
+$EGRESS_HOST_RULES
+---
+# NetworkPolicy do lado do PIPELINE — abre o egress do deile-pipeline para ESTE
+# worker. NetworkPolicy é aplicada nas DUAS pontas: a netpol do worker (acima)
+# permite ingress vindo do pipeline, mas o pipeline tem egress restritivo
+# (default-deny-all + regras estáticas só para claude-worker/deile-worker), então
+# sem esta regra o pacote nunca sai. Espelha ``pipeline-egress-to-claude-worker``.
+# Gerada por worker (idempotente: nome único ``pipeline-egress-to-$WORKER``), de
+# modo que instalar um CLI worker num cluster limpo já libera a rota ponta-a-ponta.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pipeline-egress-to-$WORKER
+  namespace: $NAMESPACE
+  labels:
+    app: deile-pipeline
+    deile.io/cli-worker: "$KIND"
+spec:
+  podSelector:
+    matchLabels:
+      app: deile-pipeline
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: $WORKER
+      ports:
+        - protocol: TCP
+          port: $PORT
+$PVC_DOC_BLOCK$CLEANUP_CRONJOB_BLOCK

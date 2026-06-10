@@ -147,8 +147,9 @@ class TestStageReasoningPropagation:
         await WorkerImplementer(client=client).implement(_make_monitor(), _issue())
         assert client.last_payload["preferred_reasoning"] == "high"
 
-    async def test_critique_refine_decompose_use_refine_stage_default(self):
-        """classify/refine/follow_ups opinionated default is low."""
+    async def test_critique_uses_classify_stage_default_low(self):
+        """critique roteia pelo stage ``classify`` (default opinado low, igual ao
+        refine/follow_ups). Sem env, o juízo CLARO/VAGO usa reasoning low."""
         issue = _issue(labels=("intent",))
         client = _FakeClient({"ok": True, "summary": "VEREDITO: CLARO"})
         impl = WorkerImplementer(client=client)

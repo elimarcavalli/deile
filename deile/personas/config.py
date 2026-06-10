@@ -9,7 +9,6 @@ All persona configuration is managed through the central ConfigManager,
 ensuring consistency, unified hot-reload, and centralized validation.
 
 Author: DEILE Team
-Version: 5.1.0 ULTRA
 """
 
 import logging

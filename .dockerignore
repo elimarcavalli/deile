@@ -96,3 +96,12 @@ infra/
 !infra/k8s/monitor_vigias.py
 !infra/k8s/monitor_tick.py
 !infra/k8s/monitor_command_server.py
+# CLI worker fleet (frota multi-CLI) — servidor genérico + core + adapters.
+# COPY'd pelo Dockerfile.cli-worker. cli_adapters é um PACOTE: a exceção do
+# diretório + dos .py dentro dele é necessária (regra de negação recursiva do
+# Docker exige re-incluir os filhos depois de re-incluir o pai).
+!infra/k8s/cli_worker_server.py
+!infra/k8s/_worker_core.py
+!infra/k8s/fleet_progress_parse.py
+!infra/k8s/cli_adapters
+!infra/k8s/cli_adapters/**

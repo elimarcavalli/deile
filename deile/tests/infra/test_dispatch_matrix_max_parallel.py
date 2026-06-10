@@ -1,7 +1,8 @@
 """Testes de max_parallel e hotkey [c] cleanup no DispatchMatrixView (issue #408).
 
 Cobre:
-- Render: linha "Max Parallel" aparece após "Worker Scaling".
+- Render: linha "Max Parallel" aparece após "Global default" (Frente 6
+  removeu a linha de Worker Scaling da matriz).
 - Cursor pode atingir Max Parallel (N+2) e é clamped lá.
 - [enter] na linha Max Parallel abre prompt max_parallel_prompt.
 - [p] abre prompt max_parallel_prompt independente de cursor.
@@ -76,18 +77,21 @@ def test_render_contains_max_parallel_row(view_demo, app_stub):
         f"'Max Parallel' não encontrado na saída:\n{out[:600]}"
 
 
-def test_render_max_parallel_after_worker_scaling(view_demo, app_stub):
+def test_render_max_parallel_after_global_default(view_demo, app_stub):
     from rich.console import Console
     console = Console(width=120)
     renderable = view_demo.render(app_stub)
     with console.capture() as cap:
         console.print(renderable)
     out = cap.get()
-    idx_scaling = out.find("Worker Scaling")
+    idx_global = out.find("Global default")
     idx_mp = out.find("Max Parallel")
-    assert idx_scaling != -1, "'Worker Scaling' não encontrado"
+    assert idx_global != -1, "'Global default' não encontrado"
     assert idx_mp != -1, "'Max Parallel' não encontrado"
-    assert idx_mp > idx_scaling, "'Max Parallel' deve aparecer APÓS 'Worker Scaling'"
+    assert idx_mp > idx_global, "'Max Parallel' deve aparecer APÓS 'Global default'"
+    # Frente 6: a linha de Worker Scaling (réplicas) saiu da matriz.
+    assert "réplicas deile-worker" not in out
+    assert "réplicas claude-worker" not in out
 
 
 def test_render_max_parallel_shows_default(view_demo, app_stub):
@@ -108,9 +112,8 @@ def test_render_max_parallel_shows_default(view_demo, app_stub):
 def test_navigation_down_reaches_max_parallel_row(view_demo, app_stub):
     from _panel import ActionResult
     n_stages = len(view_demo._stages())
-    max_parallel_idx = n_stages + 2
+    max_parallel_idx = n_stages + 1  # Frente 6: scaling row removida
 
-    # Navega até N+2
     for _ in range(max_parallel_idx):
         result = view_demo.handle_key("DOWN", app_stub)
         assert isinstance(result, ActionResult)
@@ -118,11 +121,11 @@ def test_navigation_down_reaches_max_parallel_row(view_demo, app_stub):
     assert view_demo.cursor_row == max_parallel_idx
 
 
-def test_navigation_down_clamps_at_max_parallel_row(view_demo, app_stub):
-    """DOWN não ultrapassa N+3 (Monitor é a última linha, após Max Parallel)."""
+def test_navigation_down_clamps_at_monitor_row(view_demo, app_stub):
+    """DOWN não ultrapassa N+2 (Monitor é a última linha, após Max Parallel)."""
     n_stages = len(view_demo._stages())
-    # Ordem: stages... Global(+0) Scaling(+1) MaxParallel(+2) Monitor(+3)
-    target = n_stages + 3
+    # Ordem: stages... Global(+0) MaxParallel(+1) Monitor(+2)
+    target = n_stages + 2
 
     for _ in range(30):
         view_demo.handle_key("DOWN", app_stub)
@@ -130,13 +133,13 @@ def test_navigation_down_clamps_at_max_parallel_row(view_demo, app_stub):
     assert view_demo.cursor_row == target
 
 
-def test_navigation_up_from_max_parallel_reaches_scaling(view_demo, app_stub):
+def test_navigation_up_from_max_parallel_reaches_global(view_demo, app_stub):
     n_stages = len(view_demo._stages())
-    view_demo.cursor_row = n_stages + 2  # Max Parallel
+    view_demo.cursor_row = n_stages + 1  # Max Parallel
 
     view_demo.handle_key("UP", app_stub)
 
-    assert view_demo.cursor_row == n_stages + 1  # Worker Scaling
+    assert view_demo.cursor_row == n_stages  # Global default
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +148,7 @@ def test_navigation_up_from_max_parallel_reaches_scaling(view_demo, app_stub):
 
 def test_enter_on_max_parallel_row_opens_prompt(view_demo, app_stub):
     n_stages = len(view_demo._stages())
-    view_demo.cursor_row = n_stages + 2
+    view_demo.cursor_row = n_stages + 1
 
     view_demo.handle_key("\r", app_stub)
 

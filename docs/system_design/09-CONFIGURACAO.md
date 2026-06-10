@@ -292,6 +292,24 @@ critique: todos os 2 slots ocupados (2 em voo); skip novos claims
 
 O monitor relê a variável no próximo boot do pod. Nenhuma reconstrução de imagem é necessária.
 
+### Frota multi-CLI — config por etapa e do worker genérico (Decisão #51)
+
+> Categoria de configuração da frota de CLI workers (opencode/codex/qwen/aider/goose). Referência canônica de cada variável (descrição, default, formato): [`.env.example`](../../.env.example) seções 1, 4 e 5. Esta seção descreve **responsabilidades** e onde cada chave é consumida — não duplica defaults.
+
+A frota acrescenta os CLI workers como novos alvos de dispatch além do `deile-worker` e do `claude-worker`. Três eixos de configuração são resolvidos **por etapa** do pipeline (`classify`/`refine`/`implement`/`pr_review`/`follow_ups`), cada um por um resolver dedicado em `deile/orchestration/pipeline/`:
+
+| Eixo | Env per-stage → global | Resolver | Consumo |
+|---|---|---|---|
+| **Worker (dispatch)** | `DEILE_PIPELINE_DISPATCH_<STAGE>` → `DEILE_PIPELINE_DISPATCH_MODE` (default `deile-worker`) | `dispatch_resolver.py` | escolhe qual worker (`deile-worker`/`claude-worker`/`opencode`/`codex`/`qwen`/`aider`/`goose`) atende a etapa; os kinds válidos vêm do `ADAPTERS` (auto-discovery em `cli_adapters/__init__.py`) |
+| **Modelo** | `DEILE_PIPELINE_MODEL_<STAGE>` → `DEILE_PREFERRED_MODEL` | `model_resolver.py` (`resolve_stage_cli_model`) | id `provider:modelo` propagado em `DispatchPayload.preferred_model`; CLI workers usam o slug que o adapter aceita (ex.: `openrouter:vendor/model`) |
+| **Reasoning** | `DEILE_PIPELINE_REASONING_<STAGE>` → `DEILE_REASONING_EFFORT` | `reasoning_resolver.py` | esforço repassado em `DispatchPayload.preferred_reasoning`; ver `deile/core/models/reasoning.py` |
+
+Os três resolvers leem via `get_settings()` (reasoning) ou diretamente do env de borda (dispatch/model), com o respectivo handler em `settings.py` (`_OVERRIDE_HANDLERS` / `_JSON_FIELD_MAP`) — chaves `pipeline.dispatchers.<stage>`, `pipeline.models.<stage>` e `pipeline.reasoning.<stage>` no `settings.json`.
+
+O servidor genérico dos CLI workers (`infra/k8s/cli_worker_server.py`, sobre `infra/k8s/_worker_core.py`) lê suas próprias variáveis de runtime — `DEILE_CLI_WORKER_KIND` (kind do pod), `DEILE_CLI_WORKER_HOST`/`PORT` (porta default = `adapter.default_port`), `DEILE_CLI_WORKER_ROOT`/`HOME`, `DEILE_CLI_WORKER_TASK_TIMEOUT_S`, e os tunables de cleanup/custo (`DEILE_CLI_WORKER_CLEANUP_INTERVAL_S`, `_CLEANUP_RETENTION_DAYS`, `_PROGRESS_RETENTION_DAYS`, `_PROGRESS_GRACE_S`, `_COST_LEDGER_PATH`). O OAuth opt-in por kind viaja em `DEILE_<KIND>_AUTH=oauth` (ex.: `DEILE_CODEX_AUTH`), normalmente escrito no Deployment pelo `deploy.py k8s cli-worker-login <kind>`. O bearer dos workers **não** é env: é lido do Secret file `/run/secrets/cli-worker/CLI_WORKER_BEARER_TOKEN`. Goose tem o tunable próprio `DEILE_GOOSE_MAX_TURNS` (adapter `cli_adapters/goose.py`).
+
+**Persistência (dois caminhos, como nas Decisões #41/#47):** no **cluster**, os per-stage `DEILE_PIPELINE_{DISPATCH,MODEL,REASONING}_<STAGE>` viram env vars no Deployment via `kubectl set env` (escritos pelo painel TUI `[d]` → `DispatchMatrixView`); no **CLI local**, as mesmas chaves moram em `~/.deile/settings.json` (`pipeline.dispatchers.<stage>`/`pipeline.models.<stage>`/`pipeline.reasoning.<stage>`). Etapas sem override caem no global correspondente.
+
 ## Hot-reload
 
 | Componente | Como funciona |

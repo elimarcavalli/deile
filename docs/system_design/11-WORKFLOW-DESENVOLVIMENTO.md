@@ -18,6 +18,7 @@
 | Em dúvida entre dois tiers | Escolha o **maior** |
 | Escopo crescer no meio | **Reescalone** o tier e rode retroativamente as fases obrigatórias antes de declarar a tarefa pronta |
 | Documento de referência | As fases abaixo são escritas para o tier Large; cada cabeçalho `Fase N` está anotado com o tier mínimo |
+| Adicionar um CLI worker à frota (Decisão #51) | **Não é refactor cross-module:** escrever **um** adapter `infra/k8s/cli_adapters/<kind>.py` + testes — nenhum consumidor é reescrito (registro auto-descoberto dirige resolver/painel/manifests). Template em [`12-PADROES-CODIGO.md`](12-PADROES-CODIGO.md) (CLI Adapter Development) |
 
 ## Fase 1 — Análise de Intenção e Entendimento _(Small+)_
 

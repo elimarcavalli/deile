@@ -737,12 +737,46 @@ class PodInfo:
 
 _ROLE_BY_APP = {
     "deile-pipeline": "pipeline",
+    "deile-monitor":  "monitor",
     "deile-worker":   "worker",
     "deilebot":       "bot",
     "deile-shell":    "shell",
     # issue #396: claude-worker pods are now observable in PodWatchView
     "claude-worker":  "claude-worker",
 }
+
+
+def _cli_fleet_worker_apps() -> frozenset:
+    """Apps dos workers da frota CLI (``<kind>-worker``) DERIVADOS do registro.
+
+    Single source of truth: ``cli_adapters.ADAPTERS``. Cada adapter registrado
+    contribui um app ``<kind>-worker`` cujo Deployment gerado (``gen-worker``)
+    carrega o label ``app: <kind>-worker``. Registrar um adapter novo já faz o
+    pod ser reconhecido como worker-class no painel — sem editar este módulo.
+
+    Tolerante a falha (registro ausente → ``frozenset()``): o painel nunca
+    crasha por causa da frota CLI opcional.
+    """
+    try:
+        import cli_adapters  # noqa: PLC0415 — pacote opcional em infra/k8s
+    except Exception:  # noqa: BLE001
+        return frozenset()
+    return frozenset(f"{kind}-worker" for kind in cli_adapters.ADAPTERS)
+
+
+def _role_for_app(app: str) -> str:
+    """Resolve o ``role`` de um pod a partir do seu label ``app``.
+
+    Workers núcleo + infra usam o mapa estático :data:`_ROLE_BY_APP`; os
+    workers da frota CLI (``<kind>-worker``) recebem o próprio app como role
+    (derivado do registro de adapters). Qualquer outro app → ``"other"``.
+    """
+    static = _ROLE_BY_APP.get(app)
+    if static is not None:
+        return static
+    if app in _cli_fleet_worker_apps():
+        return app  # role == "<kind>-worker"
+    return "other"
 
 
 class PodsProvider(_KubectlProviderMixin):
@@ -780,7 +814,7 @@ class PodsProvider(_KubectlProviderMixin):
             meta = item.get("metadata", {})
             labels = meta.get("labels", {})
             app = labels.get("app", "")
-            role = _ROLE_BY_APP.get(app, "other")
+            role = _role_for_app(app)
             status = item.get("status", {})
             phase = status.get("phase", "Unknown")
             container_statuses = status.get("containerStatuses", []) or []
@@ -1644,6 +1678,333 @@ class WorkerProvider(_KubectlProviderMixin):
                 live_tasks.values(), key=lambda t: t.started_ts,
             )
         return state
+
+
+# ===== ProviderHealthProvider (issue #445 — alerta de crédito/provider) =====
+#
+# Frota inteira (deile-worker + claude-worker + os 5 CLI workers) consome
+# provedores LLM (OpenRouter, OpenAI, Anthropic). Quando o provedor corta a
+# task — crédito esgotado (HTTP 402), rate-limit (429) ou erro do servidor
+# (5xx/conexão) — o operador PRECISA ver um alerta VERMELHO no painel na hora,
+# não descobrir cavando log de pod (incidente de produção: OpenRouter zerou no
+# meio de uma task e o corte passou despercebido).
+#
+# Fonte única da classificação: ``_worker_core.classify_provider_error`` (a
+# MESMA função que o backend do worker usa para marcar ``last_error_code`` no
+# resume-info). Aqui escaneamos os logs ``kubectl logs`` de cada pod worker-
+# class do host — o painel não alcança o Service in-cluster, então a verdade
+# vem do log. Robustez extra: além do code estruturado, o scan crú já casa
+# ``402``/``insufficient``/``credit``/``429``/``rate limit`` etc. porque é a
+# mesma regex-table do core.
+
+# Importa a classificação canônica do backend do worker (não duplica patterns).
+# Tolerante a ausência (pacote infra opcional): cai num no-op que nunca acende
+# alerta — o painel jamais crasha por causa disto.
+try:
+    from _worker_core import classify_provider_error as _classify_provider_error
+except Exception:  # noqa: BLE001 — módulo opcional em infra/k8s
+    def _classify_provider_error(_text: str) -> Optional[str]:  # type: ignore[misc]
+        return None
+
+
+#: Severidade por code: crédito é o corte mais grave (sangra dinheiro e trava
+#: a frota até recarga manual) → VERMELHO. Os demais são transitórios →
+#: AMARELO (rate-limit/5xx/conexão recuperam sozinhos ou com espera curta).
+_PROVIDER_ERROR_SEVERITY: Dict[str, str] = {
+    "INSUFFICIENT_CREDIT": "crit",
+    "RATE_LIMIT": "warn",
+    "PROVIDER_ERROR": "warn",
+    "PROVIDER_CONN": "warn",
+}
+
+#: Rótulo curto por code para o selo na linha do pod e o banner.
+_PROVIDER_ERROR_LABEL: Dict[str, str] = {
+    "INSUFFICIENT_CREDIT": "CRÉDITO ESGOTADO",
+    "RATE_LIMIT": "RATE LIMIT",
+    "PROVIDER_ERROR": "PROVIDER 5xx",
+    "PROVIDER_CONN": "PROVIDER OFFLINE",
+}
+
+
+def provider_error_severity(code: Optional[str]) -> Optional[str]:
+    """``'crit'`` p/ crédito, ``'warn'`` p/ os demais, ``None`` se sem erro."""
+    if not code:
+        return None
+    return _PROVIDER_ERROR_SEVERITY.get(code, "warn")
+
+
+def provider_error_label(code: Optional[str]) -> str:
+    """Rótulo legível do code (ex.: ``CRÉDITO ESGOTADO``); o code crú no fallback."""
+    if not code:
+        return ""
+    return _PROVIDER_ERROR_LABEL.get(code, code)
+
+
+@dataclass
+class WorkerProviderError:
+    """Erro de provedor LLM detectado no log de um pod worker.
+
+    ``code`` é um dos codes canônicos do ``_worker_core`` (``INSUFFICIENT_CREDIT``
+    / ``RATE_LIMIT`` / ``PROVIDER_ERROR`` / ``PROVIDER_CONN``). ``detected_ts``
+    é o timestamp da linha de log onde casou (para o operador ver QUANDO o corte
+    aconteceu); ``None`` quando a linha não carregava timestamp parseável.
+    """
+    pod_name: str
+    role: str
+    code: str
+    detected_ts: Optional[datetime] = None
+    evidence: str = ""
+
+    @property
+    def severity(self) -> str:
+        return _PROVIDER_ERROR_SEVERITY.get(self.code, "warn")
+
+    @property
+    def label(self) -> str:
+        return _PROVIDER_ERROR_LABEL.get(self.code, self.code)
+
+    @property
+    def age_s(self) -> Optional[float]:
+        if self.detected_ts is None:
+            return None
+        return (datetime.now(_UTC) - self.detected_ts).total_seconds()
+
+
+class ProviderHealthProvider(_KubectlProviderMixin):
+    """Escaneia logs de TODOS os pods worker-class buscando corte por provedor.
+
+    Cobre a frota inteira (deile-worker + claude-worker + os 5 CLI workers)
+    derivando os deploys de :func:`_cli_fleet_worker_apps` + os dois núcleos —
+    registrar um adapter novo passa a ser monitorado sem editar este módulo.
+
+    Retorna ``{pod_name: WorkerProviderError}`` apenas para pods cujo log
+    RECENTE (``--since``) casa um padrão de provedor. Pod saudável não aparece
+    no dict (ausência = ok). Best-effort em toda etapa: kubectl ausente / pod
+    down / log vazio → simplesmente não acende alerta.
+    """
+
+    #: Janela de log a varrer. Curta o suficiente para o alerta SUMIR sozinho
+    #: quando o corte para de ocorrer (ex.: recarga de crédito → próximas tasks
+    #: rodam limpas → o 402 sai da janela → banner some), longa o suficiente
+    #: para não perder um corte entre dois refreshes.
+    SINCE = "10m"
+    TAIL_LINES = 400
+
+    def __init__(self, ttl_s: float = 5.0, namespace: str = NS,
+                 enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
+        self._cache: Cache[Dict[str, WorkerProviderError]] = Cache(
+            ttl_s, self._fetch, fallback={},
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> Dict[str, WorkerProviderError]:
+        return self._cache.get(force)
+
+    def _worker_deploys(self) -> List[str]:
+        """deile-worker + claude-worker + frota CLI (derivada do registro)."""
+        deploys = ["deile-worker", "claude-worker"]
+        deploys.extend(sorted(_cli_fleet_worker_apps()))
+        return deploys
+
+    def _fetch(self) -> Dict[str, WorkerProviderError]:
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        result: Dict[str, WorkerProviderError] = {}
+        # Tail paralelo por deploy — um log lento não atrasa os demais.
+        deploys = self._worker_deploys()
+        with futures.ThreadPoolExecutor(max_workers=max(1, len(deploys))) as ex:
+            fut_map = {ex.submit(self._scan_deploy, d): d for d in deploys}
+            for fut in futures.as_completed(fut_map):
+                try:
+                    for err in fut.result():
+                        result[err.pod_name] = err
+                except Exception:  # noqa: BLE001 — um deploy falho não derruba
+                    pass
+        return result
+
+    def _scan_deploy(self, deploy: str) -> List[WorkerProviderError]:
+        if self._kubectl is None:
+            return []
+        role = _role_for_app(deploy)
+        # Resolve os pods do deploy (1 erro por pod, último corte ganha).
+        names_raw = _capture_text(
+            [self._kubectl, "-n", self._namespace, "get", "pods",
+             "-l", f"app={deploy}",
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            timeout=4.0,
+        )
+        if not names_raw:
+            return []
+        out: List[WorkerProviderError] = []
+        for name in names_raw.split():
+            err = self._scan_pod(name, role)
+            if err is not None:
+                out.append(err)
+        return out
+
+    def _scan_pod(self, pod_name: str, role: str) -> Optional[WorkerProviderError]:
+        text = _capture_text(
+            [self._kubectl, "-n", self._namespace, "logs", pod_name,
+             f"--tail={self.TAIL_LINES}", f"--since={self.SINCE}",
+             "--timestamps"],
+            timeout=4.0,
+        )
+        if not text:
+            return None
+        if len(text) > MAX_LOG_BYTES:
+            text = text[-MAX_LOG_BYTES:]
+        # Varre de baixo p/ cima: o corte mais RECENTE é o que importa para o
+        # alerta atual. A primeira linha (mais nova) que casa decide o code.
+        for raw in reversed(text.splitlines()):
+            ll = _parse_log_line(raw)
+            body = ll.body if ll is not None else raw
+            code = _classify_provider_error(body)
+            if code:
+                return WorkerProviderError(
+                    pod_name=pod_name, role=role, code=code,
+                    detected_ts=(ll.ts if ll is not None else None),
+                    evidence=body[:120],
+                )
+        return None
+
+
+# ===== OpenRouterBalanceProvider (issue #445 — saldo proativo) ==============
+#
+# Indicador proativo: avisa ANTES de a frota sangrar. OpenRouter expõe
+# ``GET /api/v1/credits`` (saldo total comprado vs. já usado) autenticado pela
+# ``OPENROUTER_API_KEY``. Lemos best-effort do host (a chave já vive no ``.env``
+# que sobe os Secrets do cluster) e mostramos o restante; fica VERMELHO quando
+# zerado/baixo.
+#
+# Segurança (pilar 08): a chave NUNCA é exposta na UI nem logada — só viaja no
+# header Authorization da requisição HTTPS. Ausência da chave = no-op (provider
+# fica ``available=False``, sem alerta). Timeout curto; falha de rede vira
+# ``last_error`` discreto, nunca derruba o painel.
+
+#: Limiar (USD) abaixo do qual o saldo restante acende VERMELHO. Acima de 2x
+#: deste valor fica verde; entre os dois, amarelo (aviso precoce).
+_OPENROUTER_LOW_BALANCE_USD = 2.0
+_OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
+
+
+@dataclass
+class OpenRouterBalance:
+    """Snapshot do saldo OpenRouter. ``available=False`` quando sem chave."""
+    available: bool = False
+    total_credits: Optional[float] = None
+    total_usage: Optional[float] = None
+
+    @property
+    def remaining(self) -> Optional[float]:
+        if self.total_credits is None or self.total_usage is None:
+            return None
+        return self.total_credits - self.total_usage
+
+    @property
+    def severity(self) -> Optional[str]:
+        """``'crit'`` se ≤ limiar, ``'warn'`` se ≤ 2x limiar, senão ``None``."""
+        rem = self.remaining
+        if rem is None:
+            return None
+        if rem <= _OPENROUTER_LOW_BALANCE_USD:
+            return "crit"
+        if rem <= _OPENROUTER_LOW_BALANCE_USD * 2:
+            return "warn"
+        return None
+
+
+def _read_openrouter_key() -> Optional[str]:
+    """Resolve a ``OPENROUTER_API_KEY`` do ambiente ou do ``.env`` da raiz.
+
+    Ordem: ``os.environ`` (operador exportou) → ``.env`` da raiz do repo (a
+    mesma fonte que o ``deploy.py`` usa para popular os Secrets). ``None`` se
+    ausente em ambos — o provider vira no-op silencioso.
+    """
+    val = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if val:
+        return val
+    env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+    if not env_path.is_file():
+        return None
+    try:
+        for raw in env_path.read_text(
+            encoding="utf-8", errors="replace",
+        ).splitlines():
+            line = raw.strip()
+            if line.startswith("export "):
+                line = line[len("export "):]
+            if line.startswith("OPENROUTER_API_KEY=") and "=" in line:
+                return line.partition("=")[2].strip().strip('"').strip("'") or None
+    except OSError:
+        return None
+    return None
+
+
+class OpenRouterBalanceProvider:
+    """Lê o saldo OpenRouter via HTTPS, best-effort, com cache TTL longo.
+
+    Não é um ``_KubectlProviderMixin`` — fala direto com a API OpenRouter
+    (independe de cluster). TTL alto (60s default) porque saldo muda devagar e
+    a chamada é uma rede externa: não vale martelar a cada refresh.
+    """
+
+    def __init__(self, ttl_s: float = 60.0, timeout_s: float = 4.0):
+        self._timeout_s = timeout_s
+        self._cache: Cache[OpenRouterBalance] = Cache(
+            ttl_s, self._fetch, fallback=OpenRouterBalance(),
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> OpenRouterBalance:
+        return self._cache.get(force)
+
+    def peek(self) -> Optional[OpenRouterBalance]:
+        """Valor cacheado sem disparar fetch (para uso no render thread)."""
+        return self._cache._value  # noqa: SLF001 (read-only peek, no I/O)
+
+    def _fetch(self) -> OpenRouterBalance:
+        key = _read_openrouter_key()
+        if not key:
+            # Sem chave: no-op. ``available=False`` → UI não mostra indicador.
+            return OpenRouterBalance(available=False)
+        import urllib.error  # noqa: PLC0415
+        import urllib.request  # noqa: PLC0415
+        req = urllib.request.Request(
+            _OPENROUTER_CREDITS_URL,
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise RuntimeError(f"openrouter credits: {exc}") from exc
+        # Schema: {"data": {"total_credits": <float>, "total_usage": <float>}}.
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise RuntimeError("openrouter credits: resposta inesperada")
+        return OpenRouterBalance(
+            available=True,
+            total_credits=_as_float(data.get("total_credits")),
+            total_usage=_as_float(data.get("total_usage")),
+        )
+
+
+def _as_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # ===== MultiSourceActivityProvider (issue #436) =============================
@@ -6379,6 +6740,13 @@ class PanelData:
     # fixos V1; buffer rolling-window 200 eventos; parser dual-mode.
     # ``None`` quando k8s não está disponível (modo local-only ou demo).
     activity: Optional[MultiSourceActivityProvider] = None
+    # Saúde de provedor LLM por worker (issue #445). Escaneia logs de toda a
+    # frota worker-class buscando corte por crédito/rate-limit/5xx. ``None`` em
+    # local-only (sem cluster para inspecionar).
+    provider_health: Optional["ProviderHealthProvider"] = None
+    # Saldo proativo OpenRouter (issue #445, bônus). Independe do cluster (fala
+    # direto com a API), mas só instanciado quando há chave configurada.
+    openrouter_balance: Optional["OpenRouterBalanceProvider"] = None
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "PanelData":
@@ -6499,6 +6867,20 @@ class PanelData:
                                             enabled=k8s_on)
                 if k8s_on else None
             ),
+            # ProviderHealthProvider (issue #445): só com k8s — varre logs de
+            # toda a frota worker-class buscando corte por provedor LLM.
+            provider_health=(
+                ProviderHealthProvider(namespace=context.namespace,
+                                       enabled=k8s_on)
+                if k8s_on else None
+            ),
+            # OpenRouterBalanceProvider (issue #445, bônus): só quando há chave.
+            # Independe de cluster (fala com a API OpenRouter direto), então
+            # vale em qualquer modo desde que a OPENROUTER_API_KEY exista.
+            openrouter_balance=(
+                OpenRouterBalanceProvider()
+                if _read_openrouter_key() else None
+            ),
         )
 
     @classmethod
@@ -6517,7 +6899,8 @@ class PanelData:
                                       self.local_registry, self.claude_workers,
                                       self.claude_worker_info, self.claude_truth,
                                       self.deile_worker_truth, self.claude_cost_today,
-                                      self.activity)
+                                      self.activity, self.provider_health,
+                                      self.openrouter_balance)
                           if p is not None)
         return base + optionals
 
@@ -6566,6 +6949,10 @@ class PanelData:
             names.append("claude_cost_today")
         if self.activity is not None:
             names.append("activity")
+        if self.provider_health is not None:
+            names.append("provider_health")
+        if self.openrouter_balance is not None:
+            names.append("openrouter_balance")
         out: List[tuple] = []
         for name, p in zip(names, self._all_providers()):
             err = p.last_error
@@ -6576,6 +6963,10 @@ class PanelData:
             # ausente — também esperado em clusters sem metrics-server.
             if ("k8s desabilitado" in err or "kubectl não encontrado" in err
                     or "kubectl top pod falhou" in err):
+                continue
+            # OpenRouter é indicador best-effort: rede externa instável não
+            # deve poluir o feed de ALERTS (o saldo simplesmente fica oculto).
+            if name == "openrouter_balance":
                 continue
             out.append((name, err))
         return out

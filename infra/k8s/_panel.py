@@ -71,6 +71,8 @@ from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
 from _panel_data import _ROLE_COLOR_MAP as _ACTIVITY_COLOR_MAP  # noqa: F401
 from _panel_data import _ERROR_DETAIL_RE as _ACTIVITY_ERROR_RE  # noqa: F401
+from _panel_data import WorkerProviderError  # noqa: F401  # issue #445
+from _panel_data import provider_error_label  # noqa: F401  # issue #445
 from _panel_data import \
     _audit_dispatch_mode_change as pd_audit_dispatch_mode_change
 from _panel_data import \
@@ -720,10 +722,111 @@ def _alerts_from_data(data: Optional[PanelData]) -> List[Alert]:
             "warn", "🙋",
             f"{len(awaiting)} issue(s) aguardando você: {nums}",
         ))
-    # Provider errors.
+    # Corte por provedor LLM por worker (issue #445) — crédito esgotado/rate-
+    # limit/5xx. VERMELHO (crit) para crédito, AMARELO (warn) para os demais.
+    # Vem ANTES dos provider errors genéricos: é o alerta mais acionável.
+    for err in _provider_errors(data):
+        sev = err.severity
+        icon = "⛔" if sev == "crit" else "⚠"
+        when = (f" ({_fmt_age(err.age_s)} atrás)"
+                if err.age_s is not None else "")
+        out.append(Alert(
+            sev, icon,
+            f"{_worker_group_label(err.role)}: {err.label} [{err.code}]{when}",
+        ))
+    # Saldo proativo OpenRouter baixo/zerado (issue #445, bônus).
+    bal_alert = _openrouter_alert(data)
+    if bal_alert is not None:
+        out.append(bal_alert)
+    # Provider errors (falha de fetch dos providers do painel — não é o mesmo
+    # que corte de provedor LLM acima; este é "não consegui ler o cluster").
     for name, err in data.errors():
         out.append(Alert("warn", "⚠", f"provider {name}: {err.split(':', 1)[0]}"))
     return out
+
+
+def _provider_errors(data: Optional[PanelData]) -> List["WorkerProviderError"]:
+    """Erros de provedor LLM ativos na frota (ordenados: crédito primeiro).
+
+    Single source: o ``ProviderHealthProvider``. Vazio quando o provider está
+    ausente (local-only/demo) ou nenhum worker bateu corte. Crédito (``crit``)
+    vem antes de rate-limit/5xx (``warn``) para o operador agir no pior caso.
+    """
+    if data is None or getattr(data, "provider_health", None) is None:
+        return []
+    raw = data.provider_health.get()
+    if not isinstance(raw, dict):
+        return []
+    errs = [e for e in raw.values() if isinstance(e, WorkerProviderError)]
+    errs.sort(key=lambda e: (0 if e.severity == "crit" else 1, e.pod_name))
+    return errs
+
+
+def _openrouter_alert(data: Optional[PanelData]) -> Optional[Alert]:
+    """Alerta de saldo OpenRouter baixo/zerado, ou ``None`` se ok/indisponível.
+
+    Usa ``peek()`` (valor cacheado, sem disparar rede no render thread). O
+    ``BackgroundRefresher`` mantém o cache fresco.
+    """
+    if data is None or getattr(data, "openrouter_balance", None) is None:
+        return None
+    bal = data.openrouter_balance.peek()
+    from _panel_data import OpenRouterBalance as _ORB  # noqa: PLC0415
+    if not isinstance(bal, _ORB) or not bal.available:
+        return None
+    sev = bal.severity
+    if sev is None:
+        return None
+    rem = bal.remaining
+    rem_txt = f"${rem:.2f}" if rem is not None else "?"
+    icon = "⛔" if sev == "crit" else "⚠"
+    return Alert(sev, icon, f"OpenRouter: saldo {rem_txt} restante — recarregar")
+
+
+def _provider_alert_banner(data: Optional[PanelData]) -> Optional[Panel]:
+    """Banner VERMELHO global de corte por provedor (issue #445).
+
+    Renderizado no TOPO de TODA tela quando QUALQUER worker está em corte por
+    crédito/provedor (ou o saldo OpenRouter zerou) — não pode passar
+    despercebido. ``None`` quando a frota está saudável (sem banner, sem ruído).
+
+    Crédito esgotado → moldura/texto VERMELHO; só rate-limit/5xx → AMARELO.
+    """
+    errs = _provider_errors(data)
+    bal_alert = _openrouter_alert(data)
+    if not errs and bal_alert is None:
+        return None
+    has_crit = any(e.severity == "crit" for e in errs) or (
+        bal_alert is not None and bal_alert.severity == "crit"
+    )
+    border = "red" if has_crit else "yellow"
+    title_style = "bold white on red" if has_crit else "bold black on yellow"
+    head = "⛔ CORTE POR PROVEDOR LLM" if has_crit else "⚠ DEGRADAÇÃO DE PROVEDOR"
+    lines: List[RenderableType] = []
+    for err in errs:
+        style = "bold red" if err.severity == "crit" else "bold yellow"
+        when = (f"  ·  {_fmt_age(err.age_s)} atrás"
+                if err.age_s is not None else "")
+        lines.append(Text.assemble(
+            (f"{'⛔' if err.severity == 'crit' else '⚠'} ", style),
+            (f"{_worker_group_label(err.role)} ", "bold"),
+            (f"[{err.pod_name}]", "dim"),
+            ("  →  ", "dim"),
+            (f"{err.label} ({err.code})", style),
+            (when, "dim"),
+        ))
+    if bal_alert is not None:
+        bstyle = "bold red" if bal_alert.severity == "crit" else "bold yellow"
+        lines.append(Text.assemble(
+            (f"{bal_alert.icon} ", bstyle), (bal_alert.msg, bstyle),
+        ))
+    return Panel(
+        Group(*lines),
+        title=Text(head, style=title_style),
+        title_align="left",
+        border_style=border,
+        box=box.HEAVY,
+    )
 
 
 # ===== activity feed ========================================================
@@ -819,6 +922,10 @@ class PodRow:
     # Idade do heartbeat quando há um (claude-worker). Quando > 15s a UI marca
     # ``⚠ stale`` em amarelo no lugar de mostrar a ação como se fosse atual.
     stale_s: Optional[float] = None
+    # Corte por provedor LLM detectado na última task deste pod (issue #445).
+    # Code canônico (``INSUFFICIENT_CREDIT``/``RATE_LIMIT``/...) ou ``None`` se
+    # saudável. Pinta a linha de VERMELHO (crédito) / AMARELO (transitório).
+    provider_error_code: Optional[str] = None
 
 
 # Limiar (s) acima do qual o heartbeat é considerado stale na coluna doing-now.
@@ -1027,6 +1134,16 @@ def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodR
         ]
     workers = data.workers.get()
     ps = data.pipeline.get()
+    # Mapa pod_name → code de corte por provedor (issue #445). Vazio quando o
+    # provider está ausente (local-only) ou a frota está saudável.
+    prov_errs: Dict[str, "WorkerProviderError"] = {}
+    if getattr(data, "provider_health", None) is not None:
+        _raw_pe = data.provider_health.get()
+        if isinstance(_raw_pe, dict):
+            prov_errs = {
+                k: v for k, v in _raw_pe.items()
+                if isinstance(v, WorkerProviderError)
+            }
     # Pares (age_s para sort, row) — age_s None significa "sem dado" (vai pro fim).
     pairs: List[Any] = []
     for p in data.pods.get():
@@ -1053,12 +1170,14 @@ def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodR
         if p.status == "Running" and not p.ready:
             ready_label = "NotReady"
 
+        prov_err = prov_errs.get(p.name)
         row = PodRow(
             icon=icon, name=p.name, role=p.role,
             status=ready_label, age=_fmt_age(p.age_s),
             restarts=str(p.restarts), last_activity=last,
             doing_now=doing, busy=busy,
             stale_s=stale_s if p.role == "claude-worker" else None,
+            provider_error_code=prov_err.code if prov_err is not None else None,
         )
         pairs.append((age_s, row))
 
@@ -1073,6 +1192,187 @@ def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodR
         pairs.sort(key=lambda t: (_pri.get(t[1].status, 2), t[1].name))
 
     return [row for _, row in pairs]
+
+
+def _is_worker_class_role(role: str) -> bool:
+    """True se *role* é um worker que recebe dispatch (agrupável na tela [1]).
+
+    Cobre o ``deile-worker`` (role ``worker``), o ``claude-worker`` e qualquer
+    worker da frota CLI (role ``<kind>-worker``, derivado do registro de
+    adapters). Pods de infra (pipeline/monitor/bot/shell) NÃO são worker-class.
+    """
+    return role == "worker" or role == "claude-worker" or (
+        role.endswith("-worker") and role != "claude-worker"
+    )
+
+
+def _worker_group_label(role: str) -> str:
+    """Rótulo legível do tipo de worker para o cabeçalho de grupo."""
+    if role == "worker":
+        return "deile-worker"
+    return role  # "claude-worker" / "<kind>-worker"
+
+
+#: Ordem determinística dos grupos de worker na tela [1]: núcleo primeiro
+#: (deile-worker, claude-worker), depois a frota CLI em ordem alfabética.
+def _ordered_worker_roles(roles) -> List[str]:
+    core = [r for r in ("worker", "claude-worker") if r in roles]
+    extra = sorted(r for r in roles if r not in ("worker", "claude-worker"))
+    return [*core, *extra]
+
+
+def _scale_deployment(ns: str, deploy_name: str, replicas: int) -> Tuple[bool, str]:
+    """``kubectl scale deployment/<name> --replicas=N`` → ``(ok, msg)``.
+
+    Single source da operação de scale do painel — reusado pela
+    ``WorkerScalingView`` (Frente 6) e pelo legado ``DispatchMatrixView``.
+    Verifica a existência do Deployment antes (msg clara se ausente) e roda
+    inline (chamada de API ~100ms). Best-effort: kubectl ausente → erro
+    legível, nunca exceção que derrube o painel.
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado — scale impossível"
+    check = subprocess.run(
+        [kubectl, "-n", ns, "get", "deployment", deploy_name],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if check.returncode != 0:
+        return False, (
+            f"deployment/{deploy_name} não encontrado em `{ns}` — "
+            "instale-o primeiro"
+        )
+    result = subprocess.run(
+        [kubectl, "-n", ns, "scale",
+         f"deployment/{deploy_name}", f"--replicas={replicas}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+    )
+    if result.returncode == 0:
+        return True, f"deployment/{deploy_name} → {replicas} réplica(s)"
+    return False, f"scale {deploy_name} falhou: {result.stderr.strip()[:120]}"
+
+
+def _read_deployment_replicas(ns: str, deploy_name: str) -> Optional[int]:
+    """Lê ``spec.replicas`` desejado de um Deployment; ``None`` se ausente.
+
+    Usado pela ``WorkerScalingView`` para mostrar o alvo atual de réplicas
+    por worker. Best-effort (kubectl ausente / deployment não existe → None).
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return None
+    try:
+        r = subprocess.run(
+            [kubectl, "-n", ns, "get", "deployment", deploy_name,
+             "-o", "jsonpath={.spec.replicas}"],
+            capture_output=True, text=True, timeout=8,
+        )
+        if r.returncode != 0:
+            return None
+        val = r.stdout.strip()
+        return int(val) if val else None
+    except Exception:  # noqa: BLE001 — kubectl/parse falham → desconhecido
+        return None
+
+
+#: Selo + estilo por severidade do corte de provedor na linha de pod (#445).
+def _provider_badge(code: Optional[str]) -> Tuple[Optional[Text], Optional[str]]:
+    """``(selo, row_style)`` para o code, ou ``(None, None)`` se saudável.
+
+    Crédito esgotado → selo ``⛔`` e linha VERMELHA; transitório (rate-limit/
+    5xx/conexão) → selo ``⚠`` e linha AMARELA. Single source da rotulagem:
+    :func:`provider_error_label` (importado do ``_panel_data``).
+    """
+    if not code:
+        return None, None
+    if code == "INSUFFICIENT_CREDIT":
+        return Text(f"⛔ {provider_error_label(code)}", style="bold white on red"), "bold red"
+    return Text(f"⚠ {provider_error_label(code)}", style="bold black on yellow"), "bold yellow"
+
+
+def _emit_pod_row(tbl, p: "PodRow", restart_fn, doing_fn,
+                  *, indent: bool = False) -> None:
+    """Adiciona uma linha de pod à tabela (com indentação opcional sob grupo).
+
+    Reusado pela tela [1] (Dashboard), PodPicker e PodWatch para que as três
+    renderizem pods com o mesmo estilo — sem duplicar a montagem da linha.
+
+    Corte por provedor LLM (issue #445): a linha inteira é pintada de VERMELHO
+    (crédito) / AMARELO (transitório) e um selo claro aparece na coluna
+    doing-now, sobrepondo o "doing now" normal — o operador não pode não ver.
+    """
+    icon_style = "bold yellow" if p.busy else "green"
+    status_style = "green" if p.status == "Running" else "red"
+    badge, row_style = _provider_badge(p.provider_error_code)
+    if badge is not None:
+        doing_text: RenderableType = badge
+        icon_style = "bold red" if row_style == "bold red" else "bold yellow"
+    else:
+        doing_text, _ = doing_fn(p)
+    name = (f"  └ {p.name.split('-')[-1]}" if indent else p.name)
+    tbl.add_row(
+        Text(p.icon, style=icon_style),
+        name,
+        Text(p.status, style=status_style),
+        p.age,
+        restart_fn(p.restarts),
+        Text(p.last_activity, style="dim"),
+        doing_text,
+        style=row_style,
+    )
+
+
+def _render_grouped_pods(tbl, rows: List["PodRow"], restart_fn, doing_fn) -> None:
+    """Preenche *tbl* com os pods agrupados por classe de worker (Frente 5).
+
+    Pods de infra (pipeline/monitor/bot/shell e quaisquer ``other``) vêm flat
+    primeiro, na ordem recebida. Em seguida, CADA tipo de worker (deile-worker,
+    claude-worker e os da frota CLI) vira um grupo: 1 cabeçalho
+    ``<tipo> (N réplicas · R ready · A ativa(s))`` + os pods do tipo indentados.
+
+    Single source da detecção de worker-class: :func:`_is_worker_class_role`
+    (derivado do registro de adapters). Adicionar um worker novo agrupa
+    automaticamente, sem editar esta função.
+    """
+    infra_rows = [p for p in rows if not _is_worker_class_role(p.role)]
+    worker_rows = [p for p in rows if _is_worker_class_role(p.role)]
+
+    for p in infra_rows:
+        _emit_pod_row(tbl, p, restart_fn, doing_fn)
+
+    by_role: Dict[str, List["PodRow"]] = {}
+    for p in worker_rows:
+        by_role.setdefault(p.role, []).append(p)
+
+    for role in _ordered_worker_roles(by_role.keys()):
+        group = by_role[role]
+        ready = sum(1 for p in group if p.status == "Running")
+        active = sum(1 for p in group if p.busy)
+        label = _worker_group_label(role)
+        # Corte por provedor no grupo (issue #445): se QUALQUER pod do tipo
+        # bateu crédito esgotado, o cabeçalho do grupo fica VERMELHO com selo;
+        # rate-limit/5xx → AMARELO. Pior severidade do grupo ganha.
+        group_codes = [p.provider_error_code for p in group if p.provider_error_code]
+        if any(c == "INSUFFICIENT_CREDIT" for c in group_codes):
+            head_icon, head_icon_style = "⛔", "bold red"
+            head_style, group_badge = "bold red", "  ⛔ CRÉDITO ESGOTADO"
+        elif group_codes:
+            head_icon, head_icon_style = "⚠", "bold yellow"
+            head_style, group_badge = "bold yellow", "  ⚠ PROVIDER DEGRADADO"
+        else:
+            head_icon, head_icon_style = "●", "cyan"
+            head_style, group_badge = "bold cyan", ""
+        tbl.add_row(
+            Text(head_icon, style=head_icon_style),
+            Text(
+                f"{label} ({len(group)} réplica(s) · {ready} ready · "
+                f"{active} ativa(s)){group_badge}",
+                style=head_style,
+            ),
+            "", "", "", "", "",
+        )
+        for p in group:
+            _emit_pod_row(tbl, p, restart_fn, doing_fn, indent=True)
 
 
 # ===== renderers reaproveitáveis ============================================
@@ -1171,13 +1471,14 @@ class DashboardView(View):
         if self._activity_focused:
             return (
                 "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
-                "[t]okens  [M]onitor  [n]otifier  [a]ctivity:[↑↓/enter/esc]  "
-                f"[m]odel/runtime  [d]ispatch  [s]ort:{self.sort_mode}  [?]help  [q]uit"
+                "[t]okens(claude) [T]okens(frota)  [M]onitor  [n]otifier  "
+                "[a]ctivity:[↑↓/enter/esc]  "
+                f"[m]odel/runtime  [d]ispatch  [S]caling  [s]ort:{self.sort_mode}  [?]help  [q]uit"
             )
         return (
             "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
-            "[t]okens  [M]onitor  [n]otifier  [a]ctivity  [m]odel/runtime  "
-            f"[d]ispatch  [s]ort:{self.sort_mode}  [?]help  [q]uit"
+            "[t]okens(claude) [T]okens(frota)  [M]onitor  [n]otifier  [m]odel/runtime  "
+            f"[d]ispatch  [S]caling  [s]ort:{self.sort_mode}  [?]help  [q]uit"
         )
 
     def render(self, app: "PanelApp") -> RenderableType:
@@ -1249,38 +1550,11 @@ class DashboardView(View):
                        ratio=3)
         tbl.add_column("doing now", no_wrap=True, overflow="ellipsis", ratio=5)
 
-        # Pods não-claude-worker em ordem; réplicas claude-worker agrupadas
-        # sob um cabeçalho (requisito #3 da proposta).
-        cw_rows = [p for p in rows if p.role == "claude-worker"]
-        other_rows = [p for p in rows if p.role != "claude-worker"]
-
-        def _emit(p: PodRow, *, indent: bool = False) -> None:
-            icon_style = "bold yellow" if p.busy else "green"
-            status_style = "green" if p.status == "Running" else "red"
-            doing_text, _ = _doing_now_render(p)
-            name = (f"  └ {p.name.split('-')[-1]}" if indent else p.name)
-            tbl.add_row(
-                Text(p.icon, style=icon_style),
-                name,
-                Text(p.status, style=status_style),
-                p.age,
-                _restart_text(p.restarts),
-                Text(p.last_activity, style="dim"),
-                doing_text,
-            )
-
-        for p in other_rows:
-            _emit(p)
-        if cw_rows:
-            running = sum(1 for p in cw_rows if p.busy)
-            tbl.add_row(
-                Text("●", style="cyan"),
-                Text(f"claude-worker ({len(cw_rows)} réplicas · {running} ativa(s))",
-                     style="bold cyan"),
-                "", "", "", "", "",
-            )
-            for p in cw_rows:
-                _emit(p, indent=True)
+        # Pods de infra (pipeline/monitor/bot/shell) renderizam flat primeiro;
+        # TODO tipo de worker (deile-worker, claude-worker e os 5 da frota CLI)
+        # é agrupado sob um cabeçalho próprio com contagem ready/total
+        # (Frente 5 — generaliza o agrupamento que existia só p/ claude-worker).
+        _render_grouped_pods(tbl, rows, _restart_text, _doing_now_render)
 
         return Panel(tbl, title="[bold]PODS[/bold]",
                      title_align="left", border_style="cyan",
@@ -1586,10 +1860,10 @@ class DashboardView(View):
                 ("Tokens 24h: ", "dim"),
                 (total_str, "bold green"),
                 (f"  ·  1h: {hour_str}", "dim"),
-                ("  [t] detalhes", "dim"),
+                ("  [t] claude · [T] frota", "dim"),
             ))
         else:
-            lines.append(Text("Tokens 24h: $11.40  ·  1h: $1.32  [t] detalhes",
+            lines.append(Text("Tokens 24h: $11.40  ·  1h: $1.32  [t] claude · [T] frota",
                                style="dim"))
 
         body = Group(*lines) if lines else Text("· sem dados", style="dim")
@@ -1664,6 +1938,9 @@ class DashboardView(View):
             # única view. As views legadas continuam no código (não foram
             # deletadas) mas saíram do registry — limpeza fica para FU PR.
             "d": "dispatch-mode-matrix",
+            # [S] MAIÚSCULO → tela dedicada de Worker Scaling (Frente 6).
+            # [s] minúsculo continua sendo o ciclo de sort (tratado abaixo).
+            "S": "worker-scaling",
             # [M] MAIÚSCULO → view dedicada do deile-monitor.
             # [m] minúsculo continua sendo model-switcher (mapeado acima).
             # O KeyReader distingue maiúsculo/minúsculo via termios cbreak —
@@ -1680,6 +1957,16 @@ class DashboardView(View):
             if self.data is not None and self.data.context is not None:
                 ns = getattr(self.data.context, "namespace", None) or _NS_DEFAULT
             script = Path(__file__).resolve().parent / "session_tokens_audit.py"
+            return ActionResult.suspend(
+                [sys.executable, str(script), "-n", ns])
+        if key == "T":
+            # [T]okens (MAIÚSCULO) — auditoria da FROTA INTEIRA (todos os
+            # worker-kinds: claude/deile/opencode/codex/qwen/goose/aider) via
+            # fleet_tokens_audit.py. O [t] minúsculo segue só claude (legacy).
+            ns = _NS_DEFAULT
+            if self.data is not None and self.data.context is not None:
+                ns = getattr(self.data.context, "namespace", None) or _NS_DEFAULT
+            script = Path(__file__).resolve().parent / "fleet_tokens_audit.py"
             return ActionResult.suspend(
                 [sys.executable, str(script), "-n", ns])
         if key == "s":
@@ -1808,14 +2095,22 @@ class PodPickerView(View):
     def _rows(self) -> List[PodRow]:
         """Lista pods do cluster + processos locais (na ordem natural).
 
-        Réplicas ``claude-worker`` são reagrupadas contíguas (antes dos
-        processos locais) para o render desenhar um cabeçalho de grupo sem
-        desalinhar o cursor — ``handle_key`` indexa esta MESMA lista.
+        Os pods worker-class (deile-worker, claude-worker e a frota CLI) são
+        reagrupados contíguos por tipo (antes dos processos locais) para o
+        render desenhar um cabeçalho por grupo sem desalinhar o cursor —
+        ``handle_key`` indexa esta MESMA lista. Reusa a detecção/ordenação de
+        grupos do Dashboard (Frente 5), sem duplicar a regra.
         """
         pods = _pod_rows(self.data)
-        cw = [p for p in pods if p.role == "claude-worker"]
-        other = [p for p in pods if p.role != "claude-worker"]
-        return other + cw + _local_process_rows(self.data)
+        infra = [p for p in pods if not _is_worker_class_role(p.role)]
+        worker_rows = [p for p in pods if _is_worker_class_role(p.role)]
+        by_role: Dict[str, List[PodRow]] = {}
+        for p in worker_rows:
+            by_role.setdefault(p.role, []).append(p)
+        grouped: List[PodRow] = []
+        for role in _ordered_worker_roles(by_role.keys()):
+            grouped.extend(by_role[role])
+        return infra + grouped + _local_process_rows(self.data)
 
     @staticmethod
     def _deployment_for_role(role: str) -> Optional[str]:
@@ -1825,12 +2120,19 @@ class PodPickerView(View):
         sinal para o handler de ``r`` recusar a ação.
         """
         mapping = {
-            "pipeline": "deile-pipeline",
-            "worker":   "deile-worker",
-            "bot":      "deilebot",
-            "shell":    "deile-shell",
+            "pipeline":      "deile-pipeline",
+            "monitor":       "deile-monitor",
+            "worker":        "deile-worker",
+            "claude-worker": "claude-worker",
+            "bot":           "deilebot",
+            "shell":         "deile-shell",
         }
-        return mapping.get(role)
+        if role in mapping:
+            return mapping[role]
+        # Workers da frota CLI: role == "<kind>-worker" == nome do Deployment.
+        if role.endswith("-worker"):
+            return role
+        return None
 
     @staticmethod
     def _pid_from_local_row(row: PodRow) -> Optional[int]:
@@ -1867,20 +2169,34 @@ class PodPickerView(View):
                        ratio=3)
         tbl.add_column("doing now", no_wrap=True, overflow="ellipsis", ratio=5)
 
-        cw_total = sum(1 for p in rows if p.role == "claude-worker")
-        cw_running = sum(1 for p in rows if p.role == "claude-worker" and p.busy)
-        cw_header_done = False
+        # Contagens por grupo de worker-class (p/ cabeçalho ready/total/ativo).
+        group_total: Dict[str, int] = {}
+        group_ready: Dict[str, int] = {}
+        group_active: Dict[str, int] = {}
+        for p in rows:
+            if _is_worker_class_role(p.role):
+                group_total[p.role] = group_total.get(p.role, 0) + 1
+                if p.status == "Running":
+                    group_ready[p.role] = group_ready.get(p.role, 0) + 1
+                if p.busy:
+                    group_active[p.role] = group_active.get(p.role, 0) + 1
+        cw_total = group_total.get("claude-worker", 0)
+        headers_done: set = set()
         for i, p in enumerate(rows):
-            # Cabeçalho do grupo claude-worker (linha visual, fora do cursor).
-            if p.role == "claude-worker" and not cw_header_done:
+            # Cabeçalho do grupo de worker (linha visual, fora do cursor) —
+            # emitido na primeira linha de CADA tipo de worker (Frente 5).
+            if _is_worker_class_role(p.role) and p.role not in headers_done:
+                label = _worker_group_label(p.role)
                 tbl.add_row(
                     "", Text("●", style="cyan"),
-                    Text(f"claude-worker ({cw_total} réplicas · "
-                         f"{cw_running} ativa(s))", style="bold cyan"),
+                    Text(f"{label} ({group_total[p.role]} réplica(s) · "
+                         f"{group_ready.get(p.role, 0)} ready · "
+                         f"{group_active.get(p.role, 0)} ativa(s))",
+                         style="bold cyan"),
                     "", "", "", "", "", "",
                 )
-                cw_header_done = True
-            indent = p.role == "claude-worker"
+                headers_done.add(p.role)
+            indent = _is_worker_class_role(p.role)
             name = f"  └ {p.name.split('-')[-1]}" if indent else p.name
             marker = "▶" if i == self.cursor else " "
             row_style = "bold cyan on grey15" if i == self.cursor else ""
@@ -5716,6 +6032,254 @@ class DispatchModeView(View):
         self.last_msg = msg
 
 
+class WorkerScalingView(View):
+    """Tela dedicada de escalonamento de réplicas por TIPO de worker (Frente 6).
+
+    Tira a edição de réplicas da ``DispatchMatrixView`` (que misturava dispatch
+    config com scaling) e dá a ela uma tela própria, navegável e clara:
+
+    - Uma linha por worker (os dispatchers de ``get_valid_dispatchers`` — os 2
+      núcleo + a frota CLI; o role do worker == nome do Deployment), com as
+      réplicas DESEJADAS (``spec.replicas``) e os pods READY do cluster.
+    - ``[↑/↓]`` move o cursor; ``[+]/[-]`` incrementa/decrementa réplicas e
+      aplica via ``kubectl scale`` na hora; ``[enter]`` abre prompt numérico
+      para setar um valor exato (0-N); ``[esc]``/``[q]`` volta ao dashboard.
+
+    Single source: a lista de workers vem do registro de adapters (idem
+    ``DispatchMatrixView._canonical_workers``); o scale reusa
+    :func:`_scale_deployment`.
+    """
+
+    name = "worker-scaling"
+    title = "Worker Scaling ([S])"
+    refresh_s = 2.0
+
+    HOTKEYS = (
+        "[↑/↓] worker   [+/-] -/+ 1 réplica (aplica já)   "
+        "[enter] setar valor exato (0-20)   [r] refresh   [q]/[esc] back"
+    )
+
+    _MAX_REPLICAS = 20
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.cursor: int = 0
+        # Prompt numérico de valor exato. None = navegando; ("scale", deploy,
+        # [buffer]) = digitando réplicas.
+        self.mode: Optional[tuple] = None
+        self.last_msg: str = ""
+        self.last_ok: Optional[bool] = None
+
+    def on_unmount(self, app) -> None:
+        self.mode = None
+
+    def intercepts_key(self, key: str) -> bool:
+        # ESC dentro do prompt fecha o modal (não pop a view).
+        return key == "ESC" and self.mode is not None
+
+    # --- data ------------------------------------------------------------
+
+    def _ns(self) -> str:
+        return (self.data.context.namespace
+                if self.data is not None and getattr(self.data, "context", None)
+                else _NS_DEFAULT)
+
+    def _worker_deployments(self) -> List[str]:
+        """Deployments worker = dispatchers válidos (role == nome do Deployment).
+
+        Derivado do registro de adapters via ``DispatchMatrixView`` (mesma
+        fonte da coluna Worker da matriz) — registrar um worker novo já o lista
+        aqui sem editar esta view.
+        """
+        return DispatchMatrixView._canonical_workers()
+
+    def _ready_by_role(self) -> Dict[str, int]:
+        """Conta pods Running por role (worker == role) — display de ready."""
+        if self.data is None or getattr(self.data, "pods", None) is None:
+            return {}
+        counts: Dict[str, int] = {}
+        try:
+            pods = self.data.pods.get()
+        except Exception:  # noqa: BLE001
+            return {}
+        for p in pods:
+            if p.status == "Running":
+                counts[p.role] = counts.get(p.role, 0) + 1
+        return counts
+
+    # --- render ----------------------------------------------------------
+
+    def render(self, app) -> RenderableType:
+        workers = self._worker_deployments()
+        if workers:
+            self.cursor = max(0, min(self.cursor, len(workers) - 1))
+        ready = self._ready_by_role()
+        ns = self._ns()
+
+        tbl = Table(show_header=True, box=box.SIMPLE_HEAVY, expand=True)
+        tbl.add_column(" ", no_wrap=True)
+        tbl.add_column("Worker", style="bold cyan", min_width=14)
+        tbl.add_column("Desired", justify="right")
+        tbl.add_column("Ready", justify="right")
+        tbl.add_column("Deployment", style="dim")
+
+        for i, worker in enumerate(workers):
+            # worker == role == nome do Deployment ("deile-worker" mapeia o role
+            # interno "worker", mas o Deployment se chama "deile-worker").
+            desired = (_read_deployment_replicas(ns, worker)
+                       if self.data is not None else None)
+            role = "worker" if worker == "deile-worker" else worker
+            ready_n = ready.get(role, 0)
+            desired_txt = str(desired) if desired is not None else "—"
+            marker = "▶" if i == self.cursor else " "
+            name_cell = (f"[reverse]{worker}[/reverse]"
+                         if i == self.cursor else worker)
+            tbl.add_row(
+                Text(marker, style="bold cyan"),
+                name_cell,
+                desired_txt,
+                str(ready_n),
+                worker,
+            )
+
+        parts: List[RenderableType] = [tbl]
+        if self.mode is not None:
+            parts.append(self._render_prompt())
+        if self.last_msg:
+            border = "green" if self.last_ok else (
+                "red" if self.last_ok is False else "yellow")
+            parts.append(Panel(
+                Text(self.last_msg,
+                     style="bold green" if self.last_ok else (
+                         "bold red" if self.last_ok is False else "yellow")),
+                title="[bold]ÚLTIMA AÇÃO[/bold]",
+                title_align="left", border_style=border,
+            ))
+        parts.append(Text(self.HOTKEYS, style="dim"))
+        return Panel(
+            Group(*parts),
+            title="[bold]WORKER SCALING[/bold]  (réplicas por tipo de worker)",
+            title_align="left", border_style="cyan",
+        )
+
+    def _render_prompt(self) -> RenderableType:
+        _, deploy, buf = self.mode  # type: ignore[misc]
+        cur = buf[0] if buf else ""
+        return Panel(
+            Group(
+                Text(f"› {cur}_", style="bold cyan"),
+                Text(""),
+                Text("[0-9] digita réplicas   [backspace] apaga   "
+                     "[enter] confirma   [esc] cancela",
+                     style="dim cyan"),
+            ),
+            title=f"[bold yellow]RÉPLICAS PARA '{deploy}' (0-{self._MAX_REPLICAS})[/bold yellow]",
+            title_align="left", border_style="yellow",
+        )
+
+    # --- input -----------------------------------------------------------
+
+    def handle_key(self, key: str, app) -> ActionResult:
+        try:
+            return self._handle_key_safe(key, app)
+        except Exception as exc:  # noqa: BLE001 — input nunca derruba o painel
+            self.last_msg = f"erro no handler {key!r}: {type(exc).__name__}: {exc}"
+            self.last_ok = False
+            self.mode = None
+            return ActionResult.refresh()
+
+    def _handle_key_safe(self, key: str, app) -> ActionResult:
+        if self.mode is not None:
+            return self._handle_prompt_key(key)
+
+        workers = self._worker_deployments()
+        n = len(workers)
+        if key in ("q", "ESC"):
+            return ActionResult.nav("dashboard")
+        if key == "r":
+            if self.data is not None:
+                try:
+                    self.data.pods.get(force=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            return ActionResult.refresh()
+        if not n:
+            return ActionResult()
+        if key in ("UP", "k"):
+            self.cursor = (self.cursor - 1) % n
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.cursor = (self.cursor + 1) % n
+            return ActionResult.refresh()
+        if key in ("+", "="):  # '=' = '+' sem shift em muitos teclados
+            return self._adjust(workers[self.cursor], +1)
+        if key in ("-", "_"):
+            return self._adjust(workers[self.cursor], -1)
+        if key in ("\r", "\n"):
+            self.mode = ("scale", workers[self.cursor], [""])
+            self.last_msg = ""
+            self.last_ok = None
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _adjust(self, deploy: str, delta: int) -> ActionResult:
+        """Lê o desired atual, soma *delta* (clamp 0..MAX) e aplica."""
+        if self.data is None:
+            self.last_msg = f"[demo] {deploy} {delta:+d} réplica (sem cluster)"
+            self.last_ok = False
+            return ActionResult.refresh()
+        ns = self._ns()
+        cur = _read_deployment_replicas(ns, deploy)
+        if cur is None:
+            cur = 0
+        target = max(0, min(self._MAX_REPLICAS, cur + delta))
+        if target == cur:
+            self.last_msg = (
+                f"{deploy} já em {cur} (limite {0 if delta < 0 else self._MAX_REPLICAS})"
+            )
+            self.last_ok = None
+            return ActionResult.refresh()
+        ok, msg = _scale_deployment(ns, deploy, target)
+        self.last_ok = ok
+        self.last_msg = msg
+        return ActionResult.refresh()
+
+    def _handle_prompt_key(self, key: str) -> ActionResult:
+        kind, deploy, buf = self.mode  # type: ignore[misc]
+        cur = buf[0] if buf else ""
+        if key == "ESC":
+            self.mode = None
+            self.last_msg = "scale cancelado"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("BACKSPACE", "\x7f", "\b"):
+            self.mode = (kind, deploy, [cur[:-1]])
+            return ActionResult.refresh()
+        if key.isdigit():
+            candidate = cur + key
+            # Limita a 2 dígitos (max 20); evita buffer absurdo.
+            if len(candidate) <= 2:
+                self.mode = (kind, deploy, [candidate])
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            if not cur:
+                self.mode = None
+                self.last_msg = "scale cancelado (vazio)"
+                self.last_ok = None
+                return ActionResult.refresh()
+            target = max(0, min(self._MAX_REPLICAS, int(cur)))
+            self.mode = None
+            if self.data is None:
+                self.last_msg = f"[demo] scale {deploy} → {target} (sem cluster)"
+                self.last_ok = False
+                return ActionResult.refresh()
+            ok, msg = _scale_deployment(self._ns(), deploy, target)
+            self.last_ok = ok
+            self.last_msg = msg
+            return ActionResult.refresh()
+        return ActionResult()
+
+
 class DispatchMatrixView(View):
     """Pipeline Stage Configuration unificada (issue #309 fase 2 — Task 18).
 
@@ -5758,20 +6322,16 @@ class DispatchMatrixView(View):
     HOTKEYS = (
         "[↑/↓] linha   [←/→] coluna (Worker/Model/Timeout/Retries/Cost/Reasoning)   "
         "[enter] editar   [r] reset   "
-        "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
-        "[s]caling row: enter digita réplicas (0-10)   "
+        "[L] switch claude login   [O] login OAuth CLI worker (codex, in-pod)   "
+        "[I] install   [U] uninstall   [q] back   "
         "[c] cleanup on-demand (preview + confirm)   "
         "[p] editar max_parallel (parallelism do pipeline)   "
         "[J] editar retenção JSONL em dias (claude-worker + cron, default 30d)   "
         "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run) 5=Reasoning   "
         "retries=0 EXIGE confirmação: digite '0!' (fail-fast, sem retry)   "
+        "réplicas de worker: use a tela [S] (Worker Scaling)   "
         "linha monitor: Worker=in-pod (não editável)  Model=DEILE_PREFERRED_MODEL do deile-monitor"
     )
-
-    # Índice de row constante para a linha de scaling (após Global default).
-    # Calculado em runtime como ``len(entries) + 1`` — mantido aqui só como
-    # documentação da convenção.
-    _SCALING_ROW_OFFSET = 1  # offset relativo ao len(entries): global=+0, scaling=+1
 
     # Source of truth do conjunto de stages — espelha
     # ``deile.orchestration.pipeline.dispatch_resolver.PIPELINE_STAGES``.
@@ -5824,9 +6384,15 @@ class DispatchMatrixView(View):
         # exibe — captura o estado da row no momento de abertura para
         # que mudar de row durante a navegação do picker não troque a
         # lista de opções (UX previsível). Para timeout/retries o picker
-        # usa ``scale_prompt`` style (entrada numérica livre em vez de lista).
+        # usa entrada numérica livre (buffer) em vez de lista.
         self.mode: Optional[tuple] = None
         self.picker_cursor: int = 0
+        # Decoração visual do picker: mapeia o VALOR de uma opção (que é o
+        # que vai pro ``kubectl set env``, mantido bare em ``options``) para um
+        # rótulo enriquecido (preço/auth) exibido SÓ no render. Vazio = render
+        # mostra o próprio valor. Resetado a cada abertura de picker para não
+        # vazar rótulos stale entre pickers. Single source: ``adapter.list_models()``.
+        self._option_labels: Dict[str, str] = {}
         # Última ação para feedback no painel (paridade com
         # ``DispatchModeView`` / ``StageModelsView``).
         self.last_msg: str = ""
@@ -5850,6 +6416,7 @@ class DispatchMatrixView(View):
         # Reentry sempre na matriz, nunca num picker stale.
         self.mode = None
         self.picker_cursor = 0
+        self._option_labels = {}
 
     def intercepts_key(self, key: str) -> bool:
         # ESC dentro do picker fecha o modal (handle_key), não pop a view.
@@ -5916,26 +6483,125 @@ class DispatchMatrixView(View):
 
     # --- picker option builders (Task 19) -------------------------------
 
+    #: Fallback estático dos workers núcleo — usado só quando o lazy import de
+    #: ``dispatch_resolver`` falha (ex.: ``deile`` fora do path, erro de import).
+    #: A frota CLI extra (``opencode-worker``, ...) só aparece com o resolver
+    #: importável; o painel NUNCA crasha por causa disso.
+    _WORKERS_FALLBACK = ("deile-worker", "claude-worker")
+
+    @staticmethod
+    def _canonical_workers() -> List[str]:
+        """Lista canônica de workers DERIVADA do registro de adapters.
+
+        Single source of truth: :func:`dispatch_resolver.get_valid_dispatchers`
+        (que une os dois workers núcleo com a frota CLI descoberta em
+        ``cli_adapters.ADAPTERS``). Registrar um adapter novo faz o worker
+        aparecer aqui SEM editar o painel. Ordem determinística: núcleo primeiro
+        (``deile-worker``, ``claude-worker``), depois o resto em ordem alfabética.
+        """
+        try:
+            from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+                BUILTIN_DISPATCHERS, get_valid_dispatchers)
+            valid = get_valid_dispatchers()
+            core = [w for w in ("deile-worker", "claude-worker") if w in valid]
+            extra = sorted(valid - BUILTIN_DISPATCHERS)
+            return [*core, *extra]
+        except Exception:  # noqa: BLE001 — provider nunca crasha o painel
+            return list(DispatchMatrixView._WORKERS_FALLBACK)
+
     def _worker_picker_options(self) -> List[str]:
-        """Opções do picker de worker (3 itens fixos)."""
+        """Opções do picker de worker — derivadas do registro de adapters."""
         return [
             self._CLEAR_SENTINEL_WORKER,  # primeiro = "limpar override"
-            "deile-worker",
-            "claude-worker",
+            *self._canonical_workers(),
         ]
+
+    @staticmethod
+    def _cli_worker_models(worker: str) -> List:
+        """``ModelInfo`` que um CLI worker da frota suporta (alimenta o picker).
+
+        É a MESMA fonte que o endpoint ``GET /v1/models`` daquele worker serve:
+        ``adapter.list_models()`` do registro de adapters (``cli_adapters``).
+        Derivar do registro (em vez de uma lista hardcoded no painel) mantém o
+        single-source-of-truth — registrar um adapter novo já popula o picker —
+        e funciona mesmo com o worker escalado a zero (não exige HTTP/pod up).
+
+        Retorna ``[]`` se ``worker`` não é um CLI worker da frota ou o registro
+        está indisponível — o caller então cai no catálogo ``provider:model``.
+        """
+        if not worker or not worker.endswith("-worker"):
+            return []
+        kind = worker[: -len("-worker")]
+        try:
+            import cli_adapters  # noqa: PLC0415 — pacote em infra/k8s
+        except Exception:  # noqa: BLE001 — frota opcional; painel nunca crasha
+            return []
+        adapter = cli_adapters.ADAPTERS.get(kind)
+        if adapter is None:
+            return []
+        try:
+            return [m for m in (adapter.list_models() or [])
+                    if isinstance(getattr(m, "id", None), str) and m.id]
+        except Exception:  # noqa: BLE001 — list_models é best-effort
+            return []
+
+    @classmethod
+    def _cli_worker_model_ids(cls, worker: str) -> List[str]:
+        """Model-ids (bare) do CLI worker — usado p/ apply via kubectl set env."""
+        return [m.id for m in cls._cli_worker_models(worker)]
+
+    @staticmethod
+    def _format_model_label(model) -> str:
+        """Rótulo enriquecido p/ o picker: ``<id>  $in/$out  [auth]``.
+
+        SÓ para exibição — o valor que vai pro env continua sendo ``model.id``
+        (o mapeamento ``id → label`` vive em ``_option_labels``). Preço e auth
+        são omitidos quando ``None`` (retrocompat com catálogos sem esses campos).
+        """
+        mid = model.id
+        parts: List[str] = [mid]
+        price_in = getattr(model, "price_in", None)
+        price_out = getattr(model, "price_out", None)
+        if price_in is not None and price_out is not None:
+            parts.append(f"${price_in:g}/${price_out:g} per 1M")
+        elif price_in is not None:
+            parts.append(f"${price_in:g} in/1M")
+        auth = getattr(model, "auth", None)
+        if auth:
+            parts.append(f"[{auth}]")
+        notes = getattr(model, "notes", None)
+        if notes:
+            parts.append(f"— {notes}")
+        return "  ".join(parts)
 
     def _model_picker_options(self, *, worker: str) -> List[str]:
         """Opções do picker de model, contextualizadas por ``worker``.
 
-        ``worker == "claude-worker"`` restringe o catálogo a ``anthropic:*``
-        (único provider que o claude binary aceita). Qualquer outro worker
-        (``deile-worker`` é o padrão) mostra o catálogo completo.
+        Três caminhos, conforme o worker selecionado na MESMA linha:
+
+        * ``claude-worker`` → catálogo ``provider:model`` restrito a
+          ``anthropic:*`` (único provider que o claude binary aceita).
+        * CLI worker da frota (``<kind>-worker``) → model-ids NATIVOS do CLI,
+          servidos pela mesma fonte do ``GET /v1/models`` daquele worker
+          (``adapter.list_models()`` do registro). Satisfaz o requisito
+          "cada worker mostra os modelos que suporta".
+        * ``deile-worker`` (default) → catálogo ``provider:model`` completo.
         """
-        all_models = self._load_all_models()
+        # Reset da decoração — cada abertura de picker recomeça limpa.
+        self._option_labels = {}
         if worker == "claude-worker":
+            all_models = self._load_all_models()
             filtered = [m for m in all_models if m.startswith("anthropic:")]
             return [self._CLEAR_SENTINEL_MODEL, *filtered]
-        return [self._CLEAR_SENTINEL_MODEL, *all_models]
+        cli_models = self._cli_worker_models(worker)
+        if cli_models:
+            # Valores bare (ids) em ``options`` p/ apply; rótulos ricos
+            # (preço/auth) em ``_option_labels`` p/ render.
+            self._option_labels = {
+                m.id: self._format_model_label(m) for m in cli_models
+            }
+            return [self._CLEAR_SENTINEL_MODEL, *[m.id for m in cli_models]]
+        return [self._CLEAR_SENTINEL_MODEL, *self._load_all_models()]
 
     def _claude_status(self):
         """Status do Deployment ``claude-worker``. Demo → não instalado."""
@@ -6080,26 +6746,12 @@ class DispatchMatrixView(View):
         tbl.add_row("Global default", global_w_txt, global_m_txt,
                     global_t_txt, global_r_txt, "—", global_z_txt, "env")
 
-        # Linha "Worker Scaling" — edita réplicas de deile-worker / claude-worker
-        # via prompt numérico [enter] (issue #309 fase 3 Task 4).
-        # ``cursor_row == len(entries) + 1`` aponta aqui.
-        scaling_idx = len(entries) + 1
-        highlight_sw = (self.cursor_row == scaling_idx and self.cursor_col == 0)
-        highlight_sm = (self.cursor_row == scaling_idx and self.cursor_col == 1)
-        scale_w_txt = "(réplicas deile-worker)"
-        scale_m_txt = "(réplicas claude-worker)"
-        if highlight_sw:
-            scale_w_txt = f"[reverse]{scale_w_txt}[/reverse]"
-        if highlight_sm:
-            scale_m_txt = f"[reverse]{scale_m_txt}[/reverse]"
-        tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt,
-                    "", "", "—", "—", "kubectl")
-
         # Linha "Max Parallel" — edita DEILE_PIPELINE_MAX_PARALLEL no
         # Deployment deile-pipeline (issue #408). [p] ou [enter] nesta row
         # abre prompt numérico/auto.
-        # ``cursor_row == len(entries) + 2`` aponta aqui.
-        max_parallel_idx = len(entries) + 2
+        # ``cursor_row == len(entries) + 1`` aponta aqui (Frente 6 removeu a
+        # linha de Worker Scaling — agora vive na ``WorkerScalingView`` [S]).
+        max_parallel_idx = len(entries) + 1
         highlight_mp = (self.cursor_row == max_parallel_idx
                         and self.cursor_col == 0)
         mp_current = self._read_max_parallel_env()
@@ -6114,11 +6766,11 @@ class DispatchMatrixView(View):
                     "─" * 9, "─" * 6, style="dim")
 
         # Linha "monitor" — modelo aplicado ao Deployment deile-monitor.
-        # ``cursor_row == len(entries) + 3`` aponta aqui.
+        # ``cursor_row == len(entries) + 2`` aponta aqui.
         # Coluna Worker é sempre "— (in-pod)": o monitor roda em loop shell
         # dentro do próprio pod e NÃO recebe dispatch externo. Bloqueamos
         # a edição com tooltip no feedback quando o operador tentar.
-        monitor_idx = len(entries) + 3
+        monitor_idx = len(entries) + 2
         highlight_mon_m = (self.cursor_row == monitor_idx and self.cursor_col == 1)
         monitor_model = self._read_monitor_model_env()
         mon_model_txt = monitor_model if monitor_model else "(default)"
@@ -6257,8 +6909,6 @@ class DispatchMatrixView(View):
             title = "TROCAR CONTA DO CLAUDE-WORKER?"
         elif kind == "uninstall_confirm":
             title = "DESINSTALAR CLAUDE-WORKER?"
-        elif kind == "scale_prompt":
-            title = f"RÉPLICAS PARA '{stage}' (0-10)"
         elif kind == "cleanup_confirm":
             title = "CLEANUP ON-DEMAND — CONFIRMAR?"
         elif kind == "max_parallel_prompt":
@@ -6285,7 +6935,10 @@ class DispatchMatrixView(View):
         tbl.add_column("opção", style="bold")
         for i, opt in enumerate(options):
             marker = "▶" if i == self.picker_cursor else " "
-            tbl.add_row(Text(marker, style="bold cyan"), Text(opt))
+            # Decoração visual (preço/auth) quando houver — o valor ``opt``
+            # continua sendo o que vai pro apply; só o display muda.
+            display = self._option_labels.get(opt, opt)
+            tbl.add_row(Text(marker, style="bold cyan"), Text(display))
 
         # Modais de confirmação Y/N usam um prompt e atalhos Y/N visíveis;
         # pickers de entrada numérica livre (timeout/retries/max_parallel) mostram buffer;
@@ -6395,9 +7048,10 @@ class DispatchMatrixView(View):
         if self.mode is not None:
             return self._handle_picker_key(key)
 
-        # Última linha editável é "monitor" (len+3).
-        # Global=len, Scaling=len+1, Max Parallel=len+2, Monitor=len+3.
-        max_row = len(self._stages()) + 3  # +3 = Global + Scaling + Max Parallel + Monitor
+        # Última linha editável é "monitor" (len+2).
+        # Global=len, Max Parallel=len+1, Monitor=len+2 (Worker Scaling saiu
+        # da matriz na Frente 6 — agora é a WorkerScalingView [S]).
+        max_row = len(self._stages()) + 2  # +2 = Global + Max Parallel + Monitor
 
         # --- back / quit --------------------------------------------------
         if key == "q" or key == "ESC":
@@ -6441,9 +7095,8 @@ class DispatchMatrixView(View):
             entries = self._entries()
             n_stages = len(entries)
             global_idx = n_stages           # "Global default"
-            scaling_idx = n_stages + 1      # "Worker Scaling"
-            max_parallel_idx = n_stages + 2  # "Max Parallel" (issue #408)
-            monitor_idx = n_stages + 3       # "monitor" (in-pod, só Model editável)
+            max_parallel_idx = n_stages + 1  # "Max Parallel" (issue #408)
+            monitor_idx = n_stages + 2       # "monitor" (in-pod, só Model editável)
             if self.cursor_row == monitor_idx:
                 if self.cursor_col == 0:
                     # Worker do monitor é sempre in-pod — não despacha externamente.
@@ -6462,14 +7115,6 @@ class DispatchMatrixView(View):
             if self.cursor_row == max_parallel_idx:
                 # Linha "Max Parallel" → prompt numérico/auto (issue #408).
                 return self._open_max_parallel_prompt()
-            if self.cursor_row == scaling_idx:
-                # Linha de scaling → prompt numérico de réplicas (Task 4).
-                # Cols 2/3 (timeout/retries) não se aplicam à scaling row.
-                if self.cursor_col >= 2:
-                    self.last_msg = "timeout/retries não se aplicam à linha de scaling"
-                    self.last_ok = None
-                    return ActionResult.refresh()
-                return self._open_scaling_prompt()
             # Row na linha "Global default" → picker global (worker/model/reasoning).
             if self.cursor_row == global_idx:
                 if self.cursor_col == 0:
@@ -6554,6 +7199,11 @@ class DispatchMatrixView(View):
                 self.last_ok = None
                 return ActionResult.refresh()
             return self._open_uninstall_modal()
+        if key in ("O",):
+            # [O] — login OAuth in-pod de um CLI worker oauth-capable (codex).
+            # Espelha o [L] do claude-worker, mas para a frota CLI: dispara o
+            # device-auth DENTRO do pod via `cli-worker-login --in-pod`.
+            return self._open_cli_oauth_login()
 
         return ActionResult()
 
@@ -6580,8 +7230,9 @@ class DispatchMatrixView(View):
     def _open_global_worker_picker(self) -> ActionResult:
         """Abre picker global de worker (DEILE_PIPELINE_DISPATCH_MODE)."""
         # Global picker NÃO oferece "(global default)" (que é ele mesmo).
-        # Em vez disso, oferece "(clear override)" + os 2 valores válidos.
-        opts = ["(clear override)", "deile-worker", "claude-worker"]
+        # Em vez disso, oferece "(clear override)" + os workers válidos
+        # DERIVADOS do registro de adapters (núcleo + frota CLI).
+        opts = ["(clear override)", *self._canonical_workers()]
         self.mode = ("global_worker", None, opts)
         self.picker_cursor = 0
         return ActionResult.refresh()
@@ -6629,10 +7280,10 @@ class DispatchMatrixView(View):
     def _open_timeout_prompt(self, entry) -> ActionResult:
         """Abre prompt numérico de timeout_s para o stage da entry.
 
-        Reutiliza o ``scale_prompt`` style (entrada numérica livre) — a
-        :meth:`_render_picker` renderiza com prompt de texto e
-        :meth:`_handle_picker_key` captura dígitos + [backspace] + [enter].
-        ``options`` carrega o valor atual para pré-preencher o prompt.
+        Entrada numérica livre (buffer) — a :meth:`_render_picker` renderiza
+        com prompt de texto e :meth:`_handle_picker_key` captura dígitos +
+        [backspace] + [enter]. ``options`` carrega o valor atual para
+        pré-preencher o prompt.
         """
         current = str(entry.timeout_s) if entry.timeout_s is not None else ""
         self.mode = ("timeout", entry.stage, [current])
@@ -6768,17 +7419,15 @@ class DispatchMatrixView(View):
             else:
                 # col 5 = Reasoning reset
                 ok, msg = pd_clear_stage_reasoning(stage, namespace=ns)
-        elif self.cursor_row == n_stages + 3:  # Monitor row — só model é resetável
+        elif self.cursor_row == n_stages + 2:  # Monitor row — só model é resetável
             if self.cursor_col == 0:
                 ok, msg = (None, "Worker do monitor não é editável (in-pod)")
             elif self.cursor_col == 1:
                 ok, msg = self._apply_monitor_model_clear(ns)
             else:
                 ok, msg = (None, "timeout/retries/cost-cap não se aplicam ao monitor")
-        elif self.cursor_row == n_stages + 2:  # Pipeline Parallelism row (issue #408)
+        elif self.cursor_row == n_stages + 1:  # Pipeline Parallelism row (issue #408)
             ok, msg = pd_set_pipeline_max_parallel(None, namespace=ns)
-        elif self.cursor_row == n_stages + 1:  # Worker Scaling row — no reset
-            ok, msg = (None, "scaling row não tem reset — ajuste manualmente")
         else:  # Global default row (n_stages)
             if self.cursor_col == 0:
                 ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
@@ -6865,76 +7514,6 @@ class DispatchMatrixView(View):
         self.last_ok = None
         return ActionResult.refresh()
 
-    # --- Worker Scaling prompt (issue #309 fase 3 Task 4) ---------------
-
-    def _open_scaling_prompt(self) -> ActionResult:
-        """Abre o modal de edição numérica de réplicas.
-
-        Reusa o slot ``self.mode`` com kind ``"scale_prompt"``. O campo
-        ``stage`` carrega qual coluna está sendo editada:
-        ``"deile-worker"`` (col 0) ou ``"claude-worker"`` (col 1).
-        ``options`` carrega as opções numéricas [0..10] como strings.
-        """
-        deploy_name = ("deile-worker" if self.cursor_col == 0
-                       else "claude-worker")
-        opts = [str(n) for n in range(11)]  # 0 a 10
-        self.mode = ("scale_prompt", deploy_name, opts)
-        self.picker_cursor = 1  # default: 1 réplica
-        self.last_msg = ""
-        self.last_ok = None
-        return ActionResult.refresh()
-
-    def _apply_scaling(self, deploy_name: str, replicas: int) -> ActionResult:
-        """Executa ``kubectl scale deployment/<name> --replicas=N``.
-
-        Roda inline (síncrono) — operação rápida (~100ms kubectl API call).
-        Para install/uninstall (que podem bloquear minutos), usamos thread;
-        scale é fire-and-forget com retorno imediato do API server.
-        """
-        ns = (self.data.context.namespace
-              if self.data is not None and getattr(self.data, "context", None)
-              else _NS_DEFAULT)
-        if self.data is None:
-            self.last_msg = (
-                f"[demo] scale {deploy_name} → {replicas} (sem cluster, no-op)"
-            )
-            self.last_ok = False
-            return ActionResult.refresh()
-
-        kubectl = kubectl_bin()
-        if kubectl is None:
-            self.last_msg = "kubectl não encontrado — scale impossível"
-            self.last_ok = False
-            return ActionResult.refresh()
-
-        # Verifica se o deployment existe antes de tentar.
-        check = subprocess.run(
-            [kubectl, "-n", ns, "get", "deployment", deploy_name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if check.returncode != 0:
-            self.last_msg = (
-                f"deployment/{deploy_name} não encontrado em `{ns}` — "
-                "instale-o primeiro ([I] para claude-worker)"
-            )
-            self.last_ok = False
-            return ActionResult.refresh()
-
-        result = subprocess.run(
-            [kubectl, "-n", ns, "scale",
-             f"deployment/{deploy_name}", f"--replicas={replicas}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-        )
-        if result.returncode == 0:
-            self.last_msg = f"deployment/{deploy_name} → {replicas} réplica(s)"
-            self.last_ok = True
-        else:
-            self.last_msg = (
-                f"scale {deploy_name} falhou: "
-                f"{result.stderr.strip()[:120]}"
-            )
-            self.last_ok = False
-        return ActionResult.refresh()
 
     def _handle_uninstall_confirm(self, key: str) -> ActionResult:
         """Roteia Y/N (+ enter sobre o cursor) no modal de uninstall."""
@@ -7107,45 +7686,6 @@ class DispatchMatrixView(View):
                 delta = -1 if key in ("UP", "k") else 1
                 self.picker_cursor = (self.picker_cursor + delta) % n
             return ActionResult.refresh()
-        return ActionResult()
-
-    def _handle_scale_prompt_key(self, key: str) -> ActionResult:
-        """Roteia teclas no modal de escala numérica (0-10 réplicas).
-
-        ↑/↓: navega nas opções numéricas.
-        Enter: aplica kubectl scale.
-        ESC/N: cancela.
-        """
-        if self.mode is None:
-            return ActionResult()
-        _kind, deploy_name, options = self.mode
-
-        if key in ("N", "n", "ESC"):
-            self.mode = None
-            self.picker_cursor = 0
-            self.last_msg = "escala cancelada"
-            self.last_ok = None
-            return ActionResult.refresh()
-
-        if key in ("UP", "k"):
-            n = len(options)
-            self.picker_cursor = (self.picker_cursor - 1) % n if n else 0
-            return ActionResult.refresh()
-
-        if key in ("DOWN", "j"):
-            n = len(options)
-            self.picker_cursor = (self.picker_cursor + 1) % n if n else 0
-            return ActionResult.refresh()
-
-        if key in ("\r", "\n"):
-            try:
-                replicas = int(options[self.picker_cursor])
-            except (IndexError, ValueError):
-                replicas = 1
-            self.mode = None
-            self.picker_cursor = 0
-            return self._apply_scaling(str(deploy_name), replicas)
-
         return ActionResult()
 
     def _handle_numeric_prompt_key(self, key: str) -> ActionResult:
@@ -7429,6 +7969,23 @@ class DispatchMatrixView(View):
                     self.last_ok = False
                     return
 
+        # CLI worker da frota (``<kind>-worker``) escolhido → instala
+        # ON-DEMAND (padrão claude-login generalizado): propaga a chave de API
+        # do .env → Secret cli-worker-keys, gera+aplica o manifest e escala a 1.
+        # Só dispara o install se o worker ainda NÃO está no cluster (idempotente
+        # de qualquer forma). Mantém o single-source-of-truth: o kind sai do
+        # nome do worker que veio do registro de adapters.
+        elif (choice not in (self._CLEAR_SENTINEL_WORKER, "deile-worker")
+              and isinstance(choice, str) and choice.endswith("-worker")):
+            cli_kind = choice[: -len("-worker")]
+            if self._is_cli_fleet_worker(cli_kind) and not self._cli_worker_installed(
+                choice, namespace=ns,
+            ):
+                ok = self._install_cli_worker_blocking(cli_kind, namespace=ns)
+                if not ok:
+                    # last_msg/last_ok já setados pelo helper; não persiste.
+                    return
+
         # Persistir override per-stage.
         if choice == self._CLEAR_SENTINEL_WORKER:
             ok, msg = pd_set_pipeline_dispatch_stage(
@@ -7441,6 +7998,215 @@ class DispatchMatrixView(View):
         self.last_ok = ok
         self.last_msg = msg
 
+    # --- CLI fleet on-demand install (padrão claude-login generalizado) -----
+
+    @staticmethod
+    def _is_cli_fleet_worker(kind: str) -> bool:
+        """True se ``kind`` é um adapter da frota CLI (registro de adapters)."""
+        if not kind:
+            return False
+        try:
+            import cli_adapters  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 — frota opcional
+            return False
+        return kind in cli_adapters.ADAPTERS
+
+    @staticmethod
+    def _oauth_capable_kind(worker: Optional[str]) -> Optional[str]:
+        """``kind`` da frota CLI se ``worker`` é oauth-capable, senão ``None``.
+
+        Um worker é oauth-capable quando o adapter da frota declara um
+        ``OAuthSpec`` (atributo ``oauth`` não-None) — ex.: ``codex``. Isso é o
+        single-source-of-truth para "este worker faz login OAuth" (mesmo
+        critério do ``cli-worker-login``), independente do ``auth_mode`` default
+        do adapter. Workers env-auth puros (``oauth is None``) devolvem ``None``.
+
+        Devolve ``None`` também para ``deile-worker``/``claude-worker`` (núcleo —
+        o claude tem seu próprio fluxo ``[L]``) e para qualquer worker fora do
+        registro de adapters.
+        """
+        if not worker or not worker.endswith("-worker"):
+            return None
+        kind = worker[: -len("-worker")]
+        try:
+            import cli_adapters  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 — frota opcional; painel nunca crasha
+            return None
+        adapter = cli_adapters.ADAPTERS.get(kind)
+        if adapter is None:
+            return None
+        return kind if getattr(adapter, "oauth", None) is not None else None
+
+    def _selected_worker(self) -> Optional[str]:
+        """Worker do cell/row selecionado na matriz (ou ``None``).
+
+        - Row de stage → ``entry.worker`` (worker efetivo daquele stage).
+        - Row "Global default" → o dispatch-mode global resolvido (worker do
+          primeiro stage que herda do global, via ``source == 'global'/'default'``;
+          na prática o painel mostra o mesmo worker para todos os stages
+          herdados — basta o efetivo de qualquer stage). Como a row global não
+          carrega um worker próprio no provider, caímos no worker do primeiro
+          stage cuja ``source`` não seja override per-stage.
+        - Demais rows (scaling / max_parallel / monitor) → ``None``.
+        """
+        entries = self._entries()
+        n_stages = len(entries)
+        if self.cursor_row < n_stages:
+            return getattr(entries[self.cursor_row], "worker", None)
+        if self.cursor_row == n_stages:  # Global default row
+            for e in entries:
+                if getattr(e, "source", None) in ("global", "default"):
+                    return getattr(e, "worker", None)
+            return entries[0].worker if entries else None
+        return None
+
+    def _cli_worker_installed(self, worker: str, *, namespace: str) -> bool:
+        """True se o Deployment ``<worker>`` já existe no cluster.
+
+        Demo (``data=None``) → False (sem cluster, install é no-op informativo).
+        """
+        if self.data is None:
+            return False
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            return False
+        check = subprocess.run(
+            [kubectl, "-n", namespace, "get", "deployment", worker],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return check.returncode == 0
+
+    def _install_cli_worker_blocking(self, kind: str, *, namespace: str) -> bool:
+        """Instala um CLI worker da frota inline (mesmo caminho do deploy.py).
+
+        ON-DEMAND: propaga a chave de API → Secret, gera+aplica o manifest e
+        escala a 1 réplica via :func:`_cli_worker_install.install_cli_worker`.
+        Publica resultado em ``last_msg``/``last_ok``. Retorna ``ok``.
+
+        Demo (``data=None``) → não toca o cluster; informa e retorna False
+        (sem persistir o override de um worker que não foi instalado de fato).
+        """
+        if self.data is None:
+            self.last_msg = (
+                f"[demo] instalaria {kind}-worker on-demand (sem cluster, no-op)"
+            )
+            self.last_ok = False
+            return False
+        try:
+            from _cli_worker_install import install_cli_worker  # noqa: PLC0415
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = f"instalador da frota CLI indisponível: {exc}"
+            self.last_ok = False
+            return False
+        try:
+            res = install_cli_worker(kind, namespace=namespace)
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = (
+                f"falha ao instalar {kind}-worker: {type(exc).__name__}: {exc}"
+            )
+            self.last_ok = False
+            return False
+        if getattr(res, "ok", False):
+            missing = getattr(res, "missing_keys", None) or []
+            suffix = (f" (chaves ausentes: {', '.join(missing)} — not-ready até"
+                      " existirem)") if missing else ""
+            self.last_msg = f"{kind}-worker instalado on-demand{suffix}"
+            self.last_ok = True
+            return True
+        self.last_msg = (
+            f"install de {kind}-worker falhou: "
+            f"{getattr(res, 'error', None) or '(sem detalhe)'}"
+        )
+        self.last_ok = False
+        return False
+
+    # --- CLI fleet OAuth login ([O], padrão claude-worker [L]) -----------
+
+    def _oauth_login_command(self, kind: str, namespace: str) -> List[str]:
+        """Monta o argv do ``cli-worker-login <kind> --in-pod`` (função pura).
+
+        O login OAuth da frota é INTERATIVO (device-auth via ``kubectl exec
+        -it`` dentro do pod): o operador vê a URL + código e autoriza no
+        browser. Rodá-lo inline congelaria o event loop do painel e corromperia
+        o terminal interativo do ``kubectl exec -it``. Por isso o painel o
+        executa via :meth:`ActionResult.suspend` — o mesmo mecanismo do
+        ``[t]okens`` —, que pausa o ``Live`` + cbreak, herda o terminal pro
+        subprocess e retoma o render ao fim.
+
+        ``--yes`` pula o ``announce_plan`` do ``deploy.py`` (o painel já é o
+        gate interativo do operador). ``--in-pod`` roda o device-auth dentro do
+        pod (não exige o CLI no host).
+        """
+        deploy_py = Path(__file__).resolve().parent / "deploy.py"
+        return [
+            sys.executable, str(deploy_py),
+            "--namespace", namespace, "--yes",
+            "k8s", "cli-worker-login", kind, "--in-pod",
+        ]
+
+    def _open_cli_oauth_login(self) -> ActionResult:
+        """Dispara o login OAuth in-pod do worker selecionado (tecla ``[O]``).
+
+        Roteia conforme o worker do cell/row selecionado:
+
+        - **CLI worker oauth-capable** (``adapter.oauth is not None`` — codex) →
+          suspende o painel e roda ``cli-worker-login <kind> --in-pod``
+          (device-auth interativo no terminal). Mensagem de "abrindo login"
+          antes; o resultado (sucesso/erro) aparece pós-retomada.
+        - **claude-worker** → aponta o fluxo dedicado ``[L]``.
+        - **CLI worker env-auth** (``oauth is None``) → informa que o worker usa
+          chave de API (não OAuth) e aponta ``[I]``.
+        - **deile-worker / linha sem worker** → mensagem informativa.
+        """
+        worker = self._selected_worker()
+        if worker == "claude-worker":
+            self.last_msg = (
+                "claude-worker tem fluxo OAuth próprio — use [L] para trocar "
+                "de conta ou [I] para instalar"
+            )
+            self.last_ok = None
+            return ActionResult.refresh()
+
+        kind = self._oauth_capable_kind(worker)
+        if kind is None:
+            if worker and worker.endswith("-worker") and self._is_cli_fleet_worker(
+                worker[: -len("-worker")]
+            ):
+                self.last_msg = (
+                    f"{worker} usa chave de API (env-auth), não OAuth — "
+                    "instale-o com [I]"
+                )
+            else:
+                self.last_msg = (
+                    "[O] aplica só a workers OAuth da frota CLI (ex.: "
+                    "codex-worker) — selecione a célula Worker de um stage que "
+                    "use um worker oauth-capable"
+                )
+            self.last_ok = None
+            return ActionResult.refresh()
+
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if (self.data is not None
+                and getattr(self.data, "context", None) is None):
+            ns = getattr(self.data, "namespace", None) or _NS_DEFAULT
+
+        if self.data is None:
+            self.last_msg = (
+                f"[demo] abriria login OAuth in-pod de {kind}-worker "
+                "(sem cluster, no-op)"
+            )
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        self.last_msg = (
+            f"abrindo login OAuth do {kind} — siga o device-auth no "
+            "terminal/browser; o painel retoma ao concluir"
+        )
+        self.last_ok = None
+        return ActionResult.suspend(self._oauth_login_command(kind, ns))
+
     # --- picker key handler ---------------------------------------------
 
     def _handle_picker_key(self, key: str) -> ActionResult:
@@ -7452,7 +8218,6 @@ class DispatchMatrixView(View):
           fecha o modal e invalida o cache do provider.
         - install_confirm / switch_login_confirm / uninstall_confirm →
           handlers dedicados (Y/N + enter sobre cursor).
-        - scale_prompt → handler de escala numérica (0-10 réplicas).
         """
         if self.mode is not None and self.mode[0] == "install_confirm":
             return self._handle_install_confirm(key)
@@ -7460,8 +8225,6 @@ class DispatchMatrixView(View):
             return self._handle_switch_login_confirm(key)
         if self.mode is not None and self.mode[0] == "uninstall_confirm":
             return self._handle_uninstall_confirm(key)
-        if self.mode is not None and self.mode[0] == "scale_prompt":
-            return self._handle_scale_prompt_key(key)
         if self.mode is not None and self.mode[0] in ("timeout", "retries"):
             return self._handle_numeric_prompt_key(key)
         if self.mode is not None and self.mode[0] == "cleanup_confirm":
@@ -7473,6 +8236,7 @@ class DispatchMatrixView(View):
         if key == "ESC":
             self.mode = None
             self.picker_cursor = 0
+            self._option_labels = {}
             return ActionResult.refresh()
         if self.mode is None:  # defesa — não deveria chegar aqui
             return ActionResult()
@@ -7493,6 +8257,7 @@ class DispatchMatrixView(View):
             self._apply_picker_selection()
             self.mode = None
             self.picker_cursor = 0
+            self._option_labels = {}
             # Invalida cache do StageDispatchProvider para a próxima
             # render mostrar o valor novo (sem precisar de [r] manual).
             if self.data is not None:
@@ -8292,6 +9057,36 @@ class PanelApp:
             self._memdebug_last_sample_at = now
         return self._memdebug_summary
 
+    # --- frame composition ---
+
+    def _compose_frame(self) -> RenderableType:
+        """Render da view atual, com o banner global de provedor no topo.
+
+        Ponto único de composição (issue #445): o banner VERMELHO de corte por
+        crédito/provedor fica VISÍVEL em QUALQUER tela — não só no dashboard.
+        Quando a frota está saudável, devolve a view sem moldura extra (zero
+        ruído / zero custo de layout). Best-effort: qualquer falha ao montar o
+        banner cai no render normal da view, nunca derruba o painel.
+        """
+        view_render = self.current_view.render(self)
+        try:
+            banner = _provider_alert_banner(self.data)
+        except Exception:  # noqa: BLE001 — banner nunca quebra o frame
+            banner = None
+        if banner is None:
+            return view_render
+        layout = Layout()
+        # ``size`` cresce com o número de linhas do banner (1 head + N erros);
+        # cap defensivo para não engolir a view em incidentes amplos.
+        rows = banner.renderable
+        n = len(getattr(rows, "renderables", [])) if rows is not None else 1
+        banner_h = min(max(n, 1) + 2, 10)
+        layout.split_column(
+            Layout(banner, name="provider_banner", size=banner_h),
+            Layout(view_render, name="view"),
+        )
+        return layout
+
     # --- snapshots ---
 
     def _snapshot(self) -> Optional[str]:
@@ -8302,7 +9097,7 @@ class PanelApp:
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"panel-{time.strftime('%Y%m%d-%H%M%S')}.txt"
         capture = Console(record=True, width=self.console.size.width)
-        capture.print(self.current_view.render(self))
+        capture.print(self._compose_frame())
         path.write_text(capture.export_text(), encoding="utf-8")
         self._purge_old_snapshots(out_dir)
         return str(path)
@@ -8424,7 +9219,7 @@ class PanelApp:
 
     def _run_loop(self, refresher: Optional["BackgroundRefresher"]) -> int:
         with KeyReader() as keys, Live(
-            self.current_view.render(self),
+            self._compose_frame(),
             console=self.console,
             screen=True,
             # 10 FPS é suficiente pra UI fluida (TUI não é jogo). 30 FPS
@@ -8474,7 +9269,7 @@ class PanelApp:
                     and (now - self._last_render) >= self.current_refresh_s
                 )
                 if consumed or self._last_render == 0.0 or cadence_due:
-                    live.update(self.current_view.render(self))
+                    live.update(self._compose_frame())
                     self._last_render = time.monotonic()
         return 0
 
@@ -8553,6 +9348,9 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         # ``StageModelsView`` (#305, key ``stage-models``) — ambas saíram do
         # registry mas as classes ainda existem no módulo (FU cleanup).
         "dispatch-mode-matrix": DispatchMatrixView(data=data),
+        # Frente 6 — escalonamento de réplicas por tipo de worker em tela
+        # própria (hotkey [S] MAIÚSCULO), tirado da DispatchMatrixView.
+        "worker-scaling": WorkerScalingView(data=data),
         # Tela dedicada do deile-monitor (hotkey [M] MAIÚSCULO no dashboard).
         # Separada em _panel_monitor.py para manter _panel.py gerenciável.
         "monitor-view": MonitorView(data=data),

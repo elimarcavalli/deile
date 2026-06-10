@@ -4,7 +4,7 @@
   <img src="docs/img/banner.png" alt="DEILE" width="480">
 </p>
 
-![Version](https://img.shields.io/badge/version-5.1.0-blue.svg?style=for-the-badge)
+![Version](https://img.shields.io/github/v/release/elimarcavalli/deile?style=for-the-badge)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-green.svg?style=for-the-badge)
 
@@ -382,10 +382,11 @@ Quando uma issue recebe `~workflow:nova` (ou o bot é atribuído/mencionado), o 
 | 🧠 **Modelo** | `DEILE_PIPELINE_MODEL_<STAGE>` | `DEILE_PREFERRED_MODEL` | `model_resolver.py` |
 | 🤔 **Reasoning** | `DEILE_PIPELINE_REASONING_<STAGE>` | `DEILE_REASONING_EFFORT` | `reasoning_resolver.py` |
 
-São dois "workers" possíveis por etapa:
+Cada etapa aponta para um worker da frota:
 
 - 🐍 **`deile-worker`** (`:8766`) — roda o **DEILE Python in-process**, usando seus próprios provedores de LLM.
 - 🤖 **`claude-worker`** (`:8767`) — roda o **`claude -p`** (Claude Code CLI) em worktrees isolados sob PVC, com credenciais OAuth.
+- 🧩 **Frota de CLI workers plugáveis** — além dos dois núcleos, qualquer CLI de codificação vira um worker despachável escrevendo **um adapter** (`infra/k8s/cli_adapters/<kind>.py`, que satisfaz o Protocol `CliAdapter`); o auto-discovery monta `ADAPTERS` como **fonte única** que dirige resolver, painel e geração de manifest/NetworkPolicy — nenhum consumidor é editado (ver Decisão #51). Cada worker é um pod com Service próprio (portas derivadas do `default_port` do adapter), nasce `replicas:0` (scale-to-zero) e é escalado 0→1 sob demanda (`cli_worker_scaler.py`). Server genérico `infra/k8s/cli_worker_server.py` reusa `_worker_core.py` (lease/heartbeat/subprocess/gate de commit+push+test). **Resume nativo** no mesmo workdir (sem re-gastar tokens) quando o adapter declara `supports_resume`; o **custo de cada sessão** é colhido para um ledger durável antes de o log volumoso ser podado e auditado pela tela `[T]okens` do painel.
 
 ### 📌 Roteamento de menção/atribuição (`process_mentions` é um roteador)
 
@@ -474,6 +475,8 @@ Todos os pods compartilham uma **única imagem** `deile-stack:local` (`imagePull
 | `deile-monitor` | `:8769` | **Supervisor determinístico do cluster** (vigias V1–V8); distinto do pipeline. Expõe um control-plane on-demand (status sem-LLM, ordens, Q&A read-only) consumido pelo `deilebot` |
 | `deile-shell` | — | Sandbox `kubectl exec`-only, toolset cheio; prompt vem do humano |
 
+> **➕ Frota de CLI workers (opcional, on-demand).** Além dos 6 pods core, qualquer CLI de codificação vira um pod-worker despachável (Service próprio, portas derivadas do `default_port` de cada adapter em `infra/k8s/cli_adapters/`). Nascem `replicas:0` (scale-to-zero, custo zero ocioso) e são instalados sob demanda (`deploy.py k8s cli-worker-install <kind>`). Para o catálogo de workers disponíveis, abra `ls infra/k8s/cli_adapters/`. Ver Decisão #51.
+
 > **`deile-monitor`** roda um tick em duas fases: **Fase A** é uma varredura mecânica **sem LLM** (8 vigias: saúde OAuth, pods em erro, issues órfãs, PRs `auto/*` com tentativa N/3, aguardando-stakeholder, Jobs falhos, saúde do pipeline, coleta de follow-ups); **Fase B** só aciona a persona `monitor` quando candidatos sobrevivem à Fase A. Em regime estável, **não gasta token**. Tick default a cada 30 min. Tem RBAC dedicado (`deile-monitor-sa`).
 
 ### 🎛️ Orquestrador: `infra/k8s/deploy.py`
@@ -490,6 +493,8 @@ Imprime um plano antes de qualquer ação mutante; `--yes` pula o prompt, `--dry
 | Pausar / retomar (scale 0/1; preserva dados) | `... k8s stop` / `... k8s start` |
 | Status / painel TUI / logs | `... k8s status` / `... k8s panel` / `... k8s logs [bot\|worker\|pipeline\|claude-worker]` |
 | Bootstrap / renovar OAuth do claude-worker | `... k8s claude-login [--switch\|--no-interactive]` / `... k8s claude-renew` |
+| **Frota CLI:** buildar imagem(ns) per-tool | `... k8s build-cli-workers [--kind <k>]` (via `Dockerfile.cli-worker`) |
+| **Frota CLI:** gerar manifest / instalar / login OAuth / remover | `... k8s gen-worker <kind>` · `... k8s cli-worker-install <kind>` · `... k8s cli-worker-login <kind> [--switch\|--no-interactive]` · `... k8s cli-worker-uninstall <kind>` |
 | Clonar repo no `deile-shell` | `... k8s clone <owner/repo>` |
 | Listar namespaces DEILE | `... k8s list` |
 | **Teardown** (apaga o namespace + dados) | `... k8s down` |
@@ -537,6 +542,8 @@ Cada processo DEILE publica seu estado vivo em `~/.deile/run/<instance_id>.json`
 **`deile-worker` (`:8766`)** — `GET /v1/health` · `POST /v1/dispatch` · `GET /v1/result/{task_id}` · `GET /v1/progress/{task_id}`
 
 **`claude-worker` (`:8767`)** — `GET /v1/health` · `GET /v1/auth/start` · `GET /v1/auth/status` · `GET /v1/pod-status` · `POST /v1/dispatch` · `GET /v1/progress/{task_id}` · `GET /v1/dispatches/{task_id}/resume-info` · `GET /v1/sessions` · `GET /v1/sessions/{id}/{command,chat,stdout}` · `POST /v1/sessions/{id}/kill` · `DELETE /v1/sessions/{id}/cleanup` · `GET\|POST /v1/cleanup`
+
+**Frota de CLI workers** (`cli_worker_server.py`, portas derivadas do adapter) — `GET /v1/health` · `GET /v1/models` · `POST /v1/dispatch` · `GET /v1/progress/{task_id}` · `GET /v1/dispatches/{task_id}/resume-info`
 
 **`deile-pipeline` status (`:8768`)** — `GET /v1/health` · `GET /v1/pipeline-status[/backlog\|/recent\|/ledger\|/reaper-preview]` · `POST /v1/pipeline/force-tick`
 
@@ -781,4 +788,4 @@ Projeto licenciado sob [**MIT License**](LICENSE).
 
 ---
 
-**DEILE 5.1.0** — `python3 deile.py`
+**DEILE** — `python3 deile.py`

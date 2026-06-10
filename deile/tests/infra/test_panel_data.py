@@ -956,6 +956,11 @@ class TestAlerts:
         snap.issues = issues or []
         d.github.get.return_value = snap
         d.errors.return_value = errors or []
+        # Saúde de provedor LLM (issue #445): baseline saudável = providers
+        # ausentes (None), espelhando local-only/demo. Sem isto o MagicMock
+        # auto-criaria atributos que o _alerts_from_data tentaria iterar.
+        d.provider_health = None
+        d.openrouter_balance = None
         return d
 
     def test_no_alerts_when_clean(self):

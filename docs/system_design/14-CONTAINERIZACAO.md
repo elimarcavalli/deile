@@ -159,6 +159,40 @@ Estado vive num singleton `PipelineStatusState` thread-safe (
 `set_reaper_preview`/`set_pods_seen`/`set_schedule_summary` +
 `set_force_tick_callback`). O monitor publica; o server expõe.
 
+### 6) Frota de CLI workers (Decisão #51)
+
+Generaliza o padrão do `claude-worker` numa **frota de N workers CLI plugáveis** ao
+lado de `pipeline`/`worker`/`claude-worker`/`bot`/`monitor`/`shell`: cada CLI de
+coding headless é um Pod com Service próprio. Hoje há cinco — **opencode**
+(`:8771`), **codex** (`:8772`), **qwen** (`:8773`), **aider** (`:8774`), **goose**
+(`:8775`); **antigravity** (`:8776` reservado) existe só como **gate documentado**
+(closed-source, auth headless não confirmada — ver Decisão #51 e
+[`08-SEGURANCA.md`](08-SEGURANCA.md)). O pipeline despacha per-stage via
+`dispatch_resolver` (mesmo padrão das decisões #41/#43); workers nascem
+`replicas: 0` (scale-to-zero), escalados on-demand pelo painel ou pelo
+`cli_worker_scaler`.
+
+| Campo | Valor |
+|---|---|
+| Imagem | `deile-cli-worker-<kind>:local` — **uma por kind**, do `Dockerfile.cli-worker` multi-stage único (stages `deps`→`base`→`final`; `WORKER_KIND` só no `final`). `deps`/`base` são idênticos entre kinds → buildkit cacheia 1× e o containerd dedupa por digest. `imagePullPolicy: Never` |
+| Args | `python3 /app/wrapper.py cli-worker` (carrega secrets, wira `GITHUB_TOKEN`/`GITLAB_TOKEN` + identidade git, valida allowlist e só então sobe o `cli_worker_server`) |
+| Server genérico | `infra/k8s/cli_worker_server.py` reusa `infra/k8s/_worker_core.py` (lease/heartbeat/subprocess one-shot/HTTP bearer/cleanup/gate); só os 5 pontos divergentes vão pro adapter `infra/k8s/cli_adapters/<kind>.py` |
+| PVC | `<kind>-worker-home` — só para workers `supports_resume`/`oauth_file` (resume nativo + cred OAuth); workers `env`-only sem resume usam `emptyDir` |
+| CronJob | `<kind>-worker-cleanup` — só para workers com PVC; monta o PVC e roda o cleanup do core (leases/workdirs stale) |
+| Secrets | `cli-worker-keys` (API keys do LLM, montadas como env via `auth_env_keys`) + `<kind>-worker-bearer` (HTTP bearer, file em `/run/secrets/cli-worker/CLI_WORKER_BEARER_TOKEN`); credencial OAuth (codex ChatGPT) via Secret próprio + initContainer `bootstrap-creds` |
+| NetworkPolicy | ingress só do `deile-pipeline`; egress DNS + 443. Gerada nas DUAS pontas (worker + `pipeline-egress-to-<worker>`). Hosts LLM do adapter (`egress_hosts`) ficam na annotation `deile.io/egress-llm-hosts` (auditoria; enforcement por FQDN exige CNI compatível — ver [`08-SEGURANCA.md`](08-SEGURANCA.md)) |
+| Endpoints HTTP | `POST /v1/dispatch`, `GET /v1/health`, `GET /v1/progress/{task_id}`, `GET /v1/dispatches/{task_id}/resume-info`, `GET /v1/models` |
+| Hardening | `runAsNonRoot`/`runAsUser: 10001`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`, `automountServiceAccountToken: false` (idêntico ao princípio 5 abaixo) |
+
+Manifests são **gerados, não versionados**: `deploy.py k8s gen-worker <kind>`
+(módulo `_cli_worker_gen.py`) renderiza
+`infra/k8s/manifests/templates/cli-worker.yaml.tmpl` a partir dos metadados do
+adapter (porta, env, dirs graváveis, `egress_hosts`, auth, storage) para
+`manifests/generated/` (gitignored, efêmero). Verbos do `deploy.py`:
+`build-cli-workers [--kind <k>]`, `gen-worker <kind>`, `cli-worker-install <kind>`,
+`cli-worker-login <kind>` (OAuth opt-in), `cli-worker-uninstall <kind>`. O `k8s up`
+**nunca** constrói nem exige um CLI worker — toda a frota é opt-in.
+
 ### Tabela-resumo
 
 | Modalidade | Quem dita o prompt | Toolset | Acessa host | Uso típico |
@@ -168,6 +202,7 @@ Estado vive num singleton `PipelineStatusState` thread-safe (
 | `deile-shell` Deployment | operador via `kubectl exec` | full | não | sandbox isolado |
 | Bot embedded agent | usuários Discord (untrusted) | só `messaging.*` (whitelist) | não | Discord chat |
 | `claude-worker` Deployment | pipeline via `/v1/dispatch` | `claude -p` (CLI Anthropic) | não | dispatch per-stage de tarefas a Claude |
+| `<kind>-worker` (frota CLI, Decisão #51) | pipeline via `/v1/dispatch` | um CLI headless por kind (opencode/codex/qwen/aider/goose) | não | dispatch per-stage a CLIs/providers baratos; scale-to-zero |
 
 ## Princípios de design
 
@@ -286,4 +321,5 @@ este pilar.
 - [`09-CONFIGURACAO.md`](09-CONFIGURACAO.md) — env vars e arquivos
   YAML/JSON que o wrapper monta em `/home/deile/config/`.
 - [`DECISOES.md`](DECISOES.md) — decisões #27 e #28 (containerização e
-  tool whitelist) e #43 (`claude-worker` + dispatch per-stage).
+  tool whitelist), #43 (`claude-worker` + dispatch per-stage) e #51
+  (frota multi-CLI: workers plugáveis via registro de adapters, Antigravity GATED).

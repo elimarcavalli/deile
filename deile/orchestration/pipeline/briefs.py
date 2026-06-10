@@ -168,7 +168,7 @@ Implemente a issue #{number} de {repo} e abra uma {pr_noun}. Execute de verdade 
 _WORKER_PR_BRIEF = """\
 {pr_noun} #{number} de {repo}. Descubra o que fazer pelo ESTADO REAL da {pr_noun}, não pelo trigger.
 
-CHECKPOINT OBRIGATÓRIO: execução é FALHA sem 1+ comentário visível via {comment_pr_cmd}.
+CHECKPOINT OBRIGATÓRIO: execução é FALHA sem 1+ comentário visível via {comment_pr_cmd}. Esse comentário tem que ser SUBSTANTIVO — resultado da SUÍTE COMPLETA + resumo do que foi revisado no diff + a VALIDAÇÃO DAS AFIRMAÇÕES da PR contra o código (PASSO 1). NUNCA só a URL/marcador: o marcador é a ÚLTIMA LINHA e NÃO substitui a justificativa escrita (uma só, no merge/review — não re-comente).
 
 PASSO 0 — Checkout + estado:
 1. Clone se preciso ({clone_cmd}); `{checkout_pr_cmd}`.
@@ -182,6 +182,7 @@ PASSO 1 — WORK-LIST (do estado, não do trigger):
 - HEAD novo + sou reviewer/assignee → revisar
 - thread aberta dirigida a mim → responder/resolver
 - comment dirigido a mim sem resposta → atender o pedido
+- **VALIDAÇÃO DE AFIRMAÇÕES (obrigatória antes de aprovar/mergear):** se a {pr_noun} adiciona/altera uma afirmação sobre o sistema (doc, README, comentário, claim do tipo "implementado"/"funciona"/"roteia X"), CONFRONTE-a com o código/config REAIS da `{main}` (`git grep`, leia `arquivo:linha`) — não aceite a afirmação só porque está escrita. Afirmação FALSA ou não-comprovável vs o estado real = BLOQUEIO: REQUEST_CHANGES (autor é OUTRO) ou NÃO-mergeie + grave o achado (PR própria). Regra: "será implementado / planejado" com plano real existente = OK; "JÁ implementado / já funciona" sem o código correspondente na `{main}` = FALSO → bloqueia. Cite a evidência (`arquivo:linha` que confirma OU a ausência que refuta) no comentário de justificativa.
 - sou assignee + autor é OUTRO + meu review APPROVED na HEAD + threads ok + CI verde → MERGEAR
 - **autor==`{gh_login}` E sou assignee (PR PRÓPRIA, ex: `auto/issue-N`) + SUÍTE VERDE + threads ok + zero regressão funcional → MERGEAR DIRETO** com `{merge_cmd}`. NÃO tente `--approve`/review formal na própria PR: o GitHub rejeita com 422 "Can not approve your own pull request" — por isso APPROVED nunca existe em PR própria, e insistir nisso é EXATAMENTE o que gera o loop de comentário infinito. O autor mergeia a própria PR sem aprovação. Se sobra só AC de doc/qualidade (não bug funcional), MERGEIE assim mesmo e abra UMA sub-issue de follow-up agregada (anti-flood) com o checklist.
 - reviewer só, HEAD igual → comentar curto "já APPROVED em <sha>, sem novidade"
@@ -206,7 +207,7 @@ PASSO 2 — Executar a work-list:
 - CHECKPOINT INCREMENTAL: grave/atualize `.deile-progress.md` (um nível acima de ./repo, NÃO commite, NÃO dentro de ./repo) **a cada milestone concluído — não espere o fim**. O timeout do dispatch MATA o processo sem aviso (rc=124); só o que estiver no journal sobrevive pro próximo tick. Escreva-o como um PRE-COMPACT: feito, falta, decisões, bloqueio, arquivo:linha.
 
 PASSO 4 — ÚLTIMA LINHA:
-- `{pr_url_pattern} MERGED` — mergeado de fato (`{check_merged_cmd}`).
+- `{pr_url_pattern} MERGED` — mergeado de fato (`{check_merged_cmd}`), COM o comentário de justificativa do CHECKPOINT já postado (suíte + diff + validação de afirmações). Merge sem justificativa escrita = execução INCOMPLETA.
 - `{pr_url_pattern} REVIEWED:APPROVED` — review APPROVE postada.
 - `{pr_url_pattern} REVIEWED:CHANGES` — review REQUEST_CHANGES postada.
 - `{pr_url_pattern} COMMENTED` — só comentário, sem review formal. **PROIBIDO** como veredito final de PR PRÓPRIA com suíte verde: nesse caso o correto é `MERGED`.

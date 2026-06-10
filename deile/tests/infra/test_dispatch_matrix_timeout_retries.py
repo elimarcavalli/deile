@@ -411,17 +411,20 @@ def test_reset_with_real_data_col3():
 
 
 # ---------------------------------------------------------------------------
-# Scaling row — cols 2/3 should not open scaling prompt
+# Frente 6 — a linha de Worker Scaling saiu da matriz (vive na [S]).
 # ---------------------------------------------------------------------------
 
 
-def test_scaling_row_col2_enter_shows_info():
+def test_matrix_has_no_worker_scaling_row():
+    from rich.console import Console
     view = _make_view()
-    n = len(view._stages())
-    view.cursor_row = n + 1  # scaling row
-    view.cursor_col = 2
-    view.handle_key("\r", None)
-    # Should NOT open a picker
-    assert view.mode is None
-    # Should show an informational message
-    assert view.last_msg is not None
+    console = Console(width=120)
+    with console.capture() as cap:
+        console.print(view.render(None))
+    out = cap.get()
+    # A linha de réplicas saiu da matriz (o hint de hotkey [S] pode citar
+    # "Worker Scaling", mas a linha-de-réplicas em si não existe mais).
+    assert "réplicas deile-worker" not in out
+    assert "réplicas claude-worker" not in out
+    # Mas Max Parallel segue na matriz.
+    assert "Max Parallel" in out

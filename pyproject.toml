@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deile"
-version = "1.0.0"
+dynamic = ["version"]
 description = "DEILE — autonomous CLI AI agent"
 authors = [{ name = "elimarcavalli" }]
 readme = "README.md"
@@ -106,6 +106,9 @@ ui = [
 
 [project.scripts]
 deile = "deile.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "deile.__version__.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["deile*"]

@@ -14,6 +14,7 @@
 | D.6 | Circuit breaker e tier cascata | [`07-INTEGRACOES-LLM.md`](07-INTEGRACOES-LLM.md) |
 | D.7 | Hot-reload | [`09-CONFIGURACAO.md`](09-CONFIGURACAO.md) |
 | D.8 | Eventos publicados | [`05-FLUXO-EXECUCAO.md`](05-FLUXO-EXECUCAO.md) |
+| D.9 | Frota multi-CLI e dispatch per-estágio no cluster | [`14-CONTAINERIZACAO.md`](14-CONTAINERIZACAO.md), Decisão #51 |
 
 ---
 
@@ -298,4 +299,57 @@ EventBus.publish(Event)
    └── approval_event              — AuditLogger.log_approval_event
 
 Dead letter queue: get_dead_letters() / replay_dead_letter(event_id)
+```
+
+## D.9 — Frota multi-CLI e dispatch per-estágio no cluster
+
+> Detalhe em [`14-CONTAINERIZACAO.md`](14-CONTAINERIZACAO.md) e Decisão #51. Portas e
+> `kind` são derivados em runtime do registro de adapters — não copie valores; abra
+> `ls infra/k8s/cli_adapters/` e o `default_port` de cada adapter.
+
+```
+                          ┌──────────────────────────────────────────┐
+infra/k8s/cli_adapters/   │ CliAdapter (Protocol) — base.py          │
+  <kind>.py  ───────────► │  metadados: kind/default_port/auth_mode/ │
+  (1 arquivo = 1 worker)  │   supports_resume/git_strategy/...       │
+                          │  métodos: build_argv/parse_output/...    │
+                          └────────────────┬─────────────────────────┘
+                                           │ auto-discovery
+                          ┌────────────────▼─────────────────────────┐
+                          │ cli_adapters/__init__.py                 │
+                          │   ADAPTERS = {kind: adapter}  (fonte única)│
+                          └───┬───────────────┬───────────────┬──────┘
+        dirige o resolver     │   dirige painel│  dirige gen de manifest/
+                              │                │  NetworkPolicy
+   ┌──────────────────────────▼──────┐   ┌─────▼────────┐   ┌──▼────────────────┐
+   │ dispatch_resolver.py            │   │ DispatchMatrix│   │ _cli_worker_gen.py│
+   │  get_valid_dispatchers()        │   │ View ([d])    │   │ + template .tmpl  │
+   │  resolve_stage_dispatcher(stage)│   └───────────────┘   └───────────────────┘
+   └──────────────┬──────────────────┘
+                  │ por estágio: DEILE_PIPELINE_DISPATCH_<STAGE>
+                  │              > global DEILE_PIPELINE_DISPATCH_MODE (def deile-worker)
+┌─────────────────▼──────────────────────────────────────────────────────────┐
+│ deile-pipeline (PipelineMonitor)                                            │
+│  classify · refine · implement · pr_review · follow_ups                     │
+│  cli_worker_scaler.py: alvo em replicas:0 → kubectl scale 0→1 (cooldown)    │
+└──┬───────────┬───────────────────────────────────────────────────────────┬─┘
+   │ HTTP      │ HTTP                                                       │ HTTP
+   ▼           ▼                                                            ▼
+┌────────┐ ┌──────────────┐   ┌─────────────────── frota CLI (replicas:0) ──────────┐
+│ deile- │ │ claude-worker │   │ opencode | codex | qwen | aider | goose | (antigravity│
+│ worker │ │  claude -p    │   │  -worker   -worker  ...                     gated)   │
+│ :8766  │ │  :8767        │   │  cli_worker_server.py (reusa _worker_core.py)        │
+│ DEILE  │ │  worktree     │   │  POST /v1/dispatch · GET /v1/health · /v1/progress · │
+│ python │ │  isolado      │   │  GET /v1/dispatches/{id}/resume-info                 │
+└────────┘ └──────────────┘   │  gate de sucesso = parse_output.ok AND wrapper_gate  │
+  núcleo      núcleo           │  (commit+push novo, ou test verde quando o brief exige)│
+                              │  resume nativo no MESMO workdir (supports_resume)    │
+                              │  PVC <kind>-worker-home + CronJob cleanup            │
+                              │  ledger durável <root>/.cost-ledger.jsonl (dedup id) │
+                              └──────────────────────────────────────────────────────┘
+                                            │ colhe custo antes de podar
+                                            ▼
+                              fleet_tokens_audit.py (tela [T]okens) +
+                              jsonl_cost.py (preço, fonte única) +
+                              fleet_progress_parse.py (parsers .progress por kind)
 ```
