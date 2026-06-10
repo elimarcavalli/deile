@@ -16,6 +16,7 @@ Variável                          Default      Significado
 ``DEILE_OTLP_SAMPLE_RATIO``       ``"1.0"``    sampling ratio (0.0-1.0)
 ``DEILE_OBSERVABILITY_DISABLED``  ``"false"``  kill-switch global (vence sobre endpoint)
 ``DEILE_OTLP_LOGS_DISABLED``      ``"false"``  kill-switch isolado para log records (spans continuam)
+``DEILE_OTLP_METRICS_DISABLED``   ``"false"``  kill-switch isolado para dispatch metrics (spans/logs continuam)
 ================================  ===========  ==========================================
 
 Nenhum import de ``opentelemetry.*`` aqui — este módulo é safe mesmo quando
@@ -40,6 +41,7 @@ __all__ = [
     "ENV_SAMPLE_RATIO",
     "ENV_DISABLED",
     "ENV_LOGS_DISABLED",
+    "ENV_METRICS_DISABLED",
 ]
 
 ENV_ENDPOINT = "DEILE_OTLP_ENDPOINT"
@@ -49,6 +51,7 @@ ENV_SERVICE_NAME = "DEILE_OTLP_SERVICE_NAME"
 ENV_SAMPLE_RATIO = "DEILE_OTLP_SAMPLE_RATIO"
 ENV_DISABLED = "DEILE_OBSERVABILITY_DISABLED"
 ENV_LOGS_DISABLED = "DEILE_OTLP_LOGS_DISABLED"
+ENV_METRICS_DISABLED = "DEILE_OTLP_METRICS_DISABLED"
 
 _DEFAULT_SERVICE_NAME = "deile"
 _DEFAULT_SAMPLE_RATIO = 1.0
@@ -102,6 +105,8 @@ class ObservabilityConfig:
         service_name: ``service.name`` do Resource OpenTelemetry.
         sample_ratio: razão de amostragem ``[0.0, 1.0]`` (1.0 = tudo).
         disabled: kill-switch global; ``True`` força no-op mesmo com endpoint.
+        logs_disabled: kill-switch isolado de log records (spans/metrics seguem).
+        metrics_disabled: kill-switch isolado de dispatch metrics (spans/logs seguem).
     """
 
     endpoint: str = ""
@@ -111,6 +116,7 @@ class ObservabilityConfig:
     sample_ratio: float = _DEFAULT_SAMPLE_RATIO
     disabled: bool = False
     logs_disabled: bool = False
+    metrics_disabled: bool = False
 
     @classmethod
     def from_env(cls) -> "ObservabilityConfig":
@@ -132,6 +138,9 @@ class ObservabilityConfig:
             disabled=_parse_bool(os.environ.get(ENV_DISABLED, "false"), False),
             logs_disabled=_parse_bool(
                 os.environ.get(ENV_LOGS_DISABLED, "false"), False
+            ),
+            metrics_disabled=_parse_bool(
+                os.environ.get(ENV_METRICS_DISABLED, "false"), False
             ),
         )
 

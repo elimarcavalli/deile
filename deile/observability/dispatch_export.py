@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
+import deile.observability.dispatch_metrics as dispatch_metrics
 from deile.observability.config import get_observability_config
 from deile.observability.dispatch_log_export import emit_log_record
 from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
@@ -165,6 +166,23 @@ def _common_attrs() -> Dict[str, str]:
     }
 
 
+def _role() -> str:
+    """Role do pod (label de cardinality bounded para as métricas)."""
+    return get_pod_metadata().get("role", "") or "unknown"
+
+
+def _safe_record_metric(fn: Any, **kwargs: Any) -> None:
+    """Chama um ``dispatch_metrics.record_*`` em try/except isolado (D3/D5).
+
+    A fiação de métrica roda APÓS a operação de span; uma falha aqui nunca
+    propaga para o pipeline de span/dispatch (observability best-effort).
+    """
+    try:
+        fn(**kwargs)
+    except Exception:  # noqa: BLE001 — metrics never break dispatch (D5)
+        pass
+
+
 # ── emit functions ───────────────────────────────────────────────────────
 
 def emit_dispatch_received(
@@ -259,6 +277,12 @@ def emit_dispatch_tool_burst(
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
     _try_emit_log(span_ctx, DispatchToolBurstAttrs.EVENT_NAME, _safe_attrs(schema.to_event_attrs()))
+    # metrics hook (#455): tool burst bucketed por cardinality bounded.
+    _safe_record_metric(
+        dispatch_metrics.record_dispatch_tool_burst_total,
+        role=_role(),
+        bucket=dispatch_metrics._tool_burst_bucket(int(count)),
+    )
 
 
 def emit_dispatch_completed(
@@ -283,6 +307,17 @@ def emit_dispatch_completed(
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
     _try_emit_log(span_ctx, DispatchCompletedAttrs.EVENT_NAME, _safe_attrs(schema.to_event_attrs()))
+    # metrics hook (#455): dispatch concluído → total + duração (elapsed_s → ms).
+    role = _role()
+    _safe_record_metric(
+        dispatch_metrics.record_dispatch_total, role=role, outcome="completed"
+    )
+    _safe_record_metric(
+        dispatch_metrics.record_dispatch_duration_ms,
+        role=role,
+        outcome="completed",
+        value_ms=float(elapsed_s) * 1000.0,
+    )
 
 
 def emit_dispatch_failed(
@@ -307,6 +342,22 @@ def emit_dispatch_failed(
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
     _try_emit_log(span_ctx, DispatchFailedAttrs.EVENT_NAME, _safe_attrs(schema.to_event_attrs()))
+    # metrics hook (#455): dispatch falho → total(failed) + failed(reason) + duração.
+    role = _role()
+    _safe_record_metric(
+        dispatch_metrics.record_dispatch_total, role=role, outcome="failed"
+    )
+    _safe_record_metric(
+        dispatch_metrics.record_dispatch_failed_total,
+        role=role,
+        reason=str(reason) if reason else "unknown",
+    )
+    _safe_record_metric(
+        dispatch_metrics.record_dispatch_duration_ms,
+        role=role,
+        outcome="failed",
+        value_ms=float(elapsed_s) * 1000.0,
+    )
 
 
 def _emit_child_span(task_id: str, name: str, attrs: Dict[str, Any]) -> None:
@@ -354,6 +405,11 @@ def emit_git_push(
         _emit_child_span(task_id, GitPushAttrs.SPAN_NAME, _safe_attrs(schema.to_span_attrs()))
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
+    # metrics hook (#455): push por outcome (status do schema carrega ok|fail).
+    if status:
+        _safe_record_metric(
+            dispatch_metrics.record_git_push_total, outcome=str(status)
+        )
 
 
 def emit_forge_pr_open(
@@ -382,6 +438,11 @@ def emit_forge_pr_review(
         _emit_child_span(task_id, ForgePrReviewAttrs.SPAN_NAME, _safe_attrs(schema.to_span_attrs()))
     except Exception:  # noqa: BLE001
         _record_drop("emit_error")
+    # metrics hook (#455): review por decision (status do schema carrega a decisão).
+    if status:
+        _safe_record_metric(
+            dispatch_metrics.record_forge_pr_review_total, decision=str(status)
+        )
 
 
 # ── test helpers ─────────────────────────────────────────────────────────
