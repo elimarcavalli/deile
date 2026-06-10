@@ -148,6 +148,16 @@ def _is_spike(title: str, body: str) -> bool:
     )
 
 
+def _close_keyword(title: str, body: str) -> str:
+    """Issue-closing verb for a PR/MR body: ``Refs`` for spikes (reference the
+    issue without auto-closing a half-proven one), ``Closes`` otherwise.
+
+    Single source of the spike→``Refs`` policy, shared by both implement briefs
+    and by the legacy local prompt (:func:`claude_dispatcher.render_implement_prompt`).
+    """
+    return "Refs" if _is_spike(title, body) else "Closes"
+
+
 def _build_brief_params(
     *,
     repo: str,
@@ -549,7 +559,7 @@ def _render_worker_implement_brief(
 ) -> str:
     params = _build_brief_params(
         repo=repo, main=main, branch=branch, number=number, forge=forge,
-        close_keyword="Refs" if _is_spike(title, body) else "Closes",
+        close_keyword=_close_keyword(title, body),
         extras={
             "title": title,
             "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]
@@ -633,7 +643,7 @@ def _render_worker_implement_resume_brief(
 ) -> str:
     params = _build_brief_params(
         repo=repo, main=main, branch=branch, number=number, forge=forge,
-        close_keyword="Refs" if _is_spike(title, body) else "Closes",
+        close_keyword=_close_keyword(title, body),
         extras={
             "title": title,
             "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]

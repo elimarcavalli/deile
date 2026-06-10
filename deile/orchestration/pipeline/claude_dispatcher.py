@@ -244,8 +244,8 @@ def render_implement_prompt(
     # lives in :mod:`deile.orchestration.pipeline.briefs` for the in-cluster
     # worker path — but it shares the same close-keyword safety so a spike run
     # locally never auto-closes a half-proven issue.
-    from deile.orchestration.pipeline.briefs import _is_spike
-    close_keyword = "Refs" if _is_spike(title, issue_body) else "Closes"
+    from deile.orchestration.pipeline.briefs import _close_keyword
+    close_keyword = _close_keyword(title, issue_body)
     return IMPLEMENT_PROMPT_TEMPLATE.format(
         repo=repo,
         number=number,
