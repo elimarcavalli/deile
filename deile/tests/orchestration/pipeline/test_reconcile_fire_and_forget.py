@@ -531,12 +531,16 @@ class TestReaperRefineExtended:
         # Aplicada há 60s — muito abaixo do hard-TTL de 7200s (descanso real).
         github.label_applied_at = AsyncMock(return_value=int(time.time()) - 60)
         await reap_orphan_claims(monitor)
-        # NÃO reapou (descanso entre passes dentro do hard-TTL).
-        added = [
-            lb for c in github.add_labels.await_args_list
-            if c.args[1] == 51 for lb in c.args[2]
+        # NÃO reapou: dentro do hard-TTL a issue 51 NÃO é tocada. Provamos a
+        # ausência de QUALQUER escrita de label (nenhum add_labels para 51), não
+        # só a ausência de ~workflow:nova — casando com o invariante "não tocada"
+        # do docstring. O caso simétrico (zumbi ALÉM do hard-TTL que É reapado)
+        # tem cobertura no irmão ``test_reaps_refine_only_with_ledger_entry``
+        # (acima) e em ``test_reaper.py`` (``test_reaper_arch_*``).
+        reap_writes = [
+            c for c in github.add_labels.await_args_list if c.args[1] == 51
         ]
-        assert WORKFLOW_NEW not in added
+        assert reap_writes == []
 
 
 # === Anti-loop same-tick (issue #418) =======================================
