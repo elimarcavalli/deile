@@ -182,3 +182,49 @@ async def test_kube_unreachable_skips_with_v_token(tick, tmp_path, capsys):
 @pytest.mark.parametrize("s,expected", [("30m", 1800), ("1h", 3600), ("2h", 7200)])
 def test_parse_duration_s(tick, s, expected):
     assert tick.parse_duration_s(s) == expected
+
+
+# ---------------------------------------------------------------------------
+# Issue #612 (AC-6, monitor side) — the INJECTED repo reaches the real
+# gh call-site (the vigias hit ``gh api repos/<repo>/...``). Proves the
+# project-agnostic config flows through the monitor tick, not a hardcoded
+# default. Exercises run_tick → MonitorContext → vigias (the real path).
+# ---------------------------------------------------------------------------
+
+async def test_injected_repo_reaches_gh_call_site(tick, tmp_path):
+    """A tick run with a neutral repo must issue gh calls against THAT repo —
+    never the hardcoded ``elimarcavalli/deile``."""
+    sd = _state_dir(tmp_path)
+    runner = FakeRunner()
+    await tick.run_tick(
+        str(sd), now=_utc(2026, 6, 2, 11, 0, 0), run=runner, renew=_renew_ok,
+        repo="acme/neutral-project", namespace="deile",
+        bot_endpoint="http://deilebot:8765", bot_token="t", user_id="",
+        kube_probe=lambda ep: 0,  # kube reachable → kube-dependent vigias run
+    )
+    gh_calls = [c for c in runner.calls if "repos/" in c]
+    assert gh_calls, "expected at least one gh api repos/<repo>/... call"
+    assert all("repos/acme/neutral-project/" in c for c in gh_calls), gh_calls
+    assert not any("elimarcavalli/deile" in c for c in runner.calls)
+
+
+async def test_judgment_file_carries_injected_repo(tick, tmp_path, monkeypatch):
+    """Phase-B judgment payload reports the injected repo (read from the
+    DEILE_PIPELINE_REPO env that the manifest sources from the ConfigMap)."""
+    monkeypatch.setenv("DEILE_PIPELINE_REPO", "acme/neutral-project")
+    sd = _state_dir(tmp_path)
+    closed = [{"number": 50, "title": "X", "body": "vou abrir uma issue para o resto",
+               "closed_at": "2026-06-02T09:00:00Z", "user": {"login": "human"}}]
+    runner = FakeRunner({
+        "issues -f state=closed": (0, json.dumps(closed)),
+        "issues/50/comments": (0, "[]"),
+        "pulls -f state=closed": (0, "[]"),
+    })
+    await tick.run_tick(
+        str(sd), now=_utc(2026, 6, 2, 11, 0, 0), run=runner, renew=_renew_ok,
+        repo="acme/neutral-project", namespace="deile",
+        bot_endpoint="http://deilebot:8765", bot_token="t", user_id="",
+        kube_probe=lambda ep: 0,
+    )
+    payload = json.load(open(sd / "monitor-judgment.json"))
+    assert payload["repo"] == "acme/neutral-project"

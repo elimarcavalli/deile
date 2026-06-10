@@ -1849,7 +1849,7 @@ class DashboardView(View):
                 (f"  {repo}", "dim"),
             ))
         else:
-            lines.append(Text("Forge: github.com · elimarcavalli/deile", style="dim"))
+            lines.append(Text("Forge: github.com · <unconfigured>", style="dim"))
 
         # ---- Tokens resumido (ponteiro para [t]) ----
         if self.data is not None:

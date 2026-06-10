@@ -112,6 +112,16 @@ class PipelineCommand(DirectCommand):
                 "(Para iniciar um monitor local: /pipeline start.)"
             ))
 
+        # ``stop`` is a control verb that does NOT operate on the target repo:
+        # stopping a monitor that does not exist must short-circuit BEFORE
+        # build_default_pipeline_config(), which (issue #612) fails loud when no
+        # forge repo is configured. Without this guard `/pipeline stop` would
+        # error just because no repo is set — even though there is nothing to stop.
+        if sub == "stop" and monitor is None:
+            return CommandResult(success=True, content=(
+                "🛑 Nenhum monitor de pipeline rodando NESTE processo — nada a parar."
+            ))
+
         if monitor is None:
             from deile.orchestration.pipeline.post_merge_callback import \
                 make_post_merge_callback

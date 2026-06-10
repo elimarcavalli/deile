@@ -40,4 +40,9 @@ def test_legacy_resolve_pipeline_repo_calls_forge_resolver(monkeypatch):
     directly — so callers transparently see the new behaviour."""
     from deile.orchestration.pipeline.constants import (resolve_forge_repo,
                                                         resolve_pipeline_repo)
-    assert resolve_pipeline_repo() == resolve_forge_repo()
+    s = Settings()
+    s.forge_repo = "owner/repo"
+    monkeypatch.setattr(
+        "deile.orchestration.pipeline.constants.get_settings", lambda: s,
+    )
+    assert resolve_pipeline_repo() == resolve_forge_repo() == "owner/repo"

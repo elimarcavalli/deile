@@ -88,18 +88,23 @@ class TestRuntimeConfigMap:
             bot_bearer="b", worker_bearer="w",
         )
         data = plan.runtime_configmap_data()
-        # Estrutura completa
+        # Estrutura completa — issue #612: `pipeline.repo` é a FONTE ÚNICA do
+        # repo-alvo (chave discreta), referenciada pelos manifests 46/55 via
+        # configMapKeyRef; saiu do JSON pipeline-settings.json.
         assert sorted(data) == [
             "bot-settings.json",
             "oneshot-settings.json",
             "pipeline-settings.json",
+            "pipeline.repo",
             "shell-settings.json",
             "worker-settings.json",
         ]
+        # O repo-alvo vai na chave discreta, não mais no JSON.
+        assert data["pipeline.repo"] == "group/sub/project"
         # Overrides chegam em pipeline-settings.json
         parsed = json.loads(data["pipeline-settings.json"])
         assert parsed["pipeline"]["dispatch_mode"] == "claude_subprocess"
-        assert parsed["pipeline"]["repo"] == "group/sub/project"
+        assert "repo" not in parsed["pipeline"]
         assert parsed["forge"]["kind"] == "gitlab"
         assert parsed["approval"]["auto"] is True
         # Outras seções continuam com defaults estáveis
