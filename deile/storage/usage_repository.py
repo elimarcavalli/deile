@@ -131,16 +131,36 @@ class UsageRepository:
 
         tier_value = tier.value if hasattr(tier, "value") else str(tier)
 
+        prompt_tokens = getattr(usage, "prompt_tokens", 0)
+        completion_tokens = getattr(usage, "completion_tokens", 0)
+        cost_usd = getattr(usage, "cost_estimate", 0.0)
+
+        # Observabilidade do "custo silencioso" (regressão do provider Gemini que
+        # gravava cost=0.0 sem aviso): uma chamada bem-sucedida que faturou tokens
+        # mas reporta custo zero é quase sempre pricing ausente/não-computado, não
+        # custo real zero. Logamos em WARNING para tornar o bug detectável sem
+        # alterar o valor persistido (mantém /cost, [T]okens e agregações iguais).
+        # Não dispara em falhas (success=False), nem em chamadas sem tokens
+        # faturáveis (prompt+completion==0), nem em auth por assinatura (sem tokens
+        # reais de API).
+        if success and cost_usd == 0.0 and (prompt_tokens + completion_tokens) > 0:
+            logger.warning(
+                "usage recorded with cost_usd=0 for a successful call with "
+                "billable tokens (provider=%s, model=%s, prompt=%s, completion=%s) "
+                "— pricing likely missing or uncomputed",
+                provider_id, model_id, prompt_tokens, completion_tokens,
+            )
+
         r = UsageRecord(
             provider_id=provider_id,
             model_id=model_id,
             tier=tier_value,
             session_id=session_id,
-            prompt_tokens=getattr(usage, "prompt_tokens", 0),
-            completion_tokens=getattr(usage, "completion_tokens", 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             cached_tokens=getattr(usage, "cached_tokens", 0),
             total_tokens=getattr(usage, "total_tokens", 0),
-            cost_usd=getattr(usage, "cost_estimate", 0.0),
+            cost_usd=cost_usd,
             latency_ms=latency_ms,
             success=success,
             error_type=error_type,
