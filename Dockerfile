@@ -227,6 +227,12 @@ RUN chmod 0555 /app/wrapper.py
 COPY --chown=deile:deile infra/k8s/claude_worker_server.py /app/claude_worker_server.py
 RUN chmod 0555 /app/claude_worker_server.py
 
+# Núcleo compartilhado de lease/repo/rate-limit (``import _worker_core``), extraído
+# em #614. claude_worker_server.py importa este módulo no topo — ele DEVE estar em
+# /app ao lado, ou o claude-worker crasha no import ao iniciar (CrashLoopBackOff).
+COPY --chown=deile:deile infra/k8s/_worker_core.py /app/_worker_core.py
+RUN chmod 0555 /app/_worker_core.py
+
 # Worker HTTP server — entry point for the deile-worker pod.
 COPY --chown=deile:deile infra/k8s/worker_server.py /app/worker_server.py
 RUN chmod 0555 /app/worker_server.py
