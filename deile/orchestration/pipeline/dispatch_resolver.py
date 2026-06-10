@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 # :mod:`deile.infrastructure.deile_worker_client` que importam de
 # ``dispatch_resolver``; a tupla é a MESMA instância (não cópia) — testes
 # podem checar identidade.
-from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES  # noqa: E402, F401
+from deile.orchestration.pipeline.model_resolver import \
+    PIPELINE_STAGES  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Frota escalável — workers derivados do registro de adapters (issue multi-CLI)
@@ -62,20 +63,22 @@ from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES  # noqa:
 #: com OAuth). Existem fora do registro de adapters da frota CLI.
 BUILTIN_DISPATCHERS: FrozenSet[str] = frozenset({"deile-worker", "claude-worker"})
 
-#: Aliases legacy de PR #330 que canonicalizam para os 2 workers núcleo.
-#: Necessário para compat com deployments existentes que tenham
-#: ``DEILE_PIPELINE_DISPATCH_MODE`` no formato underscore ou abreviado.
-#: Mantém em paridade com ``WORKER_ALIASES`` / ``CLAUDE_ALIASES`` de
-#: :mod:`deile.orchestration.pipeline.implementer`.
+#: Aliases legacy de PR #330 — as formas underscore/abreviadas que um operador
+#: pode ter em ``DEILE_PIPELINE_DISPATCH_MODE``. Estes dois frozensets são a
+#: **fonte única** do vocabulário de aliases dos workers núcleo; o
+#: :mod:`deile.orchestration.pipeline.implementer` os importa daqui (antes cada
+#: módulo mantinha sua própria cópia "em paridade" — um hazard de drift manual).
+WORKER_ALIASES: FrozenSet[str] = frozenset(
+    {"deile_worker", "worker", "deile", "deile-worker"}
+)
+CLAUDE_ALIASES: FrozenSet[str] = frozenset({"claude", "claude_code", "claude-code"})
+
+#: Mapa alias→canônico dos workers núcleo, DERIVADO dos frozensets acima
+#: (``claude-worker`` mapeia para si mesmo, espelhando ``deile-worker`` que já
+#: vive em ``WORKER_ALIASES``). Derivar evita re-listar os mesmos aliases.
 _BUILTIN_DISPATCHER_ALIASES: Dict[str, str] = {
-    "deile_worker": "deile-worker",
-    "worker": "deile-worker",
-    "deile": "deile-worker",
-    "deile-worker": "deile-worker",
-    "claude": "claude-worker",
-    "claude_code": "claude-worker",
-    "claude-code": "claude-worker",
-    "claude-worker": "claude-worker",
+    **{alias: "deile-worker" for alias in WORKER_ALIASES},
+    **{alias: "claude-worker" for alias in CLAUDE_ALIASES | {"claude-worker"}},
 }
 
 #: Default endpoints dos workers núcleo. Env vars sobrescrevem (dev local).
@@ -330,6 +333,29 @@ def resolve_stage_dispatcher(stage: str) -> str:
     return _DEFAULT_DISPATCHER
 
 
+def _parse_stage_int_env(env_name: str, *, min_value: int) -> Optional[int]:
+    """Parse a per-stage integer env var, or ``None`` when unset/empty.
+
+    Shared by :func:`resolve_stage_timeout_s` (``min_value=1``) and
+    :func:`resolve_stage_max_retries` (``min_value=0``): both read a
+    ``DEILE_PIPELINE_<AXIS>_<STAGE>`` env var as the highest-precedence override
+    and fail-fast on a present-but-invalid value — a non-integer or one below
+    the floor — so an operator config error surfaces loud instead of silently
+    falling through to the next precedence level. An empty/whitespace value is
+    treated as unset (``None``), letting the caller fall through.
+    """
+    raw_env = os.environ.get(env_name)
+    if not raw_env or not raw_env.strip():
+        return None
+    try:
+        value = int(raw_env.strip())
+    except ValueError as exc:
+        raise ValueError(f"invalid {env_name}={raw_env!r}: {exc}") from exc
+    if value < min_value:
+        raise ValueError(f"{env_name} must be >= {min_value}, got {value!r}")
+    return value
+
+
 def resolve_stage_timeout_s(stage: str) -> int:
     """Returns per-stage dispatch timeout in seconds, falling back to global default.
 
@@ -350,20 +376,12 @@ def resolve_stage_timeout_s(stage: str) -> int:
             f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
         )
 
-    # 1. Per-stage env var (fail-fast)
-    raw_env = os.environ.get(f"DEILE_PIPELINE_TIMEOUT_S_{stage.upper()}")
-    if raw_env and raw_env.strip():
-        try:
-            v = int(raw_env.strip())
-            if v <= 0:
-                raise ValueError(
-                    f"DEILE_PIPELINE_TIMEOUT_S_{stage.upper()} must be > 0, got {v!r}"
-                )
-            return v
-        except ValueError as exc:
-            raise ValueError(
-                f"invalid DEILE_PIPELINE_TIMEOUT_S_{stage.upper()}={raw_env!r}: {exc}"
-            ) from exc
+    # 1. Per-stage env var (fail-fast; timeout floor is 1s).
+    env_val = _parse_stage_int_env(
+        f"DEILE_PIPELINE_TIMEOUT_S_{stage.upper()}", min_value=1
+    )
+    if env_val is not None:
+        return env_val
 
     # 2. Per-stage settings (graceful)
     from deile.config.settings import get_settings  # lazy: avoids import cycle
@@ -405,20 +423,12 @@ def resolve_stage_max_retries(stage: str) -> int:
             f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
         )
 
-    # 1. Per-stage env var (fail-fast)
-    raw_env = os.environ.get(f"DEILE_PIPELINE_RETRIES_{stage.upper()}")
-    if raw_env is not None and raw_env.strip():
-        try:
-            v = int(raw_env.strip())
-            if v < 0:
-                raise ValueError(
-                    f"DEILE_PIPELINE_RETRIES_{stage.upper()} must be >= 0, got {v!r}"
-                )
-            return v
-        except ValueError as exc:
-            raise ValueError(
-                f"invalid DEILE_PIPELINE_RETRIES_{stage.upper()}={raw_env!r}: {exc}"
-            ) from exc
+    # 1. Per-stage env var (fail-fast; 0 retries is valid, so the floor is 0).
+    env_val = _parse_stage_int_env(
+        f"DEILE_PIPELINE_RETRIES_{stage.upper()}", min_value=0
+    )
+    if env_val is not None:
+        return env_val
 
     # 2. Per-stage settings (graceful)
     from deile.config.settings import get_settings  # lazy: avoids import cycle
