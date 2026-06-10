@@ -90,7 +90,7 @@ def _github_cmds(
     branch: str,
     main: str,
     issue_template: str,
-    close_keyword: str = "Closes",
+    close_keyword: str,
 ) -> Mapping[str, str]:
     """Concrete ``gh`` snippets — identical to the legacy literal commands
     that lived inline in the brief templates. Preserves byte-for-byte
@@ -104,7 +104,12 @@ def _github_cmds(
             f'gh pr create --repo {project_path} --base {main} --head {branch} '
             f'--title "<título coerente>" --body "<resumo>. {close_keyword} #{number}."'
         ),
-        "mark_draft_cmd": f"gh pr ready {number} --repo {project_path} --undo",
+        # Keyed by ``branch`` (not ``number``): in the implement flow the PR is
+        # created fresh, so its number is unknown when the DoD block tells the
+        # worker to mark it draft — but the head branch is always known. ``gh pr
+        # ready`` accepts ``[<number> | <url> | <branch>]``, matching the branch
+        # lookup already used by ``check_pr_cmd``.
+        "mark_draft_cmd": f"gh pr ready {branch} --repo {project_path} --undo",
         "check_pr_cmd": f"gh pr view {branch} --repo {project_path} --json url -q .url",
         "checkout_pr_cmd": f"gh pr checkout {number}",
         "merge_cmd": (
@@ -164,7 +169,7 @@ def _gitlab_cmds(
     branch: str,
     main: str,
     issue_template: str,
-    close_keyword: str = "Closes",
+    close_keyword: str,
 ) -> Mapping[str, str]:
     """Concrete ``glab`` + GitLab REST snippets.
 
@@ -182,7 +187,11 @@ def _gitlab_cmds(
             f'--source-branch {branch} -t "<título coerente>" '
             f'-d "<resumo>. {close_keyword} #{number}."'
         ),
-        "mark_draft_cmd": f"glab mr update {number} -R {project_path} --draft",
+        # Keyed by ``branch`` like ``check_pr_cmd`` above: the MR iid is unknown
+        # when the implement DoD block marks the just-created MR draft, so the
+        # REST path (which needs the iid) does not fit here. ``glab mr update``
+        # accepts a branch selector and exposes ``--draft`` natively.
+        "mark_draft_cmd": f"glab mr update {branch} -R {project_path} --draft",
         "check_pr_cmd": (
             f"glab mr view {branch} -R {project_path} -F json | jq -r .web_url"
         ),

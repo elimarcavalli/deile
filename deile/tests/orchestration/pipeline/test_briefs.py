@@ -118,6 +118,30 @@ class TestImplementBriefDefinitionOfDone:
         assert not _is_spike("[FEATURE] foo", "implementa um botão")
         assert not _is_spike("Add spike-resistant retry", "feature normal")  # 'spike' solto no título não conta
 
+    def test_gitlab_forge_dod_and_spike_refs(self):
+        """Cobertura GitLab do gate: o brief renderiza comandos `glab` e o
+        spike usa `Refs` no `glab mr create` + o draft cmd no dod_block."""
+        from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+
+        gl = ForgeConfig(
+            kind=ForgeKind.GITLAB, host="gitlab.com",
+            project_path="group/project", cli_path="/usr/bin/glab",
+        )
+        # Issue normal (GitLab) → `Closes` + comando glab.
+        normal = _render_worker_implement_brief(
+            "group/project", "main", "auto/issue-3", 3, "Add botão", "faça", forge=gl,
+        )
+        assert "DEFINIÇÃO DE PRONTO" in normal
+        assert "glab mr create" in normal
+        assert '. Closes #3."' in normal
+        # Spike (GitLab) → `Refs`, nunca `Closes`, e o draft cmd glab no dod_block.
+        spike = _render_worker_implement_brief(
+            "group/project", "main", "auto/issue-8", 8, "[SPIKE] Provar Z", "spike", forge=gl,
+        )
+        assert '. Refs #8."' in spike
+        assert '. Closes #8."' not in spike
+        assert "glab mr update auto/issue-8" in spike  # mark_draft_cmd embutido no dod_block
+
 
 class TestUnifiedPrBrief:
     """Após o refactor "PR é o quadro", os 3 briefs antigos

@@ -81,6 +81,18 @@ class TestPrompts:
         # The '@' marker isolates the body: the template contains none.
         assert prompt.count("@") == 5000
 
+    def test_implement_prompt_normal_issue_uses_closes(self):
+        prompt = render_implement_prompt("foo/bar", 42, "Add widget", "do it")
+        assert "Closes #42" in prompt
+        assert "Refs #42" not in prompt
+
+    def test_implement_prompt_spike_uses_refs(self):
+        # Legacy local path mirrors the pipeline brief: a spike references,
+        # never auto-closes, its issue.
+        prompt = render_implement_prompt("foo/bar", 7, "[SPIKE] Provar X", "spike body")
+        assert "Refs #7" in prompt
+        assert "Closes #7" not in prompt
+
     def test_review_prompt_includes_repo_and_number(self):
         prompt = render_review_prompt("foo/bar", 17, "PR title")
         assert "foo/bar" in prompt

@@ -126,9 +126,17 @@ def _is_spike(title: str, body: str) -> bool:
     A spike's Definition-of-Done is measured ACs (numbers/verdict), so its PR must
     reference (``Refs``) — never auto-close (``Closes``) — the issue, and should
     stay draft until every AC is green. Detected by the conventional ``[SPIKE]``
-    title tag or a spike-style exit-condition section in the body. Conservative on
-    purpose: a missed spike (defaults to ``Closes``) is the dangerous direction, so
-    we only require an explicit, unambiguous signal.
+    title tag or a spike-style exit-condition section in the body (the headings the
+    architect/analyst personas emit for spike issues, e.g. issue #529's
+    "## Condição de Saída"). Conservative on purpose: a missed spike (defaults to
+    ``Closes``) is the dangerous direction, so we only require an explicit,
+    unambiguous signal.
+
+    Detection reads the FULL untruncated body (so a marker past
+    ``ISSUE_BODY_MAX_CHARS`` still classifies correctly, even if it won't appear in
+    the rendered brief) and is accent-sensitive by design — the canonical headings
+    carry their accents, and an accent-stripped variant safely falls back to
+    ``Closes`` rather than risking a false positive on incidental prose.
     """
     t = (title or "").lower()
     b = (body or "").lower()
