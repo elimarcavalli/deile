@@ -27,6 +27,9 @@ import logging
 import os
 from typing import List, Optional
 
+from ._catalog import (OPENROUTER_CLAUDE_SONNET_4_6,
+                       OPENROUTER_DEEPSEEK_V4_FLASH,
+                       OPENROUTER_DEEPSEEK_V4_PRO, OPENROUTER_QWEN3_CODER)
 from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
                    classify_provider_cutoff, iter_jsonl_events,
                    no_output_result, read_brief_or_fallback)
@@ -60,34 +63,10 @@ def _cap_verdict(text: str) -> str:
 #: faz o split no PRIMEIRO ``/`` → ``--provider``/``--model``. Sem prefixo o
 #: Goose falha "Unknown provider" (não há ``GOOSE_PROVIDER`` no Deployment).
 _MODELS: List[ModelInfo] = [
-    ModelInfo(
-        id="openrouter/deepseek/deepseek-v4-flash",
-        label="DeepSeek V4 Flash (OpenRouter)",
-        provider="openrouter",
-        price_in=0.0983, price_out=0.1966, context=1_048_576,
-        notes="MAIS BARATO de coding; default recomendado",
-    ),
-    ModelInfo(
-        id="openrouter/deepseek/deepseek-v4-pro",
-        label="DeepSeek V4 Pro (OpenRouter)",
-        provider="openrouter",
-        price_in=0.435, price_out=0.87, context=1_048_576,
-        notes="MELHOR custo-benefício de coding (promo)",
-    ),
-    ModelInfo(
-        id="openrouter/anthropic/claude-sonnet-4.6",
-        label="Claude Sonnet 4.6 (OpenRouter)",
-        provider="openrouter",
-        price_in=3.00, price_out=15.00, context=1_000_000,
-        notes="premium; review crítico / arquitetura",
-    ),
-    ModelInfo(
-        id="openrouter/qwen/qwen3-coder",
-        label="Qwen3 Coder 480B (OpenRouter)",
-        provider="openrouter",
-        price_in=0.22, price_out=1.80, context=1_000_000,
-        notes="bom custo-benefício p/ implementação",
-    ),
+    OPENROUTER_DEEPSEEK_V4_FLASH,
+    OPENROUTER_DEEPSEEK_V4_PRO,
+    OPENROUTER_CLAUDE_SONNET_4_6,
+    OPENROUTER_QWEN3_CODER,
     ModelInfo(
         id="openai/gpt-5.4",
         label="GPT-5.4 (OpenAI)",
