@@ -88,6 +88,8 @@ infra/
 !infra/k8s/wrapper.py
 !infra/k8s/claude_worker_server.py
 !infra/k8s/worker_server.py
+!infra/k8s/worker_metrics.py
+!infra/k8s/worker_rate_limit.py
 !infra/k8s/_worker_resume.py
 !infra/k8s/pipeline_status_server.py
 !infra/k8s/dispatch_logger.py

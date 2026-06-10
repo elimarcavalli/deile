@@ -52,8 +52,19 @@ from typing import Any, Dict, Optional
 # logic is unit-testable without aiohttp.
 import _worker_resume as resume
 import dispatch_logger as dlog
+import worker_metrics as wm
 # aiohttp comes from the deilebot extra (already in the image).
 from aiohttp import web
+from worker_rate_limit import TokenBucketRateLimiter
+
+# Schema version is the single source of truth for the result contract
+# (issue #620 AC9). Lives in the ``deile`` package (importable in the worker
+# pod); fail-open to 1 if the package layout ever shifts so a missing import
+# never breaks a dispatch.
+try:
+    from deile.core.schemas import RESULT_SCHEMA_VERSION
+except Exception:  # noqa: BLE001 — defensive: never break dispatch on import
+    RESULT_SCHEMA_VERSION = 1
 
 logger = logging.getLogger("deile.worker_server")
 
@@ -118,6 +129,103 @@ _TASKS: Dict[str, Dict[str, Any]] = {}
 _TASKS_MAX: int = int(os.environ.get("DEILE_WORKER_MAX_INMEM_TASKS", "500"))
 _AGENT = None
 _AGENT_LOCK = asyncio.Lock()
+
+# G3 / AC3 (issue #620): protege a seção crítica evict + insert em ``_TASKS``.
+# É um lock de HIGIENE, não a correção de um bug vivo: o worker roda um único
+# event loop e não há ``await`` entre ``_evict_old_tasks_if_needed()`` e a
+# inserção do task_id em ``dispatch_handler`` — duas corrotinas nunca se
+# intercalam ali. O lock torna a invariante (``len(_TASKS) <= _TASKS_MAX + N``)
+# explícita e à prova de regressão caso um ``await`` seja introduzido entre as
+# duas operações no futuro. Mantido proporcional (sem locks por-leitura: o
+# ``result_handler``/``progress_handler`` leem sem lock — consistência
+# eventual é suficiente, conforme o desejado §3).
+_TASKS_LOCK = asyncio.Lock()
+
+# G6 / AC6 (issue #620): cache de idempotência ``X-Idempotency-Key`` →
+# ``(task_id, created_at_monotonic)``. Limpeza lazy no lookup (entradas com
+# idade > ``_IDEMPOTENCY_TTL_S`` são descartadas). Volume de dispatches por
+# worker é baixo (<100/min), então o bound implícito por TTL + ``_TASKS_MAX``
+# é suficiente em V1.
+_IDEMPOTENCY_KEYS: Dict[str, tuple] = {}
+_IDEMPOTENCY_TTL_S: float = 300.0
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+# G7 / AC7 (issue #620): token bucket por canal — capacity=10, rate=1/s.
+_RATE_LIMITER = TokenBucketRateLimiter(capacity=10.0, rate=1.0, idle_reset_s=300.0)
+
+# Contador de dispatches em voo (gauge ``deile_worker_in_flight``). Incrementado
+# na admissão de cada dispatch (wait e fire-and-forget) e decrementado no
+# terminal — fonte do gauge no scrape de ``/v1/metrics``.
+_IN_FLIGHT: int = 0
+
+# AC1 (issue #620): sinaliza shutdown em curso. Quando True o ``dispatch_handler``
+# rejeita novos dispatches com 503 enquanto o drain de ``_BG_DISPATCH_TASKS``
+# acontece em ``_graceful_shutdown``.
+_SHUTTING_DOWN: bool = False
+
+# AC1: timeout de drain do graceful shutdown (≤30s); o teto total até
+# ``os._exit(0)`` é ≤35s (drain + margem de estado terminal).
+_SHUTDOWN_DRAIN_TIMEOUT_S: float = 30.0
+_SHUTDOWN_HARD_DEADLINE_S: float = 35.0
+
+
+# ---- Metrics registry (AC2) --------------------------------------------------
+
+def _circuit_breaker_state_value() -> float:
+    """Lê o estado do circuit breaker do cliente (0/1/2) para o gauge.
+
+    Importado lazy: o gauge é avaliado só no scrape, e o cliente vive no
+    pacote ``deile`` (disponível no worker pod). Fail-open → 0 (closed) se
+    o módulo não estiver importável neste contexto.
+    """
+    try:
+        from deile.infrastructure.deile_worker_client import \
+            circuit_breaker_state
+        return float(circuit_breaker_state())
+    except Exception:  # noqa: BLE001 — métrica nunca derruba o scrape
+        return 0.0
+
+
+_METRICS = wm.MetricsRegistry()
+_M_DISPATCHES = _METRICS.register(wm.Counter(
+    "deile_worker_dispatches_total",
+    "Total de dispatches admitidos, por stage/persona/ok.",
+    labelnames=("stage", "persona", "ok"),
+))
+_M_ERRORS = _METRICS.register(wm.Counter(
+    "deile_worker_errors_total",
+    "Total de erros de dispatch, por error_code.",
+    labelnames=("error_code",),
+))
+_M_IDEMPOTENCY_HITS = _METRICS.register(wm.Counter(
+    "deile_worker_idempotency_hits_total",
+    "Dispatches servidos do cache de idempotência (já despachados).",
+))
+_M_RATE_LIMIT_REJECTIONS = _METRICS.register(wm.Counter(
+    "deile_worker_rate_limit_rejections_total",
+    "Dispatches rejeitados por rate limit, por canal.",
+    labelnames=("channel",),
+))
+_METRICS.register(wm.Gauge(
+    "deile_worker_in_flight",
+    "Dispatches atualmente em execução.",
+    lambda: float(_IN_FLIGHT),
+))
+_METRICS.register(wm.Gauge(
+    "deile_worker_tasks_memory",
+    "Tasks no registro in-memory _TASKS.",
+    lambda: float(len(_TASKS)),
+))
+_METRICS.register(wm.Gauge(
+    "deile_worker_circuit_breaker_state",
+    "Estado do circuit breaker do cliente (0=closed, 1=open, 2=half-open).",
+    _circuit_breaker_state_value,
+))
+_METRICS.register(wm.HistogramSkeleton(
+    "deile_worker_dispatch_duration_seconds",
+    "Duração de dispatch (skeleton V1 — coleta real em #621).",
+    wm.DISPATCH_DURATION_BUCKETS,
+))
 
 # B2 (PR #295 review): strong refs para background tasks geradas em
 # ``dispatch_handler`` quando ``wait=False``. ``asyncio.create_task`` mantém
@@ -482,6 +590,40 @@ def _prune_results_dir(results_dir: Path, keep: int = 200) -> None:
             logger.debug("could not prune result file %s", stale, exc_info=True)
 
 
+#: Ordem canônica dos 5 marcos de latência por fase (AC8). Cada fase é o delta
+#: até o marco anterior na sequência; ``total`` é o wall-clock completo.
+_PHASE_MARK_ORDER = ("agent_start", "model_first_token", "agent_end", "io_ops")
+
+
+def _log_phase_latencies(task_id: str, marks: Dict[str, float]) -> None:
+    """Loga as latências por fase (ms) ao final de ``_run_task`` (AC8).
+
+    Calcula os deltas entre marcos monotônicos consecutivos e emite um log
+    estruturado com o campo ``phases`` (dict ``nome -> delta_ms``). Best-effort:
+    nunca derruba o dispatch. Marcos ausentes (ex.: timeout antes do 1º token)
+    caem no marco anterior, garantindo um delta não-negativo para cada fase.
+    """
+    try:
+        start = marks.get("start")
+        if start is None:
+            return
+        # Resolve cada marco; ausências caem no anterior (delta vira ~0).
+        prev = start
+        phases: Dict[str, float] = {}
+        for name in _PHASE_MARK_ORDER:
+            ts = marks.get(name, prev)
+            phases[name] = round(max(0.0, ts - prev) * 1000.0, 3)
+            prev = ts
+        total_ts = marks.get("total", prev)
+        phases["total"] = round(max(0.0, total_ts - start) * 1000.0, 3)
+        logger.info(
+            "task %s phase latencies", task_id,
+            extra={"task_id": task_id, "phases": phases},
+        )
+    except Exception:  # noqa: BLE001 — observability never breaks a dispatch
+        logger.debug("phase latency logging failed for %s", task_id, exc_info=True)
+
+
 async def _list_workspace_files(workdir: Path) -> list[str]:
     out: list[str] = []
     if not workdir.exists():
@@ -610,9 +752,12 @@ async def _run_task(
     disturbing the worker's process-wide default.
     """
     start = time.monotonic()
-    # Workdir POR canal (não por task): o payload de dispatch não traz
-    # user_id, então dispatches do mesmo channel_id reusam a mesma pasta
-    # persistente; canais diferentes ficam isolados entre si.
+    # AC8 (issue #620): latência por fase. Capturamos ``time.monotonic()`` em
+    # 5 marcos nomeados e logamos os deltas (ms) num campo estruturado
+    # ``phases`` ao final. ``model_first_token`` é fixado no 1º chunk do stream
+    # (ou no retorno do process_input não-streaming); os demais são marcos do
+    # ciclo de vida do dispatch. ``total`` é o wall-clock completo.
+    _marks: Dict[str, float] = {"start": start}
     workdir = WORK_ROOT / _channel_workdir(channel_id)
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -668,6 +813,7 @@ async def _run_task(
     # Structured resume result, populated only on the pipeline path.
     resume_result: Optional[Dict[str, Any]] = None
     try:
+        _marks["agent_start"] = time.monotonic()
         agent = await _get_agent()
         session_id = f"worker_{task_id}"
         try:
@@ -779,6 +925,8 @@ async def _run_task(
             async def _consume_stream():
                 nonlocal final_text
                 async for chunk in stream_method(prompt, **kwargs):
+                    # AC8: 1º chunk = momento do primeiro token do modelo.
+                    _marks.setdefault("model_first_token", time.monotonic())
                     # Chunk shape varies; we accept str / dict / object.
                     if isinstance(chunk, str):
                         response_text_chunks.append(chunk)
@@ -801,6 +949,9 @@ async def _run_task(
                 agent.process_input(prompt, **kwargs),
                 timeout=_eff_timeout,
             )
+            # AC8: caminho não-streaming — o "primeiro token" coincide com o
+            # retorno da resposta completa.
+            _marks.setdefault("model_first_token", time.monotonic())
             final_text = str(getattr(resp, "content", "") or "")
 
         ok = True
@@ -839,6 +990,8 @@ async def _run_task(
         except Exception:  # noqa: BLE001 — never break the dispatch
             logger.exception("resume bookkeeping failed for task %s", task_id)
 
+    # AC8: fim do trabalho do agente (após o tool-loop + bookkeeping de resume).
+    _marks["agent_end"] = time.monotonic()
     elapsed = time.monotonic() - start
     files = await _list_workspace_files(workdir)
     summary = final_text.strip() if ok else f"erro: {error_repr}"
@@ -851,7 +1004,10 @@ async def _run_task(
         await _react(channel_id, user_message_id, "✅" if ok else "❌")
 
     # Persist result.json into the workspace (audit + later inspection).
+    # AC9: ``schema_version`` pins the result contract (deile/core/schemas/
+    # result_v1.json) so future format changes are migratable retroactively.
     result = {
+        "schema_version": RESULT_SCHEMA_VERSION,
         "task_id": task_id,
         "ok": ok,
         "elapsed_s": elapsed,
@@ -881,6 +1037,11 @@ async def _run_task(
         _prune_results_dir(results_dir)
     except OSError:
         logger.exception("could not persist result for task %s", task_id)
+
+    # AC8: marca o fim das operações de I/O e o total; loga os deltas por fase.
+    _marks["io_ops"] = time.monotonic()
+    _marks["total"] = time.monotonic()
+    _log_phase_latencies(task_id, _marks)
 
     # Dispatch terminou: remove o marcador de doing-now (painel volta a idle).
     _clear_current_marker(task_id)
@@ -936,7 +1097,45 @@ def _parse_resume_ctx(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _idempotency_lookup(key: str) -> Optional[str]:
+    """Resolve um ``X-Idempotency-Key`` para o ``task_id`` original, ou None.
+
+    Limpeza lazy (AC6): entradas com idade > ``_IDEMPOTENCY_TTL_S`` são
+    descartadas no lookup, então uma key expirada vira "nova task". Chamado
+    sob ``_TASKS_LOCK`` para ser atômico com o registro da nova task.
+    """
+    now = time.monotonic()
+    # Prune lazy de entradas expiradas (evita crescimento ilimitado do cache).
+    expired = [
+        k for k, (_tid, created) in _IDEMPOTENCY_KEYS.items()
+        if (now - created) > _IDEMPOTENCY_TTL_S
+    ]
+    for k in expired:
+        _IDEMPOTENCY_KEYS.pop(k, None)
+    entry = _IDEMPOTENCY_KEYS.get(key)
+    return entry[0] if entry else None
+
+
+def _record_dispatch_metric(stage: Optional[str], persona: Optional[str],
+                            ok: Optional[bool]) -> None:
+    """Incrementa ``deile_worker_dispatches_total`` com labels normalizados."""
+    _M_DISPATCHES.inc(
+        stage=stage or "none",
+        persona=persona or "none",
+        ok=("true" if ok else "false"),
+    )
+
+
 async def dispatch_handler(request: web.Request) -> web.Response:
+    # AC1: durante o graceful shutdown rejeitamos novos dispatches com 503
+    # (Retry-After curto) — o drain das tasks em voo segue em background.
+    if _SHUTTING_DOWN:
+        _M_ERRORS.inc(error_code="SHUTTING_DOWN")
+        return web.json_response(
+            {"error": {"code": "SHUTTING_DOWN", "message": "worker shutting down"}},
+            status=503,
+            headers={"Retry-After": "5"},
+        )
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -1022,14 +1221,71 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         except (TypeError, ValueError):
             pass
 
-    task_id = uuid.uuid4().hex[:_TASK_ID_LEN]
-    _evict_old_tasks_if_needed()
-    _TASKS[task_id] = {
-        "task_id": task_id,
-        "ok": None,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "brief": brief,
-    }
+    # AC7: rate limit por canal (token bucket capacity=10, rate=1/s). Aplicado
+    # ANTES de criar a task — um canal saturado é rejeitado com 429 +
+    # Retry-After sem consumir recurso. Canais distintos têm baldes isolados.
+    allowed, retry_after = _RATE_LIMITER.acquire(channel_id)
+    if not allowed:
+        _M_RATE_LIMIT_REJECTIONS.inc(channel=channel_id)
+        _M_ERRORS.inc(error_code="RATE_LIMITED")
+        return web.json_response(
+            {"error": {"code": "RATE_LIMITED",
+                       "message": "channel rate limit exceeded"}},
+            status=429,
+            headers={"Retry-After": str(int(retry_after))},
+        )
+
+    # AC6: idempotência. Um ``X-Idempotency-Key`` válido permite ao cliente
+    # re-enviar (ex.: após timeout de rede) sem duplicar trabalho. Validamos o
+    # charset (defesa contra keys absurdas) — keys malformadas são ignoradas
+    # (tratadas como ausentes), preservando compat com callers legados.
+    #
+    # O lookup + a possível leitura de disco ficam FORA do ``_TASKS_LOCK``: a
+    # seção crítica do lock cobre só evict+insert (AC3). A janela TOCTOU entre
+    # este lookup e o insert é benigna — duas requisições simultâneas com a
+    # mesma key de uma task já terminal servem o MESMO resultado (idempotente).
+    idem_key = request.headers.get("X-Idempotency-Key", "").strip()
+    if idem_key and not _IDEMPOTENCY_KEY_RE.match(idem_key):
+        idem_key = ""
+    if idem_key:
+        existing_id = _idempotency_lookup(idem_key)
+        if existing_id is not None:
+            existing = _TASKS.get(existing_id)
+            if existing is not None and existing.get("ok") is None:
+                # Task original ainda em execução → 409 duplicate in-flight.
+                _M_ERRORS.inc(error_code="duplicate_in_flight")
+                return web.json_response(
+                    {"error": {"code": "duplicate_in_flight",
+                               "message": f"task {existing_id} still running"}},
+                    status=409,
+                )
+            # Task original terminal (em memória ou no PVC) → serve o
+            # resultado original com marcador ``already_dispatched``.
+            state = existing if existing is not None \
+                else _lookup_task_state(existing_id)[0]
+            if state is not None:
+                _M_IDEMPOTENCY_HITS.inc()
+                payload = {k: v for k, v in state.items()
+                           if not k.startswith("_")}
+                payload["status"] = "already_dispatched"
+                return web.json_response(payload)
+            # Original sumiu (evicção + PVC podado) → trata como nova task.
+
+    # AC3: seção crítica — evict + insert do task_id são atômicos sob
+    # ``_TASKS_LOCK`` (lock de higiene; ver nota no ``_TASKS_LOCK``). Mantém a
+    # invariante de tamanho à prova de regressão.
+    async with _TASKS_LOCK:
+        task_id = uuid.uuid4().hex[:_TASK_ID_LEN]
+        _evict_old_tasks_if_needed()
+        _TASKS[task_id] = {
+            "task_id": task_id,
+            "ok": None,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "brief": brief,
+        }
+        if idem_key:
+            _IDEMPOTENCY_KEYS[idem_key] = (task_id, time.monotonic())
+
     # Structured one-line dispatch log — single source of truth consumed by
     # ``infra.k8s._panel_data.WorkerProvider`` to populate the Pod Watch
     # "current task" header (issue #309 fase 2 follow-up, #435). NEVER include
@@ -1049,6 +1305,10 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 
     wait_for_result = bool(body.get("wait_for_result", True))
     _outer_timeout = (dispatch_timeout_s + 30) if dispatch_timeout_s is not None else (TASK_TIMEOUT_S + 30)
+    # Gauge ``deile_worker_in_flight`` (AC2): conta dispatches em execução. O
+    # decremento é garantido no terminal de ambos os caminhos.
+    global _IN_FLIGHT
+    _IN_FLIGHT += 1
     if wait_for_result:
         try:
             result = await asyncio.wait_for(
@@ -1060,16 +1320,24 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 timeout=_outer_timeout,
             )
             _TASKS[task_id] = result
+            _record_dispatch_metric(stage, persona, bool(result.get("ok")))
+            if not result.get("ok"):
+                _M_ERRORS.inc(error_code="DISPATCH_FAILED")
             # Terminal marker for the panel — pairs with dispatch.received (#435).
             dlog.dispatch_completed(task=task_id, ok=bool(result.get("ok")))
             return web.json_response(result)
         except asyncio.TimeoutError:
             _TASKS[task_id] = {**_TASKS[task_id], "ok": False, "error": "outer timeout"}
+            _record_dispatch_metric(stage, persona, False)
+            _M_ERRORS.inc(error_code="OUTER_TIMEOUT")
             dlog.dispatch_failed(task=task_id, reason="outer_timeout", error_code="OUTER_TIMEOUT")
             return web.json_response(_TASKS[task_id], status=504)
+        finally:
+            _IN_FLIGHT -= 1
     else:
         # Fire-and-forget — caller polls /v1/result/{id}
         async def _bg():
+            global _IN_FLIGHT
             # Iter-2 review: handle CancelledError separately so that loop
             # shutdown still writes a terminal state to _TASKS (otherwise
             # ``ok`` stays ``None`` forever and pollers loop indefinitely).
@@ -1079,6 +1347,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                                                   preferred_model=preferred_model,
                                                   reasoning_effort=reasoning_effort,
                                                   task_timeout_s=dispatch_timeout_s)
+                _record_dispatch_metric(stage, persona, bool(_TASKS[task_id].get("ok")))
+                if not _TASKS[task_id].get("ok"):
+                    _M_ERRORS.inc(error_code="DISPATCH_FAILED")
                 dlog.dispatch_completed(
                     task=task_id, ok=bool(_TASKS[task_id].get("ok")),
                 )
@@ -1088,6 +1359,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                     "ok": False,
                     "error": "task cancelled",
                 }
+                _record_dispatch_metric(stage, persona, False)
+                _M_ERRORS.inc(error_code="TASK_CANCELLED")
                 dlog.dispatch_failed(task=task_id, reason="cancelled", error_code="TASK_CANCELLED")
                 raise
             except Exception as exc:
@@ -1095,7 +1368,11 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                     "task_id": task_id, "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
+                _record_dispatch_metric(stage, persona, False)
+                _M_ERRORS.inc(error_code="RUNTIME_EXCEPTION")
                 dlog.dispatch_failed(task=task_id, reason=type(exc).__name__, error_code="RUNTIME_EXCEPTION")
+            finally:
+                _IN_FLIGHT -= 1
         # B2 (PR #295 review): guarda strong ref para a task em background.
         # asyncio mantém apenas weak refs internamente; sem o set + callback,
         # o GC pode coletar a task antes de ela completar.
@@ -1141,6 +1418,15 @@ async def result_handler(request: web.Request) -> web.Response:
     state, error = _lookup_task_state(task_id)
     if error is not None:
         return error
+    # AC9: leitura tolerante de schema_version (forward compat). Um resultado
+    # sem o campo ou com versão diferente é SERVIDO mesmo assim — só logamos
+    # um warning para que migrações futuras nunca quebrem leitores legados.
+    version = state.get("schema_version")
+    if version != RESULT_SCHEMA_VERSION:
+        logger.warning(
+            "task %s result schema_version=%r (expected %d) — serving anyway",
+            task_id, version, RESULT_SCHEMA_VERSION,
+        )
     # Strip internal-only keys (_mono_start) before returning to the client.
     payload = {k: v for k, v in state.items() if not k.startswith("_")}
     return web.json_response(payload)
@@ -1183,6 +1469,24 @@ async def progress_handler(request: web.Request) -> web.Response:
     })
 
 
+async def metrics_handler(request: web.Request) -> web.Response:
+    """``GET /v1/metrics`` — exposição Prometheus text format (AC2).
+
+    Gated pelo mesmo Bearer dos demais endpoints (só ``/v1/health`` é aberto).
+    Zero dependências externas: o texto é renderizado pelo registry
+    hand-rolled em ``worker_metrics``. O histograma de duração é skeleton em
+    V1 (buckets registrados, ``_count=0``) — coleta real difere para #621.
+    """
+    body = _METRICS.render()
+    # Não usamos os params ``content_type``/``charset`` do aiohttp porque eles
+    # não conseguem emitir o parâmetro ``version=0.0.4`` exigido pelo formato
+    # Prometheus; setamos o header completo diretamente (AC2).
+    return web.Response(
+        body=body.encode("utf-8"),
+        headers={"Content-Type": wm.CONTENT_TYPE},
+    )
+
+
 def build_app(auth_token: str) -> web.Application:
     app = web.Application(middlewares=[_bearer_auth_mw], client_max_size=64 * 1024)
     app["auth_token"] = auth_token
@@ -1191,6 +1495,8 @@ def build_app(auth_token: str) -> web.Application:
     app.router.add_get("/v1/result/{task_id}", result_handler)
     # Issue #257 — snapshot mid-flight para polling do CLI multipanel.
     app.router.add_get("/v1/progress/{task_id}", progress_handler)
+    # Issue #620 AC2 — métricas Prometheus.
+    app.router.add_get("/v1/metrics", metrics_handler)
     return app
 
 
@@ -1211,6 +1517,85 @@ async def _on_startup(app: web.Application) -> None:
         logger.info("agent warmup complete; cwd=%s", os.getcwd())
     except Exception:
         logger.exception("agent warmup failed; dispatches will retry")
+
+
+def _mark_inflight_tasks_terminal(reason: str = "worker shutting down") -> int:
+    """Escreve estado terminal nas tasks de ``_TASKS`` que não concluíram.
+
+    AC1: ao fim do drain, tasks ainda com ``ok is None`` (não drenadas a tempo)
+    recebem ``ok=False`` + ``error=<reason>`` para que pollers de
+    ``/v1/result`` não fiquem presos esperando um terminal que nunca virá.
+    Retorna quantas foram marcadas.
+    """
+    marked = 0
+    for tid, state in list(_TASKS.items()):
+        if isinstance(state, dict) and state.get("ok") is None:
+            _TASKS[tid] = {**state, "ok": False, "error": reason}
+            marked += 1
+    return marked
+
+
+async def _graceful_shutdown(app: web.Application) -> None:
+    """Drena dispatches em voo no SIGTERM (AC1).
+
+    Ciclo: (i) marca ``_SHUTTING_DOWN`` para que ``dispatch_handler`` rejeite
+    novos pedidos com 503; (ii) drena ``_BG_DISPATCH_TASKS`` com
+    ``asyncio.wait_for(..., timeout=_SHUTDOWN_DRAIN_TIMEOUT_S)`` (≤30s);
+    (iii) escreve estado terminal nas tasks não concluídas. Registrado como
+    ``on_shutdown`` do aiohttp — ``web.run_app`` o executa quando o sinal de
+    término chega, antes de fechar o servidor. O teto total até o ponto de
+    ``os._exit(0)`` no watchdog é ≤35s.
+    """
+    global _SHUTTING_DOWN
+    _SHUTTING_DOWN = True
+    logger.info("graceful shutdown: draining %d in-flight dispatch(es)",
+                len(_BG_DISPATCH_TASKS))
+    pending = [t for t in _BG_DISPATCH_TASKS if not t.done()]
+    if pending:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=_SHUTDOWN_DRAIN_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "graceful shutdown: drain timed out after %.0fs; "
+                "marking remaining tasks terminal",
+                _SHUTDOWN_DRAIN_TIMEOUT_S,
+            )
+    marked = _mark_inflight_tasks_terminal()
+    logger.info("graceful shutdown: drain complete; %d task(s) marked terminal",
+                marked)
+
+
+def _install_shutdown_watchdog() -> None:
+    """Watchdog de hard-deadline: se o drain travar, força ``os._exit(0)``.
+
+    Mesmo com o drain do aiohttp, um cleanup pendurado poderia segurar o pod
+    além do ``terminationGracePeriodSeconds``. Ao receber SIGTERM agendamos um
+    timer que chama ``os._exit(0)`` após ``_SHUTDOWN_HARD_DEADLINE_S`` — o k8s
+    não precisa recorrer ao SIGKILL. Best-effort: se não houver loop corrente
+    (ex.: import em teste), no-op.
+    """
+    import signal
+    import threading
+
+    def _hard_exit() -> None:
+        logger.error("graceful shutdown: hard deadline reached; os._exit(0)")
+        os._exit(0)
+
+    def _on_sigterm(_signum, _frame) -> None:
+        global _SHUTTING_DOWN
+        _SHUTTING_DOWN = True
+        timer = threading.Timer(_SHUTDOWN_HARD_DEADLINE_S, _hard_exit)
+        timer.daemon = True
+        timer.start()
+
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError):
+        # Fora da main thread (ex.: alguns runners de teste) — sem watchdog.
+        logger.debug("could not install SIGTERM watchdog", exc_info=True)
 
 
 def main() -> int:
@@ -1236,6 +1621,10 @@ def main() -> int:
         return 78
     app = build_app(token)
     app.on_startup.append(_on_startup)
+    # AC1: drena dispatches em voo no SIGTERM antes de o servidor fechar, e
+    # arma o watchdog de hard-deadline que força os._exit(0) se o drain travar.
+    app.on_shutdown.append(_graceful_shutdown)
+    _install_shutdown_watchdog()
     logger.info("worker_server listening on %s:%d, work root=%s",
                 LISTEN_HOST, LISTEN_PORT, WORK_ROOT)
     web.run_app(app, host=LISTEN_HOST, port=LISTEN_PORT, print=lambda *_: None)

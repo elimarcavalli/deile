@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deile.dev/schemas/result_v1.json",
+  "title": "deile-worker dispatch result (v1)",
+  "description": "JSON written by worker_server._run_task to WORK_ROOT/.results/<task_id>.json and returned by POST /v1/dispatch and GET /v1/result/{task_id}. schema_version pins the contract so future readers can migrate retroactively (issue #620 AC9).",
+  "type": "object",
+  "required": ["schema_version", "task_id", "ok", "elapsed_s"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Contract version of this result document. A reader that finds a missing or different version serves the payload with a warning (forward compat)."
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{12}$",
+      "description": "12-char hex id minted by the worker (uuid4().hex[:12])."
+    },
+    "ok": {
+      "type": ["boolean", "null"],
+      "description": "Terminal outcome: true=success, false=failure, null=still running (in-memory transient state only)."
+    },
+    "elapsed_s": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Wall-clock seconds the dispatch ran."
+    },
+    "brief": {
+      "type": "string",
+      "description": "The user brief that was dispatched."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Final agent output (success) or error description (failure)."
+    },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Workspace files present at the end of the dispatch (capped)."
+    },
+    "channel_id": {
+      "type": "string",
+      "description": "Discord channel id or synthetic pipeline/CLI id."
+    },
+    "workdir": {
+      "type": "string",
+      "description": "Absolute path of the per-channel workspace used."
+    },
+    "status_message_id": {
+      "type": ["string", "null"],
+      "description": "Discord message id of the live status message, or null."
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp when the result was persisted."
+    },
+    "error": {
+      "type": "string",
+      "description": "Terminal error string, present only on failure paths."
+    },
+    "resume": {
+      "type": "object",
+      "description": "Structured resume result (issue #254), present only on pipeline dispatches.",
+      "additionalProperties": true
+    }
+  }
+}
