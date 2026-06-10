@@ -843,35 +843,23 @@ def _cost_ledger_path() -> Path:
 
 
 def _harvested_task_ids(ledger_path: Path) -> set:
-    """Conjunto de ``task_id`` já no ledger (dedup)."""
-    ids: set = set()
-    if not ledger_path.exists():
-        return ids
-    try:
-        with open(ledger_path, errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue
-                tid = rec.get("task_id")
-                if tid:
-                    ids.add(tid)
-    except OSError:
-        pass
-    return ids
+    """Conjunto de ``task_id`` já no ledger (dedup).
+
+    Shim sobre :func:`_worker_core.ledger_harvested_ids` — preservado para que
+    testes que monkeypatchem este nome continuem funcionando.
+    """
+    return _core.ledger_harvested_ids(ledger_path, key="task_id")
 
 
 def _append_ledger(ledger_path: Path, record: dict) -> int:
-    """Anexa um registro ao ledger. Retorna bytes escritos."""
-    line = json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n"
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(ledger_path, "a", encoding="utf-8") as fh:
-        fh.write(line)
-    return len(line.encode("utf-8"))
+    """Anexa um registro ao ledger. Retorna bytes escritos.
+
+    Shim sobre :func:`_worker_core.ledger_append_record` — preservado para que
+    testes que monkeypatchem este nome continuem funcionando.
+    """
+    return _core.ledger_append_record(
+        ledger_path, record, ensure_ascii=False,
+    )
 
 
 def _meta_model_for(task_id: str) -> Optional[str]:
