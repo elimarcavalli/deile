@@ -48,6 +48,14 @@ def _adapter(kind: str):
     return cli_adapters.get_adapter(kind)
 
 
+def _kubectl_helpers_mod():
+    """Carrega ``_kubectl_helpers`` sob lazy import (precisa de _HERE no path)."""
+    _ensure_on_path()
+    import _kubectl_helpers  # noqa: PLC0415
+
+    return _kubectl_helpers
+
+
 def _read_env_file() -> Dict[str, str]:
     """Lê o ``.env`` da raiz do repo (KEY=VALUE), tolerante a ausência.
 
@@ -106,51 +114,16 @@ def _kubectl_apply_keys_secret(
             "atualizado (worker subirá not-ready até a chave existir)"
         )
         return True
-
-    merged: Dict[str, str] = {}
-    # Lê chaves existentes para preservá-las (merge, não overwrite).
-    try:
-        existing = subprocess.run(
-            ["kubectl", "-n", namespace, "get", "secret", "cli-worker-keys",
-             "-o", "jsonpath={.data}"],
-            capture_output=True, text=True, check=False, timeout=15,
-        )
-        if existing.returncode == 0 and existing.stdout.strip():
-            import base64  # noqa: PLC0415
-            import json  # noqa: PLC0415
-            data = json.loads(existing.stdout)
-            for k, b64 in (data or {}).items():
-                try:
-                    merged[k] = base64.b64decode(b64).decode("utf-8")
-                except (ValueError, UnicodeDecodeError):
-                    continue
-    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
-        pass  # Secret ausente/illegível — começa do zero com os novos valores.
+    kh = _kubectl_helpers_mod()
+    merged: Dict[str, str] = kh.read_secret_data_map(
+        "cli-worker-keys", namespace=namespace,
+    ) or {}
     merged.update(values)
-
-    literals: List[str] = [f"--from-literal={k}={v}" for k, v in merged.items()]
-    try:
-        dry = subprocess.run(
-            ["kubectl", "create", "secret", "generic", "cli-worker-keys",
-             *literals, "-n", namespace, "--dry-run=client", "-o", "yaml"],
-            capture_output=True, text=True, check=False, timeout=15,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        logger.error("dry-run cli-worker-keys falhou: %s", exc)
-        return False
-    if dry.returncode != 0:
-        logger.error("dry-run cli-worker-keys falhou: %s", dry.stderr)
-        return False
-    try:
-        apply = subprocess.run(
-            ["kubectl", "-n", namespace, "apply", "-f", "-"],
-            input=dry.stdout, capture_output=True, text=True,
-            check=False, timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        logger.error("apply cli-worker-keys timed out")
-        return False
-    return apply.returncode == 0
+    return kh.apply_generic_secret(
+        "cli-worker-keys", merged, namespace=namespace,
+        # Apply curto (15s) preserva timing original do call-site.
+        apply_timeout_s=15,
+    )
 
 
 def _kubectl_sync_bearer(worker: str, *, namespace: str) -> bool:
@@ -160,52 +133,13 @@ def _kubectl_sync_bearer(worker: str, *, namespace: str) -> bool:
     NetworkPolicy ingress do pipeline. Se ``worker-bearer`` ainda não existe (cluster
     sem ``k8s up``), retorna ``True`` — rollout fica pending até o secret existir.
     """
-    try:
-        get = subprocess.run(
-            ["kubectl", "-n", namespace, "get", "secret", "worker-bearer",
-             "-o", "jsonpath={.data.AUTH_TOKEN}"],
-            capture_output=True, text=True, check=False, timeout=15,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        logger.error("kubectl get worker-bearer falhou: %s", exc)
-        return False
-    if get.returncode != 0 or not get.stdout.strip():
-        logger.warning(
-            "secret worker-bearer ausente — rode `deploy.py k8s up` antes de "
-            "instalar um CLI worker (rollout fica pending até o secret existir)"
-        )
-        return True
-
-    import base64  # noqa: PLC0415
-    try:
-        token = base64.b64decode(get.stdout.strip()).decode("ascii")
-    except (ValueError, UnicodeDecodeError) as exc:
-        logger.error("worker-bearer AUTH_TOKEN não é base64 ascii: %s", exc)
-        return False
-
-    try:
-        dry = subprocess.run(
-            ["kubectl", "create", "secret", "generic", f"{worker}-bearer",
-             f"--from-literal=CLI_WORKER_BEARER_TOKEN={token}",
-             "-n", namespace, "--dry-run=client", "-o", "yaml"],
-            capture_output=True, text=True, check=False, timeout=15,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        logger.error("dry-run %s-bearer falhou: %s", worker, exc)
-        return False
-    if dry.returncode != 0:
-        logger.error("dry-run %s-bearer falhou: %s", worker, dry.stderr)
-        return False
-    try:
-        apply = subprocess.run(
-            ["kubectl", "-n", namespace, "apply", "-f", "-"],
-            input=dry.stdout, capture_output=True, text=True,
-            check=False, timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        logger.error("apply %s-bearer timed out", worker)
-        return False
-    return apply.returncode == 0
+    return _kubectl_helpers_mod().sync_bearer_secret(
+        source_secret="worker-bearer",
+        source_key="AUTH_TOKEN",
+        target_secret=f"{worker}-bearer",
+        target_key="CLI_WORKER_BEARER_TOKEN",
+        namespace=namespace,
+    )
 
 
 def _kubectl_apply_manifest(

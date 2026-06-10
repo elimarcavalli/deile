@@ -59,6 +59,14 @@ def _adapter(kind: str):
     return cli_adapters.get_adapter(kind)
 
 
+def _kubectl_helpers_mod():
+    """Carrega ``_kubectl_helpers`` sob lazy import (precisa de _HERE no path)."""
+    _ensure_on_path()
+    import _kubectl_helpers  # noqa: PLC0415
+
+    return _kubectl_helpers
+
+
 def resolve_host_cred_path(
     kind: str, adapter, *, env: Optional[Dict[str, str]] = None,
     home: Optional[Path] = None,
@@ -136,38 +144,9 @@ def _kubectl_apply_cred_secret(
 
     Valor via ``--from-literal`` no pipe — nunca toca o disco do host nem é logado.
     """
-    if not payload:
-        logger.error("payload do Secret %s vazio — nada a aplicar", secret_name)
-        return False
-    literals: List[str] = [f"--from-literal={k}={v}" for k, v in payload.items()]
-    try:
-        dry = subprocess.run(
-            ["kubectl", "create", "secret", "generic", secret_name,
-             *literals, "-n", namespace, "--dry-run=client", "-o", "yaml"],
-            capture_output=True, text=True, check=False, timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        logger.error("dry-run Secret %s timed out (15s)", secret_name)
-        return False
-    except FileNotFoundError:
-        logger.error("kubectl não encontrado no PATH")
-        return False
-    if dry.returncode != 0:
-        logger.error("dry-run Secret %s falhou: %s", secret_name, dry.stderr)
-        return False
-    try:
-        apply = subprocess.run(
-            ["kubectl", "-n", namespace, "apply", "-f", "-"],
-            input=dry.stdout, capture_output=True, text=True,
-            check=False, timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        logger.error("apply Secret %s timed out (30s)", secret_name)
-        return False
-    if apply.returncode != 0:
-        logger.error("apply Secret %s falhou: %s", secret_name, apply.stderr)
-        return False
-    return True
+    return _kubectl_helpers_mod().apply_generic_secret(
+        secret_name, payload, namespace=namespace,
+    )
 
 
 def _run_login_cmd(login_cmd: List[str], *, inherit_stdio: bool = True) -> bool:
