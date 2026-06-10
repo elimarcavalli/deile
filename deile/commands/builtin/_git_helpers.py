@@ -92,19 +92,25 @@ def ensure_git_repo(cwd: str | Path | None = None) -> Path:
         raise CommandError("O diretório atual não é um repositório git.") from exc
 
 
-def ensure_gh_authenticated() -> None:
+def ensure_gh_authenticated(*, timeout: int = _DEFAULT_TIMEOUT_SECONDS) -> None:
     """Garante que a ``gh`` CLI está instalada e autenticada.
 
     Levanta :class:`CommandError` com mensagem PT-BR quando ``gh`` não
-    está instalada ou ``gh auth status`` retorna código de saída
-    diferente de zero.
+    está instalada, ``gh auth status`` excede ``timeout`` ou retorna código
+    de saída diferente de zero. O ``timeout`` evita que um ``gh auth status``
+    travado (ex.: prompt de credencial interativo) bloqueie o comando
+    indefinidamente.
     """
     if not shutil.which("gh"):
         raise CommandError("GitHub CLI (gh) não está instalada.")
-    res = subprocess.run(
-        ["gh", "auth", "status"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        res = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CommandError(f"gh auth status timeout: {exc}") from exc
     if res.returncode != 0:
         raise CommandError("CLI do GitHub (gh) não está autenticada.")

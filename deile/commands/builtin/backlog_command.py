@@ -15,6 +15,7 @@ coleta/bucketização vive em :mod:`._backlog_collectors` (delegação via
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from rich.console import Group
@@ -143,10 +144,16 @@ class BacklogCommand(DirectCommand):
         )
 
         repo_override = _parse_args(context.args)
-        ensure_git_repo()
-        ensure_gh_authenticated()
+        # Pilar 03 §1: os gates e a resolução do remote disparam ``git``/``gh``
+        # via subprocess síncrono — isolados em ``to_thread`` para não bloquear
+        # o event loop.
+        await asyncio.to_thread(ensure_git_repo)
+        await asyncio.to_thread(ensure_gh_authenticated)
 
-        repo = repo_override if repo_override is not None else _resolve_repo_from_git()
+        if repo_override is not None:
+            repo = repo_override
+        else:
+            repo = await asyncio.to_thread(_resolve_repo_from_git)
         data = await collect_backlog_data(repo)
 
         return CommandResult.success_result(
