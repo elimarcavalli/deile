@@ -507,9 +507,19 @@ async def _collect_mention_triggers(
 
     Sticky trigger behaviour by source:
 
-    * **assignee/reviewer (PR)** — NOT filtered by ``~mention:processado``.
-      Discovery-by-state: the unified PR brief opens the PR and decides whether
-      there is real work to do.  Sticky-success marks the marker to avoid churn.
+    * **reviewer (PR)** — filtered by ``~mention:processado``. A review request
+      is a one-shot, not a retry: GitHub keeps ``deile-one`` in
+      ``requested_reviewers`` until a *formal* review is submitted, so without
+      the gate the unified PR brief runs a full (and, on opus, expensive) review
+      on EVERY tick — a 401/transient failure or a comment-only verdict never
+      clears the request, and ``nowait=True`` dispatches never advance the
+      attempt-ceiling, so the loop is unbounded. The marker is applied on
+      sticky-success (``_mark_mention_done``); honoring it here makes that site's
+      comment true ("evita re-dispatch redundante no próximo tick"). A human
+      removes ``~mention:processado`` to force a re-review.
+    * **assignee (PR)** — NOT filtered by ``~mention:processado``.
+      Discovery-by-state: ``assignee`` routes to ``work_merge`` which legitimately
+      retries (CI pending, threads open) until merged/closed terminates it.
     * **assignee (issue)** — NOT filtered by ``~mention:processado``, but IS
       gated by ``~workflow:*``: issues already owned by the pipeline (gate label
       present) are skipped to prevent EVENTS panel flooding (issue #483).
@@ -549,13 +559,14 @@ async def _collect_mention_triggers(
 
     # ---- 2-4. Sticky triggers (assignee / reviewer / body) --------------
     #
-    # Antes da refactor "PR é o quadro", os sticky triggers eram gateados por
-    # ``~mention:processado`` para impedir re-disparo cross-tick. Isso é
-    # incompatível com o princípio de descoberta-por-estado: o worker abre a
-    # PR e decide pelo estado real (HEAD vs último review, threads abertas,
-    # comentários sem resposta) — se nada precisa ser feito, o brief unificado
-    # comenta curto e sai. Já o trigger ``body`` continua gateado porque o
-    # corpo é estático: sem o marker ele re-disparia infinitamente.
+    # ``assignee`` (PR/issue) segue descoberta-por-estado: o worker abre a PR e
+    # decide pelo estado real (HEAD vs último review, threads abertas) — assignee
+    # roteia p/ ``work_merge``, que legitimamente re-tenta até merge/close.
+    # ``reviewer`` e ``body`` SÃO gateados por ``~mention:processado``: ambos são
+    # one-shot (o request de review e o corpo são estáticos) e, sem o gate,
+    # re-disparariam um review/brief completo a cada tick — caro e ilimitado
+    # (o ``nowait=True`` nem avança o attempt-ceiling). O humano remove o marker
+    # para forçar re-handle.
     async def _poll(label: str, coro) -> list:
         try:
             return list(await coro)
@@ -581,6 +592,13 @@ async def _collect_mention_triggers(
             )
         )
     for pr in await _poll("review requests", monitor.forge.list_prs_with_review_requests(gh_login)):
+        # Gate one-shot review requests by ~mention:processado: the request
+        # lingers on the PR until a formal review is submitted, so re-firing
+        # every tick would re-run a full (expensive) review indefinitely. The
+        # marker is applied on sticky-success; a human removes it to re-review.
+        if MENTION_DONE in pr.labels:
+            log_routing_dropped(target_kind="pr", target=pr.number, reason="reviewer_already_processed")
+            continue
         triggers.append(
             MentionTrigger(
                 trigger_type="reviewer", pr=pr, trigger_author=gh_login,

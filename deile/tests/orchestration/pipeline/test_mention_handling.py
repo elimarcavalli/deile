@@ -398,21 +398,19 @@ class TestProcessMentionsCrossTickDedup:
         assert monitor.stats.mentions_processed == 1
         github.add_labels.assert_called_once_with("pr", 77, [MENTION_DONE])
 
-    async def test_reviewer_with_mention_done_still_dispatches(self):
-        """Após o refactor "PR é o quadro", o marker ``~mention:processado``
-        em uma PR reviewer NÃO bloqueia o re-dispatch. O brief unificado
-        agora descobre o estado real (se review está APPROVED em HEAD igual,
-        ele comenta curto "sem novidade" e o pipeline re-marca pra cortar
-        churn natural). Mudanças reais de estado (HEAD novo) voltam a
-        entrar pelo trigger natural."""
+    async def test_reviewer_with_mention_done_is_skipped(self):
+        """Um request de review é one-shot: o marker ``~mention:processado``
+        BLOQUEIA o re-dispatch. Sem isso, o request — que persiste na PR até um
+        review formal ser submetido — re-dispararia um review opus completo a
+        cada tick (caro e ilimitado; ``nowait`` nem avança o attempt-ceiling).
+        O humano remove o marker para forçar re-review."""
         monitor, github, notifier = _make_monitor()
         github.list_prs_with_review_requests = AsyncMock(
             return_value=[_pr_ref(88, labels=(MENTION_DONE,))]
         )
         await monitor._process_mentions()
-        assert monitor.stats.mentions_processed == 1
-        # PR sticky-success agora SEMPRE marca (não há mais exceção pra reviewer).
-        github.add_labels.assert_called_once_with("pr", 88, [MENTION_DONE])
+        assert monitor.stats.mentions_processed == 0
+        github.add_labels.assert_not_called()
 
     async def test_body_mention_already_processed_is_skipped(self):
         monitor, github, notifier = _make_monitor()

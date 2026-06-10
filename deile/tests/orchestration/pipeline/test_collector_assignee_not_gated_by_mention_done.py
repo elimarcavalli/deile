@@ -1,15 +1,19 @@
-"""Sticky triggers PR (assignee/reviewer) deixaram de ser gateados por
-``~mention:processado`` (Decisão #45 — "PR é o quadro").
+"""Gating dos sticky triggers de PR por ``~mention:processado``.
 
-A racional anterior — gatear sticky-PR pelo marker pra evitar storm cross-tick
-— foi substituída por descoberta-por-estado: o brief unificado abre a PR, vê
-o estado real (HEAD vs último review, threads abertas) e comenta curto "sem
-novidade" se nada precisa ser feito. O pipeline marca sticky-success com o
-marker para evitar churn redundante; mudanças reais (HEAD novo) re-armam via
-o trigger natural.
+- **assignee (PR/issue)** — NÃO gateado: roteia para ``work_merge``, que
+  legitimamente re-tenta (CI pendente, threads) até merge/close terminar
+  (descoberta-por-estado, Decisão #45).
+- **reviewer (PR)** — GATEADO: um request de review é one-shot. O GitHub
+  mantém ``deile-one`` em ``requested_reviewers`` até um review *formal* ser
+  submetido, então sem o gate o brief unificado re-rodaria um review completo
+  (caro, em opus) a CADA tick — um 401/falha transiente ou veredito só-comentário
+  nunca limpa o request, e dispatches ``nowait=True`` nem avançam o
+  attempt-ceiling, deixando o loop ilimitado. O humano remove o marker para
+  forçar re-review.
+- **body** — GATEADO: corpo é estático e re-dispararia infinitamente sem o
+  marker.
 
-O gate em **body** continua ATIVO — corpo é estático e re-dispararia
-infinitamente sem o marker. Esse teste valida ambos os comportamentos.
+Esse teste valida os três comportamentos.
 """
 
 from __future__ import annotations
@@ -83,13 +87,6 @@ class TestStickyPrTriggersUngated:
         assert triggers[0].pr is not None
         assert triggers[0].pr.number == 77
 
-    async def test_reviewer_pr_with_mention_done_still_arms(self):
-        """Idem para requested-reviewer em PR."""
-        monitor = _make_monitor(review_request_prs=[_pr(88, labels=(MENTION_DONE,))])
-        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
-        assert len(triggers) == 1
-        assert triggers[0].trigger_type == "reviewer"
-
     async def test_assignee_issue_with_mention_done_still_arms(self):
         """Assignee em ISSUE também não é mais gateado pelo marker — a
         injeção em ``~workflow:nova`` (caminho de routing) cuida da
@@ -99,6 +96,31 @@ class TestStickyPrTriggersUngated:
         assert len(triggers) == 1
         assert triggers[0].issue is not None
         assert triggers[0].issue.number == 42
+
+
+class TestReviewerTriggerGated:
+    """``reviewer`` (PR) É gateado por ``~mention:processado``.
+
+    Regressão do loop de re-dispatch: com ``deile-one`` requisitado como
+    reviewer, o request persiste na PR até um review formal ser submetido. Sem
+    o gate, todo tick re-dispararia um review opus completo (custo ilimitado;
+    ``nowait=True`` nem avança o attempt-ceiling). O marker, aplicado em
+    sticky-success, corta o re-dispatch; o humano o remove para re-revisar.
+    """
+
+    async def test_reviewer_pr_with_mention_done_is_skipped(self):
+        monitor = _make_monitor(review_request_prs=[_pr(88, labels=(MENTION_DONE,))])
+        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
+        assert triggers == []
+
+    async def test_reviewer_pr_without_mention_done_still_arms(self):
+        """O PRIMEIRO request (sem o marker) dispara o review normalmente."""
+        monitor = _make_monitor(review_request_prs=[_pr(88)])
+        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
+        assert len(triggers) == 1
+        assert triggers[0].trigger_type == "reviewer"
+        assert triggers[0].pr is not None
+        assert triggers[0].pr.number == 88
 
 
 class TestBodyTriggerStillGated:
