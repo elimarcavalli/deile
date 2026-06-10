@@ -42,6 +42,7 @@ def render_brief_cmds(
     branch: str,
     main: str,
     issue_template: str = "feature_request.md",
+    close_keyword: str = "Closes",
 ) -> Mapping[str, str]:
     """Return ``{placeholder: command}`` for *config*.
 
@@ -53,6 +54,11 @@ def render_brief_cmds(
     ``issue_template`` only affects the ``fetch_template_cmd`` placeholder
     (used by the critique/refine briefs). The default matches the most
     common path; the renderer never hardcodes a fixed template name.
+
+    ``close_keyword`` is the issue-closing verb baked into ``create_pr_cmd``'s
+    body (``Closes #N``). Spikes — whose deliverable is measured evidence, not
+    production code — pass ``"Refs"`` so the PR references the issue without
+    auto-closing it on merge (a half-proven spike must never close its issue).
     """
     if config.kind is ForgeKind.GITHUB:
         return _github_cmds(
@@ -62,6 +68,7 @@ def render_brief_cmds(
             branch=branch,
             main=main,
             issue_template=issue_template,
+            close_keyword=close_keyword,
         )
     return _gitlab_cmds(
         project_path=config.project_path,
@@ -71,6 +78,7 @@ def render_brief_cmds(
         branch=branch,
         main=main,
         issue_template=issue_template,
+        close_keyword=close_keyword,
     )
 
 
@@ -82,6 +90,7 @@ def _github_cmds(
     branch: str,
     main: str,
     issue_template: str,
+    close_keyword: str,
 ) -> Mapping[str, str]:
     """Concrete ``gh`` snippets — identical to the legacy literal commands
     that lived inline in the brief templates. Preserves byte-for-byte
@@ -93,8 +102,14 @@ def _github_cmds(
         "view_issue_cmd": f"gh issue view {number} --repo {project_path} --comments",
         "create_pr_cmd": (
             f'gh pr create --repo {project_path} --base {main} --head {branch} '
-            f'--title "<título coerente>" --body "<resumo>. Closes #{number}."'
+            f'--title "<título coerente>" --body "<resumo>. {close_keyword} #{number}."'
         ),
+        # Keyed by ``branch`` (not ``number``): in the implement flow the PR is
+        # created fresh, so its number is unknown when the DoD block tells the
+        # worker to mark it draft — but the head branch is always known. ``gh pr
+        # ready`` accepts ``[<number> | <url> | <branch>]``, matching the branch
+        # lookup already used by ``check_pr_cmd``.
+        "mark_draft_cmd": f"gh pr ready {branch} --repo {project_path} --undo",
         "check_pr_cmd": f"gh pr view {branch} --repo {project_path} --json url -q .url",
         "checkout_pr_cmd": f"gh pr checkout {number}",
         "merge_cmd": (
@@ -154,6 +169,7 @@ def _gitlab_cmds(
     branch: str,
     main: str,
     issue_template: str,
+    close_keyword: str,
 ) -> Mapping[str, str]:
     """Concrete ``glab`` + GitLab REST snippets.
 
@@ -169,8 +185,13 @@ def _gitlab_cmds(
         "create_pr_cmd": (
             f'glab mr create -R {project_path} --target-branch {main} '
             f'--source-branch {branch} -t "<título coerente>" '
-            f'-d "<resumo>. Closes #{number}."'
+            f'-d "<resumo>. {close_keyword} #{number}."'
         ),
+        # Keyed by ``branch`` like ``check_pr_cmd`` above: the MR iid is unknown
+        # when the implement DoD block marks the just-created MR draft, so the
+        # REST path (which needs the iid) does not fit here. ``glab mr update``
+        # accepts a branch selector and exposes ``--draft`` natively.
+        "mark_draft_cmd": f"glab mr update {branch} -R {project_path} --draft",
         "check_pr_cmd": (
             f"glab mr view {branch} -R {project_path} -F json | jq -r .web_url"
         ),

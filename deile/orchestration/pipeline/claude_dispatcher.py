@@ -166,7 +166,7 @@ IMPLEMENT_PROMPT_TEMPLATE = textwrap.dedent(
     - Faça commits pequenos e atômicos.
     - Adicione testes ANTES de finalizar; rode `pytest` e ajuste até 100% pass.
     - Push do branch e abra {pr_noun} via `{create_cmd}`. Use o título e corpo
-      coerentes com a issue. Adicione `Closes #{number}` no corpo.
+      coerentes com a issue. Adicione `{close_keyword} #{number}` no corpo.
     - Quando terminar, responda EXATAMENTE com a URL da {pr_noun} aberta numa única
       linha (ex: {pr_url_pattern}). Sem prosa adicional.
 
@@ -237,6 +237,15 @@ def render_implement_prompt(
     # snippet, which would over-specify and confuse the agent.
     from deile.orchestration.forge.base import ForgeKind
     create_cmd = "gh pr create" if cfg.kind is ForgeKind.GITHUB else "glab mr create"
+    # Spikes deliver measured evidence, not production code — their PR must
+    # ``Refs`` (never ``Closes``) the issue, mirroring the pipeline implement
+    # brief. This legacy local path (``ClaudeImplementer`` / ``claude -p`` on the
+    # host) does not carry the full Definition-of-Done evidence block — that
+    # lives in :mod:`deile.orchestration.pipeline.briefs` for the in-cluster
+    # worker path — but it shares the same close-keyword safety so a spike run
+    # locally never auto-closes a half-proven issue.
+    from deile.orchestration.pipeline.briefs import _close_keyword
+    close_keyword = _close_keyword(title, issue_body)
     return IMPLEMENT_PROMPT_TEMPLATE.format(
         repo=repo,
         number=number,
@@ -244,6 +253,7 @@ def render_implement_prompt(
         issue_body=issue_body.strip()[:ISSUE_BODY_MAX_CHARS],
         pr_noun=pr_noun,
         create_cmd=create_cmd,
+        close_keyword=close_keyword,
         pr_url_pattern=cmds["pr_url_pattern"],
     )
 

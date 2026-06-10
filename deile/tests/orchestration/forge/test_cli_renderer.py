@@ -19,6 +19,40 @@ def test_github_starts_with_gh(github_config):
     assert cmds["forge_name"] == "GitHub"
 
 
+def test_create_pr_cmd_defaults_to_closes(github_config):
+    """Default close_keyword keeps the legacy ``Closes #N`` (byte-for-byte)."""
+    cmds = render_brief_cmds(github_config, number=42, branch="auto/issue-42", main="main")
+    assert "Closes #42" in cmds["create_pr_cmd"]
+
+
+def test_create_pr_cmd_refs_when_spike_keyword(github_config):
+    """A spike passes ``close_keyword="Refs"`` so the PR never auto-closes the issue."""
+    cmds = render_brief_cmds(
+        github_config, number=42, branch="auto/issue-42", main="main",
+        close_keyword="Refs",
+    )
+    assert "Refs #42" in cmds["create_pr_cmd"]
+    assert "Closes #42" not in cmds["create_pr_cmd"]
+
+
+def test_github_mark_draft_cmd(github_config):
+    # Keyed by branch (not issue/PR number): the implement flow creates the PR
+    # fresh, so only the head branch is known when marking it draft.
+    cmds = render_brief_cmds(github_config, number=42, branch="auto/issue-42", main="main")
+    assert cmds["mark_draft_cmd"] == "gh pr ready auto/issue-42 --repo owner/repo --undo"
+
+
+def test_gitlab_close_keyword_and_draft(gitlab_config):
+    cmds = render_brief_cmds(
+        gitlab_config, number=7, branch="auto/issue-7", main="main", close_keyword="Refs",
+    )
+    assert "Refs #7" in cmds["create_pr_cmd"]
+    assert "Closes #7" not in cmds["create_pr_cmd"]
+    # Branch-keyed (the MR iid is unknown when the implement DoD block toggles draft).
+    assert cmds["mark_draft_cmd"].startswith("glab mr update auto/issue-7")
+    assert "--draft" in cmds["mark_draft_cmd"]
+
+
 def test_gitlab_starts_with_glab(gitlab_config):
     cmds = render_brief_cmds(gitlab_config, number=7, branch="auto/issue-7", main="main")
     assert cmds["clone_cmd"].startswith("glab ")
