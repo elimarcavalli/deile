@@ -1486,11 +1486,25 @@ def _workspace_is_stale(
     return (now - hb) >= threshold_s
 
 
-def _has_active_lease(workspace: Path) -> bool:
-    """True se ``<workspace>/.lease.json`` está presente e com heartbeat dentro
-    do TTL. Usado como guarda de segurança imediatamente antes de remover um
-    workdir (fix #520 — TOCTOU: um dispatch pode adquirir lease entre o stale
-    scan e o rmtree).
+def _has_active_lease(
+    workspace: Path, *, alive_pods: Optional[set] = None,
+) -> bool:
+    """True se ``<workspace>/.lease.json`` está presente e genuinamente ativo.
+
+    Usado como guarda de segurança imediatamente antes de remover um workdir
+    (fix #520 — TOCTOU: um dispatch pode adquirir lease entre o stale scan e o
+    rmtree). Um lease é considerado ativo quando o heartbeat está dentro do TTL
+    **e** o pod dono ainda está vivo segundo o registro de presença (issue
+    #495): um heartbeat fresco vindo de um pod já morto é justamente o
+    falso-positivo que a detecção por presença existe para derrubar — sem este
+    cruzamento o guard re-admite o workdir de um pod morto que :func:`_workspace_is_stale`
+    marcou como stale.
+
+    Args:
+        workspace: diretório do workdir candidato a remoção.
+        alive_pods: conjunto de pods vivos (``_get_alive_pods``). ``None`` =
+            presença não inicializada → recai apenas no TTL de heartbeat
+            (comportamento original do fix #520).
 
     Conservador: qualquer erro de I/O → False (não bloqueia remoção de lixo
     que não conseguimos ler; a função é uma camada extra, não a única).
@@ -1501,7 +1515,14 @@ def _has_active_lease(workspace: Path) -> bool:
     try:
         data = json.loads(lease_path.read_text(encoding="utf-8"))
         age = time.time() - float(data.get("heartbeat_at", 0))
-        return age < _LEASE_TTL_S
+        if age >= _LEASE_TTL_S:
+            return False
+        # Heartbeat fresco, mas o pod dono pode estar morto: presença manda.
+        if alive_pods is not None:
+            pod = data.get("pod", "")
+            if pod and pod not in alive_pods:
+                return False
+        return True
     except (OSError, json.JSONDecodeError, ValueError):
         return False
 
@@ -1653,7 +1674,9 @@ def _cleanup_stale_workspaces(
         # Fix #520 — re-verifica o lease imediatamente antes do rmtree para
         # evitar TOCTOU: um dispatch pode ter adquirido o lease entre o scan
         # acima e este ponto (latência de I/O, preempção de thread, etc.).
-        if _has_active_lease(child):
+        # Passa ``alive_pods`` para que um heartbeat fresco de um pod já morto
+        # (issue #495) não re-admita o workdir que o scan marcou como stale.
+        if _has_active_lease(child, alive_pods=alive_pods):
             logger.info(
                 "workspace cleanup skipped task_id=%s — lease ativo adquirido "
                 "após scan stale (TOCTOU guard, fix #520)", child.name,
