@@ -950,9 +950,16 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
         return
     # Shard filter: only consider issues whose hash falls in our shard.
     # Sort by priority so the most urgent issue is critiqued first.
+    # ``~workflow:bloqueada`` é um hard-block: congela a issue em TODOS os
+    # estágios (não só o auto-resume). Sem esta exclusão, uma issue ``nova`` que
+    # um humano travou ainda seria critecada uma vez (nova→em_revisao) — gasto
+    # não-intencional — antes de os selectors downstream (refine/implement) a
+    # congelarem. Espelha o filtro já presente no reconcile e no implement.
     candidates = [
         i for i in sort_by_priority(issues)
-        if i.batch_id is None and monitor.identity.owns(i.title)
+        if i.batch_id is None
+        and monitor.identity.owns(i.title)
+        and WORKFLOW_BLOCKED not in i.labels
     ]
     if not candidates:
         return

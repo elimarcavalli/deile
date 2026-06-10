@@ -332,6 +332,21 @@ class TestCritique:
         removed = [c.args[2] for c in monitor.github.remove_labels.await_args_list if c.args[1] == 1]
         assert any(REFINAR in lst for lst in removed)
 
+    async def test_blocked_nova_issue_is_not_critiqued(self):
+        """Hard-block: uma issue ``~workflow:nova`` que também carrega
+        ``~workflow:bloqueada`` NÃO é critecada — sem transição nova→em_revisao,
+        sem dispatch (gasto não-intencional). O label congela a issue em TODOS
+        os estágios, não só no auto-resume."""
+        monitor, _, _ = _make_monitor(
+            label_map={WORKFLOW_NEW: [_issue(98, "feature", WORKFLOW_BLOCKED)]},
+            worker_responses=[_resp("VEREDITO: CLARO")],
+        )
+        await monitor._review_one_new_issue()
+        # Sem o filtro, a issue transicionaria nova→em_revisao (1º passo da
+        # crítica). A ausência de QUALQUER transição para #98 prova que ela foi
+        # excluída dos candidatos antes de qualquer processamento/dispatch.
+        assert not any(n == 98 for (n, _f, _to) in _transitions(monitor.github))
+
     async def test_poor_feature_goes_to_arquitetura(self):
         monitor, _, _ = _make_monitor(
             label_map={WORKFLOW_NEW: [_issue(2, "feature")]},
