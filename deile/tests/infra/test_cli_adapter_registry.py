@@ -40,6 +40,25 @@ def test_workresult_defaults():
     assert wr.result_text == ""
     assert wr.error_code is None
     assert wr.cost_usd is None
+    # Contrato de uso central (issue #638) — retrocompat: defaults vazios.
+    assert wr.tokens_by_model == {}
+    assert wr.model is None
+
+
+def test_workresult_usage_fields_are_settable():
+    """Os campos novos de uso (issue #638) são preenchíveis e independentes por
+    instância (default_factory evita dict compartilhado entre WorkResults)."""
+    b = base.WorkResult(
+        ok=True,
+        tokens_by_model={"deepseek": {"in": 10, "out": 5, "cache_read": 0,
+                                      "cache_write": 0}},
+        model="deepseek",
+    )
+    assert b.tokens_by_model == {
+        "deepseek": {"in": 10, "out": 5, "cache_read": 0, "cache_write": 0}}
+    assert b.model == "deepseek"
+    # default_factory (não default mutável): cada WorkResult novo tem dict próprio.
+    assert base.WorkResult(ok=True).tokens_by_model == {}
 
 
 def test_modelinfo_as_dict_fills_label_from_id():

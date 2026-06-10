@@ -18,7 +18,7 @@ editado. Não importa nada de CLI concreto nem toca rede/filesystem.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Protocol, Tuple, runtime_checkable
+from typing import Dict, List, Literal, Optional, Protocol, Tuple, runtime_checkable
 
 #: Modo de autenticação: ``env`` = API key (não expira; automação);
 #: ``oauth_file`` = credencial OAuth em arquivo (claude/codex/antigravity;
@@ -37,12 +37,25 @@ class WorkResult:
     ``ok`` é a leitura do adapter; o servidor ainda aplica gate pós-execução
     (commit/push/testes) antes de declarar sucesso — exit-code não é confiável
     (§1.6). ``cost_usd`` só presente para claude/aider.
+
+    Observabilidade de custo central (issue #638) — campos estruturados de uso,
+    preenchidos pelo servidor a partir do parser único ``fleet_progress_parse``
+    (não pelo adapter, que tem múltiplos pontos de retorno). Viajam na resposta
+    do ``/v1/dispatch`` para o pipeline persistir 1 registro por modelo no
+    ``UsageRepository`` central (independe de pod/PVC):
+
+    * ``tokens_by_model`` — ``{model_id: {in,out,cache_read,cache_write}}``;
+      um dispatch multi-modelo produz N entradas → N registros centrais.
+    * ``model`` — model-id predominante do dispatch (anti ``unknown``: cai no
+      ``cli_model`` do payload quando o CLI não emite modelo no stdout).
     """
 
     ok: bool
     result_text: str = ""
     error_code: Optional[str] = None
     cost_usd: Optional[float] = None
+    tokens_by_model: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    model: Optional[str] = None
 
 
 @dataclass(frozen=True)
