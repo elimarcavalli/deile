@@ -5,16 +5,24 @@ Agrega todos os worker-kinds (claude, deile, opencode, codex, qwen, goose,
 aider) numa visão única ``worker-kind × modelo`` — tokens in/out/cache + custo.
 O ``session_tokens_audit.py`` legado cobre apenas o claude-worker.
 
-Camadas (SRP): coleta (I/O via ``kubectl exec``) → normalização
-(``jsonl_cost`` como fonte única de custo, #445) → apresentação (Rich, adaptativo
-ao terminal — princípio 15).
+Fonte PRIMÁRIA (issue #638): o **store central** ``~/.deile/db/usage.db`` —
+o pipeline grava 1 registro por modelo por dispatch da frota CLI (push no
+momento do dispatch). Independe de pod estar de pé: sobrevive a ``replicas=0``
+(scale-to-zero) e a ``force-delete`` de pod. O pull-via-``kubectl exec``
+(``.progress``/ledger por-PVC) vira drill-down de debug local (``--source pods``).
+
+Camadas (SRP): coleta (store central SQLite local + I/O via ``kubectl exec`` para
+os workers núcleo) → normalização (``jsonl_cost`` como fonte única de custo, #445)
+→ apresentação (Rich, adaptativo ao terminal — princípio 15).
 
 Descoberta da frota: ``cli_adapters.ADAPTERS`` é a fonte de truth — registrar um
 adapter novo inclui o worker automaticamente.
 
 Uso::
 
-    python3 infra/k8s/fleet_tokens_audit.py                 # tabela + modo interativo
+    python3 infra/k8s/fleet_tokens_audit.py                 # central + pods, interativo
+    python3 infra/k8s/fleet_tokens_audit.py --source central # só o store central (sem pods)
+    python3 infra/k8s/fleet_tokens_audit.py --source pods    # só pull-via-exec (debug)
     python3 infra/k8s/fleet_tokens_audit.py --by-worker      # resumo por worker
     python3 infra/k8s/fleet_tokens_audit.py --top 40         # 40 sessões mais caras
     python3 infra/k8s/fleet_tokens_audit.py --last 20        # 20 mais recentes
@@ -29,13 +37,12 @@ Interativo: número+Enter = detalhe; ``w`` = by-worker/sessões; ``s`` = ordena�
 
 Fontes de token por worker:
 
-* claude  → ``~/.claude/projects/-home-claude-work-*/*.jsonl``
-* opencode→ ``<root>/.progress/<task>.stdout.log`` NDJSON ``step_finish`` (custo nativo)
-* codex   → ``<root>/.progress/<task>.stdout.log`` ``token_count``/``turn.completed``
-* qwen    → ``<root>/.progress/<task>.stdout.log`` ``result.stats.models``
-* goose   → ``<root>/.progress/<task>.stdout.log`` ``metadata.total_tokens``
-* aider   → ``<root>/.progress/<task>.stdout.log`` texto "Tokens:"/"Cost:"
-* deile   → ``~/.deile/db/usage.db`` SQLite ``usage_records``
+* **frota CLI** → store central ``~/.deile/db/usage.db`` (PRIMÁRIO, #638); para
+  drill-down (``--source pods``), o ``<root>/.progress/<task>.stdout.log`` por PVC:
+  opencode NDJSON ``step_finish``, codex ``token_count``, qwen ``result.stats.models``,
+  goose ``metadata.total_tokens``, aider texto "Tokens:"/"Cost:".
+* claude  → ``~/.claude/projects/-home-claude-work-*/*.jsonl`` (via pods)
+* deile   → ``~/.deile/db/usage.db`` SQLite ``usage_records`` no PVC do pod (via pods)
 """
 
 from __future__ import annotations
@@ -82,6 +89,77 @@ BRT = timezone(timedelta(hours=-3))
 
 #: Núcleo: não vêm do registro de adapters CLI.
 CORE_WORKERS = ("claude", "deile")
+
+#: Store central de custo da frota (issue #638) — SQLite local do pipeline.
+#: O pipeline grava 1 registro por modelo por dispatch (provider_id=worker,
+#: tier=stage, session_id=channel_id, model_id=modelo). Esta é a fonte PRIMÁRIA
+#: do ``[T]okens``: independe de pod estar de pé (sobrevive a replicas=0 e
+#: force-delete). O pull-via-kubectl-exec (``.progress``/ledger PVC) vira
+#: drill-down de debug (``--source pods``).
+_CENTRAL_DB_DEFAULT = os.path.join(
+    os.path.expanduser("~"), ".deile", "db", "usage.db")
+
+
+def _central_db_path() -> str:
+    """Path do store central de custo (override por ``DEILE_USAGE_DB_PATH``)."""
+    return os.environ.get("DEILE_USAGE_DB_PATH", "").strip() or _CENTRAL_DB_DEFAULT
+
+
+def collect_central_store(db_path: str | None = None,
+                          since_mtime: float = 0.0) -> list:
+    """Lê o store central e devolve sessões normalizadas (fonte PRIMÁRIA, #638).
+
+    Agrupa ``usage_records`` por ``(provider_id, session_id)`` — ``provider_id`` é
+    o worker-kind real da frota, ``session_id`` é o channel_id do dispatch
+    (``pipeline-issue-<N>`` / ``pipeline-pr-<N>``, opcionalmente com ``#<task_id>``
+    para fire-and-forget). ``tier`` carrega o stage. O custo já é nativo (gravado
+    pelo pipeline via ``jsonl_cost``), então ``native_cost`` = soma de ``cost_usd``.
+
+    Lê o SQLite DIRETO no host (sem ``kubectl exec``): o store é local ao
+    pipeline/painel. Sessões dos workers núcleo (``deile``/``claude``) NÃO entram
+    aqui — só a frota CLI grava central; o núcleo é coletado via pods.
+    """
+    import sqlite3
+    db = db_path or _central_db_path()
+    if not os.path.isfile(db):
+        return []
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT timestamp, provider_id, model_id, tier, session_id, "
+            "prompt_tokens, completion_tokens, cached_tokens, cost_usd "
+            "FROM usage_records ORDER BY timestamp").fetchall()
+        con.close()
+    except Exception:  # noqa: BLE001 — store indisponível/corrompido → sem central
+        return []
+    sessions: dict = {}
+    for r in rows:
+        worker = (r["provider_id"] or "").strip()
+        # Núcleo é coletado via pods (claude JSONL / deile SQLite do pod);
+        # não duplicar aqui (o deile-worker grava no SQLite do PRÓPRIO pod).
+        if not worker or worker in CORE_WORKERS:
+            continue
+        if since_mtime and r["timestamp"] < since_mtime:
+            continue
+        sid = r["session_id"] or "?"
+        key = (worker, sid)
+        s = sessions.get(key)
+        if s is None:
+            s = {"worker": worker, "task_id": sid, "source": "<central-store>",
+                 "models": {}, "native_cost": 0.0, "first_ts": None,
+                 "last_ts": None, "brief": None, "mtime": r["timestamp"],
+                 "stage": r["tier"] or "", "central": True}
+            sessions[key] = s
+        model = r["model_id"] or "unknown"
+        mm = s["models"].setdefault(model, {"in": 0, "out": 0, "cc": 0, "cr": 0})
+        mm["in"] += int(r["prompt_tokens"] or 0)
+        mm["out"] += int(r["completion_tokens"] or 0)
+        mm["cr"] += int(r["cached_tokens"] or 0)
+        s["native_cost"] = (s["native_cost"] or 0.0) + float(r["cost_usd"] or 0.0)
+        s["mtime"] = max(s["mtime"] or 0, r["timestamp"])
+    return [s for s in sessions.values()
+            if any(sum(v.values()) > 0 for v in s["models"].values())]
 
 
 def _iso_brt(iso_str: str) -> str:
@@ -597,7 +675,8 @@ def enrich(sessions: list, collectors: dict) -> list:
     """Calcula custo por modelo + totais de cada sessão (camada de normalização)."""
     now = datetime.now(timezone.utc)
     for s in sessions:
-        coll = collectors[s["worker"]]
+        # Fallback genérico para kind do store central não mais registrado.
+        coll = collectors.get(s["worker"]) or collector_for(s["worker"], {})
         tot = {"in": 0, "out": 0, "cc": 0, "cr": 0}
         per_model = {}
         cost = 0.0
@@ -609,10 +688,14 @@ def enrich(sessions: list, collectors: dict) -> list:
             for k in tot:
                 tot[k] += tk.get(k, 0)
             per_model[model] = {**tk, "cost": c}
-        # Custo nativo do CLI prevalece sobre o estimado.
+        # Custo nativo prevalece sobre o estimado. Sessões do store central
+        # (issue #638) já trazem o custo computado pelo pipeline via jsonl_cost
+        # (fonte única de preço) — é "nativo" para fins de exibição (✓), qualquer
+        # que seja o worker. Senão, só workers que reportam custo nativo do CLI.
         native = s.get("native_cost")
         s["estimated_cost_usd"] = cost
-        if coll.uses_native_cost and isinstance(native, (int, float)) and native > 0:
+        prefer_native = s.get("central") or coll.uses_native_cost
+        if prefer_native and isinstance(native, (int, float)) and native > 0:
             s["cost_usd"] = float(native)
             s["cost_basis"] = "nativo"
         else:
@@ -883,9 +966,9 @@ def export(sessions: list, outdir: str):
     return jpath, cpath
 
 
-def collect_fleet(kubectl: str, ns: str, kinds: list, collectors: dict,
-                  since_mtime: float = 0.0) -> list:
-    """Varre cada worker da frota (kubectl exec) e devolve sessões enriquecidas."""
+def _collect_pod_sessions(kubectl: str, ns: str, kinds: list,
+                          since_mtime: float = 0.0) -> list:
+    """Varre cada worker via ``kubectl exec`` (raw, sem enrich)."""
     all_sessions = []
     for kind in kinds:
         pod = resolve_pod_for_worker(kubectl, ns, kind)
@@ -897,7 +980,59 @@ def collect_fleet(kubectl: str, ns: str, kinds: list, collectors: dict,
         sess = fetch_worker_sessions(kubectl, ns, kind, pod, since_mtime)
         print(f"    {len(sess)} sessões com tokens.", file=sys.stderr)
         all_sessions.extend(sess)
-    return enrich(all_sessions, collectors)
+    return all_sessions
+
+
+def collect_fleet(kubectl: str, ns: str, kinds: list, collectors: dict,
+                  since_mtime: float = 0.0) -> list:
+    """Varre cada worker da frota (kubectl exec) e devolve sessões enriquecidas."""
+    return enrich(_collect_pod_sessions(kubectl, ns, kinds, since_mtime), collectors)
+
+
+def collect_all(kubectl: str, ns: str, kinds: list, collectors: dict,
+                *, source: str = "both", since_mtime: float = 0.0,
+                db_path: str | None = None) -> list:
+    """Coleta unificada com o STORE CENTRAL como fonte primária (issue #638).
+
+    ``source``:
+
+    * ``central`` — só o store central (independe de pod; sobrevive a replicas=0
+      e force-delete). Workers núcleo (claude/deile) não escrevem central → não
+      aparecem nesse modo.
+    * ``pods`` — só o pull-via-``kubectl exec`` (``.progress``/ledger PVC) —
+      drill-down de debug local; exige pods de pé.
+    * ``both`` (default) — central primário + pods para os workers NÚCLEO
+      (claude/deile, que não têm central) e para os CLI-kinds AUSENTES do central
+      (sem dispatch via pipeline ainda). Central prevalece por
+      ``(worker, session_id)``: a sessão do PVC do mesmo dispatch é suprimida.
+    """
+    central = []
+    if source in ("central", "both"):
+        central = collect_central_store(db_path=db_path, since_mtime=since_mtime)
+        print(f"• store central: {len(central)} sessões (fonte primária).",
+              file=sys.stderr)
+
+    pods = []
+    if source in ("pods", "both"):
+        if source == "pods":
+            pod_kinds = kinds
+        else:
+            # Central cobre a frota CLI; via pods só completamos o NÚCLEO
+            # (sem central) + CLI-kinds que ainda não têm registro central.
+            covered = {s["worker"] for s in central}
+            pod_kinds = [k for k in kinds
+                         if k in CORE_WORKERS or k not in covered]
+        if pod_kinds:
+            pods = _collect_pod_sessions(kubectl, ns, pod_kinds, since_mtime)
+
+    # Dedup central × pods por (worker, session/task) — central prevalece.
+    central_keys = {(s["worker"], s["task_id"]) for s in central}
+    merged = list(central)
+    for s in pods:
+        if (s["worker"], s["task_id"]) in central_keys:
+            continue
+        merged.append(s)
+    return enrich(merged, collectors)
 
 
 SORT_MODES = [
@@ -1163,9 +1298,16 @@ def main():
                     help="ordena por última atividade; com N, só as N mais recentes")
     ap.add_argument("--model", default=None, metavar="SLUG",
                     help="filtra sessões cujo modelo contém SLUG (substring)")
+    ap.add_argument("--source", choices=("both", "central", "pods"), default="both",
+                    help="fonte: central (store SQLite, independe de pod — #638), "
+                         "pods (kubectl exec, drill-down), both (default, central "
+                         "primário + pods para núcleo)")
     args = ap.parse_args()
 
-    kubectl = find_kubectl()
+    # O store central é LOCAL (sem kubectl). Só exigimos kubectl quando a coleta
+    # toca pods (``pods``/``both``) — assim ``--source central`` funciona com a
+    # frota inteira em replicas=0 e sem kubectl no PATH.
+    kubectl = find_kubectl() if args.source in ("pods", "both") else ""
     ns = args.namespace
     kinds = _parse_worker_filter(args.worker, fleet_worker_kinds())
     if not kinds:
@@ -1174,8 +1316,9 @@ def main():
     collectors = {k: collector_for(k, declared) for k in fleet_worker_kinds()}
     console = _console()
 
-    print(f"• namespace={ns}  workers={','.join(kinds)}", file=sys.stderr)
-    sessions = collect_fleet(kubectl, ns, kinds, collectors)
+    print(f"• namespace={ns}  workers={','.join(kinds)}  source={args.source}",
+          file=sys.stderr)
+    sessions = collect_all(kubectl, ns, kinds, collectors, source=args.source)
     sessions = filter_by_model(sessions, args.model)
     if not sessions:
         sys.exit("Nenhuma sessão com tokens encontrada na frota.")
@@ -1205,7 +1348,7 @@ def main():
 
     def refetch():
         try:
-            data = collect_fleet(kubectl, ns, kinds, collectors)
+            data = collect_all(kubectl, ns, kinds, collectors, source=args.source)
             data = filter_by_model(data, args.model)
             if last_n:
                 data.sort(key=lambda x: x.get("mtime") or 0, reverse=True)
