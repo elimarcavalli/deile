@@ -70,8 +70,13 @@ def _make_monitor(
         use_pid_lock=False,
         # Reaper desligado em test default — adiciona round-trips ao
         # forge mock que poluem call_order/error counters legacy.
-        # Tests do reaper ligam explicitamente.
+        # Tests do reaper ligam explicitamente. O reaper só fica inativo
+        # quando AMBOS os TTLs são 0 (guard em tick(): stale > 0 OR
+        # arch_hard > 0 — issue #427); o ramo sem-ledger de arch_hard varre
+        # em_refinamento/em_arquitetura via list_issues_with_label e
+        # incrementaria gh_errors extras quando o forge mock falha.
         reaper_stale_seconds=0,
+        reaper_arch_hard_seconds=0,
     )
     github = MagicMock()
     github.ensure_pipeline_labels = AsyncMock()

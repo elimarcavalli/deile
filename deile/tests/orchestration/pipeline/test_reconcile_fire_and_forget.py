@@ -510,20 +510,28 @@ class TestReaperRefineExtended:
         assert ledger.get(DispatchLedger.key_for_issue(50)) is None
 
     async def test_does_not_reap_refine_resting_without_ledger(self):
+        """Reinterpretado pela issue #427 (commit d19ff4db): SEM ledger entry
+        deixou de significar "imune ao reaper" — o ramo sem-ledger reapa
+        ``em_arquitetura``/``em_refinamento`` zumbi após ``reaper_arch_hard_seconds``
+        (2h default). O invariante que continua valendo é o DESCANSO entre passes:
+        uma issue sem dispatch em voo, ainda dentro do hard-TTL, NÃO é tocada.
+        """
         import time
 
         from deile.orchestration.pipeline.stages import reap_orphan_claims
         client = _Client()
         own = "~by:default"
-        # Issue em em_arquitetura há muito tempo, SEM ledger entry (descanso).
+        # Issue em em_arquitetura em descanso (sem ledger entry, dentro do hard-TTL).
         issue = _issue(51, "feature", WORKFLOW_ARCHITECTURE, own)
         monitor, github, _ = _make(
             client, label_map={WORKFLOW_ARCHITECTURE: [issue]},
         )
         monitor.config.reaper_stale_seconds = 60
-        github.label_applied_at = AsyncMock(return_value=int(time.time()) - 9999)
+        monitor.config.reaper_arch_hard_seconds = 7200
+        # Aplicada há 60s — muito abaixo do hard-TTL de 7200s (descanso real).
+        github.label_applied_at = AsyncMock(return_value=int(time.time()) - 60)
         await reap_orphan_claims(monitor)
-        # NÃO reapou (sem ledger entry = descanso entre passes).
+        # NÃO reapou (descanso entre passes dentro do hard-TTL).
         added = [
             lb for c in github.add_labels.await_args_list
             if c.args[1] == 51 for lb in c.args[2]
