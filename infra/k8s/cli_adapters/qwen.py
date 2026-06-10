@@ -29,7 +29,7 @@ from typing import List, Optional
 
 import _worker_core as _core
 
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
+from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult, read_brief_or_fallback
 
 logger = logging.getLogger("deile.cli_adapters.qwen")
 
@@ -101,7 +101,7 @@ class QwenAdapter(BaseCliAdapter):
         Resume (issue #445): ``--resume <session_id>`` restaura history + tool
         state em vez de re-gastar tokens do zero.
         """
-        brief_text = self._read_brief(brief_path)
+        brief_text = read_brief_or_fallback(brief_path)
         argv = ["qwen", "-p", brief_text, "--yolo", "--auth-type", "openai"]
         if resume is not None and resume.session_id:
             argv += ["--resume", resume.session_id]
@@ -109,19 +109,6 @@ class QwenAdapter(BaseCliAdapter):
             argv += ["-m", model]
         argv += ["--output-format", "json"]
         return argv
-
-    @staticmethod
-    def _read_brief(brief_path: str) -> str:
-        """Lê o brief; em falha de I/O retorna prompt mínimo."""
-        try:
-            with open(brief_path, "r", encoding="utf-8") as fh:
-                return fh.read()
-        except OSError as exc:
-            logger.warning("não consegui ler o brief %r: %s", brief_path, exc)
-            return (
-                f"Leia o brief em {brief_path} e implemente exatamente o que ele "
-                "descreve. Faça git add/commit/push das mudanças ao terminar."
-            )
 
     def env_overlay(self, *, home: str) -> dict:
         """Env do subprocess: HOME gravável + retry desatendido + supressão do aviso yolo.

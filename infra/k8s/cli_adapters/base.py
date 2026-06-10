@@ -17,8 +17,30 @@ editado. Não importa nada de CLI concreto nem toca rede/filesystem.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional, Protocol, Tuple, runtime_checkable
+
+logger = logging.getLogger(__name__)
+
+
+def read_brief_or_fallback(brief_path: str) -> str:
+    """Lê o conteúdo do brief; em falha de I/O retorna prompt mínimo.
+
+    Helper compartilhado pelos adapters que precisam materializar o brief
+    como texto antes de passar ao CLI (qwen, goose, codex, antigravity).
+    Em ``OSError`` retorna um prompt mínimo apontando para o arquivo —
+    degradação graciosa, evita que IO transitório derrube o dispatch.
+    """
+    try:
+        with open(brief_path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except OSError as exc:
+        logger.warning("não consegui ler o brief %r: %s", brief_path, exc)
+        return (
+            f"Leia o brief em {brief_path} e implemente exatamente o que ele "
+            "descreve. Faça git add/commit/push das mudanças ao terminar."
+        )
 
 #: Modo de autenticação: ``env`` = API key (não expira; automação);
 #: ``oauth_file`` = credencial OAuth em arquivo (claude/codex/antigravity;
@@ -283,4 +305,5 @@ __all__ = [
     "OAuthSpec",
     "CliAdapter",
     "BaseCliAdapter",
+    "read_brief_or_fallback",
 ]

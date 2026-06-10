@@ -29,7 +29,7 @@ from typing import List, Optional
 
 import _worker_core as _core
 
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
+from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult, read_brief_or_fallback
 
 logger = logging.getLogger("deile.cli_adapters.goose")
 
@@ -122,7 +122,7 @@ class GooseAdapter(BaseCliAdapter):
         PRIMEIRO ``/``). Sem ``/`` → só ``--model``. ``None`` → env decide.
         ``reasoning`` ignorado (sem suporte).
         """
-        brief_text = self._read_brief(brief_path)
+        brief_text = read_brief_or_fallback(brief_path)
         session_name = (resume.session_id if resume is not None else "") or task_id
         argv: List[str] = ["goose", "run"]
         if session_name:
@@ -145,19 +145,6 @@ class GooseAdapter(BaseCliAdapter):
                 argv += ["--model", model]
         argv += ["-t", brief_text]
         return argv
-
-    @staticmethod
-    def _read_brief(brief_path: str) -> str:
-        """Lê o conteúdo do brief; em falha de I/O cai num prompt mínimo."""
-        try:
-            with open(brief_path, "r", encoding="utf-8") as fh:
-                return fh.read()
-        except OSError as exc:
-            logger.warning("não consegui ler o brief %r: %s", brief_path, exc)
-            return (
-                f"Leia o brief em {brief_path} e implemente exatamente o que ele "
-                "descreve. Faça git add/commit/push das mudanças ao terminar."
-            )
 
     def env_overlay(self, *, home: str) -> dict:
         """Env do subprocess: HOME/XDG graváveis + auto-mode + keyring desligado.

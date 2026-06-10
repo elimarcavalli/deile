@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from .base import BaseCliAdapter, ModelInfo, OAuthSpec, ResumeCtx, WorkResult
+from .base import BaseCliAdapter, ModelInfo, OAuthSpec, ResumeCtx, WorkResult, read_brief_or_fallback
 
 logger = logging.getLogger("deile.cli_adapters.antigravity")
 
@@ -92,7 +92,7 @@ class _AntigravityAdapterDraft(BaseCliAdapter):
         task_id: str = "",
     ) -> List[str]:
         """Rascunho do argv ``agy`` headless — flags a confirmar contra o binário."""
-        brief_text = self._read_brief(brief_path)
+        brief_text = read_brief_or_fallback(brief_path)
         argv: List[str] = ["agy", "-p", brief_text]
         if model:
             argv += ["-m", model]
@@ -102,18 +102,6 @@ class _AntigravityAdapterDraft(BaseCliAdapter):
             "--output-format", "json",
         ]
         return argv
-
-    @staticmethod
-    def _read_brief(brief_path: str) -> str:
-        try:
-            with open(brief_path, "r", encoding="utf-8") as fh:
-                return fh.read()
-        except OSError as exc:
-            logger.warning("não consegui ler o brief %r: %s", brief_path, exc)
-            return (
-                f"Leia o brief em {brief_path} e implemente exatamente o que ele "
-                "descreve. Faça git add/commit/push das mudanças ao terminar."
-            )
 
     def env_overlay(self, *, home: str) -> dict:
         """Rascunho do env; rota de auth definitiva definida pelo spike."""
