@@ -9,7 +9,8 @@ import tempfile
 from pathlib import Path
 
 from ..core.exceptions import ValidationError
-from .base import SyncTool, ToolContext, ToolResult, ToolStatus
+from .base import (SecurityLevel, SyncTool, ToolCategory, ToolContext,
+                   ToolResult, ToolSchema, ToolStatus)
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,14 @@ class PipInstallTool(SyncTool):
 
 
 class TestRunnerTool(SyncTool):
-    """Ferramenta para execução de testes (implementação futura)"""
+    """Run a project's test suite (pytest / unittest / nose) in a subprocess.
+
+    Until this tool carried a :class:`ToolSchema` it was registered but
+    invisible to every LLM function-calling exporter (they skip tools whose
+    ``schema`` is ``None``), so the agent could never invoke it even though
+    ``validation_gate`` already treated ``run_tests`` as a real validation
+    tool. The inline schema below makes it callable.
+    """
 
     @property
     def name(self) -> str:
@@ -316,6 +324,49 @@ class TestRunnerTool(SyncTool):
     @property
     def category(self) -> str:
         return "testing"
+
+    def __init__(self) -> None:
+        super().__init__(
+            schema=ToolSchema(
+                name="run_tests",
+                description=(
+                    "Run the project's test suite in a subprocess and return "
+                    "stdout/stderr plus pass/fail status. Use after editing code "
+                    "to verify nothing regressed. Defaults to pytest against "
+                    "'tests/'; pass `test_path` to scope to a file or directory "
+                    "and `verbose=true` for per-test output (pytest only)."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "test_path": {
+                            "type": "string",
+                            "description": (
+                                "File or directory to test (e.g. "
+                                "'deile/tests/tools/'). Defaults to 'tests/'. "
+                                "Use '.' to run everything from the working dir."
+                            ),
+                        },
+                        "test_type": {
+                            "type": "string",
+                            "enum": ["pytest", "unittest", "nose"],
+                            "description": "Test runner to use. Defaults to pytest.",
+                        },
+                        "verbose": {
+                            "type": "boolean",
+                            "description": (
+                                "Add -v for per-test output (pytest only). "
+                                "Defaults to false."
+                            ),
+                        },
+                    },
+                },
+                required=[],
+                security_level=SecurityLevel.MODERATE,
+                category=ToolCategory.EXECUTION,
+                max_execution_time=300,
+            )
+        )
 
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa testes do projeto"""
