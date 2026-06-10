@@ -27,9 +27,9 @@ import json
 import logging
 from typing import List, Optional
 
-import _worker_core as _core
-
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult, read_brief_or_fallback
+from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
+                   classify_provider_cutoff, no_output_result,
+                   read_brief_or_fallback)
 
 logger = logging.getLogger("deile.cli_adapters.qwen")
 
@@ -136,14 +136,8 @@ class QwenAdapter(BaseCliAdapter):
         ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx)
         ANTES de qualquer parse para que o pipeline retome em vez de re-gastar.
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"qwen cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "qwen")):
+            return cut
 
         whole = stdout.strip()
         if whole.startswith("{"):
@@ -200,12 +194,7 @@ class QwenAdapter(BaseCliAdapter):
                 ok=True,
                 result_text="qwen concluiu sem veredito textual explícito",
             )
-        tail = (stderr or stdout)[-2000:].strip()
-        return WorkResult(
-            ok=False,
-            result_text=tail or f"qwen sem saída parseável (rc={rc})",
-            error_code="NO_OUTPUT",
-        )
+        return no_output_result(stdout, stderr, rc, "qwen")
 
     def _from_events(self, events: list) -> WorkResult:
         """WorkResult da lista de eventos do ``qwen -p``.

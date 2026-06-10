@@ -42,6 +42,48 @@ def read_brief_or_fallback(brief_path: str) -> str:
             "descreve. Faça git add/commit/push das mudanças ao terminar."
         )
 
+
+def classify_provider_cutoff(
+    stdout: str, stderr: str, cli_name: str,
+) -> Optional["WorkResult"]:
+    """Prelude anti-sangria de ``parse_output`` — provider cutoff → ``WorkResult``.
+
+    Chama ``_worker_core.classify_provider_error`` sobre stdout+stderr; se
+    bater algum padrão (402/429/insufficient/…), devolve ``WorkResult(ok=False,
+    error_code=<provider_err>, result_text=<tail or default>)``. Retorna
+    ``None`` quando não há corte de provider — o adapter segue para o parse
+    estruturado normal. Helper compartilhado por opencode/qwen/goose/codex/aider
+    (todos com este mesmo trecho verbatim antes do extra-parsing).
+    """
+    import _worker_core as _core  # lazy: _worker_core não está em sys.path no import-time dos testes
+    provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
+    if not provider_err:
+        return None
+    tail = (stderr or stdout)[-2000:].strip()
+    return WorkResult(
+        ok=False,
+        result_text=tail or f"{cli_name} cortado por provider ({provider_err})",
+        error_code=provider_err,
+    )
+
+
+def no_output_result(
+    stdout: str, stderr: str, rc: int, cli_name: str,
+) -> "WorkResult":
+    """Postlude ``NO_OUTPUT`` de ``parse_output`` — saída não-parseável.
+
+    Devolve ``WorkResult(ok=False, error_code='NO_OUTPUT',
+    result_text=<tail or default>)`` com tail de até 2000 chars do stderr/stdout.
+    Helper compartilhado por opencode/qwen/goose/codex no fim do ``parse_output``
+    quando nenhum branch estruturado casou.
+    """
+    tail = (stderr or stdout)[-2000:].strip()
+    return WorkResult(
+        ok=False,
+        result_text=tail or f"{cli_name} sem saída parseável (rc={rc})",
+        error_code="NO_OUTPUT",
+    )
+
 #: Modo de autenticação: ``env`` = API key (não expira; automação);
 #: ``oauth_file`` = credencial OAuth em arquivo (claude/codex/antigravity;
 #: exige bootstrap + refresh in-pod).
@@ -306,4 +348,6 @@ __all__ = [
     "CliAdapter",
     "BaseCliAdapter",
     "read_brief_or_fallback",
+    "classify_provider_cutoff",
+    "no_output_result",
 ]

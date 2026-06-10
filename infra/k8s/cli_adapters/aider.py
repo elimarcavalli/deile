@@ -28,9 +28,8 @@ import shutil
 import subprocess
 from typing import List, Optional
 
-import _worker_core as _core
-
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
+from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
+                   classify_provider_cutoff)
 
 logger = logging.getLogger("deile.cli_adapters.aider")
 
@@ -138,14 +137,8 @@ class AiderAdapter(BaseCliAdapter):
         ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx)
         ANTES da heurística → ``error_code`` específico para o pipeline retomar.
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"aider cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "aider")):
+            return cut
 
         combined = f"{stdout}\n{stderr}".lower()
         for marker in _ERROR_MARKERS:

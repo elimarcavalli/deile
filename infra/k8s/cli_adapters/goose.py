@@ -27,9 +27,9 @@ import logging
 import os
 from typing import List, Optional
 
-import _worker_core as _core
-
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult, read_brief_or_fallback
+from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
+                   classify_provider_cutoff, no_output_result,
+                   read_brief_or_fallback)
 
 logger = logging.getLogger("deile.cli_adapters.goose")
 
@@ -171,14 +171,8 @@ class GooseAdapter(BaseCliAdapter):
         ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx)
         ANTES do parse → ``error_code`` específico para o pipeline retomar.
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"goose cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "goose")):
+            return cut
 
         whole = stdout.strip()
         if whole.startswith("{"):
@@ -223,12 +217,7 @@ class GooseAdapter(BaseCliAdapter):
                 ok=True,
                 result_text="goose concluiu sem veredito textual explícito",
             )
-        tail = (stderr or stdout)[-2000:].strip()
-        return WorkResult(
-            ok=False,
-            result_text=tail or f"goose sem saída parseável (rc={rc})",
-            error_code="NO_OUTPUT",
-        )
+        return no_output_result(stdout, stderr, rc, "goose")
 
     def _from_obj(self, obj: dict) -> WorkResult:
         """Deriva o :class:`WorkResult` de um único objeto JSON do ``goose``."""

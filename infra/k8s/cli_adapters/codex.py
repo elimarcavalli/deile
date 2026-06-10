@@ -45,10 +45,9 @@ import subprocess
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
-import _worker_core as _core
-
 from .base import (BaseCliAdapter, ModelAuth, ModelInfo, OAuthSpec, ResumeCtx,
-                   WorkResult, read_brief_or_fallback)
+                   WorkResult, classify_provider_cutoff, no_output_result,
+                   read_brief_or_fallback)
 
 logger = logging.getLogger("deile.cli_adapters.codex")
 
@@ -208,14 +207,8 @@ class CodexAdapter(BaseCliAdapter):
         conexão) ANTES da heurística — retorna ``error_code`` específico, nunca
         "conclusão limpa", para o pipeline retomar o trabalho parcial.
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"codex cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "codex")):
+            return cut
 
         last_text = ""
         error_text = ""
@@ -258,12 +251,7 @@ class CodexAdapter(BaseCliAdapter):
                 ok=True,
                 result_text="codex concluiu sem veredito textual explícito",
             )
-        tail = (stderr or stdout)[-2000:].strip()
-        return WorkResult(
-            ok=False,
-            result_text=tail or f"codex sem saída parseável (rc={rc})",
-            error_code="NO_OUTPUT",
-        )
+        return no_output_result(stdout, stderr, rc, "codex")
 
     @staticmethod
     def _event_type(event: dict) -> str:

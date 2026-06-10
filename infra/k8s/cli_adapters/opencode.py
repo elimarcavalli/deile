@@ -37,9 +37,8 @@ import shutil
 import subprocess
 from typing import List, Optional
 
-import _worker_core as _core
-
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
+from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
+                   classify_provider_cutoff, no_output_result)
 
 logger = logging.getLogger("deile.cli_adapters.opencode")
 
@@ -178,14 +177,8 @@ class OpenCodeAdapter(BaseCliAdapter):
         conexão) ANTES da heurística — retorna ``error_code`` específico, nunca
         "conclusão limpa" (bug opencode #629: 402 mid-task marcado completo).
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"opencode cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "opencode")):
+            return cut
 
         last_text = ""
         error_text = ""
@@ -226,12 +219,7 @@ class OpenCodeAdapter(BaseCliAdapter):
                 ok=True,
                 result_text="opencode concluiu sem veredito textual explícito",
             )
-        tail = (stderr or stdout)[-2000:].strip()
-        return WorkResult(
-            ok=False,
-            result_text=tail or f"opencode sem saída parseável (rc={rc})",
-            error_code="NO_OUTPUT",
-        )
+        return no_output_result(stdout, stderr, rc, "opencode")
 
     @staticmethod
     def _event_text(event: dict) -> str:
