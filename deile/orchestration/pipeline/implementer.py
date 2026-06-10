@@ -1148,6 +1148,23 @@ class WorkerImplementer(PipelineImplementer):
             )
         outcome = _outcome_from_worker_response(data)
 
+        # Observabilidade de custo central (issue #638): persiste 1 registro por
+        # modelo no UsageRepository central a partir do bloco ``usage`` estruturado
+        # que o cli-worker reporta. Só para workers da frota CLI — deile/claude
+        # contabilizam por outras vias (deile grava no SQLite do próprio pod;
+        # claude via JSONL). A escrita é best-effort isolada (record_fleet_usage
+        # nunca propaga exceção): falha de SQLite/preço NÃO derruba o dispatch.
+        if is_cli_worker:
+            from deile.orchestration.pipeline.fleet_cost_recorder import \
+                record_fleet_usage  # noqa: PLC0415
+            record_fleet_usage(
+                data,
+                worker_kind=_worker_kind_from_url(url),
+                stage=stage,
+                channel_id=channel_id,
+                cli_model=cli_model,
+            )
+
         # OAuth auto-renew (Nível 3): se o worker reportou WORKER_AUTH_EXPIRED,
         # tente uma renovação automática + retry UMA vez antes de propagar o
         # erro pro stage handler (que bloqueia a issue). Em sucesso do refresh
