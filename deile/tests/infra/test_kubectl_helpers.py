@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
@@ -135,12 +137,19 @@ def test_read_value_absent_returns_none(monkeypatch):
     assert kh.read_secret_value("sec", "AUTH_TOKEN", namespace="deile") is None
 
 
-def test_read_value_invalid_base64_returns_none(monkeypatch, caplog):
+def test_read_value_invalid_base64_raises(monkeypatch, caplog):
+    """Valor presente mas não-decodificável → ``ValueError`` (não ``None``).
+
+    Distingue "fonte corrompida" (erro real) de "fonte ausente" (None benigno),
+    sem nunca logar o valor cru.
+    """
     monkeypatch.setattr(
         kh.subprocess, "run", _router(get=_FakeCompleted(stdout="!!!not-base64!!!")),
     )
     with caplog.at_level(logging.ERROR):
-        assert kh.read_secret_value("sec", "K", namespace="deile") is None
+        with pytest.raises(ValueError):
+            kh.read_secret_value("sec", "K", namespace="deile")
+    assert "!!!not-base64!!!" not in caplog.text
 
 
 def test_read_value_timeout_returns_none(monkeypatch):
@@ -196,6 +205,26 @@ def test_sync_bearer_source_absent_is_non_fatal_true(monkeypatch, caplog):
         )
     assert ok is True
     assert "worker-bearer" in caplog.text
+
+
+def test_sync_bearer_corrupt_source_is_fatal_false(monkeypatch, caplog):
+    """Source PRESENTE mas com valor corrompido → ``False`` (fatal, não pending).
+
+    Paridade com o ``_kubectl_sync_bearer`` pré-refator, que decodificava o
+    token e abortava em corrupção em vez de tratar como "ausente". O valor cru
+    nunca é logado.
+    """
+    monkeypatch.setattr(
+        kh.subprocess, "run", _router(get=_FakeCompleted(stdout="!!!corrupt!!!")),
+    )
+    with caplog.at_level(logging.ERROR):
+        ok = kh.sync_bearer_secret(
+            source_secret="worker-bearer", source_key="AUTH_TOKEN",
+            target_secret="x-bearer", target_key="CLI_WORKER_BEARER_TOKEN",
+            namespace="deile",
+        )
+    assert ok is False
+    assert "!!!corrupt!!!" not in caplog.text
 
 
 def test_sync_bearer_copies_token_and_never_logs_it(monkeypatch, caplog):

@@ -97,9 +97,15 @@ def read_secret_value(
 
         kubectl -n <ns> get secret <name> -o jsonpath='{.data.<key>}' | base64 -d
 
-    Retorna o valor decodificado (utf-8) ou ``None`` se: o Secret não existe,
-    a chave não existe, base64 inválido ou kubectl falha. Loga em falha real
-    (kubectl não-zero), silencioso em "ausente" (chave vazia = caso normal).
+    Retorna o valor decodificado ou ``None`` quando o Secret/chave está
+    **ausente** (jsonpath vazio) ou o kubectl falha — ausência é benigna
+    (silenciosa). Já um valor **presente mas não-decodificável** (base64/utf-8
+    inválido) é um erro real e **levanta** ``ValueError`` (após logar a causa):
+    o caller distingue "fonte ausente" (None) de "fonte corrompida" (raise) e
+    decide a política — ``sync_bearer_secret`` trata corrupção como fatal,
+    paridade com o ``_kubectl_sync_bearer`` original. Decodifica utf-8 (superset
+    de ascii — cobre qualquer secret; os tokens da frota são ``token_urlsafe``,
+    portanto ascii puro, mas utf-8 não perde nada nesse caso).
     """
     try:
         get = subprocess.run(
@@ -119,7 +125,9 @@ def read_secret_value(
         logger.error(
             "Secret %s key %s não é base64 utf-8: %s", secret_name, key, exc,
         )
-        return None
+        raise ValueError(
+            f"secret {secret_name}.{key} presente mas não é base64 utf-8"
+        ) from exc
 
 
 def read_secret_data_map(
@@ -178,10 +186,18 @@ def sync_bearer_secret(
 
     Retorna ``True`` mesmo se o source não existe (operador precisa rodar
     ``k8s up`` antes — emite warning, mas o rollout do worker ficará
-    pending até o source aparecer; não-fatal). ``False`` apenas em erro
-    real de I/O com kubectl.
+    pending até o source aparecer; não-fatal). Retorna ``False`` em erro real:
+    I/O com kubectl OU source **presente mas com valor corrompido**
+    (não-decodificável) — paridade com o ``_kubectl_sync_bearer`` original, que
+    decodificava o token e abortava (False) em corrupção em vez de seguir.
     """
-    token = read_secret_value(source_secret, source_key, namespace=namespace)
+    try:
+        token = read_secret_value(source_secret, source_key, namespace=namespace)
+    except ValueError:
+        # Source presente mas com valor não-decodificável: erro real, não
+        # "ausente". read_secret_value já logou a causa. Fatal (não-pending),
+        # igual ao comportamento pré-refator.
+        return False
     if token is None:
         logger.warning(
             "secret %s ausente — rode `deploy.py k8s up` antes (rollout fica "

@@ -32,16 +32,17 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, FrozenSet, Optional, Tuple
 
-logger = logging.getLogger(__name__)
-
 # Re-export — :data:`PIPELINE_STAGES` vive em ``model_resolver`` (decisão #41,
 # o módulo mais antigo dos per-stage resolvers). Mantemos o nome aqui para
 # preservar a API pública usada por consumers como
 # :mod:`deile.infrastructure.deile_worker_client` que importam de
 # ``dispatch_resolver``; a tupla é a MESMA instância (não cópia) — testes
-# podem checar identidade.
+# podem checar identidade. ``model_resolver`` não importa este módulo, logo
+# não há ciclo de import e o re-export pode viver no bloco de imports do topo.
 from deile.orchestration.pipeline.model_resolver import \
-    PIPELINE_STAGES  # noqa: E402, F401
+    PIPELINE_STAGES  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Frota escalável — workers derivados do registro de adapters (issue multi-CLI)
