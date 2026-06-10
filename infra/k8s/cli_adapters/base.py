@@ -17,9 +17,10 @@ editado. Não importa nada de CLI concreto nem toca rede/filesystem.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Protocol, Tuple, runtime_checkable
+from typing import Iterator, List, Literal, Optional, Protocol, Tuple, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,29 @@ def classify_provider_cutoff(
         result_text=tail or f"{cli_name} cortado por provider ({provider_err})",
         error_code=provider_err,
     )
+
+
+def iter_jsonl_events(text: str) -> Iterator[dict]:
+    """Itera dicts JSONL em ``text``, tolerante a ruído fora do envelope JSON.
+
+    Pula linhas vazias, linhas que não começam com ``{`` (logs Rust-style
+    do CLI, banners, prompts), JSON malformado e payloads que não são dict.
+    Helper compartilhado pelos adapters opencode/qwen/goose/codex que varrem
+    NDJSON em ``parse_output`` e ``extract_session_id`` — antes, cada um
+    repetia o mesmo loop com a guarda ``startswith('{')``; um esquecido
+    estouraria ``json.loads`` em qualquer linha de log.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        yield event
 
 
 def no_output_result(
@@ -350,4 +374,5 @@ __all__ = [
     "read_brief_or_fallback",
     "classify_provider_cutoff",
     "no_output_result",
+    "iter_jsonl_events",
 ]

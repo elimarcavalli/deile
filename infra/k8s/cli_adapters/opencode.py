@@ -38,7 +38,8 @@ import subprocess
 from typing import List, Optional
 
 from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
-                   classify_provider_cutoff, no_output_result)
+                   classify_provider_cutoff, iter_jsonl_events,
+                   no_output_result)
 
 logger = logging.getLogger("deile.cli_adapters.opencode")
 
@@ -184,16 +185,7 @@ class OpenCodeAdapter(BaseCliAdapter):
         error_text = ""
         saw_event = False
 
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             saw_event = True
             etype = str(event.get("type", ""))
             if "error" in etype.lower():
@@ -243,16 +235,7 @@ class OpenCodeAdapter(BaseCliAdapter):
         compartilham a mesma sessão). Vazio se run abortou antes do primeiro
         evento — server não persiste id e próximo dispatch cai em fresh.
         """
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             sid = event.get("sessionID") or event.get("sessionId")
             if isinstance(sid, str) and sid.strip():
                 return sid.strip()

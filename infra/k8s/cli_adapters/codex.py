@@ -46,8 +46,8 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from .base import (BaseCliAdapter, ModelAuth, ModelInfo, OAuthSpec, ResumeCtx,
-                   WorkResult, classify_provider_cutoff, no_output_result,
-                   read_brief_or_fallback)
+                   WorkResult, classify_provider_cutoff, iter_jsonl_events,
+                   no_output_result, read_brief_or_fallback)
 
 logger = logging.getLogger("deile.cli_adapters.codex")
 
@@ -214,16 +214,7 @@ class CodexAdapter(BaseCliAdapter):
         error_text = ""
         saw_event = False
 
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             saw_event = True
             etype = self._event_type(event)
             if "error" in etype.lower():
@@ -299,16 +290,7 @@ class CodexAdapter(BaseCliAdapter):
         ``codex exec resume <id>`` consome. Tolera ``thread_id``/``session_id``
         no topo para variações de versão. Vazio se nenhum evento de início emitido.
         """
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             thread = event.get("thread")
             if isinstance(thread, dict):
                 tid = thread.get("id")

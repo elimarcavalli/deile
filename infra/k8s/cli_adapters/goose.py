@@ -28,8 +28,8 @@ import os
 from typing import List, Optional
 
 from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
-                   classify_provider_cutoff, no_output_result,
-                   read_brief_or_fallback)
+                   classify_provider_cutoff, iter_jsonl_events,
+                   no_output_result, read_brief_or_fallback)
 
 logger = logging.getLogger("deile.cli_adapters.goose")
 
@@ -186,16 +186,7 @@ class GooseAdapter(BaseCliAdapter):
         last_text = ""
         error_text = ""
         saw_event = False
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             saw_event = True
             etype = str(event.get("type", ""))
             if "error" in etype.lower() or event.get("error"):
