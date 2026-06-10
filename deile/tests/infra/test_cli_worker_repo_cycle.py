@@ -144,6 +144,14 @@ def repo_adapter(tmp_path, monkeypatch, patched_clone):
     cli_adapters.reload_adapters()
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "zzz_repo_mock")
     monkeypatch.setenv("DEILE_CLI_WORKER_ROOT", str(tmp_path / "work"))
+    # Allowlist de repos (issue #639): o dispatch reverifica ``resume.repo``
+    # contra o ConfigMap ANTES do clone. Estes testes despacham ``owner/repo``,
+    # então a allowlist precisa admiti-lo, senão o handler bloqueia com 403.
+    allow = tmp_path / "allowed_repos.regex"
+    allow.write_text(
+        r"^https://github\.com/owner/repo(\.git)?$" + "\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("DEILE_CLAUDE_ALLOWED_REPOS_FILE", str(allow))
     # A identidade git global existe no ambiente de teste; o push vai para o
     # remote local (path do bare), sem credencial nem rede.
     try:

@@ -57,6 +57,192 @@ def validate_task_id_for_path(task_id: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Enforcement da allowlist de repositórios no dispatch (issue #639)
+# --------------------------------------------------------------------------- #
+#
+# A allowlist regex (ConfigMap ``claude-worker-allowed-repos``, montada em
+# ``$DEILE_CLAUDE_ALLOWED_REPOS_FILE``) era vendida no threat model como a
+# mitigação primária de prompt-injection→exfiltração, mas NÃO havia enforcement
+# em runtime: ``wrapper.py`` só fazia fail-fast no startup e os servidores
+# clonavam o ``repo_slug`` do payload sem reverificar. Este bloco é a FONTE
+# ÚNICA de verificação por-request, reusada por ``cli_worker_server`` e
+# ``claude_worker_server`` (os dois caminhos de clone).
+#
+# Fonte canônica dos patterns = o ConfigMap ``allowed_repos.regex`` (URLs
+# completas, uma regex por linha). NÃO usamos a fonte divergente
+# ``deilebot.yaml clonable_repos`` (bug apontado pela issue #639).
+
+#: Path default do ConfigMap; cada worker sobrescreve via
+#: ``DEILE_CLAUDE_ALLOWED_REPOS_FILE`` no manifest (claude → ``/etc/claude-worker``,
+#: cli → ``/etc/cli-worker``). Mantido em sincronia com ``wrapper.CLAUDE_ALLOWED_REPOS_FILE``.
+ALLOWED_REPOS_FILE_DEFAULT = "/etc/claude-worker/allowed_repos.regex"
+
+#: Slug forge-agnóstico: ``owner/repo`` (GitHub) ou ``group/(sub/)*project``
+#: (GitLab). Apenas ``[A-Za-z0-9._-]`` por componente, ``/`` como separador,
+#: ao menos dois componentes. Ancorado: bloqueia ``..``, ``/`` líder/final,
+#: ``//``, espaços, ``@``/``:`` (host/auth smuggling), ``\\`` e backslash.
+_REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+$")
+
+#: Componentes proibidos mesmo dentro do alfabeto permitido (defesa redundante
+#: contra path traversal por componente exato ``.``/``..``).
+_FORBIDDEN_SLUG_PARTS = frozenset({"", ".", ".."})
+
+
+def allowed_repos_file_path() -> Path:
+    """Resolve o path do ConfigMap de allowlist (env var > default).
+
+    Não lê o arquivo — apenas resolve o caminho. Honra
+    ``DEILE_CLAUDE_ALLOWED_REPOS_FILE`` (cada worker o define no manifest e os
+    testes o apontam para um tmp file).
+    """
+    return Path(
+        os.environ.get(
+            "DEILE_CLAUDE_ALLOWED_REPOS_FILE", ALLOWED_REPOS_FILE_DEFAULT,
+        )
+    )
+
+
+def load_allowed_repo_patterns() -> tuple[list[re.Pattern], Optional[str]]:
+    """Carrega as regexes da allowlist para uso POR-REQUEST (não-exiting).
+
+    Diferente de ``wrapper._load_allowed_repo_patterns`` (que faz ``sys.exit``
+    no startup), aqui devolvemos ``(patterns, error)`` para o handler decidir o
+    HTTP. ``error`` é ``None`` quando a allowlist é válida e não-vazia; caso
+    contrário traz o motivo (arquivo ausente, vazio, regex inválida, ou erro de
+    leitura). Postura **fail-closed**: qualquer ``error`` não-``None`` deve
+    bloquear o dispatch — o startup já garante allowlist válida em produção
+    (``wrapper`` fail-fast), então um erro aqui só ocorre em drift/teste.
+
+    Nunca levanta.
+    """
+    path = allowed_repos_file_path()
+    try:
+        if not path.exists():
+            return [], f"allowlist de repos ausente: {path}"
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [], f"falha ao ler allowlist {path}: {exc}"
+    patterns: list[re.Pattern] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            patterns.append(re.compile(stripped))
+        except re.error as exc:
+            return [], f"regex inválida na allowlist {path}: {stripped!r}: {exc}"
+    if not patterns:
+        return [], f"allowlist vazia (sem linhas não-comentário): {path}"
+    return patterns, None
+
+
+def normalize_repo_slug(repo_slug: str) -> Optional[str]:
+    """Normaliza e valida o slug forge-agnóstico do payload de dispatch.
+
+    Aceita ``owner/repo`` (GitHub) e ``group/(sub/)*project`` (GitLab). Faz:
+
+      - ``strip()`` de espaços nas pontas;
+      - remoção de UM sufixo ``.git`` final (forma que ``gh``/``glab`` toleram);
+      - rejeição de qualquer slug que case host/auth/traversal (``..``, ``//``,
+        ``@``, ``:``, backslash, ``/`` líder/final, espaço interno).
+
+    Returns o slug canônico (sem ``.git``) ou ``None`` quando inválido — o
+    caller trata ``None`` como REPO_NOT_ALLOWED (fail-closed).
+    """
+    if not repo_slug:
+        return None
+    candidate = repo_slug.strip()
+    if not candidate:
+        return None
+    # Sufixo ``.git`` é removido ANTES da validação (gh/glab o toleram e o clone
+    # canônico não o carrega no slug). Apenas UM sufixo, case-sensitive.
+    if candidate.endswith(".git"):
+        candidate = candidate[: -len(".git")]
+    # Rejeita qualquer caractere fora do alfabeto slug logo de cara (bloqueia
+    # ``@``, ``:``, ``\``, espaço, ``~``, etc. — host/auth/url smuggling).
+    if not _REPO_SLUG_RE.fullmatch(candidate):
+        return None
+    parts = candidate.split("/")
+    if any(part in _FORBIDDEN_SLUG_PARTS for part in parts):
+        return None
+    return candidate
+
+
+def _canonical_clone_urls(slug: str) -> list[str]:
+    """URLs canônicas que os caminhos de clone realmente produzem para *slug*.
+
+    Espelha ``_git_or_gh_clone`` (``gh``/``glab repo clone`` → ``https://<host>/<slug>``,
+    fallback ``git clone https://<host>/<slug>.git``) e o ``_ensure_repo_cloned``
+    do claude-worker (``gh repo clone`` → host GitHub). Cobrimos as formas
+    https (com e sem ``.git``) e ssh para os hosts GitHub e GitLab configurados.
+    O slug já vem normalizado (sem ``.git``, sem host).
+    """
+    gh_host = (os.environ.get("DEILE_GITHUB_HOST", "").strip() or "github.com")
+    gl_host = (os.environ.get("DEILE_GITLAB_HOST", "").strip() or "gitlab.com")
+    # ``DEILE_GITHUB_HOST`` aceita CSV (GHES multi-host, decisão #42).
+    hosts = []
+    for raw in (*gh_host.split(","), gl_host):
+        h = raw.strip()
+        if h and h not in hosts:
+            hosts.append(h)
+    urls: list[str] = []
+    for host in hosts:
+        urls.append(f"https://{host}/{slug}")
+        urls.append(f"https://{host}/{slug}.git")
+        urls.append(f"git@{host}:{slug}")
+        urls.append(f"git@{host}:{slug}.git")
+    return urls
+
+
+def repo_slug_allowed(
+    repo_slug: str, patterns: Iterable[re.Pattern],
+) -> tuple[bool, Optional[str]]:
+    """Decide se *repo_slug* casa a allowlist (fonte canônica de match).
+
+    Normaliza o slug e gera as URLs canônicas de clone; exige que ao menos UMA
+    delas case ao menos UMA regex da allowlist (``re.fullmatch`` — os patterns
+    do ConfigMap já são ancorados ``^...$``, mas usamos ``fullmatch`` para não
+    depender da âncora e impedir match parcial).
+
+    Returns ``(allowed, normalized_slug)``. ``allowed=False`` cobre slug
+    malformado (``normalized_slug=None``) e slug bem-formado que não casa
+    nenhuma regex (``normalized_slug`` preenchido para o log/erro).
+    """
+    normalized = normalize_repo_slug(repo_slug)
+    if normalized is None:
+        return False, None
+    pattern_list = list(patterns)
+    for url in _canonical_clone_urls(normalized):
+        for pat in pattern_list:
+            if pat.fullmatch(url):
+                return True, normalized
+    return False, normalized
+
+
+def check_repo_allowed(repo_slug: str) -> tuple[bool, str, Optional[str]]:
+    """Verificação completa por-request: carrega patterns + casa o slug.
+
+    FONTE ÚNICA chamada pelos ``dispatch_handler`` dos dois servidores, ANTES de
+    qualquer clone. Fail-closed: allowlist ausente/vazia/inválida → bloqueia.
+
+    Returns ``(allowed, reason, normalized_slug)``:
+      - ``allowed=True``  → o slug pode ser clonado (``reason`` vazio).
+      - ``allowed=False`` → bloquear com 403 REPO_NOT_ALLOWED; ``reason`` é uma
+        mensagem segura (sem segredo, sem token) para log/resposta.
+    """
+    patterns, load_err = load_allowed_repo_patterns()
+    if load_err is not None:
+        # Fail-closed: sem allowlist confiável, nada é permitido.
+        return False, f"allowlist indisponível ({load_err})", None
+    allowed, normalized = repo_slug_allowed(repo_slug, patterns)
+    if allowed:
+        return True, "", normalized
+    if normalized is None:
+        return False, "repo slug malformado ou inseguro", None
+    return False, f"repo {normalized!r} fora da allowlist", normalized
+
+
+# --------------------------------------------------------------------------- #
 # Classificação de erro de provider (anti-sangria de custo — issue #445)
 # --------------------------------------------------------------------------- #
 #

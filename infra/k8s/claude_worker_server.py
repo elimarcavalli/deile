@@ -2041,6 +2041,29 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     # ausente → string vazia → _ensure_repo_cloned não é chamado.
     _resume_block = payload.get("resume") or {}
     _repo_slug: str = str(_resume_block.get("repo") or "").strip()
+    # Enforcement da allowlist (issue #639) — ANTES de qualquer clone
+    # (_git_fast_forward_workdir e _ensure_repo_cloned). Só vale quando há slug;
+    # sem slug o brief pode instruir o claude a clonar pelo próprio shell (gap
+    # de exfil mais profundo coberto pela FU do credential-proxy, #337). Fonte
+    # única em _worker_core.check_repo_allowed. Fail-closed: slug fora da
+    # allowlist (ou allowlist indisponível) → 403 REPO_NOT_ALLOWED.
+    if _repo_slug:
+        _allowed, _reason, _norm = _core.check_repo_allowed(_repo_slug)
+        if not _allowed:
+            logger.warning(
+                "dispatch BLOQUEADO — repo fora da allowlist (issue #639): %s",
+                _reason,
+            )
+            dlog.dispatch_failed(
+                task="",
+                reason="repo_not_allowed",
+                error_code="REPO_NOT_ALLOWED",
+            )
+            return web.json_response({
+                "ok": False,
+                "error_code": "REPO_NOT_ALLOWED",
+                "error": _reason,
+            }, status=403)
     # Modo fire-and-forget: quando False, retorna 202+task_id imediatamente e
     # executa o subprocess em background (asyncio.create_task). Comportamento
     # padrão (True ou ausente) = bloqueante, compatível com clientes legados.
