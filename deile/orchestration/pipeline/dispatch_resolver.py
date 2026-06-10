@@ -34,14 +34,13 @@ from typing import Dict, FrozenSet, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-#: Ordem operacional (igual model_resolver). Sufixo usado como JSON key.
-PIPELINE_STAGES: Tuple[str, ...] = (
-    "classify",
-    "refine",
-    "implement",
-    "pr_review",
-    "follow_ups",
-)
+# Re-export — :data:`PIPELINE_STAGES` vive em ``model_resolver`` (decisão #41,
+# o módulo mais antigo dos per-stage resolvers). Mantemos o nome aqui para
+# preservar a API pública usada por consumers como
+# :mod:`deile.infrastructure.deile_worker_client` que importam de
+# ``dispatch_resolver``; a tupla é a MESMA instância (não cópia) — testes
+# podem checar identidade.
+from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Frota escalável — workers derivados do registro de adapters (issue multi-CLI)
