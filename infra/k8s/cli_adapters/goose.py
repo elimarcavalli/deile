@@ -27,9 +27,12 @@ import logging
 import os
 from typing import List, Optional
 
-import _worker_core as _core
-
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
+from ._catalog import (OPENROUTER_CLAUDE_SONNET_4_6,
+                       OPENROUTER_DEEPSEEK_V4_FLASH,
+                       OPENROUTER_DEEPSEEK_V4_PRO, OPENROUTER_QWEN3_CODER)
+from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
+                   classify_provider_cutoff, iter_jsonl_events,
+                   no_output_result, read_brief_or_fallback)
 
 logger = logging.getLogger("deile.cli_adapters.goose")
 
@@ -60,34 +63,10 @@ def _cap_verdict(text: str) -> str:
 #: faz o split no PRIMEIRO ``/`` → ``--provider``/``--model``. Sem prefixo o
 #: Goose falha "Unknown provider" (não há ``GOOSE_PROVIDER`` no Deployment).
 _MODELS: List[ModelInfo] = [
-    ModelInfo(
-        id="openrouter/deepseek/deepseek-v4-flash",
-        label="DeepSeek V4 Flash (OpenRouter)",
-        provider="openrouter",
-        price_in=0.0983, price_out=0.1966, context=1_048_576,
-        notes="MAIS BARATO de coding; default recomendado",
-    ),
-    ModelInfo(
-        id="openrouter/deepseek/deepseek-v4-pro",
-        label="DeepSeek V4 Pro (OpenRouter)",
-        provider="openrouter",
-        price_in=0.435, price_out=0.87, context=1_048_576,
-        notes="MELHOR custo-benefício de coding (promo)",
-    ),
-    ModelInfo(
-        id="openrouter/anthropic/claude-sonnet-4.6",
-        label="Claude Sonnet 4.6 (OpenRouter)",
-        provider="openrouter",
-        price_in=3.00, price_out=15.00, context=1_000_000,
-        notes="premium; review crítico / arquitetura",
-    ),
-    ModelInfo(
-        id="openrouter/qwen/qwen3-coder",
-        label="Qwen3 Coder 480B (OpenRouter)",
-        provider="openrouter",
-        price_in=0.22, price_out=1.80, context=1_000_000,
-        notes="bom custo-benefício p/ implementação",
-    ),
+    OPENROUTER_DEEPSEEK_V4_FLASH,
+    OPENROUTER_DEEPSEEK_V4_PRO,
+    OPENROUTER_CLAUDE_SONNET_4_6,
+    OPENROUTER_QWEN3_CODER,
     ModelInfo(
         id="openai/gpt-5.4",
         label="GPT-5.4 (OpenAI)",
@@ -122,7 +101,7 @@ class GooseAdapter(BaseCliAdapter):
         PRIMEIRO ``/``). Sem ``/`` → só ``--model``. ``None`` → env decide.
         ``reasoning`` ignorado (sem suporte).
         """
-        brief_text = self._read_brief(brief_path)
+        brief_text = read_brief_or_fallback(brief_path)
         session_name = (resume.session_id if resume is not None else "") or task_id
         argv: List[str] = ["goose", "run"]
         if session_name:
@@ -145,19 +124,6 @@ class GooseAdapter(BaseCliAdapter):
                 argv += ["--model", model]
         argv += ["-t", brief_text]
         return argv
-
-    @staticmethod
-    def _read_brief(brief_path: str) -> str:
-        """Lê o conteúdo do brief; em falha de I/O cai num prompt mínimo."""
-        try:
-            with open(brief_path, "r", encoding="utf-8") as fh:
-                return fh.read()
-        except OSError as exc:
-            logger.warning("não consegui ler o brief %r: %s", brief_path, exc)
-            return (
-                f"Leia o brief em {brief_path} e implemente exatamente o que ele "
-                "descreve. Faça git add/commit/push das mudanças ao terminar."
-            )
 
     def env_overlay(self, *, home: str) -> dict:
         """Env do subprocess: HOME/XDG graváveis + auto-mode + keyring desligado.
@@ -184,14 +150,8 @@ class GooseAdapter(BaseCliAdapter):
         ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx)
         ANTES do parse → ``error_code`` específico para o pipeline retomar.
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"goose cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "goose")):
+            return cut
 
         whole = stdout.strip()
         if whole.startswith("{"):
@@ -205,16 +165,7 @@ class GooseAdapter(BaseCliAdapter):
         last_text = ""
         error_text = ""
         saw_event = False
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             saw_event = True
             etype = str(event.get("type", ""))
             if "error" in etype.lower() or event.get("error"):
@@ -236,12 +187,7 @@ class GooseAdapter(BaseCliAdapter):
                 ok=True,
                 result_text="goose concluiu sem veredito textual explícito",
             )
-        tail = (stderr or stdout)[-2000:].strip()
-        return WorkResult(
-            ok=False,
-            result_text=tail or f"goose sem saída parseável (rc={rc})",
-            error_code="NO_OUTPUT",
-        )
+        return no_output_result(stdout, stderr, rc, "goose")
 
     def _from_obj(self, obj: dict) -> WorkResult:
         """Deriva o :class:`WorkResult` de um único objeto JSON do ``goose``."""

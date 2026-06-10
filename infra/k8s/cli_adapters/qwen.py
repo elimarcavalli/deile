@@ -27,9 +27,9 @@ import json
 import logging
 from typing import List, Optional
 
-import _worker_core as _core
-
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
+from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
+                   classify_provider_cutoff, iter_jsonl_events,
+                   no_output_result, read_brief_or_fallback)
 
 logger = logging.getLogger("deile.cli_adapters.qwen")
 
@@ -101,7 +101,7 @@ class QwenAdapter(BaseCliAdapter):
         Resume (issue #445): ``--resume <session_id>`` restaura history + tool
         state em vez de re-gastar tokens do zero.
         """
-        brief_text = self._read_brief(brief_path)
+        brief_text = read_brief_or_fallback(brief_path)
         argv = ["qwen", "-p", brief_text, "--yolo", "--auth-type", "openai"]
         if resume is not None and resume.session_id:
             argv += ["--resume", resume.session_id]
@@ -109,19 +109,6 @@ class QwenAdapter(BaseCliAdapter):
             argv += ["-m", model]
         argv += ["--output-format", "json"]
         return argv
-
-    @staticmethod
-    def _read_brief(brief_path: str) -> str:
-        """Lê o brief; em falha de I/O retorna prompt mínimo."""
-        try:
-            with open(brief_path, "r", encoding="utf-8") as fh:
-                return fh.read()
-        except OSError as exc:
-            logger.warning("não consegui ler o brief %r: %s", brief_path, exc)
-            return (
-                f"Leia o brief em {brief_path} e implemente exatamente o que ele "
-                "descreve. Faça git add/commit/push das mudanças ao terminar."
-            )
 
     def env_overlay(self, *, home: str) -> dict:
         """Env do subprocess: HOME gravável + retry desatendido + supressão do aviso yolo.
@@ -149,14 +136,8 @@ class QwenAdapter(BaseCliAdapter):
         ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx)
         ANTES de qualquer parse para que o pipeline retome em vez de re-gastar.
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"qwen cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "qwen")):
+            return cut
 
         whole = stdout.strip()
         if whole.startswith("{"):
@@ -182,16 +163,7 @@ class QwenAdapter(BaseCliAdapter):
         last_text = ""
         error_text = ""
         saw_event = False
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             saw_event = True
             etype = str(event.get("type", ""))
             if "error" in etype.lower() or event.get("error"):
@@ -213,12 +185,7 @@ class QwenAdapter(BaseCliAdapter):
                 ok=True,
                 result_text="qwen concluiu sem veredito textual explícito",
             )
-        tail = (stderr or stdout)[-2000:].strip()
-        return WorkResult(
-            ok=False,
-            result_text=tail or f"qwen sem saída parseável (rc={rc})",
-            error_code="NO_OUTPUT",
-        )
+        return no_output_result(stdout, stderr, rc, "qwen")
 
     def _from_events(self, events: list) -> WorkResult:
         """WorkResult da lista de eventos do ``qwen -p``.
@@ -316,14 +283,7 @@ class QwenAdapter(BaseCliAdapter):
             if sid:
                 return sid
         # JSONL linha-a-linha.
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                ev = json.loads(line)
-            except (ValueError, TypeError):
-                continue
+        for ev in iter_jsonl_events(stdout):
             sid = self._event_session_id(ev)
             if sid:
                 return sid

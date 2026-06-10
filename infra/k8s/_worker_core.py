@@ -157,6 +157,61 @@ def dir_bytes(path: Path) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Cost ledger JSONL — engine compartilhada (claude_worker + cli_worker)
+# --------------------------------------------------------------------------- #
+#
+# Cada servidor decide o PATH e a CHAVE de dedup do ledger (claude usa
+# ``session_id``; CLI fleet usa ``task_id``), mas o engine de I/O é o mesmo:
+# scan-linha-a-linha tolerante a corrupção parcial + append atômico append-only.
+# Issue #445 — NUNCA podar transcripts sem antes ter colhido o custo para cá.
+
+
+def ledger_harvested_ids(ledger_path: Path, *, key: str) -> set:
+    """Conjunto de valores já presentes no ledger sob ``key`` (para dedup do harvest).
+
+    Lê o ledger linha-a-linha como JSONL, pula linhas vazias, JSON malformado
+    ou registros sem o campo ``key``. Retorna ``set()`` se o ledger ainda não
+    existe ou está ilegível (``OSError``). Não levanta — chamada idempotente.
+    """
+    ids: set = set()
+    if not ledger_path.exists():
+        return ids
+    try:
+        with open(ledger_path, errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                val = rec.get(key) if isinstance(rec, dict) else None
+                if val:
+                    ids.add(val)
+    except OSError:
+        pass
+    return ids
+
+
+def ledger_append_record(
+    ledger_path: Path, record: dict, *, ensure_ascii: bool = False,
+) -> int:
+    """Anexa ``record`` ao ledger como uma linha JSON. Retorna bytes escritos.
+
+    Cria o diretório-pai se necessário, abre em modo ``a`` (append-only) e
+    escreve uma linha terminada com ``\\n``. ``ensure_ascii`` controla escape
+    de unicode (cli_worker_server prefere False — emojis legíveis; o
+    claude_worker_server pré-#614 usava True — preservado por parâmetro).
+    """
+    line = json.dumps(record, separators=(",", ":"), ensure_ascii=ensure_ascii) + "\n"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger_path, "a", encoding="utf-8") as fh:
+        fh.write(line)
+    return len(line.encode("utf-8"))
+
+
+# --------------------------------------------------------------------------- #
 # Lease por workspace (multi-réplica, atomic)
 # --------------------------------------------------------------------------- #
 

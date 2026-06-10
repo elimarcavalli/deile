@@ -17,8 +17,102 @@ editado. Não importa nada de CLI concreto nem toca rede/filesystem.
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Protocol, Tuple, runtime_checkable
+from typing import (Iterator, List, Literal, Optional, Protocol, Tuple,
+                    runtime_checkable)
+
+logger = logging.getLogger(__name__)
+
+
+def read_brief_or_fallback(brief_path: str) -> str:
+    """Lê o conteúdo do brief; em falha de I/O retorna prompt mínimo.
+
+    Helper compartilhado pelos adapters que precisam materializar o brief
+    como texto antes de passar ao CLI (qwen, goose, codex, antigravity).
+    Em ``OSError`` retorna um prompt mínimo apontando para o arquivo —
+    degradação graciosa, evita que IO transitório derrube o dispatch.
+    """
+    try:
+        with open(brief_path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except OSError as exc:
+        logger.warning("não consegui ler o brief %r: %s", brief_path, exc)
+        return (
+            f"Leia o brief em {brief_path} e implemente exatamente o que ele "
+            "descreve. Faça git add/commit/push das mudanças ao terminar."
+        )
+
+
+def classify_provider_cutoff(
+    stdout: str, stderr: str, cli_name: str,
+) -> Optional["WorkResult"]:
+    """Prelude anti-sangria de ``parse_output`` — provider cutoff → ``WorkResult``.
+
+    Chama ``_worker_core.classify_provider_error`` sobre stdout+stderr; se
+    bater algum padrão (402/429/insufficient/…), devolve ``WorkResult(ok=False,
+    error_code=<provider_err>, result_text=<tail or default>)``. Retorna
+    ``None`` quando não há corte de provider — o adapter segue para o parse
+    estruturado normal. Helper compartilhado por opencode/qwen/goose/codex/aider
+    (todos com este mesmo trecho verbatim antes do extra-parsing).
+    """
+    # Import lazy (call-time, não no topo do módulo como faziam os adapters
+    # originais): mover o helper para cá só é seguro porque ``_worker_core`` não
+    # está em ``sys.path`` no import-time dos testes unitários dos adapters —
+    # importar no topo de ``base.py`` quebraria a coleta. A resolução é
+    # intencionalmente adiada para o momento da chamada.
+    import _worker_core as _core
+    provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
+    if not provider_err:
+        return None
+    tail = (stderr or stdout)[-2000:].strip()
+    return WorkResult(
+        ok=False,
+        result_text=tail or f"{cli_name} cortado por provider ({provider_err})",
+        error_code=provider_err,
+    )
+
+
+def iter_jsonl_events(text: str) -> Iterator[dict]:
+    """Itera dicts JSONL em ``text``, tolerante a ruído fora do envelope JSON.
+
+    Pula linhas vazias, linhas que não começam com ``{`` (logs Rust-style
+    do CLI, banners, prompts), JSON malformado e payloads que não são dict.
+    Helper compartilhado pelos adapters opencode/qwen/goose/codex que varrem
+    NDJSON em ``parse_output`` e ``extract_session_id`` — antes, cada um
+    repetia o mesmo loop com a guarda ``startswith('{')``; um esquecido
+    estouraria ``json.loads`` em qualquer linha de log.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        yield event
+
+
+def no_output_result(
+    stdout: str, stderr: str, rc: int, cli_name: str,
+) -> "WorkResult":
+    """Postlude ``NO_OUTPUT`` de ``parse_output`` — saída não-parseável.
+
+    Devolve ``WorkResult(ok=False, error_code='NO_OUTPUT',
+    result_text=<tail or default>)`` com tail de até 2000 chars do stderr/stdout.
+    Helper compartilhado por opencode/qwen/goose/codex no fim do ``parse_output``
+    quando nenhum branch estruturado casou.
+    """
+    tail = (stderr or stdout)[-2000:].strip()
+    return WorkResult(
+        ok=False,
+        result_text=tail or f"{cli_name} sem saída parseável (rc={rc})",
+        error_code="NO_OUTPUT",
+    )
 
 #: Modo de autenticação: ``env`` = API key (não expira; automação);
 #: ``oauth_file`` = credencial OAuth em arquivo (claude/codex/antigravity;
@@ -283,4 +377,8 @@ __all__ = [
     "OAuthSpec",
     "CliAdapter",
     "BaseCliAdapter",
+    "read_brief_or_fallback",
+    "classify_provider_cutoff",
+    "no_output_result",
+    "iter_jsonl_events",
 ]

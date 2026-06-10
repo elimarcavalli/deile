@@ -45,14 +45,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from aiohttp import web
-
-import dispatch_logger as dlog
-
 # Núcleo agnóstico-de-CLI (lease/heartbeat, subprocess, HTTP helpers) — sibling
 # stdlib-puro no mesmo dir, no sys.path in-pod como dispatch_logger. Compartilhado
 # com o servidor genérico cli_worker_server.py (multi-CLI worker fleet, Fase A1).
 import _worker_core as _core
+import dispatch_logger as dlog
+from aiohttp import web
 
 try:
     # Sibling stdlib-puro (mesmo dir, no sys.path in-pod como dispatch_logger).
@@ -2119,8 +2117,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 "ok": False,
                 "error_code": "RESUME_SESSION_MISMATCH",
                 "error": (
-                    f"resume_session_id no payload não bate com session_id "
-                    f"persistido no prev_task_id (corrupção do mini-ledger?)"
+                    "resume_session_id no payload não bate com session_id "
+                    "persistido no prev_task_id (corrupção do mini-ledger?)"
                 ),
             }, status=409)
         task_id = prev_task_id
@@ -2594,7 +2592,6 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 
     ok = _run["ok"]
     error_code = _run["error_code"]
-    auth_expired = _run["auth_expired"]
     result = _run["result"]
     claude_result = _run["claude_result"]
 
@@ -3029,11 +3026,9 @@ async def sessions_command_handler(request: web.Request) -> web.Response:
             )
         # Audit the raw access before returning.
         try:
-            from deile.security.audit_logger import (
-                AuditEventType,
-                AuditLogger,
-                SeverityLevel,
-            )
+            from deile.security.audit_logger import (AuditEventType,
+                                                     AuditLogger,
+                                                     SeverityLevel)
             _audit = AuditLogger()
             _audit.log_event(
                 event_type=AuditEventType.RAW_PROMPT_ACCESS,
@@ -3474,35 +3469,24 @@ def _orphan_jsonl_scan(
 
 
 def _harvested_session_ids(ledger_path: Path) -> set:
-    """Conjunto de ``session_id`` já presentes no ledger (dedup do harvest)."""
-    ids: set = set()
-    if not ledger_path.exists():
-        return ids
-    try:
-        with open(ledger_path, errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                sid = rec.get("session_id")
-                if sid:
-                    ids.add(sid)
-    except OSError:
-        pass
-    return ids
+    """Conjunto de ``session_id`` já presentes no ledger (dedup do harvest).
+
+    Shim sobre :func:`_worker_core.ledger_harvested_ids` — preservado para que
+    testes que monkeypatchem este nome continuem funcionando.
+    """
+    return _core.ledger_harvested_ids(ledger_path, key="session_id")
 
 
 def _append_ledger(ledger_path: Path, record: dict) -> int:
-    """Anexa um registro ao ledger (append-only). Returns bytes escritos."""
-    line = json.dumps(record, separators=(",", ":")) + "\n"
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(ledger_path, "a", encoding="utf-8") as fh:
-        fh.write(line)
-    return len(line.encode("utf-8"))
+    """Anexa um registro ao ledger (append-only). Returns bytes escritos.
+
+    Shim sobre :func:`_worker_core.ledger_append_record` — preservado para que
+    testes que monkeypatchem este nome continuem funcionando. ``ensure_ascii=True``
+    preserva o comportamento original deste server (escape de unicode).
+    """
+    return _core.ledger_append_record(
+        ledger_path, record, ensure_ascii=True,
+    )
 
 
 def _harvest_and_prune_orphan_jsonl(
