@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: deile-worker-slo-alerts
+  namespace: deile
+  labels:
+    app: deile-worker
+spec:
+  groups:
+    - name: deile-worker-slo-alerts
+      rules:
+        - alert: WorkerHighDispatchLatency
+          expr: |
+            histogram_quantile(0.99, rate(deile_worker_dispatch_duration_seconds_bucket[5m])) > 3  # TBD: calibrate after 30 days of V1+V2 data
+          for: 10m
+          labels:
+            severity: warning
+            component: deile-worker
+          annotations:
+            summary: "99th percentile dispatch latency is unusually high; escalate to critical if it persists."
+        - alert: WorkerAllProvidersDegraded
+          expr: sum(deile_worker_llm_fallback_total{reason="all_degraded"}) > 0
+          for: 1m
+          labels:
+            severity: critical
+            component: deile-worker
+          annotations:
+            summary: "All LLM providers are degrading simultaneously; fallback counter is positive."

@@ -63,3 +63,19 @@ kubectl -n deile patch secret deile-secrets \
 |---|---|
 | `GITHUB_TOKEN` | `repo` (full); `workflow` se o pipeline rotular PRs. |
 | `GITLAB_TOKEN` | `api`, `read_repository`, `write_repository`. |
+
+---
+
+## HPA ConfigMap sync
+
+O `HorizontalPodAutoscaler` em `infra/k8s/manifests/46-deile-worker-hpa.yaml` não re-checa o `ConfigMap` `deile-runtime-config` ao vivo, então qualquer mudança nos parâmetros `worker.hpa.*` precisa ser propagada manualmente antes de aplicar a nova HPA.
+
+Use `scripts/update_hpa.sh` para ler os campos `worker.hpa.minReplicas`, `worker.hpa.maxReplicas` e `worker.hpa.targetAverageValue` em `infra/k8s/manifests/47-deile-runtime-config.yaml`, validar as invariantes (`minReplicas <= maxReplicas` e `maxReplicas >= 2`) e executar o `kubectl patch hpa deile-worker ...` com os novos valores. O script aceita `--config-file`, `--namespace`, `--hpa-name` e `--kubectl` para acomodar ambientes diferentes e oferece `--dry-run` para testar a payload com `kubectl --dry-run=client` antes de aplicar.
+
+Exemplo mínimo (sempre rode após editar o ConfigMap):
+
+```bash
+scripts/update_hpa.sh --namespace deile --config-file infra/k8s/manifests/47-deile-runtime-config.yaml
+```
+
+Se o script abortar, corrija primeiro as chaves `worker.hpa.*` (o `maxReplicas` precisa ser pelo menos `2`, e `minReplicas` não pode ultrapassar `maxReplicas`).

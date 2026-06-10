@@ -852,6 +852,7 @@ async def _run_task(
 
     # Persist result.json into the workspace (audit + later inspection).
     result = {
+        "schema_version": 1,
         "task_id": task_id,
         "ok": ok,
         "elapsed_s": elapsed,
