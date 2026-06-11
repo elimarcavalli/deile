@@ -1469,15 +1469,17 @@ class DashboardView(View):
     @property
     def HOTKEYS(self) -> str:
         if self._activity_focused:
+            # No modo cursor da ACTIVITY só ↑↓/enter/esc fazem algo — destaca
+            # esse subconjunto e marca como sair (esc). As demais hotkeys
+            # globais ficam dormentes até o esc devolver o controle.
             return (
-                "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
-                "[t]okens(claude) [T]okens(frota)  [M]onitor  [n]otifier  "
-                "[a]ctivity:[↑↓/enter/esc]  "
-                f"[m]odel/runtime  [d]ispatch  [S]caling  [s]ort:{self.sort_mode}  [?]help  [q]uit"
+                "ACTIVITY: [↑↓]navega  [enter]abre origem  [esc]sai  "
+                "[q]uit"
             )
         return (
             "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
-            "[t]okens(claude) [T]okens(frota)  [M]onitor  [n]otifier  [m]odel/runtime  "
+            "[t]okens(claude) [T]okens(frota)  [M]onitor  [n]otifier  "
+            "[a]ctivity  [A]ctions  [m]odel/runtime  "
             f"[d]ispatch  [S]caling  [s]ort:{self.sort_mode}  [?]help  [q]uit"
         )
 
@@ -1657,6 +1659,12 @@ class DashboardView(View):
         # Defensive defaults for instances created via __new__ (tests).
         focused = getattr(self, "_activity_focused", False)
         cursor = getattr(self, "_activity_cursor", 0)
+        # Clamp o cursor à janela corrente — o feed encolhe entre renders
+        # (eventos saem da janela de 10) e um cursor obsoleto não pode apontar
+        # fora dos limites nem deixar a highlight órfã.
+        if rows:
+            cursor = min(cursor, len(rows) - 1)
+            self._activity_cursor = cursor
         if not rows:
             body: RenderableType = Text(
                 "· sem atividade recente registrada", style="dim"
@@ -1872,10 +1880,30 @@ class DashboardView(View):
 
     # --- key ---
 
+    # Tokens canônicos do KeyReader (ver classe ``KeyReader.read``): a seta
+    # vira ``"UP"``/``"DOWN"``, o ESC vira ``"ESC"`` e o enter vira ``"\r"``/
+    # ``"\n"``. As variantes raw (``"\x1b"``, ``"\x1b[A"``, ``"\x1b[B"``) são
+    # aceitas só por retrocompat de testes — em produção nunca chegam.
+    _ACTIVITY_UP_KEYS = ("UP", "k", "\x1b[A")
+    _ACTIVITY_DOWN_KEYS = ("DOWN", "j", "\x1b[B")
+    _ACTIVITY_ENTER_KEYS = ("\r", "\n")
+    _ACTIVITY_ESC_KEYS = ("ESC", "\x1b")
+
     def intercepts_key(self, key: str) -> bool:
-        """Intercept cursor/ESC keys when activity panel is focused (issue #446)."""
+        """Intercept cursor/ESC keys when activity panel is focused (issue #446).
+
+        Sem isso, o ESC do KeyReader (``"ESC"``) cairia no handler global
+        (``_handle_global``), que faria ``pop()`` — no-op no dashboard-root —
+        deixando ``_activity_focused`` preso. Interceptar devolve a tecla a
+        ``handle_key`` para que ESC saia do modo focused (issue #446 fix).
+        """
         if self._activity_focused:
-            if key in ("\x1b", "\x1b[A", "\x1b[B", "j", "k", "\r", "\n"):
+            if key in (
+                *self._ACTIVITY_UP_KEYS,
+                *self._ACTIVITY_DOWN_KEYS,
+                *self._ACTIVITY_ENTER_KEYS,
+                *self._ACTIVITY_ESC_KEYS,
+            ):
                 return True
         return super().intercepts_key(key)
 
@@ -1883,15 +1911,13 @@ class DashboardView(View):
         # Activity cursor navigation (issue #446) — handled before global nav.
         if self._activity_focused:
             len_rows = max(1, len(self._last_activity_events))
-            if key in ("\x1b[A", "k"):
-                # UP
+            if key in self._ACTIVITY_UP_KEYS:
                 self._activity_cursor = (self._activity_cursor - 1) % len_rows
                 return ActionResult.refresh()
-            if key in ("\x1b[B", "j"):
-                # DOWN
+            if key in self._ACTIVITY_DOWN_KEYS:
                 self._activity_cursor = (self._activity_cursor + 1) % len_rows
                 return ActionResult.refresh()
-            if key in ("\r", "\n"):
+            if key in self._ACTIVITY_ENTER_KEYS:
                 # ENTER — drill down into selected event.
                 events = self._last_activity_events
                 if events and self._activity_cursor < len(events):
@@ -1908,15 +1934,19 @@ class DashboardView(View):
                                                 pod_name=source_pod,
                                                 pod_role=actor)
                 return ActionResult.refresh()
-            if key == "\x1b":
-                # ESC — exit cursor mode.
+            if key in self._ACTIVITY_ESC_KEYS:
+                # ESC — sai do modo focused e devolve o controle global.
                 self._activity_focused = False
                 return ActionResult.refresh()
-            return ActionResult.refresh()
+            # Qualquer outra tecla no modo focused é ignorada (NOOP) para não
+            # prender hotkeys globais: ESC já desfez o foco acima, então uma
+            # tecla solta aqui não deve consumir nem forçar render.
+            return ActionResult()
 
-        # When "a" is pressed, enter activity cursor mode instead of nav to
-        # "actions".  The old "actions" view is now reached via the [a]ctions
-        # entry in the nav dict below only when NOT in focused mode.
+        # ``[a]`` minúsculo → entra no modo cursor da ACTIVITY (navegar o feed
+        # multi-source + drill-down). ``[A]`` MAIÚSCULO → ActionsView (rollout/
+        # ações do deploy.py), via ``nav`` dict abaixo. O KeyReader distingue
+        # maiúsculo/minúsculo via termios cbreak — sem ambiguidade.
         if key == "a":
             self._activity_focused = True
             self._activity_cursor = 0
@@ -1929,6 +1959,14 @@ class DashboardView(View):
             "4": "logs-split",
             "n": "notifier-echo",
             "m": "model-switcher",
+            # [A] MAIÚSCULO → ActionsView (verbos do deploy.py: rollout
+            # restart, build, up/stop/start, down — cada ação mutadora passa
+            # por confirmação [y/N]). O [a] minúsculo é o modo cursor da
+            # ACTIVITY (tratado acima). Antes (regressão #436/#446) o [a] foi
+            # repurposed para a Activity e a ActionsView ficou órfã — sem
+            # hotkey chegando nela. As ações de rollout do pod selecionado
+            # também seguem na PodPickerView ([1] Pods → r/R/x).
+            "A": "actions",
             # Pipeline Stage Configuration (issue #309 fase 2 — Task 21 cutover):
             # matriz unificada que substitui (a) o flip global de
             # ``DEILE_PIPELINE_DISPATCH_MODE`` da ``DispatchModeView`` (PR #330)
@@ -4957,7 +4995,10 @@ class ActionsView(View):
         actions = self._actions()
         # menu
         menu = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
-        menu.add_column(" ", width=3)
+        # Larguras adaptativas (pilar #15): sem ``width=<int>`` literal — o
+        # índice [1-9] é curto, então ``no_wrap`` basta para o Rich dimensionar
+        # a coluna a partir de ``console.width`` em cada render.
+        menu.add_column(" ", no_wrap=True)
         menu.add_column("ação", style="bold")
         menu.add_column("comando", style="dim")
         for i, a in enumerate(actions, 1):
