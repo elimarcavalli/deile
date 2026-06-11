@@ -398,19 +398,17 @@ class TestProcessMentionsCrossTickDedup:
         assert monitor.stats.mentions_processed == 1
         github.add_labels.assert_called_once_with("pr", 77, [MENTION_DONE])
 
-    async def test_reviewer_with_mention_done_is_skipped(self):
-        """Um request de review é one-shot: o marker ``~mention:processado``
-        BLOQUEIA o re-dispatch. Sem isso, o request — que persiste na PR até um
-        review formal ser submetido — re-dispararia um review opus completo a
-        cada tick (caro e ilimitado; ``nowait`` nem avança o attempt-ceiling).
-        O humano remove o marker para forçar re-review."""
+    async def test_reviewer_with_mention_done_still_dispatches(self):
+        """Reviewer NÃO é gateado pelo marker: a concorrência é do claude-worker
+        (cap por leases vivas → 409), não do pipeline somando labels. O
+        collector dispara para todo review-request; um review que falhou
+        re-tenta sozinho. (Ver claude_worker_server._count_live_leases.)"""
         monitor, github, notifier = _make_monitor()
         github.list_prs_with_review_requests = AsyncMock(
             return_value=[_pr_ref(88, labels=(MENTION_DONE,))]
         )
         await monitor._process_mentions()
-        assert monitor.stats.mentions_processed == 0
-        github.add_labels.assert_not_called()
+        assert monitor.stats.mentions_processed == 1
 
     async def test_body_mention_already_processed_is_skipped(self):
         monitor, github, notifier = _make_monitor()

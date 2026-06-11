@@ -569,3 +569,71 @@ class TestDispatch409WhenLeaseHeld:
         body = json.loads(response.body)
         assert body["error_code"] == "TASK_ALREADY_RUNNING"
         assert body["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Cap GLOBAL de concorrência via contagem de leases (fonte de verdade, cross-pod)
+# ---------------------------------------------------------------------------
+
+
+class TestCountLiveLeases:
+    """``_count_live_leases`` conta dispatches EM VOO = leases com heartbeat
+    fresco no PVC compartilhado. É a fonte de verdade da concorrência GLOBAL —
+    NÃO soma de labels (frágil) nem pgrep local (cego cross-pod). Auto-cura:
+    lease com heartbeat velho (pod morto) não conta."""
+
+    @pytest.mark.unit
+    def test_counts_only_fresh_leases(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(cws, "_LEASE_TTL_S", 30)
+        root = tmp_path / "work"
+        root.mkdir()
+        for tid in ("a" * 16, "b" * 16):  # 2 frescas
+            d = root / tid
+            d.mkdir()
+            _make_lease(d, age_s=0.0)
+        stale = root / ("c" * 16)  # stale (auto-cura → não conta)
+        stale.mkdir()
+        _make_lease(stale, age_s=120.0)
+        (root / ("d" * 16)).mkdir()  # task_id sem lease → não conta
+        (root / ".progress").mkdir()  # não-task_id → ignorado
+        assert cws._count_live_leases(root) == 2
+
+    @pytest.mark.unit
+    def test_missing_root_returns_zero(self, tmp_path: Path):
+        assert cws._count_live_leases(tmp_path / "nonexistent") == 0
+
+    @pytest.mark.unit
+    async def test_dispatch_returns_409_at_concurrency_cap(self, tmp_path: Path):
+        """Com >= MAX leases vivas no root, o dispatch é recusado com 409
+        CONCURRENT_DISPATCH_BLOCKED — cap global por lease-count, ANTES de aceitar."""
+        root = tmp_path
+        for tid in ("a" * 16, "b" * 16):
+            d = root / tid
+            d.mkdir()
+            _make_lease(d, age_s=0.0)
+
+        from unittest.mock import AsyncMock as _AM
+
+        request = MagicMock()
+        request.json = _AM(return_value={
+            "brief": "review PR", "stage": "pr_review",
+            "channel_id": "pipeline-mention-pr-99",
+        })
+        request.app = {"auth_token": "test-token"}
+
+        with (
+            patch.object(cws, "_CLAUDE_MAX_CONCURRENT", 2),
+            patch.object(cws, "_LEASE_TTL_S", 30),
+            patch.dict(os.environ, {
+                "DEILE_CLAUDE_WORKER_ROOT": str(root),
+                "HOSTNAME": "pod-test",
+            }),
+        ):
+            response = await cws.dispatch_handler(request)
+
+        assert response.status == 409
+        body = json.loads(response.body)
+        assert body["error_code"] == "CONCURRENT_DISPATCH_BLOCKED"
+        assert body["ok"] is False

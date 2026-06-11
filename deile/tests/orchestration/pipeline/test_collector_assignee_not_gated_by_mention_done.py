@@ -1,17 +1,14 @@
 """Gating dos sticky triggers de PR por ``~mention:processado``.
 
-- **assignee (PR/issue)** — NÃO gateado: roteia para ``work_merge``, que
-  legitimamente re-tenta (CI pendente, threads) até merge/close terminar
-  (descoberta-por-estado, Decisão #45).
-- **reviewer (PR)** — GATEADO: um request de review é one-shot. O GitHub
-  mantém ``deile-one`` em ``requested_reviewers`` até um review *formal* ser
-  submetido, então sem o gate o brief unificado re-rodaria um review completo
-  (caro, em opus) a CADA tick — um 401/falha transiente ou veredito só-comentário
-  nunca limpa o request, e dispatches ``nowait=True`` nem avançam o
-  attempt-ceiling, deixando o loop ilimitado. O humano remove o marker para
-  forçar re-review.
+- **assignee (PR/issue)** — NÃO gateado: roteia para ``work_merge`` (Decisão #45).
+- **reviewer (PR)** — NÃO gateado pelo marker: a CONCORRÊNCIA é responsabilidade
+  do claude-worker (cap global por leases vivas no PVC → 409 quando cheio), NÃO
+  do pipeline somando labels. O pipeline dispara para todo review-request; o
+  worker recusa o excedente. Um review submetido limpa o ``requested_reviewers``
+  no GitHub (some do poll); um review que falhou re-tenta sozinho (sem marker
+  que trave). Ver claude_worker_server ``_count_live_leases``.
 - **body** — GATEADO: corpo é estático e re-dispararia infinitamente sem o
-  marker.
+  marker (não há request que se auto-limpe).
 
 Esse teste valida os três comportamentos.
 """
@@ -98,48 +95,37 @@ class TestStickyPrTriggersUngated:
         assert triggers[0].issue.number == 42
 
 
-class TestReviewerTriggerGated:
-    """``reviewer`` (PR) É gateado por ``~mention:processado``.
+class TestReviewerTriggerNotGated:
+    """``reviewer`` (PR) NÃO é gateado pelo marker nem por soma-de-label.
 
-    Regressão do loop de re-dispatch: com ``deile-one`` requisitado como
-    reviewer, o request persiste na PR até um review formal ser submetido. Sem
-    o gate, todo tick re-dispararia um review opus completo (custo ilimitado;
-    ``nowait=True`` nem avança o attempt-ceiling). O marker, aplicado em
-    sticky-success, corta o re-dispatch; o humano o remove para re-revisar.
+    A concorrência é do claude-worker (cap global por leases vivas no PVC → 409),
+    não do pipeline. O collector dispara para TODO review-request; o worker
+    recusa o excedente. Marker presente ou não, com 1 ou N requests, todos
+    armam — quem limita é o worker.
     """
 
-    async def test_reviewer_pr_with_mention_done_is_skipped(self):
+    async def test_reviewer_pr_with_mention_done_still_arms(self):
+        """Marker presente NÃO bloqueia — review que falhou re-tenta sozinho."""
         monitor = _make_monitor(review_request_prs=[_pr(88, labels=(MENTION_DONE,))])
         triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
-        assert triggers == []
+        assert len(triggers) == 1
+        assert triggers[0].trigger_type == "reviewer"
+        assert triggers[0].pr.number == 88
 
-    async def test_reviewer_pr_without_mention_done_still_arms(self):
-        """O PRIMEIRO request (sem o marker) dispara o review normalmente."""
+    async def test_reviewer_pr_without_mention_done_arms(self):
         monitor = _make_monitor(review_request_prs=[_pr(88)])
         triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
         assert len(triggers) == 1
         assert triggers[0].trigger_type == "reviewer"
-        assert triggers[0].pr is not None
-        assert triggers[0].pr.number == 88
 
-    async def test_reviewer_concurrency_cap_limits_fresh_dispatch(self):
-        """Com ``max_parallel=2`` e 3 requests frescos (sem marker), só 2 armam
-        no tick; o 3º espera (re-entra no próximo tick, sem marker)."""
+    async def test_all_review_requests_arm_no_pipeline_cap(self):
+        """N requests → N triggers (o pipeline NÃO capeia; o worker é a autoridade
+        de concorrência via 409 por lease-count)."""
         monitor = _make_monitor(review_request_prs=[_pr(1), _pr(2), _pr(3)])
         monitor.config.max_parallel = 2
         triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
         reviewer = [t for t in triggers if t.trigger_type == "reviewer"]
-        assert len(reviewer) == 2
-
-    async def test_reviewer_concurrency_counts_in_flight(self):
-        """PRs com o marker (review JÁ em voo) consomem slot: com ``max_parallel=2``
-        e 2 já em voo, nenhum fresco é despachado neste tick."""
-        in_flight = [_pr(1, labels=(MENTION_DONE,)), _pr(2, labels=(MENTION_DONE,))]
-        fresh = [_pr(3), _pr(4)]
-        monitor = _make_monitor(review_request_prs=in_flight + fresh)
-        monitor.config.max_parallel = 2
-        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
-        assert [t for t in triggers if t.trigger_type == "reviewer"] == []
+        assert len(reviewer) == 3
 
 
 class TestBodyTriggerStillGated:

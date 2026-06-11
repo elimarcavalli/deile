@@ -591,34 +591,23 @@ async def _collect_mention_triggers(
                 trigger_type="assignee", pr=pr, trigger_author=gh_login,
             )
         )
-    # Review requests são one-shot E limitados por concorrência. Cada review é
-    # um dispatch opus caro (~$2-5, suíte in-pod); rodar muitos em paralelo num
-    # único claude-worker thrasha o pod e queima custo concorrente. Gateamos em
-    # DUAS dimensões:
-    #   1. ``~mention:processado`` (one-shot): o request persiste no PR até um
-    #      review FORMAL ser submetido — sem o marker, re-disparia a cada tick.
-    #      Um PR com marker E ainda requested = review JÁ despachada e em voo
-    #      (o review formal, ao ser submetido, limpa o request → deixa de contar).
-    #   2. ``max_parallel`` (concorrência): só despacha ``max_parallel`` menos os
-    #      que já estão em voo. Os excedentes NÃO recebem o marker, então
-    #      re-entram como candidatos no próximo tick, conforme os slots liberam.
-    review_prs = await _poll(
+    # Reviewer-request → um review por PR. NÃO contamos concorrência aqui: a
+    # AUTORIDADE de "quantos claude rodam" é o claude-worker, que conta leases
+    # vivas no PVC compartilhado e devolve 409 quando cheio (cap GLOBAL cross-pod
+    # — ``_count_live_leases``/``DEILE_CLAUDE_MAX_CONCURRENT``). O pipeline é
+    # burro: dispara; se 409, re-tenta no próximo tick. Somar labels p/ inferir
+    # paralelos era frágil (ignorava comment/assignee; contava sessão morta pra
+    # sempre → deadlock). Dedup do MESMO PR em voo = guarda per-channel do
+    # worker; "já revisado" = o GitHub limpa o review-request ao submeter; review
+    # que falhou re-tenta sozinho (sem marker que trave o retry).
+    for pr in await _poll(
         "review requests", monitor.forge.list_prs_with_review_requests(gh_login)
-    )
-    in_flight_reviews = sum(1 for pr in review_prs if MENTION_DONE in pr.labels)
-    review_slots = max(0, monitor.config.max_parallel - in_flight_reviews)
-    fresh_review_prs = [pr for pr in review_prs if MENTION_DONE not in pr.labels]
-    for pr in review_prs:
-        if MENTION_DONE in pr.labels:
-            log_routing_dropped(target_kind="pr", target=pr.number, reason="reviewer_already_processed")
-    for pr in fresh_review_prs[:review_slots]:
+    ):
         triggers.append(
             MentionTrigger(
                 trigger_type="reviewer", pr=pr, trigger_author=gh_login,
             )
         )
-    for pr in fresh_review_prs[review_slots:]:
-        log_routing_dropped(target_kind="pr", target=pr.number, reason="reviewer_queue_capacity")
 
     try:
         body_issues, body_prs = await monitor.forge.search_items_mentioning(handle)

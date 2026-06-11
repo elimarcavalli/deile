@@ -221,6 +221,14 @@ _LEASE_TTL_S: int = int(os.environ.get("DEILE_CLAUDE_LEASE_TTL_S", "30"))
 #: Intervalo de atualização do heartbeat em segundos.
 _LEASE_HEARTBEAT_S: int = int(os.environ.get("DEILE_CLAUDE_LEASE_HEARTBEAT_S", "5"))
 
+#: Teto GLOBAL de claude concorrentes neste worker. O registro de leases no PVC
+#: (compartilhado entre réplicas) é a ÚNICA fonte de verdade de "quantos
+#: dispatches estão em voo" — NÃO a soma de labels no pipeline (frágil: ignora
+#: gatilhos não-contados e conta sessões mortas pra sempre) NEM o ``pgrep``
+#: local (cego cross-pod). Conta leases com heartbeat fresco; auto-cura porque
+#: lease de pod morto expira em ``_LEASE_TTL_S``. 0 = sem teto.
+_CLAUDE_MAX_CONCURRENT: int = int(os.environ.get("DEILE_CLAUDE_MAX_CONCURRENT", "2"))
+
 
 # --------------------------------------------------------------------------- #
 # Anthropic quota cache — thread-safe singleton (issue #395)
@@ -1312,6 +1320,38 @@ def _parse_claude_json_output(stdout: str) -> dict:
 # --------------------------------------------------------------------------- #
 
 
+def _count_live_leases(root: Path) -> int:
+    """Conta dispatches EM VOO = leases com ``heartbeat_at`` fresco (< TTL).
+
+    Fonte de verdade da concorrência (cross-pod via PVC compartilhado): cada
+    dispatch grava ``<task_id>/.lease.json`` e o heartbeat o mantém fresco
+    enquanto o pod que o processa está vivo; ao concluir, a lease é removida; se
+    o pod morre, a lease expira em ``_LEASE_TTL_S`` e deixa de contar (auto-cura
+    — sem deadlock por estado fantasma). Best-effort: erros de I/O são pulados.
+    """
+    now = time.time()
+    count = 0
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return 0
+    for child in children:
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if not _TASK_ID_RE.fullmatch(child.name):
+            continue
+        lease_path = child / ".lease.json"
+        if not lease_path.exists():
+            continue
+        try:
+            data = json.loads(lease_path.read_text(encoding="utf-8"))
+            if (now - float(data.get("heartbeat_at", 0))) < _LEASE_TTL_S:
+                count += 1
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+    return count
+
+
 def _find_active_lease(root: Path) -> Optional[dict]:
     """Return the most recent alive lease found under *root*/<task_id>/.lease.json.
 
@@ -2137,6 +2177,29 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         claude_model = match.group(1)
 
     root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+
+    # Teto GLOBAL de concorrência (cross-pod): o registro de leases no PVC é a
+    # fonte única de "quantos dispatches em voo". Conta ANTES de aceitar; se >=
+    # máximo, recusa com 409 — o caller (pipeline) trata como não-fatal e
+    # re-tenta no próximo tick. Cobre TODO gatilho (reviewer/comment/assignee/
+    # implement) porque a autoridade é o worker que roda os processos, não a
+    # soma de labels. Vale p/ resume E fresh (ambos giram um claude).
+    if _CLAUDE_MAX_CONCURRENT > 0:
+        _live_leases = _count_live_leases(root)
+        if _live_leases >= _CLAUDE_MAX_CONCURRENT:
+            logger.warning(
+                "dispatch BLOCKED — %d leases vivas >= máx %d (channel=%s); "
+                "recusando p/ proteger o pod de contenção",
+                _live_leases, _CLAUDE_MAX_CONCURRENT, _channel_id or "?",
+            )
+            return web.json_response({
+                "ok": False,
+                "error_code": "CONCURRENT_DISPATCH_BLOCKED",
+                "error": (
+                    f"{_live_leases} claude em execução >= máximo "
+                    f"{_CLAUDE_MAX_CONCURRENT}; pipeline aguarda próximo tick"
+                ),
+            }, status=409)
 
     # Resume path: reaproveita workdir + session-id existentes.
     is_resume = bool(resume_session_id and prev_task_id)
