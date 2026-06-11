@@ -1,15 +1,16 @@
-"""Sticky triggers PR (assignee/reviewer) deixaram de ser gateados por
-``~mention:processado`` (Decisão #45 — "PR é o quadro").
+"""Gating dos sticky triggers de PR por ``~mention:processado``.
 
-A racional anterior — gatear sticky-PR pelo marker pra evitar storm cross-tick
-— foi substituída por descoberta-por-estado: o brief unificado abre a PR, vê
-o estado real (HEAD vs último review, threads abertas) e comenta curto "sem
-novidade" se nada precisa ser feito. O pipeline marca sticky-success com o
-marker para evitar churn redundante; mudanças reais (HEAD novo) re-armam via
-o trigger natural.
+- **assignee (PR/issue)** — NÃO gateado: roteia para ``work_merge`` (Decisão #45).
+- **reviewer (PR)** — NÃO gateado pelo marker: a CONCORRÊNCIA é responsabilidade
+  do claude-worker (cap global por leases vivas no PVC → 409 quando cheio), NÃO
+  do pipeline somando labels. O pipeline dispara para todo review-request; o
+  worker recusa o excedente. Um review submetido limpa o ``requested_reviewers``
+  no GitHub (some do poll); um review que falhou re-tenta sozinho (sem marker
+  que trave). Ver claude_worker_server ``_count_live_leases``.
+- **body** — GATEADO: corpo é estático e re-dispararia infinitamente sem o
+  marker (não há request que se auto-limpe).
 
-O gate em **body** continua ATIVO — corpo é estático e re-dispararia
-infinitamente sem o marker. Esse teste valida ambos os comportamentos.
+Esse teste valida os três comportamentos.
 """
 
 from __future__ import annotations
@@ -83,13 +84,6 @@ class TestStickyPrTriggersUngated:
         assert triggers[0].pr is not None
         assert triggers[0].pr.number == 77
 
-    async def test_reviewer_pr_with_mention_done_still_arms(self):
-        """Idem para requested-reviewer em PR."""
-        monitor = _make_monitor(review_request_prs=[_pr(88, labels=(MENTION_DONE,))])
-        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
-        assert len(triggers) == 1
-        assert triggers[0].trigger_type == "reviewer"
-
     async def test_assignee_issue_with_mention_done_still_arms(self):
         """Assignee em ISSUE também não é mais gateado pelo marker — a
         injeção em ``~workflow:nova`` (caminho de routing) cuida da
@@ -99,6 +93,39 @@ class TestStickyPrTriggersUngated:
         assert len(triggers) == 1
         assert triggers[0].issue is not None
         assert triggers[0].issue.number == 42
+
+
+class TestReviewerTriggerNotGated:
+    """``reviewer`` (PR) NÃO é gateado pelo marker nem por soma-de-label.
+
+    A concorrência é do claude-worker (cap global por leases vivas no PVC → 409),
+    não do pipeline. O collector dispara para TODO review-request; o worker
+    recusa o excedente. Marker presente ou não, com 1 ou N requests, todos
+    armam — quem limita é o worker.
+    """
+
+    async def test_reviewer_pr_with_mention_done_still_arms(self):
+        """Marker presente NÃO bloqueia — review que falhou re-tenta sozinho."""
+        monitor = _make_monitor(review_request_prs=[_pr(88, labels=(MENTION_DONE,))])
+        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
+        assert len(triggers) == 1
+        assert triggers[0].trigger_type == "reviewer"
+        assert triggers[0].pr.number == 88
+
+    async def test_reviewer_pr_without_mention_done_arms(self):
+        monitor = _make_monitor(review_request_prs=[_pr(88)])
+        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
+        assert len(triggers) == 1
+        assert triggers[0].trigger_type == "reviewer"
+
+    async def test_all_review_requests_arm_no_pipeline_cap(self):
+        """N requests → N triggers (o pipeline NÃO capeia; o worker é a autoridade
+        de concorrência via 409 por lease-count)."""
+        monitor = _make_monitor(review_request_prs=[_pr(1), _pr(2), _pr(3)])
+        monitor.config.max_parallel = 2
+        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
+        reviewer = [t for t in triggers if t.trigger_type == "reviewer"]
+        assert len(reviewer) == 3
 
 
 class TestBodyTriggerStillGated:

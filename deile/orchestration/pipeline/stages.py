@@ -507,9 +507,19 @@ async def _collect_mention_triggers(
 
     Sticky trigger behaviour by source:
 
-    * **assignee/reviewer (PR)** — NOT filtered by ``~mention:processado``.
-      Discovery-by-state: the unified PR brief opens the PR and decides whether
-      there is real work to do.  Sticky-success marks the marker to avoid churn.
+    * **reviewer (PR)** — NOT filtered by ``~mention:processado``. A review
+      request self-clears when a *formal* review is submitted (GitHub drops
+      ``deile-one`` from ``requested_reviewers``), so the natural PR state
+      already dedups; a review that failed (401/transient/comment-only)
+      legitimately retries on the next tick without a marker that would block
+      it. Concurrency is NOT inferred here by summing labels — the authority on
+      "how many claude run" is the claude-worker, which counts live leases on
+      the shared PVC and returns 409 when full (global cross-pod cap,
+      ``_count_live_leases``/``DEILE_CLAUDE_MAX_CONCURRENT``); the pipeline just
+      dispatches and retries on 409.
+    * **assignee (PR)** — NOT filtered by ``~mention:processado``.
+      Discovery-by-state: ``assignee`` routes to ``work_merge`` which legitimately
+      retries (CI pending, threads open) until merged/closed terminates it.
     * **assignee (issue)** — NOT filtered by ``~mention:processado``, but IS
       gated by ``~workflow:*``: issues already owned by the pipeline (gate label
       present) are skipped to prevent EVENTS panel flooding (issue #483).
@@ -549,13 +559,15 @@ async def _collect_mention_triggers(
 
     # ---- 2-4. Sticky triggers (assignee / reviewer / body) --------------
     #
-    # Antes da refactor "PR é o quadro", os sticky triggers eram gateados por
-    # ``~mention:processado`` para impedir re-disparo cross-tick. Isso é
-    # incompatível com o princípio de descoberta-por-estado: o worker abre a
-    # PR e decide pelo estado real (HEAD vs último review, threads abertas,
-    # comentários sem resposta) — se nada precisa ser feito, o brief unificado
-    # comenta curto e sai. Já o trigger ``body`` continua gateado porque o
-    # corpo é estático: sem o marker ele re-disparia infinitamente.
+    # ``assignee`` (PR/issue) segue descoberta-por-estado: o worker abre a PR e
+    # decide pelo estado real (HEAD vs último review, threads abertas) — assignee
+    # roteia p/ ``work_merge``, que legitimamente re-tenta até merge/close.
+    # ``reviewer`` NÃO é gateado por ``~mention:processado``: o review-request se
+    # auto-limpa quando um review formal é submetido (o GitHub tira ``deile-one``
+    # de ``requested_reviewers``) e um review que falhou re-tenta sozinho — a
+    # concorrência é capada no claude-worker (409 por lease viva, ver bloco
+    # abaixo), não inferida aqui. Só ``body`` é gateado: corpo estático, sem o
+    # marker re-dispararia a cada tick indefinidamente.
     async def _poll(label: str, coro) -> list:
         try:
             return list(await coro)
@@ -580,7 +592,18 @@ async def _collect_mention_triggers(
                 trigger_type="assignee", pr=pr, trigger_author=gh_login,
             )
         )
-    for pr in await _poll("review requests", monitor.forge.list_prs_with_review_requests(gh_login)):
+    # Reviewer-request → um review por PR. NÃO contamos concorrência aqui: a
+    # AUTORIDADE de "quantos claude rodam" é o claude-worker, que conta leases
+    # vivas no PVC compartilhado e devolve 409 quando cheio (cap GLOBAL cross-pod
+    # — ``_count_live_leases``/``DEILE_CLAUDE_MAX_CONCURRENT``). O pipeline é
+    # burro: dispara; se 409, re-tenta no próximo tick. Somar labels p/ inferir
+    # paralelos era frágil (ignorava comment/assignee; contava sessão morta pra
+    # sempre → deadlock). Dedup do MESMO PR em voo = guarda per-channel do
+    # worker; "já revisado" = o GitHub limpa o review-request ao submeter; review
+    # que falhou re-tenta sozinho (sem marker que trave o retry).
+    for pr in await _poll(
+        "review requests", monitor.forge.list_prs_with_review_requests(gh_login)
+    ):
         triggers.append(
             MentionTrigger(
                 trigger_type="reviewer", pr=pr, trigger_author=gh_login,
@@ -932,9 +955,16 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
         return
     # Shard filter: only consider issues whose hash falls in our shard.
     # Sort by priority so the most urgent issue is critiqued first.
+    # ``~workflow:bloqueada`` é um hard-block: congela a issue em TODOS os
+    # estágios (não só o auto-resume). Sem esta exclusão, uma issue ``nova`` que
+    # um humano travou ainda seria critecada uma vez (nova→em_revisao) — gasto
+    # não-intencional — antes de os selectors downstream (refine/implement) a
+    # congelarem. Espelha o filtro já presente no reconcile e no implement.
     candidates = [
         i for i in sort_by_priority(issues)
-        if i.batch_id is None and monitor.identity.owns(i.title)
+        if i.batch_id is None
+        and monitor.identity.owns(i.title)
+        and WORKFLOW_BLOCKED not in i.labels
     ]
     if not candidates:
         return
