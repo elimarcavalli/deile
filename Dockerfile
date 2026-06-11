@@ -237,6 +237,15 @@ RUN chmod 0555 /app/_worker_core.py
 COPY --chown=deile:deile infra/k8s/worker_server.py /app/worker_server.py
 RUN chmod 0555 /app/worker_server.py
 
+# Worker hardening helpers (issue #620). Imported by worker_server.py via bare
+# name (``import worker_metrics``, ``from worker_rate_limit import ...``), so
+# both MUST sit in /app next to worker_server.py — otherwise the deile-worker
+# pod crashes on import at startup (ModuleNotFoundError). Each needs a matching
+# `!infra/k8s/worker_*.py` exception in .dockerignore.
+COPY --chown=deile:deile infra/k8s/worker_metrics.py /app/worker_metrics.py
+COPY --chown=deile:deile infra/k8s/worker_rate_limit.py /app/worker_rate_limit.py
+RUN chmod 0555 /app/worker_metrics.py /app/worker_rate_limit.py
+
 # Pure-logic helper imported by worker_server.py (``import _worker_resume``):
 # resume fingerprint / journal / end-detection (issue #254). It MUST sit in
 # /app next to worker_server.py or the worker crashes on import at startup.

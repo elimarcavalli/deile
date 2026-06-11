@@ -113,3 +113,6 @@ version = { attr = "deile.__version__.__version__" }
 [tool.setuptools.packages.find]
 include = ["deile*"]
 exclude = ["deilebot*", "tests*"]
+
+[tool.setuptools.package-data]
+"deile.core.schemas" = ["*.json"]

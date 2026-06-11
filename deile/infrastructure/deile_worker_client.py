@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import uuid
 from typing import Any, Dict, List, Literal, Optional
@@ -28,6 +29,7 @@ from pydantic import (BaseModel, Field, ValidationError, ValidationInfo,
                       field_validator)
 
 from deile.core.exceptions import DEILEError
+from deile.infrastructure.circuit_breaker import CircuitBreaker
 from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,47 @@ _NOWAIT_TIMEOUT_S: float = 30.0
 # ``asyncio.wait_for`` no nível do tick (``WorkerImplementer._dispatch``).
 _CONNECT_TIMEOUT_S: float = 30.0
 _POOL_TIMEOUT_S: float = 30.0
+
+# Retry com exponential backoff (issue #620 AC4). Só re-tentamos falhas
+# TRANSIENTES (timeout/inalcançável/5xx) — 4xx (incl. 409/429) refletem o
+# pedido em si e nunca são re-tentados. ``_RETRY_MAX_ATTEMPTS`` é o teto
+# absoluto; ``DispatchPayload.max_retries`` (quando presente) o reduz ainda
+# mais. Backoff entre as tentativas k=0,1,...: ``base * factor^k ± jitter``.
+_RETRY_MAX_ATTEMPTS: int = 3
+_RETRY_BASE_S: float = 1.0
+_RETRY_FACTOR: float = 2.0
+_RETRY_JITTER_S: float = 0.3
+#: error_codes que indicam falha transitória e portanto re-tentável.
+_RETRYABLE_ERROR_CODES: frozenset = frozenset(
+    {"WORKER_TIMEOUT", "WORKER_UNREACHABLE", "WORKER_SERVER_ERROR"}
+)
+
+# Circuit breaker compartilhado pelo processo (issue #620 AC5): threshold de
+# 5 falhas consecutivas abre o circuito; reset de 30s leva ao probe half-open.
+# Instância única por processo — o estado de saúde do worker é global, não
+# por-dispatch. Exposto via ``circuit_breaker_state()`` para a métrica gauge.
+_CIRCUIT_FAILURE_THRESHOLD: int = 5
+_CIRCUIT_RESET_TIMEOUT_S: float = 30.0
+_CIRCUIT_BREAKER = CircuitBreaker(
+    failure_threshold=_CIRCUIT_FAILURE_THRESHOLD,
+    reset_timeout_s=_CIRCUIT_RESET_TIMEOUT_S,
+)
+
+
+def circuit_breaker_state() -> int:
+    """Estado corrente do circuit breaker como inteiro (0=closed, 1=open,
+    2=half-open) — espelha o gauge ``deile_worker_circuit_breaker_state``."""
+    return int(_CIRCUIT_BREAKER.state)
+
+
+def reset_circuit_breaker() -> None:
+    """Reseta o circuit breaker do processo para CLOSED.
+
+    Destinado a testes (o breaker é um singleton de processo, então estado
+    de um teste vazaria para o seguinte) e a bootstrap. Nunca chamado no
+    caminho de dispatch.
+    """
+    _CIRCUIT_BREAKER.reset()
 
 _DISPATCH_PATH = "/v1/dispatch"
 _PROGRESS_PATH = "/v1/progress/{task_id}"
@@ -103,7 +146,25 @@ class WorkerDispatchError(DEILEError):
 
     Carrega o ``error_code`` que a tool repassa no ``ToolResult``,
     preservando os códigos de erro originais do ``dispatch_deile_task``.
+
+    ``http_status`` (quando a falha veio de uma resposta HTTP) carrega o
+    status code para a lógica de retry classificar 5xx (transitório,
+    re-tentável) vs 4xx (definitivo, sem retry) — issue #620 AC4.
     """
+
+    def __init__(self, *args, http_status: Optional[int] = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.http_status = http_status
+
+    def is_retryable(self) -> bool:
+        """True se a falha é transitória: timeout, inalcançável ou HTTP 5xx.
+
+        4xx (incl. 409 duplicate, 429 rate-limit) NUNCA é re-tentável — o
+        erro está no pedido/estado, não no transporte (issue #620 AC4).
+        """
+        if self.http_status is not None:
+            return self.http_status >= 500
+        return self.error_code in _RETRYABLE_ERROR_CODES
 
 
 class DispatchPayload(BaseModel):
@@ -566,10 +627,20 @@ class DeileWorkerClient:
     ) -> Dict[str, Any]:
         """POST a dispatch payload to the worker and return its parsed JSON body.
 
+        Wraps :meth:`_dispatch_once` with the process-wide circuit breaker
+        (issue #620 AC5) and exponential-backoff retry (AC4):
+
+        - **Circuit breaker**: when 5 consecutive dispatches fail the circuit
+          opens and the next dispatch fails fast with ``CIRCUIT_OPEN`` (no
+          I/O); after 30s a single half-open probe is allowed.
+        - **Retry**: only transient failures (``WORKER_TIMEOUT`` /
+          ``WORKER_UNREACHABLE`` / HTTP >= 500) are retried, up to
+          :data:`_RETRY_MAX_ATTEMPTS` total attempts, capped further by the
+          payload's ``max_retries`` ceiling. 4xx (incl. 409/429) is never
+          retried — the request itself is the problem.
+
         Raises :class:`WorkerDispatchError` — carrying an ``error_code`` — for
-        every failure mode: missing/malformed credentials, missing ``httpx``,
-        transport timeout/unreachable, non-JSON body, or an HTTP >= 400
-        response.
+        every failure mode.
 
         Args:
             payload: dispatch body (validated against :class:`DispatchPayload`).
@@ -598,6 +669,76 @@ class DeileWorkerClient:
         validated = validate_dispatch_payload(payload)
         body = validated.model_dump(exclude_none=True)
 
+        # Circuit breaker gate (AC5): when OPEN inside the reset window we
+        # fail fast without touching the network. ``allow`` flips OPEN →
+        # HALF-OPEN once the window elapses, letting a single probe through.
+        if not await _CIRCUIT_BREAKER.allow():
+            raise WorkerDispatchError(
+                "circuit breaker open — worker degraded, dispatch rejected",
+                error_code="CIRCUIT_OPEN",
+            )
+
+        # Retry ceiling (AC4): the absolute max is ``_RETRY_MAX_ATTEMPTS``,
+        # narrowed by the per-stage ``max_retries`` (0 = no retry). The first
+        # call always runs, so ``max_attempts`` is the total attempt count.
+        max_attempts = _RETRY_MAX_ATTEMPTS
+        if validated.max_retries is not None:
+            max_attempts = min(max_attempts, validated.max_retries + 1)
+
+        last_exc: Optional[WorkerDispatchError] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                data = await self._dispatch_once(
+                    body, wait=wait, endpoint_url=endpoint_url,
+                )
+            except WorkerDispatchError as exc:
+                last_exc = exc
+                if not exc.is_retryable() or attempt >= max_attempts:
+                    await _CIRCUIT_BREAKER.record_failure()
+                    raise
+                delay = self._backoff_delay(attempt - 1)
+                logger.warning(
+                    "worker dispatch attempt %d/%d failed (%s); retrying in %.2fs",
+                    attempt, max_attempts, exc.error_code, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            else:
+                await _CIRCUIT_BREAKER.record_success()
+                return data
+
+        # Unreachable in practice (the loop returns or raises), but keeps the
+        # type checker happy and is defensive if max_attempts were ever 0.
+        await _CIRCUIT_BREAKER.record_failure()
+        raise last_exc or WorkerDispatchError(
+            "dispatch exhausted with no attempt", error_code="WORKER_ERROR",
+        )
+
+    @staticmethod
+    def _backoff_delay(retry_index: int) -> float:
+        """Backoff exponencial com jitter para a tentativa ``retry_index`` (0-based).
+
+        ``base * factor^retry_index`` mais jitter uniforme ``±jitter``;
+        nunca negativo (issue #620 AC4).
+        """
+        delay = _RETRY_BASE_S * (_RETRY_FACTOR ** retry_index)
+        delay += random.uniform(-_RETRY_JITTER_S, _RETRY_JITTER_S)
+        return max(0.0, delay)
+
+    async def _dispatch_once(
+        self,
+        body: Dict[str, Any],
+        *,
+        wait: bool,
+        endpoint_url: Optional[str],
+    ) -> Dict[str, Any]:
+        """Single POST attempt against the worker (no retry, no breaker).
+
+        ``body`` is already a validated/serialized dispatch payload. Raises
+        :class:`WorkerDispatchError` carrying the wire ``error_code`` and,
+        for HTTP responses, ``http_status`` so the retry layer can classify
+        transient (5xx) vs definitive (4xx) failures.
+        """
         # Issue #309 fase 2: ``endpoint_url`` (per-stage routing) sobrescreve
         # o resolver legacy quando truthy. Empty-string e ``None`` caem no
         # fallback de env var — paridade com ``_resolve_endpoint`` no
@@ -653,6 +794,7 @@ class DeileWorkerClient:
                 f"worker returned non-JSON (status={resp.status_code}, "
                 f"request_id={request_id})",
                 error_code="WORKER_BAD_RESPONSE",
+                http_status=resp.status_code,
             ) from exc
 
         if resp.status_code >= 400:
@@ -669,7 +811,9 @@ class DeileWorkerClient:
                 or f"HTTP {resp.status_code}"
             )
             raise WorkerDispatchError(
-                f"{msg} (request_id={request_id})", error_code=code
+                f"{msg} (request_id={request_id})",
+                error_code=code,
+                http_status=resp.status_code,
             )
 
         logger.info(

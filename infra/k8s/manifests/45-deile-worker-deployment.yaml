@@ -36,6 +36,10 @@ spec:
         app: deile-worker
         role: deile
     spec:
+      # Graceful shutdown (issue #620 AC1): o worker dreena dispatches em voo
+      # por até 35s no SIGTERM. O default k8s (30s) é insuficiente, então
+      # damos 40s de folga antes de o k8s recorrer ao SIGKILL.
+      terminationGracePeriodSeconds: 40
       automountServiceAccountToken: false
       enableServiceLinks: false
       securityContext:
