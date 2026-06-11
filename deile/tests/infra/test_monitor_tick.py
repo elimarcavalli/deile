@@ -209,8 +209,9 @@ async def test_injected_repo_reaches_gh_call_site(tick, tmp_path):
 
 
 async def test_judgment_file_carries_injected_repo(tick, tmp_path, monkeypatch):
-    """Phase-B judgment payload reports the injected repo (read from the
-    DEILE_PIPELINE_REPO env that the manifest sources from the ConfigMap)."""
+    """Phase-B judgment payload reports the repo the tick actually ran against
+    (the value resolved in main() and threaded through run_tick), not an
+    independent env re-read."""
     monkeypatch.setenv("DEILE_PIPELINE_REPO", "acme/neutral-project")
     sd = _state_dir(tmp_path)
     closed = [{"number": 50, "title": "X", "body": "vou abrir uma issue para o resto",
@@ -228,3 +229,45 @@ async def test_judgment_file_carries_injected_repo(tick, tmp_path, monkeypatch):
     )
     payload = json.load(open(sd / "monitor-judgment.json"))
     assert payload["repo"] == "acme/neutral-project"
+
+
+# ---------------------------------------------------------------------------
+# Issue #612 (unification — Humano's review ask on PR #647): the monitor must
+# read the target repo through the SAME canonical resolver the pipeline uses
+# (resolve_forge_repo), not a private env read. Settings *silently ignores*
+# DEILE_PIPELINE_REPO (settings.py: "truly removed"), so the legacy env is kept
+# only as a deployment-boundary fallback. These pin the precedence + the
+# never-crash contract of _resolve_repo().
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _isolate_settings(monkeypatch, tmp_path):
+    from deile.config.settings import reset_settings
+    monkeypatch.setenv("DEILE_SETTINGS_FILE", str(tmp_path / "absent.json"))
+    monkeypatch.delenv("DEILE_FORGE_REPO", raising=False)
+    monkeypatch.delenv("DEILE_PIPELINE_REPO", raising=False)
+    reset_settings()
+    yield
+    reset_settings()
+
+
+def test_resolve_repo_prefers_canonical_settings(tick, _isolate_settings, monkeypatch):
+    """forge.repo (canonical) wins even when the legacy env points elsewhere —
+    the monitor no longer diverges from the rest of the harness."""
+    from deile.config.settings import get_settings
+    get_settings().forge_repo = "acme/canonical"
+    monkeypatch.setenv("DEILE_PIPELINE_REPO", "stale/legacy")
+    assert tick._resolve_repo() == "acme/canonical"
+
+
+def test_resolve_repo_falls_back_to_legacy_env(tick, _isolate_settings, monkeypatch):
+    """No canonical config → the deployment-boundary DEILE_PIPELINE_REPO env
+    (manifest sources it from the ConfigMap) still drives the monitor."""
+    monkeypatch.setenv("DEILE_PIPELINE_REPO", "acme/from-configmap")
+    assert tick._resolve_repo() == "acme/from-configmap"
+
+
+def test_resolve_repo_empty_when_unconfigured_never_raises(tick, _isolate_settings):
+    """Nothing configured → empty string, NOT a raise: the deterministic tick
+    must never crash the heartbeat over a missing repo."""
+    assert tick._resolve_repo() == ""
