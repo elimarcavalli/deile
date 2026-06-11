@@ -118,8 +118,12 @@ class SearchTool(SyncTool):
             
             # Extract and validate parameters
             args = context.parsed_args
-            query = args.get("query", "")
-            if not query.strip():
+            # ``args.get("query", "")`` returns ``None`` (not the default) when
+            # the key is present with a null value — guard the type before
+            # ``.strip()`` so an LLM passing ``query: null`` gets a clear
+            # "cannot be empty" message instead of an opaque AttributeError.
+            query = args.get("query") or ""
+            if not isinstance(query, str) or not query.strip():
                 raise ToolError("Search query cannot be empty")
 
             path = args.get("path", ".")
