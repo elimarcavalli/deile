@@ -45,14 +45,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from aiohttp import web
-
-import dispatch_logger as dlog
-
 # Núcleo agnóstico-de-CLI (lease/heartbeat, subprocess, HTTP helpers) — sibling
 # stdlib-puro no mesmo dir, no sys.path in-pod como dispatch_logger. Compartilhado
 # com o servidor genérico cli_worker_server.py (multi-CLI worker fleet, Fase A1).
 import _worker_core as _core
+import dispatch_logger as dlog
+from aiohttp import web
 
 try:
     # Sibling stdlib-puro (mesmo dir, no sys.path in-pod como dispatch_logger).
@@ -1486,11 +1484,25 @@ def _workspace_is_stale(
     return (now - hb) >= threshold_s
 
 
-def _has_active_lease(workspace: Path) -> bool:
-    """True se ``<workspace>/.lease.json`` está presente e com heartbeat dentro
-    do TTL. Usado como guarda de segurança imediatamente antes de remover um
-    workdir (fix #520 — TOCTOU: um dispatch pode adquirir lease entre o stale
-    scan e o rmtree).
+def _has_active_lease(
+    workspace: Path, *, alive_pods: Optional[set] = None,
+) -> bool:
+    """True se ``<workspace>/.lease.json`` está presente e genuinamente ativo.
+
+    Usado como guarda de segurança imediatamente antes de remover um workdir
+    (fix #520 — TOCTOU: um dispatch pode adquirir lease entre o stale scan e o
+    rmtree). Um lease é considerado ativo quando o heartbeat está dentro do TTL
+    **e** o pod dono ainda está vivo segundo o registro de presença (issue
+    #495): um heartbeat fresco vindo de um pod já morto é justamente o
+    falso-positivo que a detecção por presença existe para derrubar — sem este
+    cruzamento o guard re-admite o workdir de um pod morto que :func:`_workspace_is_stale`
+    marcou como stale.
+
+    Args:
+        workspace: diretório do workdir candidato a remoção.
+        alive_pods: conjunto de pods vivos (``_get_alive_pods``). ``None`` =
+            presença não inicializada → recai apenas no TTL de heartbeat
+            (comportamento original do fix #520).
 
     Conservador: qualquer erro de I/O → False (não bloqueia remoção de lixo
     que não conseguimos ler; a função é uma camada extra, não a única).
@@ -1501,7 +1513,14 @@ def _has_active_lease(workspace: Path) -> bool:
     try:
         data = json.loads(lease_path.read_text(encoding="utf-8"))
         age = time.time() - float(data.get("heartbeat_at", 0))
-        return age < _LEASE_TTL_S
+        if age >= _LEASE_TTL_S:
+            return False
+        # Heartbeat fresco, mas o pod dono pode estar morto: presença manda.
+        if alive_pods is not None:
+            pod = data.get("pod", "")
+            if pod and pod not in alive_pods:
+                return False
+        return True
     except (OSError, json.JSONDecodeError, ValueError):
         return False
 
@@ -1653,7 +1672,9 @@ def _cleanup_stale_workspaces(
         # Fix #520 — re-verifica o lease imediatamente antes do rmtree para
         # evitar TOCTOU: um dispatch pode ter adquirido o lease entre o scan
         # acima e este ponto (latência de I/O, preempção de thread, etc.).
-        if _has_active_lease(child):
+        # Passa ``alive_pods`` para que um heartbeat fresco de um pod já morto
+        # (issue #495) não re-admita o workdir que o scan marcou como stale.
+        if _has_active_lease(child, alive_pods=alive_pods):
             logger.info(
                 "workspace cleanup skipped task_id=%s — lease ativo adquirido "
                 "após scan stale (TOCTOU guard, fix #520)", child.name,
@@ -2041,6 +2062,29 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     # ausente → string vazia → _ensure_repo_cloned não é chamado.
     _resume_block = payload.get("resume") or {}
     _repo_slug: str = str(_resume_block.get("repo") or "").strip()
+    # Enforcement da allowlist (issue #639) — ANTES de qualquer clone
+    # (_git_fast_forward_workdir e _ensure_repo_cloned). Só vale quando há slug;
+    # sem slug o brief pode instruir o claude a clonar pelo próprio shell (gap
+    # de exfil mais profundo coberto pela FU do credential-proxy, #337). Fonte
+    # única em _worker_core.check_repo_allowed. Fail-closed: slug fora da
+    # allowlist (ou allowlist indisponível) → 403 REPO_NOT_ALLOWED.
+    if _repo_slug:
+        _allowed, _reason, _norm = _core.check_repo_allowed(_repo_slug)
+        if not _allowed:
+            logger.warning(
+                "dispatch BLOQUEADO — repo fora da allowlist (issue #639): %s",
+                _reason,
+            )
+            dlog.dispatch_failed(
+                task="",
+                reason="repo_not_allowed",
+                error_code="REPO_NOT_ALLOWED",
+            )
+            return web.json_response({
+                "ok": False,
+                "error_code": "REPO_NOT_ALLOWED",
+                "error": _reason,
+            }, status=403)
     # Modo fire-and-forget: quando False, retorna 202+task_id imediatamente e
     # executa o subprocess em background (asyncio.create_task). Comportamento
     # padrão (True ou ausente) = bloqueante, compatível com clientes legados.
@@ -2119,8 +2163,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 "ok": False,
                 "error_code": "RESUME_SESSION_MISMATCH",
                 "error": (
-                    f"resume_session_id no payload não bate com session_id "
-                    f"persistido no prev_task_id (corrupção do mini-ledger?)"
+                    "resume_session_id no payload não bate com session_id "
+                    "persistido no prev_task_id (corrupção do mini-ledger?)"
                 ),
             }, status=409)
         task_id = prev_task_id
@@ -2594,7 +2638,6 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 
     ok = _run["ok"]
     error_code = _run["error_code"]
-    auth_expired = _run["auth_expired"]
     result = _run["result"]
     claude_result = _run["claude_result"]
 
@@ -3029,11 +3072,9 @@ async def sessions_command_handler(request: web.Request) -> web.Response:
             )
         # Audit the raw access before returning.
         try:
-            from deile.security.audit_logger import (
-                AuditEventType,
-                AuditLogger,
-                SeverityLevel,
-            )
+            from deile.security.audit_logger import (AuditEventType,
+                                                     AuditLogger,
+                                                     SeverityLevel)
             _audit = AuditLogger()
             _audit.log_event(
                 event_type=AuditEventType.RAW_PROMPT_ACCESS,
@@ -3474,35 +3515,24 @@ def _orphan_jsonl_scan(
 
 
 def _harvested_session_ids(ledger_path: Path) -> set:
-    """Conjunto de ``session_id`` já presentes no ledger (dedup do harvest)."""
-    ids: set = set()
-    if not ledger_path.exists():
-        return ids
-    try:
-        with open(ledger_path, errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                sid = rec.get("session_id")
-                if sid:
-                    ids.add(sid)
-    except OSError:
-        pass
-    return ids
+    """Conjunto de ``session_id`` já presentes no ledger (dedup do harvest).
+
+    Shim sobre :func:`_worker_core.ledger_harvested_ids` — preservado para que
+    testes que monkeypatchem este nome continuem funcionando.
+    """
+    return _core.ledger_harvested_ids(ledger_path, key="session_id")
 
 
 def _append_ledger(ledger_path: Path, record: dict) -> int:
-    """Anexa um registro ao ledger (append-only). Returns bytes escritos."""
-    line = json.dumps(record, separators=(",", ":")) + "\n"
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(ledger_path, "a", encoding="utf-8") as fh:
-        fh.write(line)
-    return len(line.encode("utf-8"))
+    """Anexa um registro ao ledger (append-only). Returns bytes escritos.
+
+    Shim sobre :func:`_worker_core.ledger_append_record` — preservado para que
+    testes que monkeypatchem este nome continuem funcionando. ``ensure_ascii=True``
+    preserva o comportamento original deste server (escape de unicode).
+    """
+    return _core.ledger_append_record(
+        ledger_path, record, ensure_ascii=True,
+    )
 
 
 def _harvest_and_prune_orphan_jsonl(

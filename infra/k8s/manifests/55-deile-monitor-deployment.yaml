@@ -68,7 +68,11 @@ spec:
           args:
             - |
               set -eu
-              REPO="${DEILE_PIPELINE_REPO:-elimarcavalli/deile}"
+              # Issue #612 (project-agnostic): DEILE_PIPELINE_REPO vem da FONTE
+              # ÚNICA `pipeline.repo` (ConfigMap deile-runtime-config / manifest
+              # 47) via configMapKeyRef abaixo — sem repo configurado o clone
+              # falha alto em vez de cair num default hardcoded.
+              REPO="${DEILE_PIPELINE_REPO:?DEILE_PIPELINE_REPO ausente — configure pipeline.repo no ConfigMap deile-runtime-config}"
               if [ -f /home/deile/.git/HEAD ]; then
                 echo "repo already present — fast-forward"
                 git fetch --depth=1 origin "$(git rev-parse --abbrev-ref HEAD)" || true
@@ -82,7 +86,13 @@ spec:
               fi
               echo "bootstrap-repo OK"
           env:
-            - { name: DEILE_PIPELINE_REPO, value: "elimarcavalli/deile" }
+            # Issue #612 — repo-alvo do clone vem da FONTE ÚNICA `pipeline.repo`
+            # (ConfigMap deile-runtime-config / manifest 47), não de um literal.
+            - name: DEILE_PIPELINE_REPO
+              valueFrom:
+                configMapKeyRef:
+                  name: deile-runtime-config
+                  key: pipeline.repo
           volumeMounts:
             - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
             - { name: home,          mountPath: /home/deile }
@@ -144,8 +154,14 @@ spec:
             - { name: DEILE_DEFAULT_PERSONA,   value: monitor }
             - { name: DEILE_BOT_ENDPOINT,      value: "http://deilebot:8765" }
             - { name: DEILE_SETTINGS_FILE,     value: "/etc/deile/settings.json" }
-            # Repo the monitor inspects (gh CLI calls)
-            - { name: DEILE_PIPELINE_REPO,     value: "elimarcavalli/deile" }
+            # Repo the monitor inspects (gh CLI calls). Issue #612: FONTE ÚNICA
+            # `pipeline.repo` (ConfigMap deile-runtime-config / manifest 47),
+            # lida por monitor_tick.py (os.environ DEILE_PIPELINE_REPO) → run_tick.
+            - name: DEILE_PIPELINE_REPO
+              valueFrom:
+                configMapKeyRef:
+                  name: deile-runtime-config
+                  key: pipeline.repo
             # State directory (PVC mount — writable for tick state files)
             - { name: DEILE_MONITOR_STATE_DIR, value: "/state" }
             # Namespace the monitor supervises (Phase A renew + kubectl scope).

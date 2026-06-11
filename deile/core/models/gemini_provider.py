@@ -1147,6 +1147,33 @@ class GeminiProvider(ModelProvider):
             logger.debug("Gemini cost calc failed: %s", exc)
         return usage
 
+    def _compute_cost(self, usage: ModelUsage) -> float:
+        """Custo do request em USD a partir do pricing do catálogo.
+
+        O ``prompt_token_count`` do Gemini é o total efetivo do prompt e JÁ
+        INCLUI ``cached_content_token_count`` (docs oficiais do google-genai:
+        UsageMetadata.prompt_token_count). É a mesma semântica de superset que
+        OpenAI/DeepSeek têm — por isso cobramos só a parcela não-cacheada à
+        taxa cheia e a parcela cacheada à taxa de cache, evitando o
+        double-count que o ``estimate_cost`` base (pensado para o Anthropic,
+        cujo ``input_tokens`` exclui o cache) produziria.
+        """
+        p = self.pricing
+        if p is None:
+            return 0.0
+        cached = usage.cached_tokens or 0
+        non_cached_input = max(usage.prompt_tokens - cached, 0)
+        input_cost = (non_cached_input / 1_000_000) * p.input_per_1m_usd
+        output_cost = (usage.completion_tokens / 1_000_000) * p.output_per_1m_usd
+        if cached and p.cached_input_per_1m_usd is not None:
+            cached_cost = (cached / 1_000_000) * p.cached_input_per_1m_usd
+        elif cached:
+            # Sem preço de cache publicado → cobra a parcela cacheada à taxa cheia.
+            cached_cost = (cached / 1_000_000) * p.input_per_1m_usd
+        else:
+            cached_cost = 0.0
+        return round(input_cost + output_cost + cached_cost, 8)
+
     @staticmethod
     def _aggregate_usage(a: ModelUsage, b: ModelUsage) -> ModelUsage:
         """Soma dois `ModelUsage` (multi-turn function calling)."""

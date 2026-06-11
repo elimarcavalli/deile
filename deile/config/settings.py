@@ -532,7 +532,12 @@ class Settings:
 
     # Pipeline
     pipeline_base_path: Optional[Path] = None
-    pipeline_repo: str = "elimarcavalli/deile"
+    # Project-agnostic (issue #612): NO hardcoded default. The target repo must
+    # be supplied via DEILE_FORGE_REPO / forge.repo (canonical) or this legacy
+    # pipeline.repo key. resolve_forge_repo() fails loud when both are empty —
+    # the k8s reference deploy provides the value through the
+    # deile-runtime-config ConfigMap, never through code.
+    pipeline_repo: str = ""
     pipeline_notify_user_id: Optional[str] = None
     pipeline_poll_interval: int = 60
     pipeline_claude_timeout: int = 1800

@@ -35,11 +35,15 @@ import json
 import logging
 import shutil
 import subprocess
+from dataclasses import replace
 from typing import List, Optional
 
-import _worker_core as _core
-
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
+from ._catalog import (OPENROUTER_CLAUDE_SONNET_4_6,
+                       OPENROUTER_DEEPSEEK_V4_FLASH,
+                       OPENROUTER_DEEPSEEK_V4_PRO, OPENROUTER_QWEN3_CODER)
+from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
+                   classify_provider_cutoff, iter_jsonl_events,
+                   no_output_result)
 
 logger = logging.getLogger("deile.cli_adapters.opencode")
 
@@ -57,34 +61,18 @@ _MODELS_CMD_TIMEOUT_S = 20
 #: formato nativo (``provider/model``). A lista dinâmica prevalece; este garante
 #: que o picker do painel nunca fica vazio.
 _FALLBACK_MODELS: List[ModelInfo] = [
-    ModelInfo(
-        id="openrouter/deepseek/deepseek-v4-flash",
-        label="DeepSeek V4 Flash (OpenRouter)",
-        provider="openrouter",
-        price_in=0.0983, price_out=0.1966, context=1_048_576,
+    # Opencode usa uma variante mais específica do default do flash; outros
+    # campos vêm do catálogo compartilhado (preserva preço unificado).
+    replace(
+        OPENROUTER_DEEPSEEK_V4_FLASH,
         notes="MAIS BARATO de coding; default recomendado p/ o grosso",
     ),
-    ModelInfo(
-        id="openrouter/deepseek/deepseek-v4-pro",
-        label="DeepSeek V4 Pro (OpenRouter)",
-        provider="openrouter",
-        price_in=0.435, price_out=0.87, context=1_048_576,
+    replace(
+        OPENROUTER_DEEPSEEK_V4_PRO,
         notes="MELHOR custo-benefício de coding (promo; sobe p/ $1.74/$3.48)",
     ),
-    ModelInfo(
-        id="openrouter/anthropic/claude-sonnet-4.6",
-        label="Claude Sonnet 4.6 (OpenRouter)",
-        provider="openrouter",
-        price_in=3.00, price_out=15.00, context=1_000_000,
-        notes="premium; review crítico / arquitetura",
-    ),
-    ModelInfo(
-        id="openrouter/qwen/qwen3-coder",
-        label="Qwen3 Coder 480B (OpenRouter)",
-        provider="openrouter",
-        price_in=0.22, price_out=1.80, context=1_000_000,
-        notes="bom custo-benefício p/ implementação",
-    ),
+    OPENROUTER_CLAUDE_SONNET_4_6,
+    OPENROUTER_QWEN3_CODER,
     ModelInfo(
         id="openrouter/qwen/qwen3-coder-next",
         label="Qwen3 Coder Next (OpenRouter)",
@@ -178,29 +166,14 @@ class OpenCodeAdapter(BaseCliAdapter):
         conexão) ANTES da heurística — retorna ``error_code`` específico, nunca
         "conclusão limpa" (bug opencode #629: 402 mid-task marcado completo).
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"opencode cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "opencode")):
+            return cut
 
         last_text = ""
         error_text = ""
         saw_event = False
 
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             saw_event = True
             etype = str(event.get("type", ""))
             if "error" in etype.lower():
@@ -226,12 +199,7 @@ class OpenCodeAdapter(BaseCliAdapter):
                 ok=True,
                 result_text="opencode concluiu sem veredito textual explícito",
             )
-        tail = (stderr or stdout)[-2000:].strip()
-        return WorkResult(
-            ok=False,
-            result_text=tail or f"opencode sem saída parseável (rc={rc})",
-            error_code="NO_OUTPUT",
-        )
+        return no_output_result(stdout, stderr, rc, "opencode")
 
     @staticmethod
     def _event_text(event: dict) -> str:
@@ -255,16 +223,7 @@ class OpenCodeAdapter(BaseCliAdapter):
         compartilham a mesma sessão). Vazio se run abortou antes do primeiro
         evento — server não persiste id e próximo dispatch cai em fresh.
         """
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             sid = event.get("sessionID") or event.get("sessionId")
             if isinstance(sid, str) and sid.strip():
                 return sid.strip()

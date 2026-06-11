@@ -1272,7 +1272,7 @@ class TestRuntimeContext:
         assert ctx.pipeline_deploy == "deile-pipeline"
         assert ctx.worker_deploy == "deile-worker"
         assert ctx.bot_deploy == "deilebot"
-        assert ctx.repo  # detectado do origin OU fallback "elimarcavalli/deile"
+        assert ctx.repo  # detectado do origin OU sentinela REPO_UNCONFIGURED (#612)
 
     def test_detect_with_overrides(self):
         ctx = pd.RuntimeContext.detect(
@@ -1285,6 +1285,74 @@ class TestRuntimeContext:
         assert ctx.pipeline_deploy == "p1"
         assert ctx.worker_deploy == "w1"
         assert ctx.repo == "org/repo"
+
+
+class TestForgeRepoInjectionPanel:
+    """Issue #612 (AC-7): o painel/monitor reporta o repo-alvo INJETADO, não um
+    default hardcoded. Exercita o call-site real ``RuntimeContext.detect`` +
+    ``_detect_default_repo`` + ``_read_forge_repo`` (não unit isolado)."""
+
+    def test_detect_uses_explicit_override_repo(self):
+        """Override do operador (CLI) é honrado direto — sem tocar git/ConfigMap."""
+        ctx = pd.RuntimeContext.detect(repo="acme/widget")
+        assert ctx.repo == "acme/widget"
+
+    def test_detect_uses_configmap_repo_when_no_override(self, monkeypatch):
+        """Sem override, o repo vem da chave discreta ``pipeline.repo`` do
+        ConfigMap (FONTE ÚNICA), provando que a config injetada flui até o
+        contexto que o painel renderiza — não cai no fallback."""
+        monkeypatch.setattr(pd, "_read_forge_repo", lambda ns: "gitlab-grp/sub/proj")
+        # Se o ConfigMap resolve, _detect_default_repo (git) NÃO deve ser usado.
+        monkeypatch.setattr(
+            pd, "_detect_default_repo",
+            lambda: pytest.fail("ConfigMap repo present — git fallback must not run"),
+        )
+        monkeypatch.setattr(pd, "_read_forge_kind", lambda ns: "gitlab")
+        ctx = pd.RuntimeContext.detect(namespace="deile-gl")
+        assert ctx.repo == "gitlab-grp/sub/proj"
+
+    def test_read_forge_repo_parses_discrete_configmap_key(self, monkeypatch):
+        """``_read_forge_repo`` lê a chave discreta ``pipeline.repo`` (não mais
+        o JSON ``pipeline-settings.json``) e devolve o valor cru."""
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            return MagicMock(returncode=0, stdout="owner/from-configmap\n", stderr="")
+
+        monkeypatch.setattr(pd.subprocess, "run", fake_run)
+        assert pd._read_forge_repo("deile") == "owner/from-configmap"
+        # Prova que consulta a chave discreta pipeline.repo, não o JSON blob.
+        assert any("pipeline\\.repo" in a for a in captured["args"])
+
+    def test_detect_default_repo_warns_and_returns_sentinel_without_git(
+        self, monkeypatch, caplog
+    ):
+        """Sem git no PATH, NÃO finge `elimarcavalli/deile`: devolve a sentinela
+        REPO_UNCONFIGURED e emite WARNING claro (AC-3 observabilidade)."""
+        import logging
+        monkeypatch.setattr(pd.shutil, "which", lambda name: None)
+        with caplog.at_level(logging.WARNING):
+            result = pd._detect_default_repo()
+        assert result == pd.REPO_UNCONFIGURED
+        assert result != "elimarcavalli/deile"
+        assert any("cannot derive target repo" in r.message for r in caplog.records)
+
+    def test_detect_default_repo_warns_and_returns_sentinel_without_origin(
+        self, monkeypatch, caplog
+    ):
+        """Com git mas sem remote origin, mesma degradação loud."""
+        import logging
+        monkeypatch.setattr(pd.shutil, "which", lambda name: "/usr/bin/git")
+        monkeypatch.setattr(
+            pd.subprocess, "run",
+            lambda *a, **k: MagicMock(returncode=2, stdout="", stderr=""),
+        )
+        with caplog.at_level(logging.WARNING):
+            result = pd._detect_default_repo()
+        assert result == pd.REPO_UNCONFIGURED
+        assert any("no git origin" in r.message for r in caplog.records)
 
     def test_demo_disables_modes(self):
         ctx = pd.RuntimeContext(demo=True)

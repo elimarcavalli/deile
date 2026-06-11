@@ -104,7 +104,16 @@ spec:
               fi
               echo "bootstrap-repo OK"
           env:
-            - { name: DEILE_PIPELINE_REPO,  value: "elimarcavalli/deile" }
+            # Issue #612 (project-agnostic) — repo-alvo do bootstrap git clone
+            # vem da FONTE ÚNICA `pipeline.repo` no ConfigMap deile-runtime-config
+            # (manifest 47), não de um literal hardcoded aqui. Para o deploy de
+            # referência do próprio DEILE o ConfigMap traz `elimarcavalli/deile`;
+            # operadores de outros projetos editam só a chave do ConfigMap.
+            - name: DEILE_PIPELINE_REPO
+              valueFrom:
+                configMapKeyRef:
+                  name: deile-runtime-config
+                  key: pipeline.repo
             # Issue #355 — lê do mesmo ConfigMap que o main container para
             # que operadores GitLab configurem forge.kind=gitlab em um lugar
             # só. optional: true preserva o comportamento legado: se a chave
@@ -151,6 +160,17 @@ spec:
             # diretório read-only pelo user 10001, quebrando ~/.deile/logs/,
             # ~/.deile/run/, ~/.deile/sessions/.
             - { name: DEILE_SETTINGS_FILE,           value: "/etc/deile/settings.json" }
+            # Issue #612 (project-agnostic) — o repo-alvo do pipeline (lido por
+            # resolve_forge_repo() → Settings.forge_repo) vem da FONTE ÚNICA
+            # `pipeline.repo` no ConfigMap deile-runtime-config (manifest 47),
+            # NÃO mais do `"repo"` embutido em pipeline-settings.json. Sem essa
+            # injeção o pipeline aborta no startup (fail-loud, AC-3) — é assim
+            # que config ausente deixa de ser mascarada por um default silencioso.
+            - name: DEILE_FORGE_REPO
+              valueFrom:
+                configMapKeyRef:
+                  name: deile-runtime-config
+                  key: pipeline.repo
             #
             # Para receber DMs do notifier, adicione "pipeline.notify_user_id":
             # "<discord-id>" em pipeline-settings.json (manifest 47).

@@ -182,3 +182,92 @@ async def test_kube_unreachable_skips_with_v_token(tick, tmp_path, capsys):
 @pytest.mark.parametrize("s,expected", [("30m", 1800), ("1h", 3600), ("2h", 7200)])
 def test_parse_duration_s(tick, s, expected):
     assert tick.parse_duration_s(s) == expected
+
+
+# ---------------------------------------------------------------------------
+# Issue #612 (AC-6, monitor side) — the INJECTED repo reaches the real
+# gh call-site (the vigias hit ``gh api repos/<repo>/...``). Proves the
+# project-agnostic config flows through the monitor tick, not a hardcoded
+# default. Exercises run_tick → MonitorContext → vigias (the real path).
+# ---------------------------------------------------------------------------
+
+async def test_injected_repo_reaches_gh_call_site(tick, tmp_path):
+    """A tick run with a neutral repo must issue gh calls against THAT repo —
+    never the hardcoded ``elimarcavalli/deile``."""
+    sd = _state_dir(tmp_path)
+    runner = FakeRunner()
+    await tick.run_tick(
+        str(sd), now=_utc(2026, 6, 2, 11, 0, 0), run=runner, renew=_renew_ok,
+        repo="acme/neutral-project", namespace="deile",
+        bot_endpoint="http://deilebot:8765", bot_token="t", user_id="",
+        kube_probe=lambda ep: 0,  # kube reachable → kube-dependent vigias run
+    )
+    gh_calls = [c for c in runner.calls if "repos/" in c]
+    assert gh_calls, "expected at least one gh api repos/<repo>/... call"
+    assert all("repos/acme/neutral-project/" in c for c in gh_calls), gh_calls
+    assert not any("elimarcavalli/deile" in c for c in runner.calls)
+
+
+async def test_judgment_file_carries_injected_repo(tick, tmp_path, monkeypatch):
+    """Phase-B judgment payload reports the repo the tick actually ran against
+    (the value resolved in main() and threaded through run_tick), not an
+    independent env re-read."""
+    monkeypatch.setenv("DEILE_PIPELINE_REPO", "acme/neutral-project")
+    sd = _state_dir(tmp_path)
+    closed = [{"number": 50, "title": "X", "body": "vou abrir uma issue para o resto",
+               "closed_at": "2026-06-02T09:00:00Z", "user": {"login": "human"}}]
+    runner = FakeRunner({
+        "issues -f state=closed": (0, json.dumps(closed)),
+        "issues/50/comments": (0, "[]"),
+        "pulls -f state=closed": (0, "[]"),
+    })
+    await tick.run_tick(
+        str(sd), now=_utc(2026, 6, 2, 11, 0, 0), run=runner, renew=_renew_ok,
+        repo="acme/neutral-project", namespace="deile",
+        bot_endpoint="http://deilebot:8765", bot_token="t", user_id="",
+        kube_probe=lambda ep: 0,
+    )
+    payload = json.load(open(sd / "monitor-judgment.json"))
+    assert payload["repo"] == "acme/neutral-project"
+
+
+# ---------------------------------------------------------------------------
+# Issue #612 (unification — Humano's review ask on PR #647): the monitor must
+# read the target repo through the SAME canonical resolver the pipeline uses
+# (resolve_forge_repo), not a private env read. Settings *silently ignores*
+# DEILE_PIPELINE_REPO (settings.py: "truly removed"), so the legacy env is kept
+# only as a deployment-boundary fallback. These pin the precedence + the
+# never-crash contract of _resolve_repo().
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _isolate_settings(monkeypatch, tmp_path):
+    from deile.config.settings import reset_settings
+    monkeypatch.setenv("DEILE_SETTINGS_FILE", str(tmp_path / "absent.json"))
+    monkeypatch.delenv("DEILE_FORGE_REPO", raising=False)
+    monkeypatch.delenv("DEILE_PIPELINE_REPO", raising=False)
+    reset_settings()
+    yield
+    reset_settings()
+
+
+def test_resolve_repo_prefers_canonical_settings(tick, _isolate_settings, monkeypatch):
+    """forge.repo (canonical) wins even when the legacy env points elsewhere —
+    the monitor no longer diverges from the rest of the harness."""
+    from deile.config.settings import get_settings
+    get_settings().forge_repo = "acme/canonical"
+    monkeypatch.setenv("DEILE_PIPELINE_REPO", "stale/legacy")
+    assert tick._resolve_repo() == "acme/canonical"
+
+
+def test_resolve_repo_falls_back_to_legacy_env(tick, _isolate_settings, monkeypatch):
+    """No canonical config → the deployment-boundary DEILE_PIPELINE_REPO env
+    (manifest sources it from the ConfigMap) still drives the monitor."""
+    monkeypatch.setenv("DEILE_PIPELINE_REPO", "acme/from-configmap")
+    assert tick._resolve_repo() == "acme/from-configmap"
+
+
+def test_resolve_repo_empty_when_unconfigured_never_raises(tick, _isolate_settings):
+    """Nothing configured → empty string, NOT a raise: the deterministic tick
+    must never crash the heartbeat over a missing repo."""
+    assert tick._resolve_repo() == ""

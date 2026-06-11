@@ -349,9 +349,14 @@ class BashExecuteTool(SyncTool):
             
             # Security assessment
             risk_level, security_warnings = assess_risk(command)
-            
+
             # Check if risk level is acceptable
             risk_hierarchy = ["safe", "moderate", "dangerous"]
+            if security_level not in risk_hierarchy:
+                raise ToolError(
+                    f"Invalid security_level {security_level!r}; "
+                    f"must be one of {risk_hierarchy}"
+                )
             requested_level_idx = risk_hierarchy.index(security_level)
             actual_level_idx = risk_hierarchy.index(risk_level)
             

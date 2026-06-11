@@ -85,6 +85,67 @@ class TestExtractGeminiUsage:
         assert usage.prompt_tokens == 10     # tokens ainda capturados
 
 
+# -------- _compute_cost (real method, sem mock) -----------------------------
+#
+# Regressão: o código chamava ``self._compute_cost(usage)`` mas o método NÃO
+# existia na classe (o nome do catálogo é ``estimate_cost``). O ``AttributeError``
+# era engolido pelo ``except`` de ``_extract_gemini_usage`` (fail-open de cost),
+# então TODA request Gemini reportava ``cost_estimate=0.0`` em silêncio — o exato
+# bug que os comentários do módulo afirmavam estar corrigido. Os testes acima
+# mockam ``prov._compute_cost`` e por isso nunca exerceram o método real.
+# Estes testes constroem um GeminiProvider REAL (sem mock do _compute_cost) e
+# travam a presença + a semântica superset-aware do cálculo.
+
+class _FakeHandle:
+    def __init__(self, pricing) -> None:
+        self.pricing = pricing
+
+
+def _real_gemini_provider(input_per_1m, output_per_1m, cached_per_1m):
+    """GeminiProvider real com pricing stubado — sem init de cliente/SDK."""
+    prov = GeminiProvider.__new__(GeminiProvider)
+    prov._handle = _FakeHandle(SimpleNamespace(
+        input_per_1m_usd=input_per_1m,
+        output_per_1m_usd=output_per_1m,
+        cached_input_per_1m_usd=cached_per_1m,
+    ))
+    return prov
+
+
+class TestComputeCostReal:
+    def test_method_exists_on_class(self):
+        # Trava o nome do método — um rename quebra o cálculo de custo em silêncio.
+        assert hasattr(GeminiProvider, "_compute_cost")
+
+    def test_cost_is_non_zero_for_real_provider(self):
+        prov = _real_gemini_provider(2.0, 12.0, 0.5)
+        resp = _fake_response(_fake_usage_md(
+            prompt=1000, candidates=500, total=1500, cached=100,
+        ))
+        usage = GeminiProvider._extract_gemini_usage(prov, resp, request_time=1.0)
+        # 900 não-cacheado @ $2 + 500 saída @ $12 + 100 cache @ $0.5
+        expected = (900 / 1e6) * 2.0 + (500 / 1e6) * 12.0 + (100 / 1e6) * 0.5
+        assert usage.cost_estimate == pytest.approx(round(expected, 8))
+        assert usage.cost_estimate > 0.0
+
+    def test_cached_tokens_not_double_charged(self):
+        # prompt_token_count do Gemini INCLUI cached_content_token_count (docs
+        # google-genai): a parcela cacheada não pode ser cobrada duas vezes.
+        prov = _real_gemini_provider(5.0, 10.0, 1.0)
+        usage = ModelUsage(
+            prompt_tokens=1_000_000, completion_tokens=0,
+            total_tokens=1_000_000, cached_tokens=700_000,
+        )
+        # 300k @ $5 + 700k @ $1 = $1.50 + $0.70 = $2.20 (base double-cobraria $5.70)
+        assert prov._compute_cost(usage) == pytest.approx(2.20)
+
+    def test_no_pricing_returns_zero(self):
+        prov = GeminiProvider.__new__(GeminiProvider)
+        prov._handle = None
+        usage = ModelUsage(prompt_tokens=1_000_000, cached_tokens=100_000)
+        assert prov._compute_cost(usage) == 0.0
+
+
 # -------- _aggregate_usage --------------------------------------------------
 
 class TestAggregateUsage:

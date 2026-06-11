@@ -24,11 +24,22 @@ data:
   # re-apliquem + reiniciem deile-pipeline. Operadores GitHub: valor padrão
   # "github" já é o fallback no script do initContainer (${DEILE_FORGE_KIND:-github}).
   forge.kind: github
+  # Issue #612 (project-agnostic) — FONTE ÚNICA do repo-alvo do harness. Os
+  # deployments 46 (initContainer bootstrap-repo) e 55 (monitor) referenciam
+  # esta chave via configMapKeyRef em vez de carregar o literal hardcoded.
+  # O default abaixo é o deploy de referência do próprio DEILE (N/A para
+  # operadores de outros projetos) — troque para o seu owner/repo (GitHub)
+  # ou group/.../project (GitLab) e re-aplique + reinicie a stack.
+  pipeline.repo: elimarcavalli/deile
+  # NOTA (issue #612): o repo-alvo NÃO mora mais neste JSON. O pod
+  # deile-pipeline recebe o valor via env DEILE_FORGE_REPO (manifest 46),
+  # que referencia a chave `pipeline.repo` acima por configMapKeyRef — fonte
+  # única. Manter o `"repo"` aqui criaria um segundo lugar para o valor
+  # divergir do `pipeline.repo`.
   pipeline-settings.json: |
     {
       "pipeline": {
         "dispatch_mode": "deile_worker",
-        "repo": "elimarcavalli/deile",
         "poll_interval": 60
       },
       "approval": {

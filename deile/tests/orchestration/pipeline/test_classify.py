@@ -45,8 +45,12 @@ def _make_monitor(*, unclassified: list | None = None) -> tuple[PipelineMonitor,
         # cada tick chama ``list_open_prs + list_issues_with_label`` no
         # forge mock, poluindo call_order rastreado por testes legacy
         # (test_tick_calls_classify_before_review). Tests do reaper
-        # ligam explicitamente.
+        # ligam explicitamente. O reaper só fica inativo quando AMBOS os
+        # TTLs são 0 (guard em tick(): stale > 0 OR arch_hard > 0 — issue
+        # #427); o ramo sem-ledger de arch_hard varre em_refinamento/
+        # em_arquitetura via list_issues_with_label e também poluiria a ordem.
         reaper_stale_seconds=0,
+        reaper_arch_hard_seconds=0,
     )
     github = MagicMock()
     github.ensure_pipeline_labels = AsyncMock()

@@ -8,7 +8,7 @@ module against future drift after the SRP extraction out of implementer.py.
 from __future__ import annotations
 
 from deile.orchestration.pipeline.briefs import (
-    _classify_mention_action, _render_claude_mention_prompt,
+    _classify_mention_action, _is_spike, _render_claude_mention_prompt,
     _render_trigger_details, _render_worker_implement_brief,
     _render_worker_implement_resume_brief, _render_worker_mention_brief,
     _render_worker_pr_address_brief, _render_worker_pr_unified_brief,
@@ -69,6 +69,95 @@ class TestWorkerImplementBrief:
         out = _render_worker_implement_brief("o/r", "main", "b", 1, "T", body)
         assert "x" * ISSUE_BODY_MAX_CHARS in out
         assert "x" * (ISSUE_BODY_MAX_CHARS + 1) not in out
+
+
+class TestImplementBriefDefinitionOfDone:
+    """Brief de implement carrega o gate de Definição-de-Pronto (causa-raiz da
+    PR#605: spike fechou-pela-metade porque "PR existe + testes impactados verdes"
+    contava como pronto, e ``Closes`` era automático).
+    """
+
+    def test_dod_block_present(self):
+        out = _render_worker_implement_brief("o/r", "main", "b", 1, "T", "body")
+        assert "DEFINIÇÃO DE PRONTO" in out
+        assert "NÃO-VERIFICADO" in out
+        # skip de teste de integração não satisfaz AC
+        assert "PULA" in out
+        assert "@pytest.mark.integration" in out
+
+    def test_resume_brief_also_has_dod_block(self):
+        out = _render_worker_implement_resume_brief("o/r", "main", "b", 1, "T", "body")
+        assert "DEFINIÇÃO DE PRONTO" in out
+
+    def test_normal_issue_create_pr_uses_closes(self):
+        # Asserta no comando de criar PR (o DoD menciona "Refs" como fallback no texto).
+        out = _render_worker_implement_brief("o/r", "main", "b", 1, "Add widget", "do it")
+        assert '. Closes #1."' in out
+        assert '. Refs #1."' not in out
+
+    def test_spike_title_create_pr_uses_refs(self):
+        out = _render_worker_implement_brief(
+            "o/r", "main", "b", 99, "[SPIKE] Provar X", "faça o spike"
+        )
+        assert '. Refs #99."' in out
+        assert '. Closes #99."' not in out
+
+    def test_spike_exit_condition_body_create_pr_uses_refs(self):
+        out = _render_worker_implement_brief(
+            "o/r", "main", "b", 5, "Investigar Y",
+            "blah\n## Condição de Saída\nACs verdes com números",
+        )
+        assert '. Refs #5."' in out
+        assert '. Closes #5."' not in out
+
+    def test_spike_resume_brief_create_pr_uses_refs(self):
+        # O mesmo invariante de spike vale no brief de resume (briefs.py).
+        out = _render_worker_implement_resume_brief(
+            "o/r", "main", "b", 13, "[SPIKE] Provar Z", "retoma o spike"
+        )
+        assert '. Refs #13."' in out
+        assert '. Closes #13."' not in out
+
+    def test_normal_resume_brief_create_pr_uses_closes(self):
+        out = _render_worker_implement_resume_brief(
+            "o/r", "main", "b", 14, "Add widget", "retoma"
+        )
+        assert '. Closes #14."' in out
+        assert '. Refs #14."' not in out
+
+    def test_is_spike_detection(self):
+        assert _is_spike("[SPIKE] foo", "")
+        assert _is_spike("[spike] foo", "")  # case-insensitive
+        assert _is_spike("[ spike ] foo", "")  # whitespace-tolerant
+        assert _is_spike("foo", "## Condição de Saída\n...")
+        assert _is_spike("foo", "Critérios de Aprovação do Spike: ...")
+        assert not _is_spike("[FEATURE] foo", "implementa um botão")
+        assert not _is_spike("Add spike-resistant retry", "feature normal")  # 'spike' solto no título não conta
+        assert not _is_spike(None, None)  # None-safe
+
+    def test_gitlab_forge_dod_and_spike_refs(self):
+        """Cobertura GitLab do gate: o brief renderiza comandos `glab` e o
+        spike usa `Refs` no `glab mr create` + o draft cmd no dod_block."""
+        from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+
+        gl = ForgeConfig(
+            kind=ForgeKind.GITLAB, host="gitlab.com",
+            project_path="group/project", cli_path="/usr/bin/glab",
+        )
+        # Issue normal (GitLab) → `Closes` + comando glab.
+        normal = _render_worker_implement_brief(
+            "group/project", "main", "auto/issue-3", 3, "Add botão", "faça", forge=gl,
+        )
+        assert "DEFINIÇÃO DE PRONTO" in normal
+        assert "glab mr create" in normal
+        assert '. Closes #3."' in normal
+        # Spike (GitLab) → `Refs`, nunca `Closes`, e o draft cmd glab no dod_block.
+        spike = _render_worker_implement_brief(
+            "group/project", "main", "auto/issue-8", 8, "[SPIKE] Provar Z", "spike", forge=gl,
+        )
+        assert '. Refs #8."' in spike
+        assert '. Closes #8."' not in spike
+        assert "glab mr update auto/issue-8" in spike  # mark_draft_cmd embutido no dod_block
 
 
 class TestUnifiedPrBrief:

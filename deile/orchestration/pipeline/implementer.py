@@ -45,8 +45,9 @@ from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
 from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.dispatch_resolver import (
-    BUILTIN_DISPATCHERS, get_endpoint_for, resolve_stage_dispatcher,
-    resolve_stage_max_retries, resolve_stage_timeout_s)
+    BUILTIN_DISPATCHERS, CLAUDE_ALIASES, WORKER_ALIASES, get_endpoint_for,
+    resolve_stage_dispatcher, resolve_stage_max_retries,
+    resolve_stage_timeout_s)
 from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  persona_for_type,
                                                  template_for_type)
@@ -1405,6 +1406,7 @@ class WorkerImplementer(PipelineImplementer):
             forge=monitor.forge.config,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         # A crítica (julgar CLARO/VAGO) é o PRIMEIRO passo LLM e roteia pelo stage
         # ``classify`` — distinto do ``refine`` (reescrever o corpo). São duas
         # chamadas LLM separadas em ticks distintos (briefs distintos), então
@@ -1593,10 +1595,10 @@ class WorkerImplementer(PipelineImplementer):
 # factory
 # ---------------------------------------------------------------------------
 
-WORKER_ALIASES = frozenset({"deile_worker", "worker", "deile", "deile-worker"})
-CLAUDE_ALIASES = frozenset({"claude", "claude_code", "claude-code"})
-
-# Backwards-compatible aliases for internal callers that used the underscored names.
+# ``WORKER_ALIASES`` / ``CLAUDE_ALIASES`` são a fonte única em
+# :mod:`deile.orchestration.pipeline.dispatch_resolver` (importados no topo) —
+# re-exportados aqui por compatibilidade com importadores que os esperam neste
+# módulo. Os nomes underscored mantêm callers internos legados.
 _WORKER_ALIASES = WORKER_ALIASES
 _CLAUDE_ALIASES = CLAUDE_ALIASES
 

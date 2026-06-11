@@ -26,11 +26,14 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+from dataclasses import replace
 from typing import List, Optional
 
-import _worker_core as _core
-
-from .base import BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult
+from ._catalog import (OPENROUTER_CLAUDE_SONNET_4_6,
+                       OPENROUTER_DEEPSEEK_V4_FLASH,
+                       OPENROUTER_DEEPSEEK_V4_PRO, OPENROUTER_QWEN3_CODER)
+from .base import (BaseCliAdapter, ModelInfo, ResumeCtx, WorkResult,
+                   classify_provider_cutoff)
 
 logger = logging.getLogger("deile.cli_adapters.aider")
 
@@ -49,34 +52,15 @@ _ERROR_MARKERS = (
 #: Catálogo curado de fallback quando ``aider --list-models`` falha/sem rede.
 #: A lista dinâmica prevalece; este catálogo garante picker não-vazio.
 _FALLBACK_MODELS: List[ModelInfo] = [
-    ModelInfo(
-        id="openrouter/deepseek/deepseek-v4-flash",
-        label="DeepSeek V4 Flash (OpenRouter)",
-        provider="openrouter",
-        price_in=0.0983, price_out=0.1966, context=1_048_576,
-        notes="MAIS BARATO de coding; default recomendado",
-    ),
-    ModelInfo(
-        id="openrouter/deepseek/deepseek-v4-pro",
-        label="DeepSeek V4 Pro (OpenRouter)",
-        provider="openrouter",
-        price_in=0.435, price_out=0.87, context=1_048_576,
-        notes="MELHOR custo-benefício de coding (promo)",
-    ),
-    ModelInfo(
-        id="openrouter/anthropic/claude-sonnet-4.6",
-        label="Claude Sonnet 4.6 (OpenRouter)",
-        provider="openrouter",
-        price_in=3.00, price_out=15.00, context=1_000_000,
+    OPENROUTER_DEEPSEEK_V4_FLASH,
+    OPENROUTER_DEEPSEEK_V4_PRO,
+    # Aider descreve o claude-sonnet como "tarefas cirúrgicas críticas"
+    # porque o aider É a frente cirúrgica (auto-commit, edição fina).
+    replace(
+        OPENROUTER_CLAUDE_SONNET_4_6,
         notes="premium; tarefas cirúrgicas críticas",
     ),
-    ModelInfo(
-        id="openrouter/qwen/qwen3-coder",
-        label="Qwen3 Coder 480B (OpenRouter)",
-        provider="openrouter",
-        price_in=0.22, price_out=1.80, context=1_000_000,
-        notes="bom custo-benefício p/ implementação",
-    ),
+    OPENROUTER_QWEN3_CODER,
 ]
 
 
@@ -138,14 +122,8 @@ class AiderAdapter(BaseCliAdapter):
         ANTI-SANGRIA (issue #445): classifica corte de provider (402/429/5xx)
         ANTES da heurística → ``error_code`` específico para o pipeline retomar.
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"aider cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "aider")):
+            return cut
 
         combined = f"{stdout}\n{stderr}".lower()
         for marker in _ERROR_MARKERS:

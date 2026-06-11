@@ -45,10 +45,9 @@ import subprocess
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
-import _worker_core as _core
-
 from .base import (BaseCliAdapter, ModelAuth, ModelInfo, OAuthSpec, ResumeCtx,
-                   WorkResult)
+                   WorkResult, classify_provider_cutoff, iter_jsonl_events,
+                   no_output_result, read_brief_or_fallback)
 
 logger = logging.getLogger("deile.cli_adapters.codex")
 
@@ -164,7 +163,7 @@ class CodexAdapter(BaseCliAdapter):
         SEMPRE ``codex exec`` (nunca ``codex`` puro — panica sem TTY). Brief lido
         do arquivo como prompt posicional (Codex não tem ``--message-file``).
         """
-        brief_text = self._read_brief(brief_path)
+        brief_text = read_brief_or_fallback(brief_path)
         argv: List[str] = ["codex", "exec"]
         if resume is not None and resume.session_id:
             argv += ["resume", resume.session_id]
@@ -184,19 +183,6 @@ class CodexAdapter(BaseCliAdapter):
             brief_text,
         ]
         return argv
-
-    @staticmethod
-    def _read_brief(brief_path: str) -> str:
-        """Lê o conteúdo do brief; em falha de I/O retorna prompt mínimo (degradação graciosa)."""
-        try:
-            with open(brief_path, "r", encoding="utf-8") as fh:
-                return fh.read()
-        except OSError as exc:
-            logger.warning("não consegui ler o brief %r: %s", brief_path, exc)
-            return (
-                f"Leia o brief em {brief_path} e implemente exatamente o que ele "
-                "descreve. Faça git add/commit/push das mudanças ao terminar."
-            )
 
     def env_overlay(self, *, home: str) -> dict:
         """Env do subprocess: HOME + CODEX_HOME graváveis (config + auth.json OAuth).
@@ -221,29 +207,14 @@ class CodexAdapter(BaseCliAdapter):
         conexão) ANTES da heurística — retorna ``error_code`` específico, nunca
         "conclusão limpa", para o pipeline retomar o trabalho parcial.
         """
-        provider_err = _core.classify_provider_error(f"{stdout}\n{stderr}")
-        if provider_err:
-            tail = (stderr or stdout)[-2000:].strip()
-            return WorkResult(
-                ok=False,
-                result_text=tail or f"codex cortado por provider ({provider_err})",
-                error_code=provider_err,
-            )
+        if (cut := classify_provider_cutoff(stdout, stderr, "codex")):
+            return cut
 
         last_text = ""
         error_text = ""
         saw_event = False
 
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             saw_event = True
             etype = self._event_type(event)
             if "error" in etype.lower():
@@ -271,12 +242,7 @@ class CodexAdapter(BaseCliAdapter):
                 ok=True,
                 result_text="codex concluiu sem veredito textual explícito",
             )
-        tail = (stderr or stdout)[-2000:].strip()
-        return WorkResult(
-            ok=False,
-            result_text=tail or f"codex sem saída parseável (rc={rc})",
-            error_code="NO_OUTPUT",
-        )
+        return no_output_result(stdout, stderr, rc, "codex")
 
     @staticmethod
     def _event_type(event: dict) -> str:
@@ -324,16 +290,7 @@ class CodexAdapter(BaseCliAdapter):
         ``codex exec resume <id>`` consome. Tolera ``thread_id``/``session_id``
         no topo para variações de versão. Vazio se nenhum evento de início emitido.
         """
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(event, dict):
-                continue
+        for event in iter_jsonl_events(stdout):
             thread = event.get("thread")
             if isinstance(thread, dict):
                 tid = thread.get("id")
