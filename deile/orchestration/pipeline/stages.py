@@ -507,16 +507,16 @@ async def _collect_mention_triggers(
 
     Sticky trigger behaviour by source:
 
-    * **reviewer (PR)** — filtered by ``~mention:processado``. A review request
-      is a one-shot, not a retry: GitHub keeps ``deile-one`` in
-      ``requested_reviewers`` until a *formal* review is submitted, so without
-      the gate the unified PR brief runs a full (and, on opus, expensive) review
-      on EVERY tick — a 401/transient failure or a comment-only verdict never
-      clears the request, and ``nowait=True`` dispatches never advance the
-      attempt-ceiling, so the loop is unbounded. The marker is applied on
-      sticky-success (``_mark_mention_done``); honoring it here makes that site's
-      comment true ("evita re-dispatch redundante no próximo tick"). A human
-      removes ``~mention:processado`` to force a re-review.
+    * **reviewer (PR)** — NOT filtered by ``~mention:processado``. A review
+      request self-clears when a *formal* review is submitted (GitHub drops
+      ``deile-one`` from ``requested_reviewers``), so the natural PR state
+      already dedups; a review that failed (401/transient/comment-only)
+      legitimately retries on the next tick without a marker that would block
+      it. Concurrency is NOT inferred here by summing labels — the authority on
+      "how many claude run" is the claude-worker, which counts live leases on
+      the shared PVC and returns 409 when full (global cross-pod cap,
+      ``_count_live_leases``/``DEILE_CLAUDE_MAX_CONCURRENT``); the pipeline just
+      dispatches and retries on 409.
     * **assignee (PR)** — NOT filtered by ``~mention:processado``.
       Discovery-by-state: ``assignee`` routes to ``work_merge`` which legitimately
       retries (CI pending, threads open) until merged/closed terminates it.
@@ -562,11 +562,12 @@ async def _collect_mention_triggers(
     # ``assignee`` (PR/issue) segue descoberta-por-estado: o worker abre a PR e
     # decide pelo estado real (HEAD vs último review, threads abertas) — assignee
     # roteia p/ ``work_merge``, que legitimamente re-tenta até merge/close.
-    # ``reviewer`` e ``body`` SÃO gateados por ``~mention:processado``: ambos são
-    # one-shot (o request de review e o corpo são estáticos) e, sem o gate,
-    # re-disparariam um review/brief completo a cada tick — caro e ilimitado
-    # (o ``nowait=True`` nem avança o attempt-ceiling). O humano remove o marker
-    # para forçar re-handle.
+    # ``reviewer`` NÃO é gateado por ``~mention:processado``: o review-request se
+    # auto-limpa quando um review formal é submetido (o GitHub tira ``deile-one``
+    # de ``requested_reviewers``) e um review que falhou re-tenta sozinho — a
+    # concorrência é capada no claude-worker (409 por lease viva, ver bloco
+    # abaixo), não inferida aqui. Só ``body`` é gateado: corpo estático, sem o
+    # marker re-dispararia a cada tick indefinidamente.
     async def _poll(label: str, coro) -> list:
         try:
             return list(await coro)
