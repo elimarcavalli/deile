@@ -547,6 +547,140 @@ def test_parser_ledger_env_override_path(fta, tmp_path):
 # --------------------------------------------------------------------------- #
 # 8. Mensagem correta de worker indisponível (replicas=0 × ausente)            #
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 9. Store central como fonte PRIMÁRIA (issue #638) — independe de pod            #
+# --------------------------------------------------------------------------- #
+def _seed_central_db(path, rows):
+    """Cria um usage.db central com ``rows`` (worker, model, stage, session, ...)."""
+    import sqlite3
+    con = sqlite3.connect(path)
+    con.execute("""CREATE TABLE usage_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, provider_id TEXT,
+        model_id TEXT, tier TEXT, session_id TEXT, prompt_tokens INTEGER,
+        completion_tokens INTEGER, cached_tokens INTEGER, total_tokens INTEGER,
+        cost_usd REAL, latency_ms INTEGER, success INTEGER, error_type TEXT)""")
+    for r in rows:
+        con.execute(
+            "INSERT INTO usage_records (timestamp, provider_id, model_id, tier, "
+            "session_id, prompt_tokens, completion_tokens, cached_tokens, "
+            "total_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            r)
+    con.commit()
+    con.close()
+
+
+def test_collect_central_store_reads_fleet_workers(fta, tmp_path):
+    """O store central agrupa por (worker, session) e exclui o núcleo (claude/deile)."""
+    db = tmp_path / "usage.db"
+    _seed_central_db(db, [
+        # (ts, provider/worker, model, tier/stage, session, in, out, cached, total, cost)
+        (1_700_000_000.0, "opencode", "deepseek/deepseek-v4-pro", "implement",
+         "pipeline-issue-242", 1500, 300, 21415, 23215, 0.012),
+        (1_700_000_001.0, "qwen", "qwen3-coder-plus", "pr_review",
+         "pipeline-pr-300", 5000, 1200, 800, 7000, 0.011),
+        # núcleo deile → NÃO entra no central (coletado via pods).
+        (1_700_000_002.0, "deile", "deepseek-chat", "implement", "sess-x",
+         100, 50, 0, 150, 0.001),
+    ])
+    sessions = fta.collect_central_store(db_path=str(db))
+    workers = {s["worker"] for s in sessions}
+    assert workers == {"opencode", "qwen"}  # deile (núcleo) excluído
+    oc = next(s for s in sessions if s["worker"] == "opencode")
+    assert oc["source"] == "<central-store>" and oc["central"] is True
+    assert oc["stage"] == "implement"
+    m = oc["models"]["deepseek/deepseek-v4-pro"]
+    assert m["in"] == 1500 and m["out"] == 300 and m["cr"] == 21415
+    assert abs(oc["native_cost"] - 0.012) < 1e-9
+
+
+def test_central_store_missing_db_is_empty(fta, tmp_path):
+    assert fta.collect_central_store(db_path=str(tmp_path / "nope.db")) == []
+
+
+def test_central_session_cost_is_native_for_any_worker(fta, tmp_path):
+    """Sessão do central usa o custo já gravado (jsonl_cost) como NATIVO (✓),
+    mesmo para um worker cujo coletor não reporta custo nativo (qwen/codex)."""
+    db = tmp_path / "usage.db"
+    _seed_central_db(db, [
+        (1_700_000_000.0, "qwen", "qwen3-coder-plus", "implement",
+         "pipeline-issue-1", 5000, 1000, 0, 6000, 0.42),
+    ])
+    sessions = fta.collect_central_store(db_path=str(db))
+    collectors = {k: fta.collector_for(k, {}) for k in fta.fleet_worker_kinds()}
+    enriched = fta.enrich(sessions, collectors)
+    s = enriched[0]
+    assert s["cost_basis"] == "nativo"
+    assert abs(s["cost_usd"] - 0.42) < 1e-9
+
+
+def test_collect_all_central_works_without_kubectl(fta, tmp_path, monkeypatch):
+    """AC #638: ``[T]okens`` mostra custo da frota com workers em replicas=0 e SEM
+    kubectl — ``source=central`` lê só o store local."""
+    db = tmp_path / "usage.db"
+    _seed_central_db(db, [
+        (1_700_000_000.0, "opencode", "deepseek/deepseek-v4-pro", "implement",
+         "pipeline-issue-242", 1500, 300, 0, 1800, 0.012),
+    ])
+    monkeypatch.setenv("DEILE_USAGE_DB_PATH", str(db))
+    collectors = {k: fta.collector_for(k, {}) for k in fta.fleet_worker_kinds()}
+
+    # kubectl="" (nunca usado em source=central): se algo tentar exec, quebra.
+    def _boom(*_a, **_kw):
+        raise AssertionError("source=central NÃO deve tocar pods/kubectl")
+
+    monkeypatch.setattr(fta, "_collect_pod_sessions", _boom)
+    sessions = fta.collect_all("", "deile", fta.fleet_worker_kinds(), collectors,
+                               source="central")
+    assert len(sessions) == 1
+    assert sessions[0]["worker"] == "opencode"
+    assert sessions[0]["cost_basis"] == "nativo"
+
+
+def test_collect_all_both_central_supersedes_pod_session(fta, tmp_path, monkeypatch):
+    """``both``: central prevalece por (worker, session); a sessão do mesmo
+    dispatch via pod (PVC) é suprimida (sem dupla contagem)."""
+    db = tmp_path / "usage.db"
+    _seed_central_db(db, [
+        (1_700_000_000.0, "opencode", "x/y", "implement", "pipeline-issue-9",
+         1000, 200, 0, 1200, 0.05),
+    ])
+    monkeypatch.setenv("DEILE_USAGE_DB_PATH", str(db))
+    collectors = {k: fta.collector_for(k, {}) for k in fta.fleet_worker_kinds()}
+
+    # Pods devolvem a MESMA sessão (mesmo task_id == session_id) + uma do núcleo.
+    def _fake_pods(_kubectl, _ns, _kinds, _since=0.0):
+        return [
+            {"worker": "opencode", "task_id": "pipeline-issue-9", "source": "pvc",
+             "models": {"x/y": {"in": 999, "out": 1, "cc": 0, "cr": 0}},
+             "native_cost": 0.99, "first_ts": None, "last_ts": None,
+             "mtime": None, "brief": None},
+            {"worker": "claude", "task_id": "csess", "source": "jsonl",
+             "models": {"claude-sonnet-4-6": {"in": 100, "out": 20, "cc": 0, "cr": 0}},
+             "native_cost": None, "first_ts": None, "last_ts": None,
+             "mtime": None, "brief": None},
+        ]
+
+    monkeypatch.setattr(fta, "_collect_pod_sessions", _fake_pods)
+    sessions = fta.collect_all("kc", "deile", fta.fleet_worker_kinds(), collectors,
+                               source="both")
+    by_worker = {(s["worker"], s["task_id"]): s for s in sessions}
+    # 1 opencode (central, NÃO o do PVC) + 1 claude (núcleo via pods).
+    oc = by_worker[("opencode", "pipeline-issue-9")]
+    assert oc["central"] is True
+    assert oc["models"]["x/y"]["in"] == 1000  # do central, não 999 do PVC
+    assert ("claude", "csess") in by_worker
+
+
+def test_central_store_respects_since_mtime(fta, tmp_path):
+    db = tmp_path / "usage.db"
+    _seed_central_db(db, [
+        (1_700_000_000.0, "opencode", "x/y", "implement", "old", 100, 10, 0, 110, 0.01),
+        (1_700_999_999.0, "opencode", "x/y", "implement", "new", 200, 20, 0, 220, 0.02),
+    ])
+    sessions = fta.collect_central_store(db_path=str(db), since_mtime=1_700_500_000.0)
+    assert {s["task_id"] for s in sessions} == {"new"}
+
+
 def test_unavailable_reason_distinguishes_scaled_zero_from_absent(fta, monkeypatch):
     calls = {}
 

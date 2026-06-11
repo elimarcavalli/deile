@@ -803,6 +803,96 @@ def test_run_cleanup_invokes_harvest(mock_adapter, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Bloco de uso estruturado para o store central (issue #638)
+# --------------------------------------------------------------------------- #
+
+
+def test_build_usage_block_opencode_shape(mock_adapter, monkeypatch):
+    """``build_usage_block`` extrai tokens-por-modelo do shape nativo via o parser
+    ÚNICO (fleet_progress_parse) e normaliza p/ cache_read/cache_write (#638)."""
+    import json as _json
+    stdout = "\n".join([
+        _json.dumps({"type": "step_start", "modelID": "deepseek/deepseek-v4-pro"}),
+        _json.dumps({"type": "step_finish", "part": {
+            "cost": 0.012,
+            "tokens": {"input": 1500, "output": 300,
+                       "cache": {"read": 21415, "write": 100}}}}),
+    ])
+    tbm, model = cws.build_usage_block(
+        kind="opencode", stdout=stdout, task_id="t1",
+        cli_model="deepseek/deepseek-v4-pro",
+    )
+    assert model == "deepseek/deepseek-v4-pro"
+    assert tbm == {"deepseek/deepseek-v4-pro": {
+        "in": 1500, "out": 300, "cache_read": 21415, "cache_write": 100}}
+
+
+def test_build_usage_block_remaps_unknown_to_cli_model(mock_adapter):
+    """goose só emite total_tokens (sem modelo) → ``unknown`` é remapeado para o
+    ``cli_model`` do payload (anti model=unknown)."""
+    import json as _json
+    stdout = _json.dumps({"messages": [],
+                          "metadata": {"total_tokens": 8000, "status": "completed"}})
+    tbm, model = cws.build_usage_block(
+        kind="goose", stdout=stdout, task_id="t2",
+        cli_model="deepseek/deepseek-v4-flash",
+    )
+    assert "unknown" not in tbm
+    assert "deepseek/deepseek-v4-flash" in tbm
+    assert model == "deepseek/deepseek-v4-flash"
+
+
+def test_build_usage_block_noop_for_non_progress_kind(mock_adapter):
+    """Kinds sem parser de .progress (claude/deile/mock) → bloco vazio + cli_model."""
+    tbm, model = cws.build_usage_block(
+        kind="claude", stdout="irrelevante", task_id="t3", cli_model="claude:sonnet",
+    )
+    assert tbm == {} and model == "claude:sonnet"
+
+
+async def test_dispatch_usage_block_present(mock_resume_adapter, monkeypatch):
+    """A resposta do /v1/dispatch + resume-info carregam o bloco ``usage`` (#638)."""
+    import json as _json
+    _commit_pushed_git(monkeypatch)
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
+    cli_adapters.reload_adapters()
+    app = cws.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        adapter = cws._resolve_adapter()
+
+        def _argv(**kw):
+            wd = kw["workdir"]
+            modeline = _json.dumps({"type": "step_start",
+                                    "modelID": "openrouter/deepseek/deepseek-v4-pro"})
+            event = _json.dumps({"type": "step_finish", "part": {
+                "tokens": {"input": 1200, "output": 250,
+                           "cache": {"read": 0, "write": 0}}}})
+            return ["sh", "-c",
+                    f"printf '%s\\n%s\\n' '{modeline}' '{event}'; touch {wd}/.ran"]
+
+        monkeypatch.setattr(adapter, "build_argv", _argv)
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "x", "branch": "auto/issue-1",
+                  "cli_model": "openrouter/deepseek/deepseek-v4-pro"},
+        )
+        body = await resp.json()
+        usage = body["usage"]
+        assert usage["worker"] == "opencode"
+        assert usage["model"] == "openrouter/deepseek/deepseek-v4-pro"
+        tbm = usage["tokens_by_model"]["openrouter/deepseek/deepseek-v4-pro"]
+        assert tbm["in"] == 1200 and tbm["out"] == 250
+
+        # resume-info também surface o bloco usage (para o read-back fire-and-forget).
+        ri = await client.get(
+            f"/v1/dispatches/{body['task_id']}/resume-info", headers=_AUTH_HEADERS,
+        )
+        ri_body = await ri.json()
+        assert ri_body["usage"]["model"] == "openrouter/deepseek/deepseek-v4-pro"
+        assert ri_body["cli_model"] == "openrouter/deepseek/deepseek-v4-pro"
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 

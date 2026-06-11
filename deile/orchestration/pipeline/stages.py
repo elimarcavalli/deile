@@ -21,8 +21,8 @@ import asyncio
 import logging
 import re
 import time
-from datetime import timedelta
 from dataclasses import replace
+from datetime import timedelta
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from deile.orchestration.forge import (CommentRef, GhCommandError, IssueRef,
@@ -1191,7 +1191,10 @@ async def reconcile_critique_issues(monitor: "PipelineMonitor") -> None:
         # stage="classify"): o reconcile precisa resolver o MESMO worker pelo
         # stage="classify", senão consultaria o endpoint errado (404 → fresh →
         # double-dispatch). Refine continua em stage="refine".
-        state, info = await _fetch_reconcile_state(monitor, task_id, "classify")
+        state, info = await _fetch_reconcile_state(
+            monitor, task_id, "classify",
+            channel_id=f"pipeline-issue-{issue.number}",
+        )
         if state == _RECON_RUNNING:
             continue
         if state == _RECON_GONE:
@@ -1417,7 +1420,10 @@ async def reconcile_refine_issues(monitor: "PipelineMonitor") -> None:
         if not task_id:
             ledger.clear(key)
             continue
-        state, info = await _fetch_reconcile_state(monitor, task_id, "refine")
+        state, info = await _fetch_reconcile_state(
+            monitor, task_id, "refine",
+            channel_id=f"pipeline-issue-{issue.number}",
+        )
         if state == _RECON_RUNNING:
             continue
         if state == _RECON_GONE:
@@ -1867,7 +1873,8 @@ _RECON_GONE = "gone"
 
 
 async def _fetch_reconcile_state(
-    monitor: "PipelineMonitor", task_id: str, stage: str
+    monitor: "PipelineMonitor", task_id: str, stage: str,
+    *, channel_id: str = "",
 ) -> Tuple[str, dict]:
     """Consulta ``/v1/dispatches/{task_id}/resume-info`` e normaliza o estado.
 
@@ -1882,6 +1889,11 @@ async def _fetch_reconcile_state(
       True — o worker ainda está processando.
     - ``_RECON_DONE``: concluiu; ``info`` traz ``last_result_full`` /
       ``last_result_summary`` / ``last_is_error`` pro parser de veredito.
+
+    Issue #638: quando o estado é DONE e o dispatch foi fire-and-forget num
+    worker da frota CLI, o bloco ``usage`` do resume-info é persistido no
+    UsageRepository central (dedupado por task_id) — a resposta do 202 foi
+    descartada, então este é o único ponto de read-back de custo. Best-effort.
     """
     implementer = monitor.implementer
     client = getattr(implementer, "_client", None)
@@ -1907,7 +1919,58 @@ async def _fetch_reconcile_state(
     still_running = info.get("last_completed_at") is None or info.get("claude_alive")
     if still_running:
         return _RECON_RUNNING, info
+    _record_fleet_usage_from_reconcile(url, info, stage, channel_id, task_id)
     return _RECON_DONE, info
+
+
+async def _capture_implement_fleet_cost(
+    monitor: "PipelineMonitor", issue_number: int,
+) -> None:
+    """Lê o resume-info do implement concluído e persiste o custo central (#638).
+
+    O implement é fire-and-forget; quando o PR aparece (ground-truth), lemos a
+    sessão uma vez para colher o uso. ``_fetch_reconcile_state`` (stage=implement)
+    já dispara a escrita central dedupada quando o estado é DONE. Best-effort.
+    """
+    try:
+        ledger = getattr(monitor.implementer, "_ledger", None)
+        if ledger is None:
+            return
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        entry = ledger.get(DispatchLedger.key_for_issue(issue_number))
+        task_id = (entry or {}).get("task_id") or ""
+        if not task_id:
+            return
+        await _fetch_reconcile_state(
+            monitor, task_id, "implement",
+            channel_id=f"pipeline-issue-{issue_number}",
+        )
+    except Exception as exc:  # noqa: BLE001 — captura de custo nunca bloqueia o reconcile
+        logger.debug(
+            "captura de custo do implement #%d falhou (non-fatal): %s",
+            issue_number, exc,
+        )
+
+
+def _record_fleet_usage_from_reconcile(
+    url: Optional[str], info: dict, stage: str, channel_id: str, task_id: str,
+) -> None:
+    """Persiste custo central de um fire-and-forget concluído (issue #638).
+
+    No-op para workers núcleo (deile/claude): o resume-info deles não traz o
+    bloco ``usage`` (só o cli-worker o preenche), então o recorder retorna 0.
+    Best-effort isolado — o recorder nunca propaga exceção.
+    """
+    from deile.orchestration.pipeline.fleet_cost_recorder import \
+        record_fleet_usage_from_resume_info
+    from deile.orchestration.pipeline.implementer import _worker_kind_from_url
+    record_fleet_usage_from_resume_info(
+        info,
+        worker_kind=_worker_kind_from_url(url or ""),
+        stage=stage,
+        channel_id=channel_id,
+        task_id=task_id,
+    )
 
 
 async def _count_total_in_flight(monitor: "PipelineMonitor") -> int:
@@ -2055,6 +2118,11 @@ async def reconcile_implementing_issues(monitor: "PipelineMonitor") -> None:
             "reconcile #%d: PR detected via ground truth → transitioning to %s",
             issue.number, WORKFLOW_PR,
         )
+        # Issue #638: o implement é fire-and-forget (resposta do 202 descartada).
+        # Agora que o worker concluiu (PR existe), lê o resume-info uma vez para
+        # persistir o custo central do dispatch (dedupado por task_id no recorder).
+        # Best-effort: falha de leitura/escrita não bloqueia a transição.
+        await _capture_implement_fleet_cost(monitor, issue.number)
         try:
             await monitor.forge.transition_issue(
                 issue.number,
@@ -2872,7 +2940,10 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
         if not task_id:
             ledger.clear(key)
             continue
-        state, info = await _fetch_reconcile_state(monitor, task_id, "pr_review")
+        state, info = await _fetch_reconcile_state(
+            monitor, task_id, "pr_review",
+            channel_id=f"pipeline-pr-{pr.number}",
+        )
         if state == _RECON_RUNNING:
             continue
         if state == _RECON_GONE:

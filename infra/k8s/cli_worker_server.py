@@ -33,6 +33,7 @@ import os
 import secrets
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
 
@@ -227,11 +228,13 @@ async def _post_run_gate(
         reason.append("nenhum commit novo desde o início do dispatch")
     if not pushed:
         reason.append(f"branch {branch!r} não confirmado no remote origin")
-    return WorkResult(
+    # ``replace`` preserva tokens_by_model/model (issue #638): mesmo um dispatch
+    # reprovado no gate de push CONSUMIU tokens — o custo precisa ser contabilizado.
+    return replace(
+        work_result,
         ok=False,
         result_text=work_result.result_text or "; ".join(reason),
         error_code="NO_PUSH",
-        cost_usd=work_result.cost_usd,
     )
 
 
@@ -394,6 +397,11 @@ async def resume_info_handler(request: web.Request) -> web.Response:
         "last_result_full": meta.get("last_result_full", ""),
         "last_result_summary": meta.get("last_result_summary", ""),
         "last_error_code": meta.get("last_error_code", ""),
+        # Issue #638: bloco de uso para o reconcile gravar o custo central de
+        # dispatches fire-and-forget (implement paralelo), cuja resposta do 202
+        # foi descartada. ``cli_model`` viaja para o anti model=unknown na ponta.
+        "usage": meta.get("usage") or {},
+        "cli_model": meta.get("cli_model", "") or "",
     })
 
 
@@ -619,6 +627,20 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             work = adapter.parse_output(
                 stdout=result.stdout, stderr=result.stderr, rc=result.returncode,
             )
+            # Observabilidade de custo central (issue #638): enriquece o veredito
+            # do adapter com tokens-por-modelo a partir do parser ÚNICO
+            # (fleet_progress_parse), ANTES da finalização de git (que reconstrói
+            # o WorkResult). Best-effort: extração falha → bloco vazio, dispatch segue.
+            _tokens_by_model, _usage_model = build_usage_block(
+                kind=adapter.kind, stdout=result.stdout,
+                task_id=task_id, cli_model=cli_model,
+            )
+            if _tokens_by_model or _usage_model:
+                work = replace(
+                    work,
+                    tokens_by_model=_tokens_by_model,
+                    model=_usage_model,
+                )
             # session_id nativo (issue #445): opencode/qwen no JSON; codex no
             # thread.started; goose/aider retornam o task_id como sentinela.
             try:
@@ -645,7 +667,10 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 prev_task_id=meta_prev_task_id, attempt=attempt,
                 cli_model=cli_model,
             )
-            return _build_response(task_id, result, work, session_id=session_id)
+            return _build_response(
+                task_id, result, work, session_id=session_id,
+                worker_kind=adapter.kind,
+            )
         finally:
             stop_hb.set()
             try:
@@ -713,10 +738,8 @@ async def _finalize_git(
         logger.warning("push pós-run falhou task_id=%s: %s", task_id, push_detail)
 
     if error_code != work.error_code:
-        return WorkResult(
-            ok=work.ok, result_text=work.result_text,
-            error_code=error_code, cost_usd=work.cost_usd,
-        )
+        # ``replace`` preserva tokens_by_model/model (issue #638).
+        return replace(work, error_code=error_code)
     return work
 
 
@@ -749,6 +772,10 @@ def _save_task_result(
        ``resume_session_id`` + mesmo workdir.
     3. **Modelo durável (anti model=unknown):** vários CLIs (goose, aider, codex)
        não emitem o modelo no stdout — só no argv. Auditoria lê este meta.
+    4. **Custo central de fire-and-forget (issue #638):** persiste o bloco
+       ``usage`` (tokens-por-modelo) para que o reconcile do pipeline o leia via
+       resume-info e grave no UsageRepository central (o 202 descarta a resposta
+       do dispatch, então sem isto o implement paralelo não teria custo central).
 
     Best-effort: falha de I/O vira warning.
     """
@@ -766,6 +793,10 @@ def _save_task_result(
         "last_result_summary": full[:300],
         "last_error_code": work.error_code or "",
         "last_total_cost_usd": work.cost_usd,
+        "usage": {
+            "model": work.model,
+            "tokens_by_model": work.tokens_by_model or {},
+        },
     }
     path = _result_meta_path(task_id)
     try:
@@ -791,11 +822,13 @@ def _load_task_result(task_id: str) -> Optional[dict]:
 
 def _build_response(
     task_id: str, result, work: WorkResult, *, session_id: str = "",
+    worker_kind: str = "",
 ) -> dict:
     """Monta a resposta JSON do contrato unificado (paridade com claude-worker).
 
     ``session_id`` = id nativo do CLI (issue #445); ``None`` quando o adapter
-    não suporta resume.
+    não suporta resume. ``worker_kind`` (issue #638) viaja no bloco ``usage``
+    para o pipeline atribuir o registro de custo central ao worker correto.
     """
     response = {
         "ok": work.ok,
@@ -808,6 +841,15 @@ def _build_response(
         "total_cost_usd": work.cost_usd,
         "is_error": not work.ok,
         "result": work.result_text,
+        # Observabilidade de custo central (issue #638): bloco estruturado de uso
+        # que o pipeline persiste no UsageRepository (1 registro por modelo).
+        # ``worker`` permite atribuir o registro mesmo quando o endpoint não
+        # revela o kind; ``model`` evita ``unknown`` (cai no cli_model).
+        "usage": {
+            "worker": worker_kind,
+            "model": work.model,
+            "tokens_by_model": work.tokens_by_model or {},
+        },
     }
     if not work.ok:
         response["error_code"] = work.error_code or "WORKER_FAILED"
@@ -883,6 +925,71 @@ def _meta_model_for(task_id: str) -> Optional[str]:
     meta = _load_task_result(task_id) or {}
     m = meta.get("cli_model")
     return m.strip() if isinstance(m, str) and m.strip() else None
+
+
+def _predominant_model(tokens_by_model: dict, cli_model: Optional[str]) -> Optional[str]:
+    """Modelo predominante de um bloco de uso (maior total de tokens).
+
+    Anti ``unknown`` (issue #638): se o único modelo é ``unknown`` (CLIs que não
+    emitem o modelo no stdout — goose/aider/codex), cai no ``cli_model`` do
+    payload. Empate é resolvido determinístico (maior soma, depois nome).
+    """
+    real = {
+        m: sum(int(v or 0) for v in tk.values())
+        for m, tk in tokens_by_model.items()
+        if m and m != "unknown"
+    }
+    if real:
+        return max(sorted(real), key=real.get)
+    return (cli_model or "").strip() or (
+        next(iter(tokens_by_model), None) if tokens_by_model else None
+    )
+
+
+def build_usage_block(
+    *, kind: str, stdout: str, task_id: str, cli_model: Optional[str],
+) -> tuple:
+    """Extrai ``(tokens_by_model, model)`` da saída nativa do CLI (issue #638).
+
+    Fonte ÚNICA de parsing: ``fleet_progress_parse`` (o MESMO parser do
+    harvester do ledger e da auditoria), via :data:`_fpp`. Remapeia ``unknown``
+    → ``cli_model`` do payload (anti model=unknown), espelhando exatamente o
+    ``harvest_progress_to_ledger``. Retorna ``({}, None)`` quando o kind não usa
+    ``.progress`` (claude/deile contabilizam por outras vias) ou o parser está
+    indisponível — best-effort, nunca derruba o dispatch.
+
+    O custo NÃO é calculado aqui: viaja como tokens-por-modelo e o pipeline
+    recompõe o custo via ``jsonl_cost.fleet_cost_of_model`` (fonte única de
+    preço) — paridade com o ledger durável.
+    """
+    if _fpp is None:
+        return {}, (cli_model or "").strip() or None
+    try:
+        parsed = _fpp.parse_progress_text(kind, stdout, task_id)
+    except Exception as exc:  # noqa: BLE001 — extração de uso é best-effort
+        logger.warning("build_usage_block falhou kind=%s task_id=%s: %s",
+                       kind, task_id, exc)
+        return {}, (cli_model or "").strip() or None
+    if parsed is None:
+        return {}, (cli_model or "").strip() or None
+    models = dict(parsed.get("models") or {})
+    cm = (cli_model or "").strip()
+    if cm and "unknown" in models:
+        unk = models.pop("unknown")
+        dst = models.setdefault(cm, {"in": 0, "out": 0, "cc": 0, "cr": 0})
+        for k in ("in", "out", "cc", "cr"):
+            dst[k] = int(dst.get(k, 0)) + int(unk.get(k, 0) or 0)
+    # Normaliza para o contrato do WorkResult: chaves cache_read/cache_write.
+    tokens_by_model = {
+        m: {
+            "in": int(tk.get("in", 0) or 0),
+            "out": int(tk.get("out", 0) or 0),
+            "cache_read": int(tk.get("cr", 0) or 0),
+            "cache_write": int(tk.get("cc", 0) or 0),
+        }
+        for m, tk in models.items()
+    }
+    return tokens_by_model, _predominant_model(models, cli_model)
 
 
 def harvest_progress_to_ledger(
