@@ -433,6 +433,22 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     repo_slug = str(_resume_block.get("repo") or "").strip()
     base_branch = str(_resume_block.get("main_branch") or "").strip()
 
+    # Enforcement da allowlist (issue #639) — ANTES de qualquer clone. Só vale
+    # quando há slug (sem slug o CLI roda no workspace cru, não clona nada).
+    # Fail-closed: slug fora da allowlist (ou allowlist indisponível) → 403.
+    if repo_slug:
+        _allowed, _reason, _norm = _core.check_repo_allowed(repo_slug)
+        if not _allowed:
+            logger.warning(
+                "dispatch BLOQUEADO — repo fora da allowlist (issue #639): %s",
+                _reason,
+            )
+            return web.json_response({
+                "ok": False,
+                "error_code": "REPO_NOT_ALLOWED",
+                "error": _reason,
+            }, status=403)
+
     dispatch_timeout_s: Optional[int] = None
     _raw_timeout = payload.get("timeout_s")
     if _raw_timeout is not None:

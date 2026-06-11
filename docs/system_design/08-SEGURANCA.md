@@ -103,21 +103,36 @@ e adiciona estes pontos de segurança próprios:
 | Modos de auth | `env` (API key, default, não expira — preferido para automação) vs `oauth_file` (cred OAuth montada, opt-in via `DEILE_<KIND>_AUTH=oauth`). No modo OAuth o initContainer `bootstrap-creds` copia o Secret → PVC writable mode `0600`, com refresh in-pod (espelha o claude-worker); codex é dual-mode por modelo (`OPENAI_API_KEY` env ou ChatGPT OAuth `~/.codex/auth.json`) e o `provision_auth` faz backup antes de sobrescrever a credencial |
 | Gate de sucesso ≠ exit-code | Exit-code dos CLIs não é confiável. O veredito final é `WorkResult.ok = adapter.parse_output(...).ok AND wrapper_gate()`, onde o gate pós-run exige **commit novo desde o `base_sha` + branch pushado** (`brief_driven`) ou commit do próprio CLI + push (`cli_autocommit`, só aider). Um corte por provider (402/429/5xx) é classificado como INCOMPLETO (`_worker_core.classify_provider_error`) → o pipeline RETOMA o trabalho parcial em vez de jogá-lo fora (anti-sangria, issue #445) |
 
-### Gap aberto — allowlist de repos sem enforcement no dispatch (issue #639)
+### Enforcement da allowlist de repos no dispatch (issue #639)
 
-**Risco aberto, pré-requisito de produção.** O `wrapper.py cli-worker` carrega a
-allowlist regex (`claude-worker-allowed-repos`) e faz fail-fast se ela estiver
-ausente/vazia (`_load_allowed_repo_patterns`), mas o `_install_git_repo_guard`
-hoje só publica um **marcador** (`DEILE_CLAUDE_ALLOWED_REPOS_LOADED`) — diferente
-do `deile-shell`, ele **não instala** o guard `~/bin/git` que bloqueia clone/push
-para URL fora da lista, e o `cli_worker_server` **não reverifica** o slug do repo
-no path de `/v1/dispatch` (nenhuma referência à allowlist no server). Consequência:
-um agente CLI vítima de prompt-injection pode exfiltrar via `git push` para um
-repo arbitrário usando o token de forge wirado no pod. Mitigação V1 = isolamento
-de Pod (NetworkPolicy ingress-só-do-pipeline, host inalcançável) + o gate de
-sucesso, mas **não** há contenção do destino do push. Fechar antes de produção:
-pre-receive/clone guard efetivo no modo `cli-worker` + reverificação do slug no
-dispatch.
+**Fechado na camada de dispatch.** A allowlist regex
+(`claude-worker-allowed-repos`, montada em `$DEILE_CLAUDE_ALLOWED_REPOS_FILE`)
+era vendida no threat model como mitigação primária de
+prompt-injection→exfiltração, mas antes só fazia fail-fast no startup
+(`wrapper._load_allowed_repo_patterns`) — os servidores clonavam o `repo_slug`
+do payload sem reverificar. Agora os **dois** `dispatch_handler`
+(`cli_worker_server` e `claude_worker_server`) reverificam o slug **antes de
+qualquer clone** (cli-worker: `_worker_core.ensure_repo_and_branch`;
+claude-worker: `_git_fast_forward_workdir` **e** `_ensure_repo_cloned`),
+retornando **403 `REPO_NOT_ALLOWED`** quando não casa.
+
+Fonte única em `_worker_core.check_repo_allowed` (não a fonte divergente
+`deilebot.yaml clonable_repos`): normaliza o slug forge-agnóstico
+(`owner/repo` GH, `group/(sub/)*project` GL — rejeita `..`, `//`, `@`/`:`,
+backslash, sufixo `.git`, host-prefix), gera as URLs canônicas de clone (https
++ ssh, hosts GH/GHES-CSV/GL) e exige `re.fullmatch` contra ao menos uma regex
+da allowlist. **Postura fail-closed**: allowlist ausente/vazia/inválida em
+runtime bloqueia tudo — consistente com o startup (`wrapper` faz `sys.exit` sem
+allowlist válida), então não quebra deploy legítimo, só defende contra drift
+(ConfigMap removido em runtime). Sem slug no payload o portão não dispara (o CLI
+roda no workspace cru e não clona). O bloqueio é auditado sem vazar segredo
+(cli: `logger.warning`; claude: `dispatch_logger.dispatch_failed`).
+
+**Gap residual (fora de escopo, FU própria #337):** o brief do claude-worker
+ainda pode instruir o `claude -p` (`bypassPermissions`) a clonar/push via shell
+próprio — contenção desse vetor exige o sidecar credential-proxy. A
+NetworkPolicy egress FQDN-aware (limitação do CNI k3s) também fica para CNI
+Cilium futuro.
 
 ### Antigravity GATED
 
