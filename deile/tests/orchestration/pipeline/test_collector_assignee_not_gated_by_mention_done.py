@@ -122,6 +122,25 @@ class TestReviewerTriggerGated:
         assert triggers[0].pr is not None
         assert triggers[0].pr.number == 88
 
+    async def test_reviewer_concurrency_cap_limits_fresh_dispatch(self):
+        """Com ``max_parallel=2`` e 3 requests frescos (sem marker), só 2 armam
+        no tick; o 3º espera (re-entra no próximo tick, sem marker)."""
+        monitor = _make_monitor(review_request_prs=[_pr(1), _pr(2), _pr(3)])
+        monitor.config.max_parallel = 2
+        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
+        reviewer = [t for t in triggers if t.trigger_type == "reviewer"]
+        assert len(reviewer) == 2
+
+    async def test_reviewer_concurrency_counts_in_flight(self):
+        """PRs com o marker (review JÁ em voo) consomem slot: com ``max_parallel=2``
+        e 2 já em voo, nenhum fresco é despachado neste tick."""
+        in_flight = [_pr(1, labels=(MENTION_DONE,)), _pr(2, labels=(MENTION_DONE,))]
+        fresh = [_pr(3), _pr(4)]
+        monitor = _make_monitor(review_request_prs=in_flight + fresh)
+        monitor.config.max_parallel = 2
+        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
+        assert [t for t in triggers if t.trigger_type == "reviewer"] == []
+
 
 class TestBodyTriggerStillGated:
     """Por contraste: ``body`` continua gateado por ``MENTION_DONE``.
