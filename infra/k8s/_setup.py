@@ -106,10 +106,13 @@ class NamespacePlan:
         pelo operador. As entradas para worker/shell/oneshot/bot são
         idênticas ao manifest base — não tem variação per-NS.
         """
+        # Issue #612 (project-agnostic): o repo-alvo vive na chave discreta
+        # ``pipeline.repo`` (FONTE ÚNICA, referenciada pelos manifests 46/55 via
+        # configMapKeyRef), não embutido no JSON ``pipeline-settings.json``.
+        # Mantê-lo nos dois lugares deixaria os valores divergirem.
         pipeline_settings: Dict[str, object] = {
             "pipeline": {
                 "dispatch_mode": self.dispatch_mode,
-                "repo": self.repo,
                 "poll_interval": 60,
             },
             "approval": {"auto": True},
@@ -117,6 +120,7 @@ class NamespacePlan:
         if self.forge_kind in ("github", "gitlab"):
             pipeline_settings["forge"] = {"kind": self.forge_kind}
         return {
+            "pipeline.repo": self.repo,
             "pipeline-settings.json": json.dumps(pipeline_settings, indent=2) + "\n",
             "worker-settings.json": (
                 '{\n  "model": {\n    "preferred": "deepseek:deepseek-v4-pro"\n  },\n'

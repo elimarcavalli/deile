@@ -236,7 +236,7 @@ async def run_tick(
 
     needs_phase_b = bool(fu_candidates)
     if needs_phase_b:
-        _write_judgment(sd, tick_n, fu_candidates, state, now)
+        _write_judgment(sd, tick_n, fu_candidates, state, now, repo)
     return {"paused": False, "needs_phase_b": needs_phase_b, "candidates": fu_candidates}
 
 
@@ -255,11 +255,14 @@ def _safe_sync(emitter: core.Emitter, vname: str, fn: Callable[[], None]) -> Non
 
 
 def _write_judgment(state_dir: Path, tick_n: int, candidates: List[Dict[str, Any]],
-                    state: Dict[str, Any], now: datetime) -> None:
+                    state: Dict[str, Any], now: datetime, repo: str) -> None:
     payload = {
         "tick": tick_n,
         "generated_at": core.iso(now),
-        "repo": os.environ.get("DEILE_PIPELINE_REPO", ""),
+        # Issue #612: report the SAME repo the tick actually ran against
+        # (resolved once in main() via the canonical resolver) instead of
+        # re-reading the env independently — single read, no divergence.
+        "repo": repo,
         "fu_candidates": candidates,
         "fu_created_today": state.get("fu_created_today", 0),
         "fu_day_slot": state.get("fu_day_slot", ""),
@@ -283,9 +286,38 @@ def _write_judgment(state_dir: Path, tick_n: int, candidates: List[Dict[str, Any
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _resolve_repo() -> str:
+    """Resolve the monitor's target repo through the canonical resolver.
+
+    Issue #612 (project-agnostic): the monitor used to read ``DEILE_PIPELINE_REPO``
+    directly — but ``Settings`` *silently ignores* that env var (it was "truly
+    removed"; only ``DEILE_FORGE_REPO`` / ``forge.repo`` / ``pipeline.repo`` feed
+    settings). That meant the monitor read a source the rest of the harness no
+    longer honours. This routes the read through the SAME
+    :func:`resolve_forge_repo` the pipeline uses, with the legacy
+    ``DEILE_PIPELINE_REPO`` env kept as a deployment-boundary fallback so the
+    reference manifest (ConfigMap ``pipeline.repo`` → ``DEILE_PIPELINE_REPO``)
+    keeps working unchanged.
+
+    ``require=False`` + graceful fallback: a missing repo degrades with a
+    ``WARNING``, never raises — the deterministic Phase-A tick must never crash
+    the heartbeat (a hard fail-loud belongs to the pipeline's startup, not to
+    the supervisor's per-tick sweep). The import is lazy (mirrors the existing
+    ``_claude_creds_refresh`` import) so the flattened ``/app/monitor_tick.py``
+    keeps a clean module-import surface, and any config-layer error falls back
+    to the raw env rather than killing the tick.
+    """
+    env_repo = os.environ.get("DEILE_PIPELINE_REPO", "").strip()
+    try:
+        from deile.orchestration.pipeline.constants import resolve_forge_repo
+        return resolve_forge_repo(require=False, fallback=env_repo)
+    except Exception:  # noqa: BLE001 — config import must never crash the tick
+        return env_repo
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     state_dir = os.environ.get("DEILE_MONITOR_STATE_DIR", "/state")
-    repo = os.environ.get("DEILE_PIPELINE_REPO", "")
+    repo = _resolve_repo()
     namespace = os.environ.get("DEILE_K8S_NAMESPACE", "deile")
     bot_endpoint = os.environ.get("DEILE_BOT_ENDPOINT", "http://deilebot:8765")
     bot_token = _read_secret("DEILE_BOT_AUTH_TOKEN")

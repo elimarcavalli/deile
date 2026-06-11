@@ -244,7 +244,11 @@ class TestBuildSettings:
         from deile.config.settings import get_settings
 
         s = get_settings()
-        assert s.pipeline_repo == "elimarcavalli/deile"
+        # Issue #612 (project-agnostic): NO hardcoded default repo. With no
+        # config the field is empty so config-absence is detectable (and
+        # resolve_forge_repo() fails loud), instead of silently defaulting to
+        # elimarcavalli/deile.
+        assert s.pipeline_repo == ""
         assert s.cron_poll_interval == 30
         assert s.debug_enabled is False
         reset_settings()

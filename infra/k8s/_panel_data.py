@@ -86,16 +86,30 @@ _ALLOWED_DEPLOYMENTS_FULL = frozenset({
 _POD_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?$")
 
 
+# Sentinela project-agnostic (issue #612): quando nenhuma fonte de repo está
+# disponível (sem override, sem ConfigMap, sem git origin) o painel NÃO finge
+# que está apontando para `elimarcavalli/deile`. Mostra este marcador para o
+# operador deixar explícito que a config do repo-alvo está ausente.
+REPO_UNCONFIGURED = "<unconfigured>"
+
+
 def _detect_default_repo() -> str:
     """Tenta derivar `owner/repo` de `git remote get-url origin`.
 
-    Fallback para `elimarcavalli/deile` se git ausente, sem origin, ou
-    formato não reconhecido. Roda uma única vez no import — silencioso.
+    Issue #612 (project-agnostic): NÃO há mais fallback hardcoded para
+    `elimarcavalli/deile`. Quando git está ausente, sem origin, ou o formato
+    não é reconhecido, emite um `WARNING` e devolve :data:`REPO_UNCONFIGURED`
+    — o painel/monitor degrada com mensagem clara em vez de reportar o repo
+    errado silenciosamente. Roda uma única vez no import.
     """
-    fallback = "elimarcavalli/deile"
     git = shutil.which("git")
     if git is None:
-        return fallback
+        logger.warning(
+            "git not found — cannot derive target repo from origin; "
+            "panel will report %r until DEILE_FORGE_REPO/forge.repo is set",
+            REPO_UNCONFIGURED,
+        )
+        return REPO_UNCONFIGURED
     try:
         out = subprocess.run(
             [git, "remote", "get-url", "origin"],
@@ -103,13 +117,27 @@ def _detect_default_repo() -> str:
             cwd=str(Path(__file__).resolve().parent.parent.parent),
         )
     except (OSError, subprocess.TimeoutExpired):
-        return fallback
+        logger.warning(
+            "git remote lookup failed — panel will report %r until "
+            "DEILE_FORGE_REPO/forge.repo is set", REPO_UNCONFIGURED,
+        )
+        return REPO_UNCONFIGURED
     if out.returncode != 0:
-        return fallback
+        logger.warning(
+            "no git origin — panel will report %r until "
+            "DEILE_FORGE_REPO/forge.repo is set", REPO_UNCONFIGURED,
+        )
+        return REPO_UNCONFIGURED
     url = out.stdout.strip()
     # github.com[:/]owner/repo(.git)?  — cobre https e ssh.
     m = re.search(r"github\.com[:/]([^/]+/[^/.]+?)(?:\.git)?/?$", url)
-    return m.group(1) if m else fallback
+    if m:
+        return m.group(1)
+    logger.warning(
+        "git origin %r did not match owner/repo — panel will report %r until "
+        "DEILE_FORGE_REPO/forge.repo is set", url, REPO_UNCONFIGURED,
+    )
+    return REPO_UNCONFIGURED
 
 
 REPO_DEFAULT = _detect_default_repo()
@@ -284,13 +312,15 @@ class RuntimeContext:
 
 
 def _read_forge_repo(namespace: str) -> str:
-    """Lê ``pipeline.repo`` do ConfigMap ``deile-runtime-config`` do NS.
+    """Lê a chave ``pipeline.repo`` do ConfigMap ``deile-runtime-config`` do NS.
 
-    Quando o painel aponta para um namespace que carrega forge GitLab, o
-    repo certo a listar **não** é o ``owner/repo`` do clone local (que
-    ``_detect_default_repo()`` retornaria via ``gh repo view``) — é o repo
-    que o pipeline está orquestrando, declarado no ConfigMap layered.
-    Falha graciosamente para ``""`` (callsite cai no default).
+    Issue #612 (project-agnostic): o repo-alvo passou a viver na chave
+    discreta ``pipeline.repo`` do ConfigMap (FONTE ÚNICA dos manifests 46/55),
+    não mais embutido no JSON ``pipeline-settings.json``. Quando o painel
+    aponta para um namespace que carrega forge GitLab, o repo certo a listar
+    **não** é o ``owner/repo`` do clone local (que ``_detect_default_repo()``
+    retornaria) — é o repo que o pipeline está orquestrando, declarado no
+    ConfigMap. Falha graciosamente para ``""`` (callsite cai no default).
     """
     kubectl = kubectl_bin()
     if kubectl is None:
@@ -299,23 +329,14 @@ def _read_forge_repo(namespace: str) -> str:
         out = subprocess.run(
             [kubectl, "-n", namespace, "get", "configmap",
              "deile-runtime-config",
-             "-o", "jsonpath={.data.pipeline-settings\\.json}"],
+             "-o", "jsonpath={.data.pipeline\\.repo}"],
             capture_output=True, text=True, timeout=3.0,
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    if out.returncode != 0 or not out.stdout.strip():
+    if out.returncode != 0:
         return ""
-    try:
-        payload = json.loads(out.stdout)
-    except json.JSONDecodeError:
-        return ""
-    pipeline = payload.get("pipeline") if isinstance(payload, dict) else None
-    if isinstance(pipeline, dict):
-        repo = pipeline.get("repo")
-        if isinstance(repo, str) and repo.strip():
-            return repo.strip()
-    return ""
+    return out.stdout.strip()
 
 
 def _read_forge_kind(namespace: str) -> str:
