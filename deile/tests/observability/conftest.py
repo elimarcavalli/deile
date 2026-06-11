@@ -28,7 +28,8 @@ def otel_sdk_available() -> bool:
 def _reset_singletons(monkeypatch):
     """Reseta singletons + limpa envs OTLP antes/depois de cada teste."""
     from deile.observability import (reset_dispatch_export,
-                                     reset_dispatch_log_export, reset_metrics,
+                                     reset_dispatch_log_export,
+                                     reset_dispatch_metrics, reset_metrics,
                                      reset_observability_config, reset_tracer)
 
     for env in (
@@ -39,6 +40,8 @@ def _reset_singletons(monkeypatch):
         "DEILE_OTLP_SAMPLE_RATIO",
         "DEILE_OBSERVABILITY_DISABLED",
         "DEILE_OTLP_LOGS_DISABLED",
+        "DEILE_OTLP_METRICS_DISABLED",
+        "OTEL_METRIC_EXPORT_INTERVAL",
         "DEILE_ROLE",
         "HOSTNAME",
     ):
@@ -48,6 +51,7 @@ def _reset_singletons(monkeypatch):
     reset_observability_config()
     reset_dispatch_export()
     reset_dispatch_log_export()
+    reset_dispatch_metrics()
     try:
         yield
     finally:
@@ -56,6 +60,7 @@ def _reset_singletons(monkeypatch):
         reset_observability_config()
         reset_dispatch_export()
         reset_dispatch_log_export()
+        reset_dispatch_metrics()
 
 
 @pytest.fixture
@@ -131,6 +136,59 @@ def in_memory_log_exporter(monkeypatch):
     yield log_exporter
 
     log_provider.shutdown()
+
+
+@pytest.fixture
+def in_memory_dispatch_metrics_reader(monkeypatch):
+    """Injeta um MeterProvider in-memory no módulo ``dispatch_metrics`` (#455).
+
+    Substitui ``deile.observability.dispatch_metrics._meter_provider`` por um
+    ``MeterProvider`` com ``InMemoryMetricReader``. O teste chama
+    ``reader.get_metrics_data()`` para conferir nomes/labels/valores das
+    métricas de dispatch — exercitando a fiação REAL de ``emit_*``.
+    """
+    if not otel_sdk_available():
+        pytest.skip("opentelemetry SDK não instalado (pip install -e .[otel])")
+
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    monkeypatch.setattr(
+        "deile.observability.dispatch_metrics._meter_provider", provider
+    )
+
+    # Ligar OTLP via env para get_dispatch_meter_provider() não retornar None.
+    monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
+
+    from deile.observability import (reset_dispatch_metrics,
+                                     reset_observability_config)
+    reset_observability_config()
+    reset_dispatch_metrics()
+
+    yield reader
+
+    provider.shutdown()
+
+
+def dispatch_metric_points(reader, metric_name):
+    """Helper: retorna lista de (value/sum, attrs) p/ um metric do reader."""
+    data = reader.get_metrics_data()
+    points = []
+    if data is None:
+        return points
+    for rm in data.resource_metrics:
+        for sm in rm.scope_metrics:
+            for metric in sm.metrics:
+                if metric.name != metric_name:
+                    continue
+                for dp in metric.data.data_points:
+                    value = getattr(dp, "value", None)
+                    if value is None:  # histogram → use sum
+                        value = getattr(dp, "sum", None)
+                    points.append((value, dict(dp.attributes)))
+    return points
 
 
 @pytest.fixture

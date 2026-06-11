@@ -43,6 +43,11 @@ from deile.observability.dispatch_log_export import (emit_log_record,
                                                      get_dispatch_log_export,
                                                      get_log_provider,
                                                      reset_dispatch_log_export)
+from deile.observability.dispatch_metrics import (
+    record_dispatch_duration_ms, record_dispatch_failed_total,
+    record_dispatch_tool_burst_total, record_dispatch_total,
+    record_forge_pr_review_total, record_git_push_total,
+    reset_dispatch_metrics, shutdown_dispatch_metrics)
 from deile.observability.dispatch_schema import (SCHEMA_VERSION,
                                                  get_pod_metadata)
 from deile.observability.metrics import (DeileMetrics, NoOpMetrics,
@@ -90,4 +95,13 @@ __all__ = [
     "get_log_provider",
     "get_dispatch_log_export",
     "emit_log_record",
+    # metrics pipeline (issue #455)
+    "record_dispatch_total",
+    "record_dispatch_failed_total",
+    "record_dispatch_duration_ms",
+    "record_dispatch_tool_burst_total",
+    "record_git_push_total",
+    "record_forge_pr_review_total",
+    "shutdown_dispatch_metrics",
+    "reset_dispatch_metrics",
 ]

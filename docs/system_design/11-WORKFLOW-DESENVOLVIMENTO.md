@@ -196,6 +196,32 @@ Segue exatamente o mesmo contrato da Decisão #39:
 | SDK `opentelemetry-sdk` não instalado | 0 spans (fallback no-op silencioso) |
 | Exporter raise | drop counter incrementa; log `dispatch.otlp_drop` ≤1×/60s |
 
+### Pipeline de métricas (Prometheus/OTLP)
+
+> Implementado em `deile/observability/dispatch_metrics.py` — issue #455. Fecha a trinca de sinais (traces #443 + logs #454 + métricas #455). `MeterProvider` próprio (não estende `OtlpMetrics`), fiado nos `emit_*` de `dispatch_export.py`.
+
+Sete instrumentos V1, todos com **labels de cardinality bounded** (enum fechado; nunca `task_id`/`session_id`/`sha`/`branch`/`pr`/`model`):
+
+| Instrumento | Tipo | Labels |
+|---|---|---|
+| `deile.dispatch.total` | counter | `role`, `outcome` (completed\|failed) |
+| `deile.dispatch.failed.total` | counter | `role`, `reason` |
+| `deile.dispatch.duration_ms` | histogram | `role`, `outcome` (p50/p95/p99 derivável) |
+| `deile.dispatch.tool_burst.total` | counter | `role`, `bucket` (`50-`/`100-`/`500+`) |
+| `deile.dispatch.otlp_drop.total` | counter | `reason` (interno; emitido no flush do drop counter) |
+| `deile.forge.pr_review.total` | counter | `decision` |
+| `deile.git.push.total` | counter | `outcome` (ok\|fail) |
+
+Fiação (`dispatch_export.emit_* → dispatch_metrics.record_*`, após a operação de span, em `try/except` isolado): `emit_dispatch_completed` → `record_dispatch_total` + `record_dispatch_duration_ms`; `emit_dispatch_failed` → `record_dispatch_total` + `record_dispatch_failed_total` + `record_dispatch_duration_ms`; `emit_dispatch_tool_burst` → `record_dispatch_tool_burst_total`; `emit_git_push` → `record_git_push_total`; `emit_forge_pr_review` → `record_forge_pr_review_total`. O `role` vem de `get_pod_metadata()`; `elapsed_s` é convertido para ms.
+
+| Condição | Comportamento |
+|---|---|
+| `DEILE_OTLP_ENDPOINT` vazio / SDK ausente | NoOp silencioso (linha INFO única `otel_sdk_available=false` quando SDK ausente) |
+| `DEILE_OBSERVABILITY_DISABLED=true` | NoOp (kill-switch global) |
+| `DEILE_OTLP_METRICS_DISABLED=true` | NoOp só de métricas — traces/logs intactos |
+| `OTEL_METRIC_EXPORT_INTERVAL` | intervalo de export do `PeriodicExportingMetricReader` (default 60000ms) |
+| Exporter/instrument raise | drop counter incrementa; log `dispatch.otlp_metric_drop` ≤1×/60s |
+
 ---
 
 ## Exemptions (sem fases obrigatórias)
