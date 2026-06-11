@@ -169,6 +169,99 @@ class TestRecordFromProvider:
         assert r.tier == "tier_2"
 
     @pytest.mark.asyncio
+    async def test_record_from_provider_warns_on_silent_zero_cost(self, repo, caplog):
+        """Custo silencioso: chamada bem-sucedida com tokens faturados mas cost=0.
+
+        Regressão da família de bugs do provider Gemini que gravava cost=0.0
+        sem aviso. O valor persistido NÃO muda (continua 0.0); apenas garantimos
+        que o caso vire detectável via WARNING.
+        """
+        class FakeUsage:
+            prompt_tokens = 500
+            completion_tokens = 200
+            cached_tokens = 0
+            total_tokens = 700
+            cost_estimate = 0.0  # pricing ausente/não-computado
+
+        class FakeTier:
+            value = "tier_1"
+
+        with caplog.at_level("WARNING", logger="deile.storage.usage_repository"):
+            await repo.record_from_provider(
+                provider_id="gemini",
+                model_id="gemini-2.5-pro",
+                tier=FakeTier(),
+                session_id="sess-zero",
+                usage=FakeUsage(),
+                latency_ms=400,
+                success=True,
+            )
+
+        # Valor persistido inalterado.
+        stored = repo.records_for_session("sess-zero")[0]
+        assert stored.cost_usd == 0.0
+        assert stored.prompt_tokens == 500
+        # Mas o custo silencioso virou observável.
+        assert any(
+            "cost_usd=0" in rec.message and rec.levelname == "WARNING"
+            for rec in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_record_from_provider_no_warn_on_legitimate_zero_cost(self, repo, caplog):
+        """Casos legítimos de cost=0 NÃO disparam o warning.
+
+        - Falha (success=False): pode ter tokens parciais sem custo cobrado.
+        - Sem tokens faturáveis (prompt+completion==0): nada para faturar
+          (ex.: auth por assinatura/OAuth que não conta tokens de API).
+        """
+        class FailedUsage:
+            prompt_tokens = 300
+            completion_tokens = 0
+            cached_tokens = 0
+            total_tokens = 300
+            cost_estimate = 0.0
+
+        class NoTokenUsage:
+            prompt_tokens = 0
+            completion_tokens = 0
+            cached_tokens = 0
+            total_tokens = 0
+            cost_estimate = 0.0
+
+        class FakeTier:
+            value = "tier_1"
+
+        class FakeError:
+            error_type = "rate_limit"
+
+        with caplog.at_level("WARNING", logger="deile.storage.usage_repository"):
+            await repo.record_from_provider(
+                provider_id="anthropic",
+                model_id="claude-opus-4-8",
+                tier=FakeTier(),
+                session_id="sess-fail",
+                usage=FailedUsage(),
+                latency_ms=100,
+                success=False,
+                error_envelope=FakeError(),
+            )
+            await repo.record_from_provider(
+                provider_id="anthropic",
+                model_id="claude-opus-4-8",
+                tier=FakeTier(),
+                session_id="sess-notoken",
+                usage=NoTokenUsage(),
+                latency_ms=50,
+                success=True,
+            )
+
+        assert not any(
+            "cost_usd=0" in rec.message and rec.levelname == "WARNING"
+            for rec in caplog.records
+        )
+
+    @pytest.mark.asyncio
     async def test_record_from_provider_with_error_envelope(self, repo):
         class FakeUsage:
             prompt_tokens = 0
