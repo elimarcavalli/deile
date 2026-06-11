@@ -379,7 +379,8 @@ EXAMPLES:
         try:
             old_router = get_tier_router()
             old_providers = list(old_router.registered_providers().values())
-        except Exception:
+        except Exception as exc:
+            logger.debug("could not snapshot providers from old TierRouter: %s", exc)
             old_providers = []
 
         reset_tier_router()
@@ -389,8 +390,8 @@ EXAMPLES:
         for p in old_providers:
             try:
                 new_router.register_provider(p)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("could not re-register provider on new TierRouter: %s", exc)
 
         # Sync the legacy ModelRouter.strategy (consulted when tier classification fails)
         try:

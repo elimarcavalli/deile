@@ -161,9 +161,11 @@ async def collect_standup_data(since_spec: str) -> StandupData:
     ``asyncio.run``. Commits permanecem síncronos (``git log``) e rodam em
     :func:`asyncio.to_thread` para não bloquear o event loop.
     """
-    # Pre-condition gates — git/gh disponíveis e autenticados.
-    ensure_git_repo()
-    ensure_gh_authenticated()
+    # Pre-condition gates — git/gh disponíveis e autenticados. Disparam
+    # subprocess síncrono, então rodam em ``asyncio.to_thread`` (Pilar 03 §1)
+    # para não bloquear o event loop.
+    await asyncio.to_thread(ensure_git_repo)
+    await asyncio.to_thread(ensure_gh_authenticated)
 
     delta = parse_since(since_spec)
     since_date = datetime.now(timezone.utc) - delta
@@ -172,7 +174,7 @@ async def collect_standup_data(since_spec: str) -> StandupData:
     # Late import — evita ciclo de import no carregamento do command package.
     from ...orchestration.pipeline.github_client import GitHubClient
 
-    repo = _resolve_repo_from_git()
+    repo = await asyncio.to_thread(_resolve_repo_from_git)
     client = GitHubClient(repo)
 
     commits = await asyncio.to_thread(collect_commits, since_iso)
