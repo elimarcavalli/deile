@@ -1,10 +1,11 @@
 """Procedural Memory - Patterns aprendidos e habilidades adquiridas"""
 
-import json
 import logging
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List
+
+from deile.storage.aio_fileio import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,8 @@ class ProceduralMemory:
             return
 
         if self.patterns_file.exists():
-            with open(self.patterns_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                self._patterns.update(data)
+            data = await read_json(self.patterns_file)
+            self._patterns.update(data)
 
         self._is_initialized = True
         logger.info("ProceduralMemory inicializada")
@@ -79,7 +79,6 @@ class ProceduralMemory:
 
     async def shutdown(self) -> None:
         """Finalização - salva patterns"""
-        with open(self.patterns_file, 'w', encoding='utf-8') as f:
-            json.dump(dict(self._patterns), f, ensure_ascii=False, indent=2)
+        await write_json(self.patterns_file, dict(self._patterns))
 
         self._is_initialized = False
