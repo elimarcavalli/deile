@@ -470,6 +470,19 @@ class TestEnsureChecks:
             sc.ensure_gh_authenticated()
         assert "auten" in str(exc_info.value).lower() or "auth" in str(exc_info.value).lower()
 
+    def test_gh_auth_timeout_raises_command_error(self, monkeypatch):
+        # gh auth status sem timeout podia travar indefinidamente (issue #655).
+        # TimeoutExpired deve ser mapeado para CommandError PT-BR.
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+
+        def _raise_timeout(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd=["gh", "auth", "status"], timeout=30)
+
+        monkeypatch.setattr(gh.subprocess, "run", _raise_timeout)
+        with pytest.raises(CommandError) as exc_info:
+            sc.ensure_gh_authenticated()
+        assert "timeout" in str(exc_info.value).lower()
+
 
 # ---------------------------------------------------------------------------
 # execute() — fluxo completo
