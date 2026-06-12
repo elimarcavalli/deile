@@ -767,6 +767,15 @@ class DeileWorkerClient:
             "Content-Type": "application/json",
             "X-Request-ID": request_id,
         }
+        # Issue #457 — D2: inject W3C traceparent from the current OTel context
+        # so the worker can open deile.dispatch as a child of pipeline.dispatch_request.
+        # This is the single injection point covering all call sites of _post_dispatch()
+        # in implementer.py. Falls open when opentelemetry-api is not installed.
+        try:
+            from opentelemetry import propagate as _propagate  # noqa: PLC0415
+            _propagate.inject(headers)
+        except ImportError:
+            pass
         logger.info(
             "worker dispatch starting",
             extra={"request_id": request_id, "wait": wait},

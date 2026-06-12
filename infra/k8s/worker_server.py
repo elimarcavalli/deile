@@ -1303,12 +1303,43 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         effort=reasoning_effort or None,
     )
 
+    # Issue #457 — D3: extract W3C traceparent and open deile.dispatch span as
+    # child of the pipeline.dispatch_request span (cross-pod trace propagation).
+    # Falls open: absent header → propagate.extract returns empty context →
+    # start_span creates a root span (D4 fallback). No exception is raised.
+    _deile_dispatch_span = None
+    _deile_dispatch_ctx_token = None
+    try:
+        from opentelemetry import (  # noqa: F401
+            context as _otel_context, propagate as _otel_propagate,
+            trace as _otel_trace)
+        _parent_ctx = _otel_propagate.extract(request.headers)
+        _deile_dispatch_span = _otel_trace.get_tracer("deile.worker").start_span(
+            "deile.dispatch", context=_parent_ctx
+        )
+        _deile_dispatch_ctx_token = _otel_context.attach(
+            _otel_trace.set_span_in_context(_deile_dispatch_span)
+        )
+    except ImportError:
+        pass
+
     wait_for_result = bool(body.get("wait_for_result", True))
     _outer_timeout = (dispatch_timeout_s + 30) if dispatch_timeout_s is not None else (TASK_TIMEOUT_S + 30)
     # Gauge ``deile_worker_in_flight`` (AC2): conta dispatches em execução. O
     # decremento é garantido no terminal de ambos os caminhos.
     global _IN_FLIGHT
     _IN_FLIGHT += 1
+    def _close_deile_dispatch_span():
+        """Close the deile.dispatch OTel span opened for cross-pod propagation (#457)."""
+        if _deile_dispatch_span is not None:
+            _deile_dispatch_span.end()
+        if _deile_dispatch_ctx_token is not None:
+            try:
+                from opentelemetry import context as _oc  # noqa: F401,PLC0415
+                _oc.detach(_deile_dispatch_ctx_token)
+            except ImportError:
+                pass
+
     if wait_for_result:
         try:
             result = await asyncio.wait_for(
@@ -1334,6 +1365,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             return web.json_response(_TASKS[task_id], status=504)
         finally:
             _IN_FLIGHT -= 1
+            _close_deile_dispatch_span()
     else:
         # Fire-and-forget — caller polls /v1/result/{id}
         async def _bg():
@@ -1376,6 +1408,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         # B2 (PR #295 review): guarda strong ref para a task em background.
         # asyncio mantém apenas weak refs internamente; sem o set + callback,
         # o GC pode coletar a task antes de ela completar.
+        # Issue #457: close the deile.dispatch span before creating the bg task;
+        # the asyncio task already inherited the context via copy_context().
+        _close_deile_dispatch_span()
         bg_task = asyncio.create_task(_bg())
         _BG_DISPATCH_TASKS.add(bg_task)
         bg_task.add_done_callback(_BG_DISPATCH_TASKS.discard)
