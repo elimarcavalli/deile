@@ -45,6 +45,7 @@ from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
                                                  ForgePrReviewAttrs,
                                                  GitCommitAttrs, GitPushAttrs,
                                                  get_pod_metadata)
+from deile.observability.semconv_mapping import apply_semconv_attrs
 from deile.observability.tracer import OtlpTracer, get_tracer, otel_available
 
 __all__ = [
@@ -374,6 +375,9 @@ def _emit_child_span(task_id: str, name: str, attrs: Dict[str, Any]) -> None:
     ctx = set_span_in_context(parent)
     all_attrs = {**attrs, **_common_attrs()}
     child = raw.start_span(name, context=ctx, attributes=all_attrs)
+    config = get_observability_config()
+    if config.is_semconv_enabled:
+        apply_semconv_attrs(child, attrs)
     child_ctx = child.get_span_context()
     child.end()
     _try_emit_log(child_ctx, name, attrs)

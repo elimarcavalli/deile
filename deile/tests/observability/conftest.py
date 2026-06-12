@@ -41,6 +41,7 @@ def _reset_singletons(monkeypatch):
         "DEILE_OBSERVABILITY_DISABLED",
         "DEILE_OTLP_LOGS_DISABLED",
         "DEILE_OTLP_METRICS_DISABLED",
+        "DEILE_OTLP_SEMCONV_ENABLED",
         "OTEL_METRIC_EXPORT_INTERVAL",
         "DEILE_ROLE",
         "HOSTNAME",
