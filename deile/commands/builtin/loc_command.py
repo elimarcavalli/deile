@@ -47,7 +47,8 @@ class LocCommand(DirectCommand):
         try:
             with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                 return sum(1 for _ in f)
-        except Exception:
+        except Exception as exc:  # open por arquivo é best-effort — 0 linhas em falha
+            logger.debug("loc: falha ao contar linhas em %s: %s", filepath, exc)
             return 0
 
     _LANGUAGE_BY_EXT: dict[str, str] = {
@@ -79,8 +80,8 @@ class LocCommand(DirectCommand):
                                 stripped = line.strip()
                                 if stripped.startswith("def test_") or stripped.startswith("async def test_"):
                                     count += 1
-                    except Exception:
-                        pass
+                    except Exception as exc:  # open por arquivo é best-effort — ignora arquivo ilegível
+                        logger.debug("loc: falha ao contar testes em %s: %s", filepath, exc)
         return count
 
     def _collect_stats(self, cwd: str) -> dict:
