@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -18,6 +19,8 @@ from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (export_timestamp, get_memory_manager, get_session,
                       raise_command_error, split_args, success_panel,
                       wrap_command_errors)
+
+logger = logging.getLogger(__name__)
 
 _CHECKPOINT_DIR = Path.home() / ".deile" / "checkpoints"
 _CHECKPOINT_INDEX = _CHECKPOINT_DIR / "index.json"
@@ -129,8 +132,8 @@ class MemoryCommand(DirectCommand):
         try:
             from ...security.audit_logger import get_audit_logger
             table.add_row("Eventos de Auditoria", str(get_audit_logger().event_count()), "Buffer em memória")
-        except Exception:
-            pass
+        except Exception as exc:  # audit_logger é best-effort — falha não aborta o status
+            logger.debug("memory status: falha ao ler audit_logger: %s", exc)
 
         management = Panel(
             Text(
@@ -214,13 +217,13 @@ class MemoryCommand(DirectCommand):
                 for plan_id in pm.active_plan_ids():
                     await pm.stop_plan(plan_id)
                 total += pm.clear_active_state()
-            except Exception:
-                pass
+            except Exception as exc:  # plan_manager é best-effort — falha não aborta o clear all
+                logger.debug("memory clear all: falha ao limpar plan_manager: %s", exc)
             try:
                 from ...security.audit_logger import get_audit_logger
                 total += get_audit_logger().clear_events()
-            except Exception:
-                pass
+            except Exception as exc:  # audit_logger é best-effort — falha não aborta o clear all
+                logger.debug("memory clear all: falha ao limpar audit_logger: %s", exc)
             cleared = total
             desc = "todos os componentes de memória"
 
@@ -279,8 +282,8 @@ class MemoryCommand(DirectCommand):
                 impact = "Alto" if active > 5 else "Médio" if active > 2 else "Baixo"
                 table.add_row("Planos Ativos", str(active), f"{active * 1000}B", impact)
                 total_impact += 3 if active > 2 else 0
-        except Exception:
-            pass
+        except Exception as exc:  # plan_manager é best-effort — falha não aborta o usage
+            logger.debug("memory usage: falha ao ler plan_manager: %s", exc)
 
         try:
             from ...security.audit_logger import get_audit_logger
@@ -289,8 +292,8 @@ class MemoryCommand(DirectCommand):
                 impact = "Médio" if audit_count > 500 else "Baixo"
                 table.add_row("Eventos de Auditoria", str(audit_count), f"{audit_count * 300}B", impact)
                 total_impact += 1 if audit_count > 500 else 0
-        except Exception:
-            pass
+        except Exception as exc:  # audit_logger é best-effort — falha não aborta o usage
+            logger.debug("memory usage: falha ao ler audit_logger: %s", exc)
 
         if total_impact > 5:
             rec = "🔴 Alto Impacto — considere /memory clear all"
@@ -384,8 +387,8 @@ class MemoryCommand(DirectCommand):
         if mm is not None:
             try:
                 usage = await mm.get_memory_usage()
-            except Exception:
-                pass
+            except Exception as exc:  # memory_manager é best-effort — falha não aborta o checkpoint
+                logger.debug("memory save: falha ao ler memory_manager para checkpoint: %s", exc)
 
         checkpoint_data = {
             "name": name,

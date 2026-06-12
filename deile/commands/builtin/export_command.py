@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,8 @@ from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (ArgSpec, export_timestamp, get_agent, get_session,
                       get_session_id, parse_flag_args,
                       promote_positional_format, split_args)
+
+logger = logging.getLogger(__name__)
 
 
 class ExportCommand(DirectCommand):
@@ -154,8 +157,8 @@ class ExportCommand(DirectCommand):
                 if mr:
                     providers = getattr(mr, "providers", {})
                     model_name = ", ".join(providers.keys()) if providers else "indisponível"
-            except Exception:
-                pass
+            except Exception as exc:  # model_router é best-effort — falha não aborta o export
+                logger.debug("export: falha ao ler model_router: %s", exc)
 
             # Persona ativa
             persona_name = "indisponível"
@@ -165,8 +168,8 @@ class ExportCommand(DirectCommand):
                     persona = pm.get_active_persona()
                     if persona:
                         persona_name = getattr(persona, "name", "indisponível")
-            except Exception:
-                pass
+            except Exception as exc:  # persona_manager é best-effort — falha não aborta o export
+                logger.debug("export: falha ao ler persona_manager: %s", exc)
 
             # Memória
             memory_stats: Dict[str, Any] = {"status": "indisponível"}
@@ -174,8 +177,8 @@ class ExportCommand(DirectCommand):
                 mm = getattr(agent, "memory_manager", None)
                 if mm:
                     memory_stats = await mm.get_memory_usage()
-            except Exception:
-                pass
+            except Exception as exc:  # memory_manager é best-effort — falha não aborta o export
+                logger.debug("export: falha ao ler memory_manager: %s", exc)
 
             data["session_info"] = {
                 "model": model_name,
@@ -195,8 +198,8 @@ class ExportCommand(DirectCommand):
                             for af in run_dir.glob("*.json"):
                                 artifacts.append({"path": str(af), "size": af.stat().st_size})
                 data["export_metadata"]["data_sources"].append("ArtifactManager")
-            except Exception:
-                pass
+            except Exception as exc:  # leitura de artifacts é best-effort — falha não aborta o export
+                logger.debug("export: falha ao coletar artifacts: %s", exc)
             data["artifacts"] = {
                 "count": len(artifacts),
                 "items": artifacts,
@@ -211,8 +214,8 @@ class ExportCommand(DirectCommand):
                 raw_plans = await pm_inst.list_plans()
                 plans = raw_plans if raw_plans else []
                 data["export_metadata"]["data_sources"].append("PlanManager")
-            except Exception:
-                pass
+            except Exception as exc:  # plan_manager é best-effort — falha não aborta o export
+                logger.debug("export: falha ao coletar planos: %s", exc)
             data["plans"] = {
                 "count": len(plans),
                 "items": plans,
@@ -426,7 +429,8 @@ class ExportCommand(DirectCommand):
             try:
                 size = Path(fp).stat().st_size
                 lines.append(f"  • {fname} ({size:,} bytes)")
-            except Exception:
+            except Exception as exc:  # stat é best-effort no sumário — exibe sem tamanho
+                logger.debug("export: falha ao ler tamanho de %s: %s", fname, exc)
                 lines.append(f"  • {fname}")
 
         lines += [
