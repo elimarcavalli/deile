@@ -42,6 +42,7 @@ __all__ = [
     "ENV_DISABLED",
     "ENV_LOGS_DISABLED",
     "ENV_METRICS_DISABLED",
+    "ENV_SEMCONV_ENABLED",
 ]
 
 ENV_ENDPOINT = "DEILE_OTLP_ENDPOINT"
@@ -52,6 +53,7 @@ ENV_SAMPLE_RATIO = "DEILE_OTLP_SAMPLE_RATIO"
 ENV_DISABLED = "DEILE_OBSERVABILITY_DISABLED"
 ENV_LOGS_DISABLED = "DEILE_OTLP_LOGS_DISABLED"
 ENV_METRICS_DISABLED = "DEILE_OTLP_METRICS_DISABLED"
+ENV_SEMCONV_ENABLED = "DEILE_OTLP_SEMCONV_ENABLED"
 
 _DEFAULT_SERVICE_NAME = "deile"
 _DEFAULT_SAMPLE_RATIO = 1.0
@@ -117,6 +119,7 @@ class ObservabilityConfig:
     disabled: bool = False
     logs_disabled: bool = False
     metrics_disabled: bool = False
+    semconv_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "ObservabilityConfig":
@@ -142,7 +145,15 @@ class ObservabilityConfig:
             metrics_disabled=_parse_bool(
                 os.environ.get(ENV_METRICS_DISABLED, "false"), False
             ),
+            semconv_enabled=_parse_bool(
+                os.environ.get(ENV_SEMCONV_ENABLED, "true"), True
+            ),
         )
+
+    @property
+    def is_semconv_enabled(self) -> bool:
+        """Retorna ``True`` quando dual-emit de attrs SemConv ``vcs.*`` está ativo."""
+        return self.semconv_enabled
 
     @property
     def is_enabled(self) -> bool:
