@@ -1080,140 +1080,175 @@ class WorkerImplementer(PipelineImplementer):
         # instead it reconciles ground truth (GitHub labels / PR existence)
         # on the next tick. Used by the implement stage so that N workers
         # can process N issues in parallel.
-        wait = not nowait
+
+        # Issue #457 — D1: open parent span `pipeline.dispatch_request` so
+        # that the deile.dispatch span opened on the worker side becomes a
+        # child (W3C traceparent propagation). Fails open — if the OTel API
+        # is not installed, span_ctx stays None and the dispatch proceeds
+        # normally without instrumentation. The span covers _post_dispatch()
+        # through the final return so traceparent is already injected (D2)
+        # before the HTTP POST fires.
+        _dispatch_span = None
+        _dispatch_ctx_token = None
         try:
-            data = await self._post_dispatch(url, payload, wait=wait)
-        except WorkerDispatchError as exc:
-            # Defense-in-depth contra triple-dispatch (fix 2026-05-27).
-            # Worker recusa com 409 quando há claude vivo na mesma sessão
-            # (detectado via /proc local OU mtime do JSONL na PVC compartilhada
-            # entre réplicas). Trata exatamente como ``_still_alive`` acima:
-            # mantém em_andamento, próximo tick re-tenta — NÃO escala
-            # como erro porque não é falha do worker, é deduplicação correta.
-            if exc.error_code == "CONCURRENT_DISPATCH_BLOCKED":
-                logger.info(
-                    "dispatch skipped — worker reportou claude vivo na sessão "
-                    "anterior (CONCURRENT_DISPATCH_BLOCKED); aguarda próximo "
-                    "tick. ledger_key=%s", ledger_key,
-                )
-                return WorkOutcome(
-                    ok=False, text="",
-                    error="DISPATCH_SKIPPED_CONCURRENT: claude-worker já tem "
-                          "sessão ativa pro mesmo task; skip nesse tick",
-                )
-            # Mecanismo 2 (lease): worker recusa com 409 + TASK_ALREADY_RUNNING
-            # quando outra réplica detém o lease do workspace desta task.
-            # Comportamento idêntico ao CONCURRENT_DISPATCH_BLOCKED: pipeline
-            # aguarda o próximo tick, NÃO incrementa tentativas, NÃO limpa
-            # o ledger — a task está em andamento em outro pod.
-            if exc.error_code == "TASK_ALREADY_RUNNING":
-                logger.info(
-                    "dispatch skipped — workspace com lease ativo em outra "
-                    "réplica (TASK_ALREADY_RUNNING); aguarda próximo tick. "
-                    "ledger_key=%s", ledger_key,
-                )
-                return WorkOutcome(
-                    ok=False, text="",
-                    error="DISPATCH_SKIPPED_LEASE: workspace desta task está "
-                          "com lease ativo em outro pod; skip nesse tick",
-                )
-            return WorkOutcome(ok=False, text="", error=f"{exc.error_code}: {exc}"[:500])
-        except Exception as exc:  # noqa: BLE001 — never crash the tick
-            logger.exception("worker dispatch raised")
-            return WorkOutcome(ok=False, text="", error=f"{type(exc).__name__}: {exc}"[:500])
-        # Issue #373: fire-and-forget path — worker returned 202 + task_id.
-        # The task is running in the background; the pipeline reconciles
-        # ground truth on the next tick via ``reconcile_implementing_issues``.
-        if nowait:
-            task_id = data.get("task_id", "") if isinstance(data, dict) else ""
-            logger.info(
-                "worker fire-and-forget accepted: task_id=%s stage=%s",
-                task_id, stage,
+            from opentelemetry import (  # noqa: PLC0415
+                context as _otel_context, trace as _otel_trace)
+            _dispatch_span = _otel_trace.get_tracer("deile.pipeline").start_span(
+                "pipeline.dispatch_request"
             )
-            # Grava no ledger também no caminho nowait — critique/refine/review
-            # fresh passam ledger_key e precisam de rastreabilidade igual ao
-            # implement. Sem isso o task_id se perde antes do reconcile poder
-            # fazer resume na próxima janela.
-            if ledger_key and task_id:
-                worker_kind = _worker_kind_from_url(url)
-                self._ledger.record(
-                    ledger_key,
-                    task_id=task_id,
-                    session_id="",  # Desconhecido até o worker terminar
-                    stage=stage, branch=branch,
-                    worker_kind=worker_kind,
-                )
-            return WorkOutcome(
-                ok=True, text="", task_id=task_id,
-                ended="",  # Not yet known — reconcile via ground truth
+            _dispatch_ctx_token = _otel_context.attach(
+                _otel_trace.set_span_in_context(_dispatch_span)
             )
-        outcome = _outcome_from_worker_response(data)
+        except ImportError:
+            pass
 
-        # Observabilidade de custo central (issue #638): persiste 1 registro por
-        # modelo no UsageRepository central a partir do bloco ``usage`` estruturado
-        # que o cli-worker reporta. Só para workers da frota CLI — deile/claude
-        # contabilizam por outras vias (deile grava no SQLite do próprio pod;
-        # claude via JSONL). A escrita é best-effort isolada (record_fleet_usage
-        # nunca propaga exceção): falha de SQLite/preço NÃO derruba o dispatch.
-        if is_cli_worker:
-            from deile.orchestration.pipeline.fleet_cost_recorder import \
-                record_fleet_usage  # noqa: PLC0415
-            record_fleet_usage(
-                data,
-                worker_kind=_worker_kind_from_url(url),
-                stage=stage,
-                channel_id=channel_id,
-                cli_model=cli_model,
-            )
-
-        # OAuth auto-renew (Nível 3): se o worker reportou WORKER_AUTH_EXPIRED,
-        # tente uma renovação automática + retry UMA vez antes de propagar o
-        # erro pro stage handler (que bloqueia a issue). Em sucesso do refresh
-        # o segundo dispatch tipicamente passa porque o claude-worker recarrega
-        # o ANTHROPIC_AUTH_TOKEN a cada dispatch (via _refresh_oauth_with_lock).
-        outcome = await self._try_auto_renew_oauth_and_retry(
-            outcome=outcome,
-            url=url, payload=payload, wait=wait,
-            stage=stage,
-        )
-
-        # Issue #309 fase 3.5 + issue #347 follow-up — persistência no
-        # DispatchLedger:
-        #
-        # • ok=True E NÃO houve REQUEST_CHANGES/BLOCKED no veredict:
-        #   trabalho concluído (merge, approve, implement bem-sucedido).
-        #   → CLEAR ledger; próximo dispatch desse PR/issue é fresh.
-        #
-        # • ok=True MAS reviewer reportou REQUEST_CHANGES ou BLOCKED_*:
-        #   subprocess rodou ok, mas funcionalmente está bloqueado
-        #   esperando operador agir. → PRESERVE ledger pra próximo
-        #   dispatch poder retomar via --resume com o contexto do reviewer.
-        #
-        # • ok=False (erro, timeout, etc.): grava entrada pra retry com
-        #   resume no próximo tick.
-        if ledger_key and outcome.task_id:
-            worker_kind = _worker_kind_from_url(url)
-            blocked_by_verdict = (
-                stage == "pr_review" and outcome.ok
-                and _review_was_blocked(outcome.text)
-            )
-            if outcome.ok and not blocked_by_verdict:
-                self._ledger.clear(ledger_key)
-            else:
-                self._ledger.record(
-                    ledger_key,
-                    task_id=outcome.task_id,
-                    session_id=outcome.session_id,
-                    stage=stage, branch=branch,
-                    worker_kind=worker_kind,
-                )
-                if blocked_by_verdict:
+        try:
+            wait = not nowait
+            try:
+                data = await self._post_dispatch(url, payload, wait=wait)
+            except WorkerDispatchError as exc:
+                # Defense-in-depth contra triple-dispatch (fix 2026-05-27).
+                # Worker recusa com 409 quando há claude vivo na mesma sessão
+                # (detectado via /proc local OU mtime do JSONL na PVC compartilhada
+                # entre réplicas). Trata exatamente como ``_still_alive`` acima:
+                # mantém em_andamento, próximo tick re-tenta — NÃO escala
+                # como erro porque não é falha do worker, é deduplicação correta.
+                if exc.error_code == "CONCURRENT_DISPATCH_BLOCKED":
                     logger.info(
-                        "ledger %s: review REQUEST_CHANGES/BLOCKED — "
-                        "preservando entry pra resume da próxima review",
-                        ledger_key,
+                        "dispatch skipped — worker reportou claude vivo na sessão "
+                        "anterior (CONCURRENT_DISPATCH_BLOCKED); aguarda próximo "
+                        "tick. ledger_key=%s", ledger_key,
                     )
-        return outcome
+                    return WorkOutcome(
+                        ok=False, text="",
+                        error="DISPATCH_SKIPPED_CONCURRENT: claude-worker já tem "
+                              "sessão ativa pro mesmo task; skip nesse tick",
+                    )
+                # Mecanismo 2 (lease): worker recusa com 409 + TASK_ALREADY_RUNNING
+                # quando outra réplica detém o lease do workspace desta task.
+                # Comportamento idêntico ao CONCURRENT_DISPATCH_BLOCKED: pipeline
+                # aguarda o próximo tick, NÃO incrementa tentativas, NÃO limpa
+                # o ledger — a task está em andamento em outro pod.
+                if exc.error_code == "TASK_ALREADY_RUNNING":
+                    logger.info(
+                        "dispatch skipped — workspace com lease ativo em outra "
+                        "réplica (TASK_ALREADY_RUNNING); aguarda próximo tick. "
+                        "ledger_key=%s", ledger_key,
+                    )
+                    return WorkOutcome(
+                        ok=False, text="",
+                        error="DISPATCH_SKIPPED_LEASE: workspace desta task está "
+                              "com lease ativo em outro pod; skip nesse tick",
+                    )
+                return WorkOutcome(ok=False, text="", error=f"{exc.error_code}: {exc}"[:500])
+            except Exception as exc:  # noqa: BLE001 — never crash the tick
+                logger.exception("worker dispatch raised")
+                return WorkOutcome(ok=False, text="", error=f"{type(exc).__name__}: {exc}"[:500])
+            # Issue #373: fire-and-forget path — worker returned 202 + task_id.
+            # The task is running in the background; the pipeline reconciles
+            # ground truth on the next tick via ``reconcile_implementing_issues``.
+            if nowait:
+                task_id = data.get("task_id", "") if isinstance(data, dict) else ""
+                logger.info(
+                    "worker fire-and-forget accepted: task_id=%s stage=%s",
+                    task_id, stage,
+                )
+                # Grava no ledger também no caminho nowait — critique/refine/review
+                # fresh passam ledger_key e precisam de rastreabilidade igual ao
+                # implement. Sem isso o task_id se perde antes do reconcile poder
+                # fazer resume na próxima janela.
+                if ledger_key and task_id:
+                    worker_kind = _worker_kind_from_url(url)
+                    self._ledger.record(
+                        ledger_key,
+                        task_id=task_id,
+                        session_id="",  # Desconhecido até o worker terminar
+                        stage=stage, branch=branch,
+                        worker_kind=worker_kind,
+                    )
+                return WorkOutcome(
+                    ok=True, text="", task_id=task_id,
+                    ended="",  # Not yet known — reconcile via ground truth
+                )
+            outcome = _outcome_from_worker_response(data)
+
+            # Observabilidade de custo central (issue #638): persiste 1 registro por
+            # modelo no UsageRepository central a partir do bloco ``usage`` estruturado
+            # que o cli-worker reporta. Só para workers da frota CLI — deile/claude
+            # contabilizam por outras vias (deile grava no SQLite do próprio pod;
+            # claude via JSONL). A escrita é best-effort isolada (record_fleet_usage
+            # nunca propaga exceção): falha de SQLite/preço NÃO derruba o dispatch.
+            if is_cli_worker:
+                from deile.orchestration.pipeline.fleet_cost_recorder import \
+                    record_fleet_usage  # noqa: PLC0415
+                record_fleet_usage(
+                    data,
+                    worker_kind=_worker_kind_from_url(url),
+                    stage=stage,
+                    channel_id=channel_id,
+                    cli_model=cli_model,
+                )
+
+            # OAuth auto-renew (Nível 3): se o worker reportou WORKER_AUTH_EXPIRED,
+            # tente uma renovação automática + retry UMA vez antes de propagar o
+            # erro pro stage handler (que bloqueia a issue). Em sucesso do refresh
+            # o segundo dispatch tipicamente passa porque o claude-worker recarrega
+            # o ANTHROPIC_AUTH_TOKEN a cada dispatch (via _refresh_oauth_with_lock).
+            outcome = await self._try_auto_renew_oauth_and_retry(
+                outcome=outcome,
+                url=url, payload=payload, wait=wait,
+                stage=stage,
+            )
+
+            # Issue #309 fase 3.5 + issue #347 follow-up — persistência no
+            # DispatchLedger:
+            #
+            # • ok=True E NÃO houve REQUEST_CHANGES/BLOCKED no veredict:
+            #   trabalho concluído (merge, approve, implement bem-sucedido).
+            #   → CLEAR ledger; próximo dispatch desse PR/issue é fresh.
+            #
+            # • ok=True MAS reviewer reportou REQUEST_CHANGES ou BLOCKED_*:
+            #   subprocess rodou ok, mas funcionalmente está bloqueado
+            #   esperando operador agir. → PRESERVE ledger pra próximo
+            #   dispatch poder retomar via --resume com o contexto do reviewer.
+            #
+            # • ok=False (erro, timeout, etc.): grava entrada pra retry com
+            #   resume no próximo tick.
+            if ledger_key and outcome.task_id:
+                worker_kind = _worker_kind_from_url(url)
+                blocked_by_verdict = (
+                    stage == "pr_review" and outcome.ok
+                    and _review_was_blocked(outcome.text)
+                )
+                if outcome.ok and not blocked_by_verdict:
+                    self._ledger.clear(ledger_key)
+                else:
+                    self._ledger.record(
+                        ledger_key,
+                        task_id=outcome.task_id,
+                        session_id=outcome.session_id,
+                        stage=stage, branch=branch,
+                        worker_kind=worker_kind,
+                    )
+                    if blocked_by_verdict:
+                        logger.info(
+                            "ledger %s: review REQUEST_CHANGES/BLOCKED — "
+                            "preservando entry pra resume da próxima review",
+                            ledger_key,
+                        )
+            return outcome
+        finally:
+            # Issue #457 — close pipeline.dispatch_request span on all exit
+            # paths (return / exception). The context token is detached so
+            # the parent span is restored in the asyncio task context.
+            if _dispatch_span is not None:
+                _dispatch_span.end()
+            if _dispatch_ctx_token is not None:
+                try:
+                    from opentelemetry import context as _otel_context  # noqa: PLC0415
+                    _otel_context.detach(_dispatch_ctx_token)
+                except ImportError:
+                    pass
 
     async def _wrap_review_brief_for_resume(
         self,

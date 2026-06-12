@@ -2419,6 +2419,37 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         effort=reasoning_effort or None,
     )
 
+    # Issue #457 — D3: extract W3C traceparent and open deile.dispatch span as
+    # child of the pipeline.dispatch_request span (cross-pod trace propagation).
+    # Falls open: absent header → propagate.extract returns empty context →
+    # start_span creates a root span (D4 fallback). No exception is raised.
+    _deile_dispatch_span = None
+    _deile_dispatch_ctx_token = None
+    try:
+        from opentelemetry import (  # noqa: F401
+            context as _otel_context, propagate as _otel_propagate,
+            trace as _otel_trace)
+        _parent_ctx = _otel_propagate.extract(request.headers)
+        _deile_dispatch_span = _otel_trace.get_tracer("deile.claude_worker").start_span(
+            "deile.dispatch", context=_parent_ctx
+        )
+        _deile_dispatch_ctx_token = _otel_context.attach(
+            _otel_trace.set_span_in_context(_deile_dispatch_span)
+        )
+    except ImportError:
+        pass
+
+    def _close_deile_dispatch_span():
+        """Close the deile.dispatch OTel span opened for cross-pod propagation (#457)."""
+        if _deile_dispatch_span is not None:
+            _deile_dispatch_span.end()
+        if _deile_dispatch_ctx_token is not None:
+            try:
+                from opentelemetry import context as _oc  # noqa: F401,PLC0415
+                _oc.detach(_deile_dispatch_ctx_token)
+            except ImportError:
+                pass
+
     # Mecanismo 2 — Lease: garante que NUNCA dois pods trabalhem no mesmo
     # workspace simultaneamente. Adquirido ANTES do spawn; liberado no finally.
     lease = await _acquire_lease(workspace, channel=_channel_id, session_id=session_id)
@@ -2437,6 +2468,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             reason="lease_conflict",
             error_code="TASK_ALREADY_RUNNING",
         )
+        _close_deile_dispatch_span()
         return web.json_response({
             "ok": False,
             "error_code": "TASK_ALREADY_RUNNING",
@@ -2677,6 +2709,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 )
                 await _cleanup_lease()
 
+        # Issue #457: close span before create_task (bg task inherited context).
+        _close_deile_dispatch_span()
         bg_task = asyncio.create_task(_bg_nowait(), name=f"nowait-{task_id}")
         _BG_NOWAIT_TASKS.add(bg_task)
         bg_task.add_done_callback(_BG_NOWAIT_TASKS.discard)
@@ -2692,6 +2726,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     if _run is None:
         # Só ocorre se _run_and_finalize lançou exceção antes de persistir —
         # o erro já foi logado; lease já foi limpo no finally interno.
+        _close_deile_dispatch_span()
         return web.json_response({
             "ok": False,
             "error": "subprocess raised exception (see logs)",
@@ -2735,6 +2770,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         )
         response["error"] = failure_reason[:500]
 
+    _close_deile_dispatch_span()
     return web.json_response(response)
 
 
