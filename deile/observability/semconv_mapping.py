@@ -33,11 +33,13 @@ _HTTPS_RE = re.compile(
 def _normalize_repo_url(raw: str) -> str:
     """Converte SCP/SSH ou HTTPS com .git para URL canônica HTTPS sem .git.
 
-    Exemplos:
-      git@github.com:owner/repo.git  → https://github.com/owner/repo
-      https://github.com/owner/repo.git → https://github.com/owner/repo
-      https://github.com/owner/repo     → https://github.com/owner/repo (idempotente)
-      git@gitlab.com:owner/repo.git  → https://gitlab.com/owner/repo
+    Forge-agnóstica: a transformação depende só da forma da URL (SCP/SSH vs
+    HTTPS, sufixo ``.git``), nunca do host — vale para qualquer forge.
+
+    Exemplos (``forge.example`` = host genérico, placeholder de qualquer forge):
+      git@forge.example:owner/repo.git    → https://forge.example/owner/repo
+      https://forge.example/owner/repo.git → https://forge.example/owner/repo
+      https://forge.example/owner/repo     → https://forge.example/owner/repo (idempotente)
     """
     s = (raw or "").strip()
     if not s:
