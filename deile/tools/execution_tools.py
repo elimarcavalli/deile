@@ -61,17 +61,62 @@ class PythonExecutionTool(SyncTool):
     Isolation: subprocess + cwd bound to the session's working directory + timeout.
     """
 
-    @property
-    def name(self) -> str:
-        return "python_execute"
+    def __init__(self) -> None:
+        super().__init__(
+            schema=ToolSchema(
+                name="python_execute",
+                description=(
+                    "Executes a Python snippet in a subprocess and returns "
+                    "stdout, stderr, and exit_code. The snippet runs with the "
+                    "project's interpreter and the session's working directory "
+                    "as cwd. Use this for quick import checks ('import X'), "
+                    "small probes, or running short scripts without writing "
+                    "them to disk. For multi-step programs already on disk, "
+                    "prefer bash_execute with 'python <file>'."
+                ),
+                parameters={
+                    "type": "OBJECT",
+                    "properties": {
+                        "code": {
+                            "type": "STRING",
+                            "description": (
+                                "Python source to execute. Multi-line strings "
+                                "are fine. The snippet runs in a fresh "
+                                "subprocess — no state is shared between calls."
+                            ),
+                        },
+                        "timeout": {
+                            "type": "NUMBER",
+                            "description": "Maximum seconds to wait. Default: 30.",
+                        },
+                    },
+                    "required": ["code"],
+                },
+                security_level=SecurityLevel.MODERATE,
+                category=ToolCategory.EXECUTION,
+                examples=[
+                    {
+                        "description": (
+                            "Validate that an import resolves before running "
+                            "a longer program"
+                        ),
+                        "parameters": {
+                            "code": "import requests; print(requests.__version__)"
+                        },
+                    },
+                    {
+                        "description": "Quick numerical probe",
+                        "parameters": {
+                            "code": "import math; print(math.factorial(20))"
+                        },
+                    },
+                ],
+            )
+        )
 
     @property
     def description(self) -> str:
         return "Executes a Python snippet in a subprocess and returns stdout/stderr/exit_code"
-
-    @property
-    def category(self) -> str:
-        return "execution"
 
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa código Python via subprocess."""
@@ -151,9 +196,107 @@ class PipInstallTool(SyncTool):
         r"(?:[<>=!~]=?[A-Za-z0-9._\-+*]+(?:,[<>=!~]=?[A-Za-z0-9._\-+*]+)*)?$"
     )
 
-    @property
-    def name(self) -> str:
-        return "pip_install"
+    def __init__(self) -> None:
+        super().__init__(
+            schema=ToolSchema(
+                name="pip_install",
+                description=(
+                    "Installs a Python package via pip in the project's "
+                    "interpreter and (by default) appends it to "
+                    "requirements.txt if not already listed. Use this whenever "
+                    "ModuleNotFoundError appears or when adding a new "
+                    "third-party dependency. Idempotent: if the package is "
+                    "already in requirements.txt, the file is not modified."
+                ),
+                parameters={
+                    "type": "OBJECT",
+                    "properties": {
+                        "package": {
+                            "type": "STRING",
+                            "description": (
+                                "Package name (e.g. 'requests') or full PEP "
+                                "508 spec (e.g. 'requests>=2.0', "
+                                "'pillow[webp]==10.0.0'). Whitespace and shell "
+                                "metachars are rejected."
+                            ),
+                        },
+                        "version": {
+                            "type": "STRING",
+                            "description": (
+                                "Optional exact version (e.g. '2.31.0'). When "
+                                "provided, joined as 'package==version'. If "
+                                "'package' already contains a version "
+                                "specifier, leave this empty."
+                            ),
+                        },
+                        "update_requirements": {
+                            "type": "BOOLEAN",
+                            "description": (
+                                "If true (default), append the spec to "
+                                "requirements.txt when the package is not "
+                                "already listed there."
+                            ),
+                        },
+                        "requirements_file": {
+                            "type": "STRING",
+                            "description": (
+                                "Path to requirements file relative to the "
+                                "working directory. Defaults to "
+                                "'requirements.txt'."
+                            ),
+                        },
+                        "upgrade": {
+                            "type": "BOOLEAN",
+                            "description": (
+                                "If true, pass --upgrade to pip to force "
+                                "reinstall to the latest matching version. "
+                                "Default: false."
+                            ),
+                        },
+                        "timeout": {
+                            "type": "NUMBER",
+                            "description": (
+                                "Maximum seconds to wait for pip to complete. "
+                                "Default: 120."
+                            ),
+                        },
+                    },
+                    "required": ["package"],
+                },
+                security_level=SecurityLevel.MODERATE,
+                category=ToolCategory.EXECUTION,
+                examples=[
+                    {
+                        "description": (
+                            "React to ModuleNotFoundError: install requests "
+                            "and persist it"
+                        ),
+                        "parameters": {"package": "requests"},
+                    },
+                    {
+                        "description": "Install with pinned version",
+                        "parameters": {"package": "pydantic", "version": "2.6.0"},
+                    },
+                    {
+                        "description": (
+                            "Upgrade an existing dep to its latest matching "
+                            "version"
+                        ),
+                        "parameters": {"package": "rich", "upgrade": True},
+                    },
+                    {
+                        "description": (
+                            "Install without touching requirements.txt "
+                            "(one-off scratch test)"
+                        ),
+                        "parameters": {
+                            "package": "ipython",
+                            "update_requirements": False,
+                        },
+                    },
+                ],
+            )
+        )
 
     @property
     def description(self) -> str:
@@ -162,10 +305,6 @@ class PipInstallTool(SyncTool):
             "requirements.txt if not already present. Use this in response to "
             "ModuleNotFoundError or when adding a new third-party dependency."
         )
-
-    @property
-    def category(self) -> str:
-        return "execution"
 
     @staticmethod
     def _normalize_pkg_name(spec: str) -> str:
