@@ -391,6 +391,8 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.cost_caps_usd.implement":  ("pipeline_cost_cap_usd_implement",  _to_optional_positive_decimal),
     "pipeline.cost_caps_usd.pr_review":  ("pipeline_cost_cap_usd_pr_review",  _to_optional_positive_decimal),
     "pipeline.cost_caps_usd.follow_ups": ("pipeline_cost_cap_usd_follow_ups", _to_optional_positive_decimal),
+    # Global cost cap fallback (issue #666) — applies to all stages when no per-stage cap set.
+    "pipeline.cost_cap_usd":             ("pipeline_cost_cap_usd",            _to_optional_positive_decimal),
     # Sub-DEILEs paralelos (issue #257)
     "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
     "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
@@ -668,6 +670,10 @@ class Settings:
     pipeline_cost_cap_usd_implement: Optional[Decimal] = None
     pipeline_cost_cap_usd_pr_review: Optional[Decimal] = None
     pipeline_cost_cap_usd_follow_ups: Optional[Decimal] = None
+    # Global cost cap fallback (issue #666) — level-4 fallback in
+    # resolve_stage_cost_cap_usd when no per-stage cap and no global env var.
+    # Persisted under ``pipeline.cost_cap_usd`` in settings.json.
+    pipeline_cost_cap_usd: Optional[Decimal] = None
 
     # Sub-DEILEs paralelos em sessão CLI (issue #257)
     # `subagent_runner`        — "local" (default; in-process via asyncio.gather de

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -895,12 +896,18 @@ def _remove_persona_from_yaml(config_file: Path, persona_id: str) -> None:
 
 # Singleton instance
 _config_manager: Optional[ConfigManager] = None
+_config_manager_lock = threading.Lock()
 
 
 def get_config_manager() -> ConfigManager:
-    """Retorna instância singleton do ConfigManager"""
+    """Retorna instância singleton do ConfigManager.
+
+    Thread-safe via double-checked locking (espelha get_settings(), Decisão #11).
+    """
     global _config_manager
     if _config_manager is None:
-        _config_manager = ConfigManager()
-        _config_manager.create_default_configs()  # Cria configs padrão se necessário
+        with _config_manager_lock:
+            if _config_manager is None:
+                _config_manager = ConfigManager()
+                _config_manager.create_default_configs()
     return _config_manager
