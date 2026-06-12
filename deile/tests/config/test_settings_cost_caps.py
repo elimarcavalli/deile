@@ -72,6 +72,11 @@ class TestSettingsCostCapFields:
         assert s.pipeline_cost_cap_usd_pr_review is None
         assert s.pipeline_cost_cap_usd_follow_ups is None
 
+    def test_global_field_default_is_none(self):
+        """Global pipeline_cost_cap_usd field must exist and default to None (issue #666)."""
+        s = Settings()
+        assert s.pipeline_cost_cap_usd is None
+
     def test_fields_accept_decimal(self):
         s = Settings(
             pipeline_cost_cap_usd_implement=Decimal("5.00"),
@@ -79,6 +84,11 @@ class TestSettingsCostCapFields:
         )
         assert s.pipeline_cost_cap_usd_implement == Decimal("5.00")
         assert s.pipeline_cost_cap_usd_classify == Decimal("1.50")
+
+    def test_global_field_accepts_decimal(self):
+        """Global cost cap field accepts a Decimal value."""
+        s = Settings(pipeline_cost_cap_usd=Decimal("3.00"))
+        assert s.pipeline_cost_cap_usd == Decimal("3.00")
 
 
 class TestSettingsJsonLoadingCostCap:
@@ -120,3 +130,24 @@ class TestSettingsJsonLoadingCostCap:
         assert s.pipeline_cost_cap_usd_implement is None
         # Valid value applied
         assert s.pipeline_cost_cap_usd_classify == Decimal("5.00")
+
+    def test_json_loads_global_cost_cap(self):
+        """pipeline.cost_cap_usd key in settings.json is loaded into pipeline_cost_cap_usd (issue #666)."""
+        cfg = {"pipeline": {"cost_cap_usd": "7.50"}}
+        s = Settings()
+        s.apply_overrides(cfg)
+        assert s.pipeline_cost_cap_usd == Decimal("7.50")
+
+    def test_global_cost_cap_independent_of_per_stage(self):
+        """Global and per-stage cost caps coexist without interference."""
+        cfg = {
+            "pipeline": {
+                "cost_cap_usd": "2.00",
+                "cost_caps_usd": {"implement": "5.00"},
+            }
+        }
+        s = Settings()
+        s.apply_overrides(cfg)
+        assert s.pipeline_cost_cap_usd == Decimal("2.00")
+        assert s.pipeline_cost_cap_usd_implement == Decimal("5.00")
+        assert s.pipeline_cost_cap_usd_classify is None
