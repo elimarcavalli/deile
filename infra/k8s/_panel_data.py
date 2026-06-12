@@ -2048,9 +2048,26 @@ _MULTI_SOURCE_DEFS: Tuple[Tuple[str, str, str], ...] = (
     ("deile-monitor",  "monitor",      "blue"),
 )
 
+
+@dataclass(frozen=True)
+class ActivitySource:
+    """Fonte de tail para o widget ACTIVITY (issue #447).
+
+    Campos:
+      deployment — nome DNS-1123 do Deployment (alvo de ``kubectl logs deploy/``).
+      role       — label exibido na coluna actor do widget.
+      color      — cor Rich do actor (ex: ``"cyan"``, ``"orange1"``).
+    """
+    deployment: str
+    role: str
+    color: str
+
+
 _SOURCE_ROLE_MAP: Dict[str, str] = {d: r for d, r, _ in _MULTI_SOURCE_DEFS}
 _SOURCE_COLOR_MAP: Dict[str, str] = {d: c for d, _, c in _MULTI_SOURCE_DEFS}
 # Maps role_label → color; used by _activity_panel for correct color lookup.
+# Mutated in-place by MultiSourceActivityProvider when custom sources are loaded,
+# so _panel.py's module-level import of this dict sees the updated values.
 _ROLE_COLOR_MAP: Dict[str, str] = {r: c for _, r, c in _MULTI_SOURCE_DEFS}
 
 _MULTI_BUFFER_CAP = 200
@@ -2180,8 +2197,33 @@ class MultiSourceActivityState:
         return sorted(self.events, key=lambda e: e.ts, reverse=True)[:n]
 
 
+def _sources_from_settings() -> Optional[List[ActivitySource]]:
+    """Lê ``panel_activity_sources`` do Settings singleton e converte para
+    ``List[ActivitySource]``. Retorna ``None`` se a lista estiver vazia (sentinela
+    para "usar default V1") ou se o import falhar (ambiente sem ``deile``).
+
+    A importação é lazy para que ``_panel_data`` funcione em ambientes onde o
+    pacote ``deile`` não está no ``sys.path`` (alguns testes de integração).
+    """
+    try:
+        from deile.config.settings import get_settings  # noqa: PLC0415
+        raw = get_settings().panel_activity_sources
+        if not raw:
+            return None
+        return [
+            ActivitySource(deployment=d["deployment"], role=d["role"], color=d["color"])
+            for d in raw
+        ]
+    except Exception:  # noqa: BLE001 — ImportError, KeyError, etc.
+        return None
+
+
 class MultiSourceActivityProvider(_KubectlProviderMixin):
-    """Tail em paralelo de 5 deployments → buffer rolling-window de eventos.
+    """Tail em paralelo de N deployments → buffer rolling-window de eventos.
+
+    Fontes padrão (V1): os 5 deployments de ``_MULTI_SOURCE_DEFS``. Fontes
+    customizáveis via ``settings.panel_activity_sources`` (issue #447) ou
+    passando ``sources`` diretamente ao construtor.
 
     Usa ``--since=10s --tail=80 --timestamps`` por source. Cada refresh
     mescla todas as linhas num buffer capped em 200, ordenado por timestamp.
@@ -2190,10 +2232,23 @@ class MultiSourceActivityProvider(_KubectlProviderMixin):
     """
 
     def __init__(self, ttl_s: float = 3.0, namespace: str = NS,
-                 enabled: bool = True):
+                 enabled: bool = True,
+                 sources: Optional[List[ActivitySource]] = None):
         self._kubectl = kubectl_bin()
         self._namespace = namespace
         self._enabled = enabled
+        # D4 (issue #447): fontes configuráveis; None/vazio → default V1.
+        if sources:
+            self._sources: List[ActivitySource] = sources
+        else:
+            self._sources = [
+                ActivitySource(deployment=d, role=r, color=c)
+                for d, r, c in _MULTI_SOURCE_DEFS
+            ]
+        # Update module-level role→color map so _panel.py's rendering picks up
+        # custom colors. Mutação in-place preserva a referência importada por
+        # _panel.py (``from _panel_data import _ROLE_COLOR_MAP``).
+        _ROLE_COLOR_MAP.update({s.role: s.color for s in self._sources})
         self._cache: Cache[MultiSourceActivityState] = Cache(
             ttl_s, self._fetch, fallback=MultiSourceActivityState(),
         )
@@ -2264,11 +2319,13 @@ class MultiSourceActivityProvider(_KubectlProviderMixin):
             raise RuntimeError("kubectl não encontrado")
 
         # AC3: parallel fetch via ThreadPoolExecutor.
+        # D4 (issue #447): iterate self._sources (set in __init__) instead of
+        # the module-level constant; supports configurable source lists.
         pool: List[ActivityEvent] = []
-        with futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with futures.ThreadPoolExecutor(max_workers=len(self._sources) or 1) as executor:
             future_map = {
-                executor.submit(self._fetch_source, deploy, role): deploy
-                for deploy, role, _ in _MULTI_SOURCE_DEFS
+                executor.submit(self._fetch_source, src.deployment, src.role): src.deployment
+                for src in self._sources
             }
             for fut in futures.as_completed(future_map):
                 deploy = future_map[fut]
@@ -6883,9 +6940,11 @@ class PanelData:
                 if k8s_on else None
             ),
             # MultiSourceActivityProvider (issue #436): only when k8s is on.
+            # issue #447: pass configurable sources from settings (lazy import).
             activity=(
                 MultiSourceActivityProvider(namespace=context.namespace,
-                                            enabled=k8s_on)
+                                            enabled=k8s_on,
+                                            sources=_sources_from_settings())
                 if k8s_on else None
             ),
             # ProviderHealthProvider (issue #445): só com k8s — varre logs de
