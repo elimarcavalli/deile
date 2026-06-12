@@ -102,9 +102,10 @@ for key, label in keys:
         values[label] = str(value).strip()
 if missing:
     raise SystemExit(f"missing runtime config keys: {', '.join(missing)}")
-print(values["minReplicas"])
-print(values["maxReplicas"])
-print(values["targetAverageValue"])
+# Emit on a single space-separated line: the caller reads this with a
+# here-string `read -r min max target`, which only consumes the FIRST line —
+# printing each value on its own line left max/target empty (parse failure).
+print(values["minReplicas"], values["maxReplicas"], values["targetAverageValue"])
 PY
 })"
 
