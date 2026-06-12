@@ -276,6 +276,57 @@ def _to_optional_reasoning_effort(value: Any) -> Optional[str]:
     return stripped
 
 
+# DNS-1123 label regex for validating deployment names in activity sources.
+# Mirrors _POD_NAME_RE in infra/k8s/_panel_data.py — keep in sync.
+# Allows single-character names (e.g. "x") and names up to 253 chars.
+_ACTIVITY_DEPLOYMENT_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?$")
+
+
+def _to_activity_sources(value: Any) -> List[Dict[str, str]]:
+    """Strict converter for ``panel.activity_sources`` entries (issue #447).
+
+    Accepts a list of dicts, each with ``deployment`` (DNS-1123), ``role``
+    (non-empty str) and ``color`` (non-empty str). Empty list → [] (sentinel
+    for "use V1 default"). Duplicate ``deployment`` keys → rejected.
+    ``role`` duplicates are allowed (cosmetic, not a security boundary).
+    """
+    if not isinstance(value, list):
+        raise TypeError(f"expected list, got {type(value).__name__}")
+    if not value:
+        return []
+    seen_deployments: set = set()
+    result: List[Dict[str, str]] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise TypeError(
+                f"activity_sources[{idx}]: expected dict, got {type(item).__name__}"
+            )
+        deployment = item.get("deployment", "")
+        if not isinstance(deployment, str) or not deployment:
+            raise ValueError(
+                f"activity_sources[{idx}].deployment: missing or empty"
+            )
+        if not _ACTIVITY_DEPLOYMENT_RE.match(deployment):
+            raise ValueError(
+                f"activity_sources[{idx}].deployment={deployment!r}: "
+                "must match DNS-1123 (lowercase alphanumeric + hyphens, "
+                "start/end with alphanumeric, max 253 chars)"
+            )
+        if deployment in seen_deployments:
+            raise ValueError(
+                f"activity_sources[{idx}].deployment={deployment!r}: duplicate"
+            )
+        seen_deployments.add(deployment)
+        role = item.get("role", "")
+        if not isinstance(role, str) or not role:
+            raise ValueError(f"activity_sources[{idx}].role: missing or empty")
+        color = item.get("color", "")
+        if not isinstance(color, str) or not color:
+            raise ValueError(f"activity_sources[{idx}].color: missing or empty")
+        result.append({"deployment": deployment, "role": role, "color": color})
+    return result
+
+
 def _to_optional_positive_decimal(value: Any) -> Optional[Decimal]:
     """Strict converter for per-stage cost cap entries (issue #392).
 
@@ -412,6 +463,11 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "security.sandbox_code_execution": ("sandbox_code_execution", _to_bool),
     "security.encrypt_logs": ("encrypt_logs", _to_bool),
     "monitoring.generate_compliance_reports": ("generate_compliance_reports", _to_bool),
+    # ACTIVITY widget configurable sources (issue #447). Strict-only: the
+    # list-of-dicts type cannot be handled by _set_typed / _apply_nested_dict.
+    # Apply via apply_overrides() which is called after _apply_nested_dict in
+    # each layer function. Empty list sentinel = "use V1 default".
+    "panel.activity_sources": ("panel_activity_sources", _to_activity_sources),
 }
 
 
@@ -728,6 +784,14 @@ class Settings:
     sandbox_code_execution: bool = False
     encrypt_logs: bool = False
     generate_compliance_reports: bool = False
+
+    # ACTIVITY widget configurable sources (issue #447).
+    # Empty list (default) = use the V1 default (_MULTI_SOURCE_DEFS in
+    # infra/k8s/_panel_data.py). Non-empty = override the tail sources list.
+    # Each dict: {"deployment": str, "role": str, "color": str}.
+    # Validated by _to_activity_sources (DNS-1123 deployment, no dups).
+    # Hot-reload is deferred to #606; sources are read once at provider init.
+    panel_activity_sources: List[Dict[str, str]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         for attr in ("working_directory", "config_directory", "logs_directory", "cache_directory"):
@@ -1065,11 +1129,16 @@ def _build_json_field_map() -> Dict[str, str]:
     refactor is observably no-op vs. the previous hand-maintained mapping.
     """
     # Keys present strict-only by design — preserve historical asymmetry.
+    # panel.activity_sources is strict-only because _set_typed cannot handle
+    # list-of-dicts (it stores raw dicts without validation/conversion). The
+    # layer functions call settings.apply_overrides(data) after _apply_nested_dict
+    # to process strict-only keys via their typed converters.
     _STRICT_ONLY = {
         "debug",
         "deile_md.user_path",
         "pipeline.max_parallel",
         "pipeline.refine_max_attempts",
+        "panel.activity_sources",
     }
     derived = {
         key_path: field_name
@@ -1457,8 +1526,14 @@ def _apply_user_layer(settings: "Settings", global_path: Path) -> None:
     Always safe to call — a missing file results in a no-op. Loads the
     trust allowlist as a side effect (consumed by
     :func:`_apply_project_layer_if_trusted`).
+
+    After the loose ``_apply_nested_dict`` pass, also runs
+    ``apply_overrides`` so strict-only complex keys (e.g.
+    ``panel.activity_sources``) are picked up via their typed converters.
     """
-    _apply_nested_dict(settings, _load_json_file(global_path))
+    data = _load_json_file(global_path)
+    _apply_nested_dict(settings, data)
+    settings.apply_overrides(data)
 
 
 def _apply_project_layer_if_trusted(
@@ -1493,7 +1568,9 @@ def _apply_project_layer_if_trusted(
                 project_path,
                 str(cwd),
             )
-        _apply_nested_dict(settings, _load_json_file(project_path))
+        data = _load_json_file(project_path)
+        _apply_nested_dict(settings, data)
+        settings.apply_overrides(data)
     else:
         logger.warning(
             "settings: ignoring project layer %s — cwd %s is not in "
