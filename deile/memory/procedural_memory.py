@@ -1,5 +1,6 @@
 """Procedural Memory - Patterns aprendidos e habilidades adquiridas"""
 
+import json
 import logging
 from collections import defaultdict
 from pathlib import Path
@@ -30,8 +31,14 @@ class ProceduralMemory:
             return
 
         if self.patterns_file.exists():
-            data = await read_json(self.patterns_file)
-            self._patterns.update(data)
+            try:
+                data = await read_json(self.patterns_file)
+                self._patterns.update(data)
+            except (json.JSONDecodeError, OSError):
+                logger.warning(
+                    "ProceduralMemory: falha ao ler %s; iniciando com base vazia",
+                    self.patterns_file,
+                )
 
         self._is_initialized = True
         logger.info("ProceduralMemory inicializada")

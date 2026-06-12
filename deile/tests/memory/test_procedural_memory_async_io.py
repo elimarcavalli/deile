@@ -89,3 +89,16 @@ async def test_shutdown_offloads_blocking_write(tmp_path: Path, monkeypatch) -> 
 
     await pm.shutdown()
     assert to_thread_called, "shutdown() must offload the blocking write to a thread"
+
+
+async def test_initialize_tolerates_corrupt_patterns_file(tmp_path: Path) -> None:
+    """A corrupt ``patterns.json`` must not crash initialize(); start from empty."""
+    (tmp_path / "patterns.json").write_text("{ not valid json !!!", encoding="utf-8")
+
+    pm = ProceduralMemory(storage_dir=tmp_path, min_frequency=1)
+    await pm.initialize()  # must not raise
+
+    assert pm._is_initialized
+    # No patterns loaded from the corrupt file.
+    relevant = await pm.get_relevant_patterns("anything")
+    assert relevant == []
