@@ -1638,8 +1638,88 @@ def k8s_claude_login(args: dict) -> int:
     return 0
 
 
+def k8s_claude_setup_token(args: dict) -> int:
+    """k8s claude-setup-token — instala claude-worker com token de 1 ano (issue #603).
+
+    Substitui ``claude-login`` para novas instalações. Usa ``claude setup-token``
+    (token OAuth com escopo inference-only, validade ~1 ano) em vez do OAuth
+    interativo de curta duração (~8h). Token injetado como env var no pod
+    (CLAUDE_CODE_OAUTH_TOKEN via Secret K8s) — sem credentials.json, sem
+    initContainer bootstrap-creds.
+
+    Protocolo:
+      1. Operador roda ``claude setup-token`` no HOST.
+      2. Copia o token impresso pelo comando.
+      3. Exporta: ``export CLAUDE_CODE_OAUTH_TOKEN=<token>``
+      4. Roda: ``deploy.py k8s claude-setup-token``
+
+    Flags: ``--token <valor>`` (não recomendado — fica no histórico do shell).
+    Renovação: re-rodar este verb ~1×/ano quando o token expirar.
+
+    BILLING (a partir de 15/jun/2026): uso via ``claude -p`` em planos de
+    assinatura consome crédito mensal de Agent SDK (separado do uso interativo).
+    Monitore o consumo após a ativação.
+    """
+    ns = _ns(args)
+    extras = args.get("extra") or []
+
+    # Suporte a --token <valor> como flag explícita (não recomendado, mas útil
+    # para testes automatizados onde CLAUDE_CODE_OAUTH_TOKEN não pode ser setado).
+    explicit_token: Optional[str] = None
+    i = 0
+    while i < len(extras):
+        if extras[i] in ("--token", "-t") and i + 1 < len(extras):
+            explicit_token = extras[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    sys.path.insert(0, str(HERE))
+    try:
+        from _claude_install import setup_token_claude_worker  # noqa: PLC0415
+    finally:
+        sys.path.pop(0)
+
+    ui.section("k8s claude-setup-token")
+    ui.info(
+        "Instalando claude-worker com token de 1 ano (claude setup-token)."
+    )
+    if not explicit_token and not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        ui.info(
+            "Token não detectado em CLAUDE_CODE_OAUTH_TOKEN.\n"
+            "Rode no host:\n"
+            "  claude setup-token\n"
+            "Copie o token e:\n"
+            "  export CLAUDE_CODE_OAUTH_TOKEN=<token>\n"
+            "  deploy.py k8s claude-setup-token"
+        )
+
+    result = setup_token_claude_worker(
+        namespace=ns,
+        token=explicit_token,
+        interactive=True,
+    )
+
+    if not result.ok:
+        ui.err(f"claude-setup-token falhou: {result.error}")
+        ui.info(f"Secret claude-credentials: {'ok' if result.secret_applied else '—'}")
+        ui.info(f"Deployment claude-worker:  {'ok' if result.deployment_applied else '—'}")
+        ui.info(f"Rollout ready:             {'ok' if result.rollout_ready else '—'}")
+        return 1
+
+    ui.ok("claude-worker pronto com token de 1 ano.")
+    ui.info("Próxima renovação: ~1 ano (re-rode claude-setup-token quando o token expirar).")
+    ui.info(f"Secret claude-credentials: {'ok' if result.secret_applied else '—'}")
+    ui.info(f"Deployment claude-worker:  {'ok' if result.deployment_applied else '—'}")
+    ui.info(f"Rollout ready:             {'ok' if result.rollout_ready else '—'}")
+    return 0
+
+
 def k8s_claude_renew(args: dict) -> int:
     """k8s claude-renew — refresh lightweight do token OAuth do claude-worker.
+
+    LEGADO (issue #603): prefira ``claude-setup-token`` para novas instalações.
+    Mantido para compatibilidade com fluxos que ainda usam ``claude-login``.
 
     Use quando o claude-worker reportar ``WORKER_AUTH_EXPIRED`` ou quando
     quiser renovar PROATIVAMENTE antes da expiração (~8h do OAuth Claude).
@@ -2864,6 +2944,7 @@ _K8S = {
     "build": k8s_build, "test": k8s_test, "clone": k8s_clone,
     "list": k8s_list, "panel": k8s_panel, "doctor": cmd_doctor,
     "setup": k8s_setup, "claude-login": k8s_claude_login,
+    "claude-setup-token": k8s_claude_setup_token,
     "claude-renew": k8s_claude_renew,
     "renew-daemon": k8s_renew_daemon,
     "create-namespace": k8s_create_namespace,
@@ -2896,11 +2977,13 @@ _K8S_ACTIONS = [
     ("logs", "logs recentes (bot + worker)"),
     ("test", "rodar o Job one-shot deile-oneshot"),
     ("clone", "clone <owner/repo> — clona um repo no deile-shell"),
+    ("claude-setup-token",
+     "instalar/renovar claude-worker com token de 1 ano (claude setup-token) — preferido"),
     ("claude-login",
-     "instalar claude-worker no cluster (flags: --switch, --no-interactive,"
-     " --from-env-only, --in-pod)"),
+     "instalar claude-worker no cluster via OAuth interativo (legado; flags: --switch,"
+     " --no-interactive, --from-env-only, --in-pod)"),
     ("claude-renew",
-     "renovar OAuth do claude-worker (lightweight: Secret + restart, sem manifests)"),
+     "renovar OAuth legado do claude-worker (lightweight: Secret + restart, sem manifests)"),
     ("gen-worker",
      "gerar manifest de um CLI worker do template (gen-worker <kind>) — opt-in"),
     ("build-cli-workers",

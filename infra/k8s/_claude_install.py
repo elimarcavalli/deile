@@ -225,8 +225,59 @@ def _run_claude_login(*, logout_first: bool = False,
         return False
 
 
+def _kubectl_apply_oauth_token_secret(token: str, *, namespace: str) -> bool:
+    """Apply/update Secret ``claude-credentials`` com a key ``CLAUDE_CODE_OAUTH_TOKEN``.
+
+    Formato novo (issue #603): o Secret tem a key ``CLAUDE_CODE_OAUTH_TOKEN``
+    com o token bruto (string) para injeção direta como env var no pod.
+    Não usa mais ``credentials.json`` — o initContainer foi removido.
+
+    Timeouts: 15s (dry-run) + 30s (apply).
+    NÃO loga o token — princípio 08.
+    """
+    logger.info(
+        "aplicando Secret claude-credentials com CLAUDE_CODE_OAUTH_TOKEN (len=%d)",
+        len(token),
+    )
+    dry_run_cmd = [
+        "kubectl", "create", "secret", "generic", "claude-credentials",
+        f"--from-literal=CLAUDE_CODE_OAUTH_TOKEN={token}",
+        "-n", namespace,
+        "--dry-run=client", "-o", "yaml",
+    ]
+    try:
+        dry = subprocess.run(
+            dry_run_cmd, capture_output=True, text=True, check=False, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("kubectl create secret dry-run timed out (15s)")
+        return False
+    except FileNotFoundError:
+        logger.error("kubectl não encontrado no PATH")
+        return False
+    if dry.returncode != 0:
+        logger.error("kubectl create secret dry-run failed: %s", dry.stderr)
+        return False
+    try:
+        apply = subprocess.run(
+            ["kubectl", "apply", "-f", "-"],
+            input=dry.stdout, capture_output=True, text=True, check=False, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("kubectl apply secret timed out (30s)")
+        return False
+    if apply.returncode != 0:
+        logger.error("kubectl apply secret failed: %s", apply.stderr)
+        return False
+    logger.info("Secret claude-credentials aplicado com sucesso")
+    return True
+
+
 def _kubectl_apply_secret(creds: dict, *, namespace: str) -> bool:
     """Apply/update Secret claude-credentials com credentials.json content.
+
+    LEGADO (issue #603): usado pelo fluxo ``claude-login`` (OAuth antigo).
+    Novos deploys usam ``_kubectl_apply_oauth_token_secret`` (setup-token).
 
     Timeouts: 15s (dry-run, só serializa) + 30s (apply, fala com API server).
     Sem timeout, kubectl pendurado em DNS/auth issue trava o painel/CLI
@@ -876,4 +927,128 @@ def renew_claude_worker(
     return ClaudeLoginResult(
         ok=True, account_email=email,
         secret_applied=True, deployment_applied=True, rollout_ready=True,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# setup_token_claude_worker — fluxo novo (issue #603)
+#
+# Usa ``claude setup-token`` (token de 1 ano) em vez do OAuth interativo.
+# O token é armazenado no Secret ``claude-credentials`` sob a key
+# ``CLAUDE_CODE_OAUTH_TOKEN`` e injetado no pod via env var (sem arquivo,
+# sem initContainer bootstrap-creds).
+#
+# Protocolo:
+#   1. Operador roda ``claude setup-token`` no HOST e copia o token impresso.
+#   2. Passa o token via ``CLAUDE_CODE_OAUTH_TOKEN`` env var OU via stdin
+#      quando ``interactive=True``.
+#   3. ``_kubectl_apply_oauth_token_secret`` grava o Secret.
+#   4. Sync do bearer + apply manifests + wait rollout.
+# --------------------------------------------------------------------------- #
+
+
+def setup_token_claude_worker(
+    *,
+    namespace: str = "deile",
+    token: Optional[str] = None,
+    interactive: bool = True,
+) -> ClaudeLoginResult:
+    """Instala o claude-worker usando um token de longa duração (setup-token).
+
+    O ``claude setup-token`` gera um token OAuth com escopo ``inference-only``
+    e validade de ~1 ano (doc Anthropic, 2026-06-13). Diferente do OAuth
+    interativo (``claude auth login``), o token NÃO é salvo automaticamente —
+    o Humano copia do stdout e passa aqui.
+
+    Precedência de entrada do token (primeira que não for vazia vence):
+      1. Parâmetro ``token`` (passado diretamente pelo caller).
+      2. Env var ``CLAUDE_CODE_OAUTH_TOKEN`` (zero-touch para CI/CD).
+      3. Stdin interativo (quando ``interactive=True``).
+
+    Etapas:
+      1. Obtém o token pela cadeia de precedência acima.
+      2. Aplica Secret ``claude-credentials`` com key ``CLAUDE_CODE_OAUTH_TOKEN``.
+      3. Sincroniza ``claude-worker-bearer`` (igual ao bootstrap normal).
+      4. Aplica manifests (47/49/50/51/40). Manifest 50 injeta o token via env.
+      5. Wait rollout (180s).
+
+    Args:
+        namespace: namespace K8s onde o claude-worker está instalado.
+        token: token bruto de ``claude setup-token`` (opcional; prioridade 1).
+        interactive: se True e token não encontrado, solicita via stdin.
+
+    Returns:
+        ClaudeLoginResult com mesmo schema do bootstrap normal.
+    """
+    import os as _os  # noqa: PLC0415
+
+    # 1. Resolver token.
+    resolved_token = (token or "").strip()
+    if not resolved_token:
+        resolved_token = (_os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or "").strip()
+    if not resolved_token and interactive:
+        try:
+            import getpass  # noqa: PLC0415
+            print(
+                "\nCole o token gerado por `claude setup-token` "
+                "(não será ecoado): ",
+                end="",
+                flush=True,
+            )
+            resolved_token = getpass.getpass("").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ClaudeLoginResult(
+                ok=False,
+                error="Entrada interativa cancelada — forneça o token via "
+                "CLAUDE_CODE_OAUTH_TOKEN ou --token.",
+            )
+    if not resolved_token:
+        return ClaudeLoginResult(
+            ok=False,
+            error=(
+                "Token não encontrado. Rode `claude setup-token` no host, "
+                "copie o token impresso e passe via:\n"
+                "  export CLAUDE_CODE_OAUTH_TOKEN=<token>\n"
+                "  deploy.py k8s claude-setup-token\n"
+                "Ou use --token <valor> (não recomendado em CI — fica no histórico)."
+            ),
+        )
+
+    # 2. Aplica Secret claude-credentials com key CLAUDE_CODE_OAUTH_TOKEN.
+    if not _kubectl_apply_oauth_token_secret(resolved_token, namespace=namespace):
+        return ClaudeLoginResult(
+            ok=False,
+            error="Falha ao aplicar Secret claude-credentials com CLAUDE_CODE_OAUTH_TOKEN.",
+        )
+
+    # 3. Sincroniza claude-worker-bearer (mesmo que bootstrap_claude_worker).
+    if not _kubectl_sync_bearer_token(namespace=namespace):
+        return ClaudeLoginResult(
+            ok=False,
+            secret_applied=True,
+            error="Falha ao sincronizar claude-worker-bearer.",
+        )
+
+    # 4. Apply manifests.
+    if not _kubectl_apply_manifests(namespace=namespace):
+        return ClaudeLoginResult(
+            ok=False,
+            secret_applied=True,
+            error="Falha ao aplicar manifests do claude-worker.",
+        )
+
+    # 5. Wait rollout.
+    if not _kubectl_wait_rollout(namespace=namespace):
+        return ClaudeLoginResult(
+            ok=False,
+            secret_applied=True,
+            deployment_applied=True,
+            error="claude-worker rollout não ficou Ready em 180s.",
+        )
+
+    return ClaudeLoginResult(
+        ok=True,
+        secret_applied=True,
+        deployment_applied=True,
+        rollout_ready=True,
     )

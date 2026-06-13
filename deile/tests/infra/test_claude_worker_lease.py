@@ -1,9 +1,14 @@
-"""Testes dos mecanismos de lease e OAuth do claude-worker multi-réplica.
+"""Testes dos mecanismos de lease e auth do claude-worker multi-réplica.
 
-Cobre os três mecanismos implementados na branch feat/multi-claude:
-  1. OAuth file-lock cross-pod (_refresh_oauth_with_lock + fcntl.flock)
+Cobre os mecanismos implementados:
+  1. Auth via CLAUDE_CODE_OAUTH_TOKEN (issue #603) + guard --bare
   2. Lease por task_id (filesystem-based, atomic)
   3. Liveness via lease (_is_alive_via_lease + _is_claude_process_alive)
+
+Nota (issue #603): o mecanismo de OAuth file-lock (credentials.json +
+fcntl.flock) foi removido. A auth agora é via CLAUDE_CODE_OAUTH_TOKEN
+injetado como env var pelo K8s Secret. Os testes de ``_refresh_oauth_with_lock``
+e ``_is_expiring_soon`` foram removidos junto com as funções.
 
 Casos de integração do dispatch handler (409 via lease) são cobertos no
 módulo ``test_implementer_task_already_running.py``.
@@ -311,98 +316,61 @@ class TestClaudePidInLease:
 
 
 # ---------------------------------------------------------------------------
-# Mecanismo 1 — OAuth: _refresh_oauth_with_lock
+# Mecanismo 1 — Auth: _assert_no_bare_in_argv (issue #603)
 # ---------------------------------------------------------------------------
 
 
-class TestOAuthFlock:
-    @pytest.mark.unit
-    def test_refresh_loads_token_from_valid_creds(self, tmp_path: Path):
-        """Carrega token de credentials.json válido e seta ANTHROPIC_AUTH_TOKEN."""
-        creds = {
-            "claudeAiOauth": {
-                "accessToken": "tok-abc123",
-                "expiresAt": int((time.time() + 3600) * 1000),  # +1h
-            }
-        }
-        creds_path = tmp_path / "credentials.json"
-        creds_path.write_text(json.dumps(creds), encoding="utf-8")
+class TestAuthSetupToken:
+    """Testes do mecanismo de auth via CLAUDE_CODE_OAUTH_TOKEN (issue #603).
 
-        result = cws._refresh_oauth_with_lock(creds_path)
-        assert result is True
-        assert os.environ.get("ANTHROPIC_AUTH_TOKEN") == "tok-abc123"
+    O mecanismo antigo (OAuth file-lock com credentials.json + fcntl.flock)
+    foi removido. A auth agora é via CLAUDE_CODE_OAUTH_TOKEN injetado como env
+    var pelo K8s Secret. O único guard de auth no código é _assert_no_bare_in_argv.
+    """
 
     @pytest.mark.unit
-    def test_refresh_returns_false_on_missing_file(self, tmp_path: Path):
-        """Arquivo ausente → retorna False sem levantar."""
-        result = cws._refresh_oauth_with_lock(tmp_path / "no_such_file.json")
-        assert result is False
+    def test_bare_flag_raises_runtime_error(self):
+        """--bare no argv → RuntimeError (bare mode não lê CLAUDE_CODE_OAUTH_TOKEN)."""
+        with pytest.raises(RuntimeError, match="--bare"):
+            cws._assert_no_bare_in_argv(["claude", "-p", "--bare", "do something"])
 
     @pytest.mark.unit
-    def test_refresh_returns_false_on_corrupt_json(self, tmp_path: Path):
-        """JSON malformado → retorna False sem levantar."""
-        creds_path = tmp_path / "credentials.json"
-        creds_path.write_text("{CORRUPT", encoding="utf-8")
-        result = cws._refresh_oauth_with_lock(creds_path)
-        assert result is False
+    def test_no_bare_passes(self):
+        """argv sem --bare → sem exceção."""
+        cws._assert_no_bare_in_argv([
+            "claude", "-p",
+            "--permission-mode", "bypassPermissions",
+            "--output-format", "json",
+            "do something",
+        ])
 
     @pytest.mark.unit
-    def test_oauth_flock_serialization(self, tmp_path: Path):
-        """Duas threads tentando refresh simultâneo são serializadas pelo flock.
+    def test_empty_argv_passes(self):
+        """argv vazio → sem exceção (defensivo)."""
+        cws._assert_no_bare_in_argv([])
 
-        Ambas devem conseguir ler o token (o lock é liberado após a leitura);
-        a serialização garante que não há race condition na leitura.
+    @pytest.mark.unit
+    def test_no_refresh_oauth_function(self):
+        """_refresh_oauth_with_lock NÃO deve mais existir (removido em issue #603).
+
+        A presença desta função indicaria que alguém tentou restaurar o
+        mecanismo antigo, o que quebraria a auth da frota (ANTHROPIC_AUTH_TOKEN
+        tem precedência sobre CLAUDE_CODE_OAUTH_TOKEN).
         """
-        creds = {
-            "claudeAiOauth": {
-                "accessToken": "tok-shared",
-                "expiresAt": int((time.time() + 3600) * 1000),
-            }
-        }
-        creds_path = tmp_path / "credentials.json"
-        creds_path.write_text(json.dumps(creds), encoding="utf-8")
-
-        results: list[bool] = []
-
-        def _worker():
-            r = cws._refresh_oauth_with_lock(creds_path)
-            results.append(r)
-
-        t1 = Thread(target=_worker)
-        t2 = Thread(target=_worker)
-        t1.start()
-        t2.start()
-        t1.join(timeout=5)
-        t2.join(timeout=5)
-
-        assert len(results) == 2
-        assert all(results), "ambas as threads devem retornar True"
+        assert not hasattr(cws, "_refresh_oauth_with_lock"), (
+            "_refresh_oauth_with_lock encontrado no módulo — deve ter sido removido "
+            "na migração para setup-token (issue #603). A presença desta função "
+            "implica que ANTHROPIC_AUTH_TOKEN seria exportado, mascarando "
+            "CLAUDE_CODE_OAUTH_TOKEN na ordem de precedência do claude CLI."
+        )
 
     @pytest.mark.unit
-    def test_is_expiring_soon_true_when_close(self):
-        """_is_expiring_soon retorna True quando token expira em < 5min."""
-        creds = {
-            "claudeAiOauth": {
-                "expiresAt": int((time.time() + 60) * 1000),  # expira em 1min
-            }
-        }
-        assert cws._is_expiring_soon(creds) is True
-
-    @pytest.mark.unit
-    def test_is_expiring_soon_false_when_far(self):
-        """_is_expiring_soon retorna False quando token ainda tem >5min."""
-        creds = {
-            "claudeAiOauth": {
-                "expiresAt": int((time.time() + 3600) * 1000),  # expira em 1h
-            }
-        }
-        assert cws._is_expiring_soon(creds) is False
-
-    @pytest.mark.unit
-    def test_is_expiring_soon_false_on_missing_field(self):
-        """Campo ausente → False (fail-open: não dispara refresh desnecessário)."""
-        assert cws._is_expiring_soon({}) is False
-        assert cws._is_expiring_soon({"claudeAiOauth": {}}) is False
+    def test_no_load_oauth_function(self):
+        """_load_oauth_token_into_env NÃO deve mais existir (removido em issue #603)."""
+        assert not hasattr(cws, "_load_oauth_token_into_env"), (
+            "_load_oauth_token_into_env encontrado no módulo — deve ter sido removido "
+            "na migração para setup-token (issue #603)."
+        )
 
 
 # ---------------------------------------------------------------------------
