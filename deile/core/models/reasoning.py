@@ -30,7 +30,10 @@ mais novo que o SDK instalado.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # ── Conjuntos de níveis por contexto ──────────────────────────────────────
 
@@ -188,11 +191,25 @@ def request_overrides(provider_id: str, model_id: str, effort: Any) -> Dict[str,
 def resolve_session_reasoning(session: Any) -> Optional[str]:
     """Esforço efetivo para o turno do agente (deile-worker / CLI).
 
-    Precedência: ``session.context_data["reasoning_effort"]`` (injetado pelo
-    worker a partir do ``DispatchPayload``, ou setado pelo comando ``/reasoning``)
-    > ``settings.reasoning_effort`` (global, configurável no DEILE CLI) > ``None``.
+    Precedência: ``session.context_data["forced_reasoning_effort"]`` (hard
+    override — comando ``/reasoning use <nível>``, vence injeção per-turn do
+    worker) > ``session.context_data["reasoning_effort"]`` (injetado pelo
+    worker a partir do ``DispatchPayload``, ou setado pelo comando
+    ``/reasoning``) > ``settings.reasoning_effort`` (global, configurável no
+    DEILE CLI) > ``None``.
     Best-effort: nunca levanta.
     """
+    try:
+        cd = getattr(session, "context_data", None) or {}
+        forced = normalize_effort(cd.get("forced_reasoning_effort"))
+        if forced:
+            logger.debug(
+                "resolve_session_reasoning: forced (hard) '%s' vence session/global",
+                forced,
+            )
+            return forced
+    except Exception:  # noqa: BLE001
+        pass
     try:
         cd = getattr(session, "context_data", None) or {}
         v = normalize_effort(cd.get("reasoning_effort"))

@@ -171,3 +171,81 @@ class TestSessionResolver:
 
         assert R.resolve_session_reasoning(_S()) is None
         reset_settings()
+
+    def test_forced_wins_over_soft(self, monkeypatch):
+        monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
+        from deile.config.settings import reset_settings
+        reset_settings()
+
+        class _S:
+            context_data = {
+                "forced_reasoning_effort": "ultracode",
+                "reasoning_effort": "low",
+            }
+
+        assert R.resolve_session_reasoning(_S()) == "ultracode"
+        reset_settings()
+
+    def test_forced_wins_over_settings(self, monkeypatch):
+        from deile.config.settings import get_settings, reset_settings
+        monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
+        reset_settings()
+        get_settings().reasoning_effort = "high"
+
+        class _S:
+            context_data = {"forced_reasoning_effort": "max"}
+
+        assert R.resolve_session_reasoning(_S()) == "max"
+        reset_settings()
+
+    def test_forced_auto_stores_not_clears(self, monkeypatch):
+        monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
+        from deile.config.settings import reset_settings
+        reset_settings()
+
+        class _S:
+            context_data = {"forced_reasoning_effort": "auto"}
+
+        assert R.resolve_session_reasoning(_S()) == "auto"
+        reset_settings()
+
+    def test_soft_used_when_no_forced(self, monkeypatch):
+        monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
+        from deile.config.settings import reset_settings
+        reset_settings()
+
+        class _S:
+            context_data = {"reasoning_effort": "medium"}
+
+        assert R.resolve_session_reasoning(_S()) == "medium"
+        reset_settings()
+
+    def test_worker_clobber_beaten_by_forced(self, monkeypatch):
+        """Simula injeção per-turn do worker em reasoning_effort: o forced vence."""
+        monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
+        from deile.config.settings import reset_settings
+        reset_settings()
+
+        class _S:
+            context_data = {
+                "forced_reasoning_effort": "xhigh",
+                "reasoning_effort": "low",  # worker injetou low
+            }
+
+        assert R.resolve_session_reasoning(_S()) == "xhigh"
+        reset_settings()
+
+    def test_forced_debug_log_emitted(self, monkeypatch, caplog):
+        import logging
+        monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
+        from deile.config.settings import reset_settings
+        reset_settings()
+
+        class _S:
+            context_data = {"forced_reasoning_effort": "high"}
+
+        with caplog.at_level(logging.DEBUG, logger="deile.core.models.reasoning"):
+            R.resolve_session_reasoning(_S())
+
+        assert any("forced (hard)" in r.message for r in caplog.records)
+        reset_settings()
