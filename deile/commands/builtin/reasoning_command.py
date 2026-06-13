@@ -50,8 +50,15 @@ Reasoning Command — esforço de raciocínio do turno
 
 USAGE:
     /reasoning                 Mostra o esforço atual e os níveis válidos
-    /reasoning <nível>         Fixa o esforço para esta sessão
-    /reasoning clear           Remove o override (volta ao global)
+    /reasoning <nível>         Fixa o esforço SOFT para esta sessão
+    /reasoning clear           Remove o override SOFT (volta ao global)
+    /reasoning use <nível>     Hard override — vence injeção per-turn do worker
+    /reasoning use clear       Remove o hard override (idempotente)
+
+EIXOS:
+    SOFT (/reasoning <nível>)  — grava session.context_data["reasoning_effort"]
+    HARD (/reasoning use <n>)  — grava session.context_data["forced_reasoning_effort"],
+                                  lido antes do SOFT em resolve_session_reasoning
 
 NÍVEIS:
     anthropic / claude-worker: low | medium | high | xhigh | max | ultracode | auto
@@ -59,9 +66,14 @@ NÍVEIS:
     gemini:   off | minimal | low | medium | high | auto
     deepseek: off | high | max | auto
 
+    /reasoning use auto  → armazena "auto" (provider-default forçado, NÃO é clear)
+    /reasoning use clear → limpa o hard override (_CLEAR_KEYWORDS: clear/reset/...)
+
 EXEMPLOS:
     /reasoning high
-    /reasoning ultracode
+    /reasoning use ultracode
+    /reasoning use auto
+    /reasoning use clear
     /reasoning clear
 """
 
@@ -69,6 +81,9 @@ EXEMPLOS:
         args = split_args(context)
         if not args or args[0].lower() in ("show", "status"):
             return self._show(context)
+        if args[0].lower() == "use":
+            target = args[1].strip().lower() if len(args) > 1 else ""
+            return self._use(target, context)
         target = args[0].strip().lower()
         if target in _CLEAR_KEYWORDS:
             return self._clear(context)
@@ -90,8 +105,11 @@ EXEMPLOS:
         return session.context_data
 
     def _current_effort(self, context: CommandContext) -> tuple:
-        """Retorna ``(valor, fonte)`` do esforço efetivo: sessão > global > default."""
+        """Retorna ``(valor, fonte)`` do esforço efetivo: forced > sessão > global > default."""
         cd = self._ctx_data(context) or {}
+        forced = normalize_effort(cd.get("forced_reasoning_effort"))
+        if forced:
+            return forced, "forced (hard)"
         v = normalize_effort(cd.get("reasoning_effort"))
         if v:
             return v, "session (/reasoning)"
@@ -125,6 +143,73 @@ EXEMPLOS:
                 border_style="cyan",
             ),
             metadata={"reasoning_effort": current, "source": source},
+        )
+
+    def _use(self, target: str, context: CommandContext) -> CommandResult:
+        """Despacha ``/reasoning use <nível|clear>`` — eixo HARD."""
+        if not target:
+            return CommandResult(
+                success=False,
+                content=Panel(
+                    Text("Usage: /reasoning use <nível>  ou  /reasoning use clear", style="yellow"),
+                    title="Reasoning effort",
+                    border_style="yellow",
+                ),
+            )
+        if target in _CLEAR_KEYWORDS:
+            return self._use_clear(context)
+        return self._use_set(target, context)
+
+    def _use_set(self, target: str, context: CommandContext) -> CommandResult:
+        """Grava ``forced_reasoning_effort`` (hard override)."""
+        if not is_valid_effort(target):
+            return CommandResult(
+                success=False,
+                content=Panel(
+                    Text(
+                        f"Nível inválido '{target}'.\n"
+                        "Anthropic/claude: " + " | ".join(CLAUDE_CODE_EFFORTS) + "\n"
+                        "openai: " + " | ".join(OPENAI_EFFORTS) + "\n"
+                        "gemini: " + " | ".join(GEMINI_EFFORTS) + "\n"
+                        "deepseek: " + " | ".join(DEEPSEEK_EFFORTS),
+                        style="yellow",
+                    ),
+                    title="[bold red]Reasoning effort inválido[/bold red]",
+                    border_style="red",
+                ),
+            )
+        cd = self._ctx_data(context)
+        if cd is None:
+            return CommandResult(
+                success=False,
+                content=Panel(Text("Sessão indisponível.", style="red"),
+                              title="Error", border_style="red"),
+            )
+        cd["forced_reasoning_effort"] = target
+        logger.info("forced_reasoning_effort setado em '%s'", target)
+        return CommandResult(
+            success=True,
+            content=Panel(
+                Text(f"Hard override: esforço fixado em '{target}' (vence injeção per-turn do worker)."),
+                title="Reasoning effort — hard override",
+                border_style="green",
+            ),
+            metadata={"forced_reasoning_effort": target},
+        )
+
+    def _use_clear(self, context: CommandContext) -> CommandResult:
+        """Remove ``forced_reasoning_effort`` (idempotente)."""
+        cd = self._ctx_data(context)
+        if cd is not None:
+            cd.pop("forced_reasoning_effort", None)
+        logger.info("forced_reasoning_effort limpo")
+        return CommandResult(
+            success=True,
+            content=Panel(
+                Text("Hard override removido — esforço volta ao slot SOFT / global / default."),
+                title="Reasoning effort — hard override",
+                border_style="green",
+            ),
         )
 
     def _set(self, target: str, context: CommandContext) -> CommandResult:
