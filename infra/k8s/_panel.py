@@ -3673,7 +3673,7 @@ class LiveSessionView(View):
     refresh_s = 2.0
 
     HOTKEYS = ("[esc] volta   [r] força refresh   [E] export JSON/.txt   "
-               "[/] filtro grep   [q] sai")
+               "[k] kill   [C] cleanup (se terminou)   [/] filtro grep   [q] sai")
 
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
@@ -3696,6 +3696,10 @@ class LiveSessionView(View):
         self._filter_op: str = ""  # issue #544
         self._prompt_open: bool = False
         self._filter_buffer: str = ""
+        # Confirmação de 2-keypress para ações destrutivas (issue #462).
+        # None = ocioso; "k" = kill pendente; "C" = cleanup pendente.
+        # Resolvido ANTES de _export_mode/_prompt_open em handle_key.
+        self.confirm_action: Optional[str] = None
 
     def on_mount(self, app: "PanelApp") -> None:
         payload = getattr(app, "last_payload", {}) or {}
@@ -3717,6 +3721,7 @@ class LiveSessionView(View):
         self._filter_op = ""
         self._prompt_open = False
         self._filter_buffer = ""
+        self.confirm_action = None
         # Restore saved filter for this session (issue #544).
         if self.task_id:
             _fkey = _sanitize_filter_key(f"session:{self.task_id}")
@@ -3841,6 +3846,10 @@ class LiveSessionView(View):
 
     def _live_session_footer_text(self) -> str:
         """Dynamic footer for LiveSessionView."""
+        if self.confirm_action is not None:
+            label = "kill" if self.confirm_action == "k" else "cleanup"
+            return (f"[bold yellow]confirmar {label}?[/bold yellow]  "
+                    f"[y] ou [{self.confirm_action}] confirma  /  qualquer outra tecla cancela")
         if self._prompt_open:
             return (f"filtro: {self._filter_buffer}_"
                     "   [enter] confirma   [esc] cancela   [backspace] apaga")
@@ -3923,6 +3932,8 @@ class LiveSessionView(View):
             rows.append(Layout(self._render_export_path_panel(), name="modal", size=5))
         elif self._export_mode == "overwrite":
             rows.append(Layout(self._render_export_overwrite_panel(), name="modal", size=4))
+        elif self.confirm_action is not None:
+            rows.append(Layout(self._render_confirm_panel(), name="confirm", size=4))
         elif self._status_msg:
             rows.append(Layout(
                 Panel(Text(self._status_msg, style="bold green"),
@@ -3936,7 +3947,10 @@ class LiveSessionView(View):
         return layout
 
     def intercepts_key(self, key: str) -> bool:
-        if key == "ESC" and (self._prompt_open or bool(self._filter_text)):
+        # CA8: ESC também interceptado quando confirmação destrutiva está pendente
+        # (evita pop de view enquanto operador decide).
+        if key == "ESC" and (self._prompt_open or bool(self._filter_text)
+                             or self.confirm_action is not None):
             return True
         return super().intercepts_key(key)
 
@@ -3981,6 +3995,10 @@ class LiveSessionView(View):
         return ActionResult.refresh()
 
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # CA9: confirm_action resolvido PRIMEIRO — impede que k/C/y sejam
+        # engolidos pelo filtro ou export enquanto confirmação está pendente.
+        if self.confirm_action is not None:
+            return self._handle_confirmation(key, app)
         if self._export_mode == "path":
             return self._handle_export_path_key(key)
         if self._export_mode == "overwrite":
@@ -4005,11 +4023,154 @@ class LiveSessionView(View):
             return ActionResult.refresh()
         if key == "E":
             return self._start_export()
+        # Ações destrutivas — armam confirmação de 2-keypress (issue #462).
+        if key == "k":
+            self.confirm_action = "k"
+            return ActionResult.refresh()
+        if key == "C":
+            # Gate de UI: [C] só disponível quando sessão não está mais ativa.
+            # Defesa TOCTOU real fica no servidor (409 se ainda alive — CA6).
+            alive = (bool((self._last_render.session or {}).get("alive"))
+                     if self._last_render else True)
+            if alive:
+                app.push_toast("⚠", "sessão ainda ativa — use [k] kill primeiro")
+                return ActionResult.refresh()
+            self.confirm_action = "C"
+            return ActionResult.refresh()
         return ActionResult()
 
     def _set_status(self, msg: str, ttl: float = 6.0) -> None:
         self._status_msg = msg
         self._status_until = time.time() + ttl
+
+    # --- ações destrutivas (issue #462) ---
+
+    def _make_client(self, cls: type) -> Any:
+        """Cria um ClaudeWorkerSessionsClient usando o contexto do painel."""
+        claude_worker_url: Optional[str] = None
+        claude_worker_token: Optional[str] = None
+        if self.data is not None and self.data.context is not None:
+            ctx = self.data.context
+            claude_worker_url = getattr(ctx, "claude_worker_url", None)
+            claude_worker_token = getattr(ctx, "claude_worker_token", None)
+        if not claude_worker_url:
+            ns = (_NS_DEFAULT if self.data is None or self.data.context is None
+                  else getattr(self.data.context, "namespace", _NS_DEFAULT))
+            claude_worker_url = (
+                f"http://claude-worker.{ns}.svc.cluster.local:8767"
+            )
+        return cls(base_url=claude_worker_url, bearer_token=claude_worker_token)
+
+    def _handle_confirmation(self, key: str, app: "PanelApp") -> ActionResult:
+        """Resolve confirmação de 2-keypress (padrão PodPickerView._handle_confirmation).
+
+        Aceita: [y] universal ou repetir a própria tecla ([k][k] / [C][C]).
+        Qualquer outra tecla cancela (default-deny — CA8).
+        """
+        action = self.confirm_action
+        if key == "y" or key == action:
+            self.confirm_action = None
+            if action == "k":
+                return self._apply_kill(app)
+            return self._apply_cleanup(app)
+        # Cancelado — audit + toast.
+        from _panel_data import _audit_pod_action  # noqa: PLC0415
+        _audit_pod_action(
+            action or "?", f"session:{self.task_id}",
+            result="cancelled",
+            detail=f"operador cancelou ({key!r})",
+        )
+        self.confirm_action = None
+        app.push_toast("↩", "cancelado")
+        return ActionResult.refresh()
+
+    def _apply_kill(self, app: "PanelApp") -> ActionResult:
+        """Executa POST /kill e trata os ramos de resposta (CA2/CA3/CA5)."""
+        import asyncio  # noqa: PLC0415
+        from _panel_data import _audit_pod_action  # noqa: PLC0415
+        try:
+            from deile.ui.panel.observability.client import (  # noqa: PLC0415
+                ClaudeWorkerSessionsClient, ApiError,
+            )
+        except ImportError as exc:
+            app.push_toast("⚠", f"cliente indisponível: {exc}")
+            return ActionResult.refresh()
+
+        client = self._make_client(ClaudeWorkerSessionsClient)
+        resource = f"session:{self.task_id}"
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                reply = loop.run_until_complete(client.kill(self.task_id))
+            finally:
+                loop.close()
+        except Exception as exc:  # noqa: BLE001 — timeout/network
+            _audit_pod_action("kill", resource, result="failed",
+                              detail=str(exc)[:200])
+            app.push_toast("⚠", f"kill falhou: {exc}")
+            return ActionResult.refresh()
+
+        if isinstance(reply, ApiError):
+            _audit_pod_action("kill", resource, result="failed",
+                              detail=f"HTTP {reply.status}: {reply.message}")
+            app.push_toast("⚠", f"kill: HTTP {reply.status} — {reply.message}")
+            return ActionResult.refresh()
+
+        killed = bool((reply or {}).get("killed"))
+        pid = (reply or {}).get("pid")
+        _audit_pod_action("kill", resource, result="allowed",
+                          detail=f"killed={killed} pid={pid}")
+        if killed:
+            app.push_toast("✂", f"kill OK — pid {pid} terminado")
+        else:
+            app.push_toast("ℹ", "kill despachado — processo já tinha terminado (409)")
+        return ActionResult.refresh()
+
+    def _apply_cleanup(self, app: "PanelApp") -> ActionResult:
+        """Executa DELETE /cleanup e trata os ramos de resposta (CA4/CA5/CA6)."""
+        import asyncio  # noqa: PLC0415
+        from _panel_data import _audit_pod_action  # noqa: PLC0415
+        try:
+            from deile.ui.panel.observability.client import (  # noqa: PLC0415
+                ClaudeWorkerSessionsClient, ApiError,
+            )
+        except ImportError as exc:
+            app.push_toast("⚠", f"cliente indisponível: {exc}")
+            return ActionResult.refresh()
+
+        client = self._make_client(ClaudeWorkerSessionsClient)
+        resource = f"session:{self.task_id}"
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                reply = loop.run_until_complete(client.cleanup(self.task_id))
+            finally:
+                loop.close()
+        except Exception as exc:  # noqa: BLE001 — timeout/network
+            _audit_pod_action("cleanup", resource, result="failed",
+                              detail=str(exc)[:200])
+            app.push_toast("⚠", f"cleanup falhou: {exc}")
+            return ActionResult.refresh()
+
+        if isinstance(reply, ApiError):
+            if reply.status == 409:
+                # CA6: defesa server-side (sessão ainda alive). Mostra toast,
+                # não volta — operador precisa usar [k] kill primeiro.
+                _audit_pod_action("cleanup", resource, result="allowed",
+                                  detail=f"409 server: sessão ainda alive")
+                app.push_toast("⚠", "cleanup bloqueado pelo servidor (409) — sessão ainda ativa")
+            else:
+                _audit_pod_action("cleanup", resource, result="failed",
+                                  detail=f"HTTP {reply.status}: {reply.message}")
+                app.push_toast("⚠", f"cleanup: HTTP {reply.status} — {reply.message}")
+            return ActionResult.refresh()
+
+        removed = (reply or {}).get("removed", {})
+        removed_keys = [k for k, v in removed.items() if v] if isinstance(removed, dict) else []
+        _audit_pod_action("cleanup", resource, result="allowed",
+                          detail=f"removed={removed_keys!r}")
+        app.push_toast("🗑", f"cleanup OK — {', '.join(removed_keys) or 'nada removido'}")
+        return ActionResult.back()
 
     def _start_export(self) -> ActionResult:
         if self._last_render is None:
@@ -4061,6 +4222,21 @@ class LiveSessionView(View):
             self._set_status("export cancelado")
         self._export_target = None
         return ActionResult.refresh()
+
+    def _render_confirm_panel(self) -> "Panel":
+        action = self.confirm_action or "?"
+        action_label = "kill (termina o processo claude -p)" if action == "k" else "cleanup (apaga workdir + jsonl)"
+        tid = self.task_id[:16] if self.task_id else "?"
+        return Panel(
+            Text.from_markup(
+                f"[bold yellow]Confirmar {action_label}[/bold yellow] — sessão [cyan]{tid}[/cyan]\n\n"
+                f"[bold green][y][/bold green] ou [bold green][{action}][/bold green] confirma  /  "
+                "[dim]qualquer outra tecla cancela[/dim]"
+            ),
+            title="[bold yellow]⚠ CONFIRMAR AÇÃO DESTRUTIVA[/bold yellow]",
+            title_align="left",
+            border_style="yellow",
+        )
 
     def _render_export_path_panel(self) -> "Panel":
         return Panel(
