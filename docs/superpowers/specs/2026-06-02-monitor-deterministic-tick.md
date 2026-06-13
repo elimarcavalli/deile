@@ -22,8 +22,10 @@ interpretador de bash carésimo.
 2. **Phase B (LLM)** — `monitor.md` enxuto, invocado SÓ quando há julgamento real e
    **recebendo os achados** da Phase A: V8 (julgamento semântico de prosa, jaccard,
    compor/abrir issue) + anomalias novas/atípicas.
-3. **Corrigir o `oauth_renew` futil**: trocar `claude auth login` pelo caminho real
-   headless `try_refresh_claude_credentials()`.
+3. **Corrigir o `oauth_renew` futil**: remover `claude auth login`. (Nota: o
+   refresh headless `try_refresh_claude_credentials()` desta spec foi
+   posteriormente REMOVIDO na issue #603 — a auth migrou para o token de ~1 ano
+   do `claude setup-token`/`CLAUDE_CODE_OAUTH_TOKEN`; o vigia agora só notifica.)
 4. **Intervalo de tick 600 → 1800 s**; `DEILE_MAX_TOOL_ITERATIONS=50` na Phase B.
 5. **Enxugar a persona** preservando 100% da responsabilidade.
 
@@ -62,11 +64,15 @@ emite v8.create/v8.skip/notify/command); o emitter Python produz formato byte-id
 
 ### Renovação OAuth real (substitui `claude auth login`)
 
-`from deile.orchestration.pipeline._claude_creds_refresh import try_refresh_claude_credentials`
-(async). Lê creds in-pod, faz patch do Secret `claude-credentials` — headless. Distingue:
-`ok` (renovado) / transiente (retry next tick) / `refresh_token`-expirado (notifica 1×,
-sem hammering). **RBAC novo no manifest 55**: `secrets [get,patch,create]` em
-`claude-credentials` + `deployments [get]` em `claude-worker`.
+> **Obsoleto desde a issue #603.** Esta seção descrevia o refresh headless via
+> `_claude_creds_refresh.try_refresh_claude_credentials` (lia creds in-pod e
+> patchava o Secret `claude-credentials`). Com a migração para o token de ~1 ano
+> do `claude setup-token` (env `CLAUDE_CODE_OAUTH_TOKEN`), **não há mais refresh
+> headless**: o módulo `_claude_creds_refresh` foi removido e o vigia de OAuth
+> apenas notifica o Humano para rodar `deploy.py k8s claude-setup-token` quando o
+> token de fato expira. O **RBAC do manifest 55** (`secrets [get,patch,create]`
+> em `claude-credentials` + `deployments [get]` em `claude-worker`) é mantido
+> para updates pontuais do Secret via setup-token.
 
 ## Fronteira Phase A (determinística) vs Phase B (LLM)
 

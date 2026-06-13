@@ -6546,7 +6546,8 @@ class DispatchMatrixView(View):
     HOTKEYS = (
         "[↑/↓] linha   [←/→] coluna (Worker/Model/Timeout/Retries/Cost/Reasoning)   "
         "[enter] editar   [r] reset   "
-        "[L] switch claude login   [O] login OAuth CLI worker (codex, in-pod)   "
+        "[L] switch claude login   [T] login via setup-token (token ~1 ano)   "
+        "[O] login OAuth CLI worker (codex, in-pod)   "
         "[I] install   [U] uninstall   [q] back   "
         "[c] cleanup on-demand (preview + confirm)   "
         "[p] editar max_parallel (parallelism do pipeline)   "
@@ -7131,6 +7132,8 @@ class DispatchMatrixView(View):
             title = "INSTALAR CLAUDE-WORKER?"
         elif kind == "switch_login_confirm":
             title = "TROCAR CONTA DO CLAUDE-WORKER?"
+        elif kind == "setup_token_confirm":
+            title = "LOGIN VIA SETUP-TOKEN (TOKEN ~1 ANO)?"
         elif kind == "uninstall_confirm":
             title = "DESINSTALAR CLAUDE-WORKER?"
         elif kind == "cleanup_confirm":
@@ -7168,7 +7171,7 @@ class DispatchMatrixView(View):
         # pickers de entrada numérica livre (timeout/retries/max_parallel) mostram buffer;
         # pickers convencionais usam enter/esc.
         if kind in ("install_confirm", "switch_login_confirm",
-                    "uninstall_confirm"):
+                    "setup_token_confirm", "uninstall_confirm"):
             # ``stage`` carrega o texto explicativo da operação.
             prompt = Text(str(stage) if stage else "", style="bold")
             hint = Text("[Y] confirma   [N]/[esc] cancela",
@@ -7266,6 +7269,7 @@ class DispatchMatrixView(View):
                   (worker/model conforme col).
             * [r] → reseta a célula corrente (clear override).
             * [L] → switch claude-worker login.
+            * [T] → login via setup-token (token ~1 ano, issue #603).
             * [I] → install claude-worker on-the-fly.
         """
         # Picker modal — todas as teclas vão pro handler dedicado.
@@ -7373,7 +7377,7 @@ class DispatchMatrixView(View):
         # --- [r] reset da célula corrente -------------------------------
         if key == "r":
             return self._reset_current_cell()
-        if key in ("L", "I"):
+        if key in ("L", "I", "T"):
             # Bloqueia spawn duplo enquanto bootstrap em background.
             if self._install_in_progress:
                 self.last_msg = (
@@ -7382,6 +7386,11 @@ class DispatchMatrixView(View):
                 )
                 self.last_ok = None
                 return ActionResult.refresh()
+        if key in ("T",):
+            # Issue #603 — login via `claude setup-token` (token ~1 ano,
+            # env CLAUDE_CODE_OAUTH_TOKEN via Secret). Espelha o [L], mas usa
+            # o token de longa duração em vez de OAuth interativo de ~8h.
+            return self._open_setup_token_modal()
         if key in ("L",):
             # Task 20 — modal de switch-login do claude-worker. Só faz
             # sentido quando o Deployment já está aplicado; senão sugere [I].
@@ -7715,6 +7724,28 @@ class DispatchMatrixView(View):
         self.last_ok = None
         return ActionResult.refresh()
 
+    def _open_setup_token_modal(self) -> ActionResult:
+        """Modal Y/N para login via ``claude setup-token`` (issue #603).
+
+        Confirmação dispara ``setup_token_claude_worker`` (token de ~1 ano via
+        ``CLAUDE_CODE_OAUTH_TOKEN``) em vez do OAuth interativo de ~8h do [L].
+        O token é resolvido pela env var ``CLAUDE_CODE_OAUTH_TOKEN`` (ou stdin
+        no host, antes de rodar o painel); o painel apenas re-aplica o Secret
+        e reinicia o Deployment.
+        """
+        prompt = (
+            "Login via `claude setup-token` (token ~1 ano). Rode no host "
+            "`claude setup-token`, exporte CLAUDE_CODE_OAUTH_TOKEN=<token> e "
+            "confirme — o Secret é re-aplicado e o Deployment reiniciado. "
+            "Sem token na env, a operação falha com mensagem clara."
+        )
+        self.mode = ("setup_token_confirm", prompt,
+                     ["Sim, instalar com token de 1 ano", "Cancelar"])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
     def _open_uninstall_modal(self) -> ActionResult:
         """Modal Y/N para desinstalar o claude-worker do cluster.
 
@@ -7903,6 +7934,32 @@ class DispatchMatrixView(View):
             if self.picker_cursor == 0:
                 return self._handle_switch_login_confirm("Y")
             return self._handle_switch_login_confirm("N")
+        if key in ("UP", "k", "DOWN", "j"):
+            _, _, options = self.mode  # type: ignore[misc]
+            n = len(options)
+            if n:
+                delta = -1 if key in ("UP", "k") else 1
+                self.picker_cursor = (self.picker_cursor + delta) % n
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _handle_setup_token_confirm(self, key: str) -> ActionResult:
+        """Roteia Y/N (+ enter sobre o cursor) no modal de setup-token (#603)."""
+        if key in ("Y", "y"):
+            self.mode = None
+            self.picker_cursor = 0
+            self._perform_setup_token()
+            return ActionResult.refresh()
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "login via setup-token cancelado"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            if self.picker_cursor == 0:
+                return self._handle_setup_token_confirm("Y")
+            return self._handle_setup_token_confirm("N")
         if key in ("UP", "k", "DOWN", "j"):
             _, _, options = self.mode  # type: ignore[misc]
             n = len(options)
@@ -8152,6 +8209,108 @@ class DispatchMatrixView(View):
                 pass
 
         # Libera o slot por último — render observa estado completo antes.
+        self._install_in_progress = False
+
+    def _perform_setup_token(self, *, _blocking: bool = False) -> None:
+        """Spawna :func:`setup_token_claude_worker` em thread daemon (#603).
+
+        Espelha :meth:`_perform_install` — instala/atualiza o claude-worker
+        usando o token de longa duração (``CLAUDE_CODE_OAUTH_TOKEN``) em vez do
+        OAuth interativo de ~8h. Reusa o slot ``_install_in_progress`` (mesma
+        operação lógica: re-aplica Secret + manifests + rollout), de modo que
+        [I]/[L]/[T] não disparam concorrentemente.
+
+        :param _blocking: força execução inline (testes). Default ``False`` —
+            UX do painel ([T] modal) nunca bloqueia.
+        """
+        import threading  # noqa: PLC0415
+
+        if self._install_in_progress or (
+                self._install_thread is not None
+                and self._install_thread.is_alive()):
+            self.last_msg = (
+                "instalação/login do claude-worker já em andamento — "
+                "aguarde o resultado antes de tentar de novo"
+            )
+            self.last_ok = None
+            return
+
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if (self.data is not None
+                and getattr(self.data, "context", None) is None):
+            ns = getattr(self.data, "namespace", None) or _NS_DEFAULT
+
+        self.last_msg = (
+            "executando setup-token do claude-worker em background "
+            "(token ~1 ano) — UI permanece responsiva, resultado aparecerá "
+            "aqui em alguns segundos…"
+        )
+        self.last_ok = None
+        self._install_in_progress = True
+
+        if _blocking or getattr(self, "_install_blocking", False):
+            self._run_setup_token_blocking(namespace=ns)
+            return
+
+        self._install_thread = threading.Thread(
+            target=self._run_setup_token_blocking,
+            kwargs={"namespace": ns},
+            name="claude-setup-token",
+            daemon=True,
+        )
+        self._install_thread.start()
+
+    def _run_setup_token_blocking(self, *, namespace: str) -> None:
+        """Worker body — executa ``setup_token_claude_worker`` e publica resultado.
+
+        Importação lazy + indireção pelo módulo (não pelo símbolo) para que o
+        monkeypatch dos testes pegue a substituição em
+        ``infra.k8s._claude_install.setup_token_claude_worker``.
+        """
+        from _claude_install import \
+            setup_token_claude_worker as _direct_setup  # noqa: PLC0415
+
+        try:
+            import _claude_install  # noqa: PLC0415
+            setup_fn = getattr(
+                _claude_install, "setup_token_claude_worker", _direct_setup,
+            )
+        except ImportError:
+            setup_fn = _direct_setup
+
+        try:
+            result = setup_fn(namespace=namespace, interactive=False)
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = (
+                f"falha em setup_token_claude_worker: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.last_ok = False
+            self._install_in_progress = False
+            return
+
+        if not getattr(result, "ok", False):
+            self.last_msg = (
+                f"setup-token retornou erro: "
+                f"{getattr(result, 'error', None) or '(sem detalhe)'}"
+            )
+            self.last_ok = False
+        else:
+            self.last_msg = (
+                "claude-worker instalado com token de ~1 ano "
+                "(CLAUDE_CODE_OAUTH_TOKEN) com sucesso"
+            )
+            self.last_ok = True
+
+        if self.data is not None:
+            try:
+                self.data.stage_dispatch._cache.invalidate()  # noqa: SLF001
+                self.data.stage_dispatch._status_cache.invalidate()  # noqa: SLF001
+            except (AttributeError, TypeError):
+                pass
+
         self._install_in_progress = False
 
     def _on_worker_selected(self, stage: str, choice: str) -> None:
@@ -8447,6 +8606,8 @@ class DispatchMatrixView(View):
             return self._handle_install_confirm(key)
         if self.mode is not None and self.mode[0] == "switch_login_confirm":
             return self._handle_switch_login_confirm(key)
+        if self.mode is not None and self.mode[0] == "setup_token_confirm":
+            return self._handle_setup_token_confirm(key)
         if self.mode is not None and self.mode[0] == "uninstall_confirm":
             return self._handle_uninstall_confirm(key)
         if self.mode is not None and self.mode[0] in ("timeout", "retries"):

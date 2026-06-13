@@ -232,7 +232,10 @@ Prints a plan before mutating; `--yes` skips the prompt, `--dry-run` shows it on
 | Status / live TUI panel / list NS / prereq check | `... k8s status` / `... k8s panel` / `... k8s list` / `... k8s doctor` |
 | Logs | `... k8s logs [bot\|worker\|shell\|<deployment-name>]` — aliases `bot`→deilebot, `worker`→deile-worker, `shell`→deile-shell; any other token = literal deployment (`deile-pipeline`, `claude-worker`, `deile-monitor`); no arg = bot+worker |
 | One-shot Job / clone repo into shell | `... k8s test` / `... k8s clone <owner/repo>` |
-| Bootstrap / renew claude-worker OAuth | `... k8s claude-login [--switch\|--no-interactive]` / `... k8s claude-renew` |
+| Bootstrap claude-worker (token 1 ano) | `... k8s claude-setup-token` (preferido — issue #603) |
+| Renovar token de 1 ano | re-rodar `k8s claude-setup-token` ~1×/ano |
+| Bootstrap via OAuth legado | `... k8s claude-login [--switch\|--no-interactive]` |
+| Renovar OAuth legado | `... k8s claude-renew` |
 | **Build CLI worker image(s)** (opt-in) | `... k8s build-cli-workers [--kind <k>]` — single `Dockerfile.cli-worker` (multi-stage `deps`→`base`→`final`; `WORKER_KIND` build-arg only in `final`) |
 | Gen / install / uninstall a CLI worker | `... k8s gen-worker <kind>` (render manifest) · `... k8s cli-worker-install <kind>` (env auth) · `... k8s cli-worker-uninstall <kind>` |
 | Install an OAuth-capable CLI worker | `... k8s cli-worker-login <kind> [--switch\|--no-interactive\|--in-pod]` (only adapters with an `OAuthSpec` — e.g. codex; §5.4) |
@@ -254,7 +257,9 @@ One stack per namespace (default `deile`; `deile-gl` = GitLab pilot, usually sca
 The 6 core deployments are namespace-agnostic; **caveat:** some auxiliary manifests (NetworkPolicy, claude-worker, certain PVCs/CronJobs) hardcode `namespace: deile` — full for core, partial for auxiliaries. Never touch `default`, `kube-system`, `kube-public`, `kube-node-lease`.
 
 ### 5.4 claude-worker — dispatching `claude -p` in-cluster
-- **Setup:** `deploy.py k8s claude-login` captures host `~/.claude/` creds → Secret `claude-credentials` → initContainer copies to PVC `/home/claude/.claude/credentials.json` mode `0600` (refresh in-pod under flock). `--switch` = new account; `--no-interactive` = CI-safe.
+- **Setup (issue #603, preferido):** `deploy.py k8s claude-setup-token` — Humano roda `claude setup-token` no host, copia o token, exporta `CLAUDE_CODE_OAUTH_TOKEN=<token>` e roda o verb. Token de ~1 ano injetado no pod como env var via Secret K8s (chave `CLAUDE_CODE_OAUTH_TOKEN`). Sem credentials.json, sem initContainer. Renovação: ~1×/ano.
+- **Setup (legado):** `deploy.py k8s claude-login` captures host `~/.claude/` creds → Secret `claude-credentials` key `credentials.json` → initContainer copies to PVC. `--switch` = new account; `--no-interactive` = CI-safe. DEPRECATED em favor de `claude-setup-token`.
+- **BILLING (a partir de 15/jun/2026):** uso via `claude -p` em planos de assinatura consome crédito mensal de Agent SDK separado do uso interativo. Monitore o consumo após a migração.
 - **Panel `[d]` → `DispatchMatrixView`** — one row per stage, **6 editable columns**: Worker × Model × Timeout(s) × Retries × Cost-cap (USD/run) × Reasoning (Model anthropic-only when Worker=`claude-worker`). Hotkeys: `[enter]` picker, `[r]` reset, `[L]` switch login, `[I]` install, `[U]` uninstall, `[s]` scale, `[c]` cleanup (preview+confirm via `kubectl exec`), `[p]` `max_parallel` (`[a]`=`auto`), `[J]` JSONL retention.
 - **Cost ledger (#445):** `claude -p` transcripts couple `--resume` continuity (bulky, ephemeral) with cost audit (tiny, permanent). `_do_cleanup` (startup hook + CronJob `claude-worker-cleanup` 03:00 UTC + `POST /v1/cleanup`) **harvests each orphan session's cost into a durable JSONL ledger BEFORE pruning** (`infra/k8s/jsonl_cost.py` = single pricing source; dedup by `session_id`); `session_tokens_audit.py` reads ledger + live JSONL, same pricing. **NEVER prune without harvesting** (incident: 337 transcripts deleted).
 
@@ -312,7 +317,7 @@ Two-phase deterministic tick (PR #504): **Phase A** = mechanical sweep, **zero L
 1. **`ps`/`pgrep` work** (`procps` in the image). Old image: `cat /proc/*/cmdline | tr '\0' ' '` (`/proc` shows the host PIDNS).
 2. **Pipeline logs look empty when idle** — the monitor emits per-tick; short tails get evicted by health probes. Use `--tail=500` / `--since=10m`. Unbuffered (`PYTHONUNBUFFERED=1` + tini), so true silence-with-RUNNING = deadlock (rare) or too-aggressive a tail.
 3. **`.lease.json` mtime is NOT liveness for `claude -p`** — the wrapper rewrites `heartbeat_at` every 5 s regardless, lease `pid` = **wrapper** PID. Each dispatch writes `claude_pid`; `_find_active_lease` reports `claude_running` (True iff that PID alive). **Trust `claude_running` (or `pgrep -a claude`), never lease mtime.**
-4. **OAuth renew is an operational trap.** The claude-worker access token expires (~hours); the in-pod "refresh" does **not** rotate the refresh token → the whole fleet falls into `401 / WORKER_AUTH_EXPIRED`, looking like a "stuck pipeline" with no code cause. Fix from host: **`python3 infra/k8s/deploy.py k8s claude-renew`** (reads the macOS keychain). Check this FIRST when dispatches mysteriously stall.
+4. **Auth (issue #603, nova abordagem):** com `claude setup-token` (token 1 ano), a frota usa `CLAUDE_CODE_OAUTH_TOKEN` injetado via Secret K8s. Sem initContainer, sem credentials.json, sem refresh automático. Se dispatches pararem com `WORKER_AUTH_EXPIRED`, rode `deploy.py k8s claude-setup-token` (token pode ter expirado ou não estar configurado). **ANTHROPIC_AUTH_TOKEN NÃO deve ser exportado** (vence na precedência de auth e mascara o CLAUDE_CODE_OAUTH_TOKEN). O wrapper.py já remove ANTHROPIC_API_KEY do env do subprocess. Instâncias legadas com `claude-login` (OAuth ~8h) devem migrar para `claude-setup-token`.
 
 ### 5.7 HTTP control-plane endpoints (Bearer except `/v1/health` + OAuth; full paths/params **README §Endpoints**)
 - **deile-worker `:8766`** — `health` · `POST dispatch` · `result/{id}` · `progress/{id}`

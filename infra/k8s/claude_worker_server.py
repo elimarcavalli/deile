@@ -27,7 +27,6 @@ Spec: ``docs/superpowers/specs/2026-05-26-claude-worker-design.md`` §4.4.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hmac
 import json
 import logging
@@ -75,131 +74,40 @@ _TASK_ID_RE = _core.TASK_ID_RE
 
 
 # --------------------------------------------------------------------------- #
-# Mecanismo 1 — OAuth file-lock cross-pod
+# Mecanismo 1 — auth via CLAUDE_CODE_OAUTH_TOKEN (issue #603)
 #
-# Quando o claude-worker tem N réplicas, todas elas montam o mesmo PVC
-# (``claude-worker-home``) com o mesmo ``credentials.json``. Sem lock, dois
-# pods que detectam expiração simultânea disparam refresh concorrente e o
-# segundo write corrompe o token recém-gravado pelo primeiro. O flock garante
-# serialização: apenas um pod escreve de cada vez; os demais aguardam e então
-# leem o token já atualizado.
+# Auth migrada de credentials.json (file-based, expirava em ~8h) para
+# CLAUDE_CODE_OAUTH_TOKEN injetado pelo K8s Secret (1 ano via setup-token).
+#
+# Precedência de auth no claude CLI (alta→baixa):
+#   1. cloud provider (Bedrock/Vertex/Foundry)
+#   2. ANTHROPIC_AUTH_TOKEN   ← NÃO exportar (venceria o CLAUDE_CODE_OAUTH_TOKEN)
+#   3. ANTHROPIC_API_KEY      ← já removido pelo wrapper.py (_SENSITIVE_KEYS)
+#   4. apiKeyHelper (script)
+#   5. CLAUDE_CODE_OAUTH_TOKEN ← injetado pelo Secret K8s via env:
+#   6. subscription OAuth via /login
+#
+# IMPORTANTE: --bare NÃO lê CLAUDE_CODE_OAUTH_TOKEN. O dispatch usa
+# `claude -p` (nunca --bare) — ver _assert_no_bare_in_argv().
 # --------------------------------------------------------------------------- #
 
 
-def _creds_path() -> Path:
-    """Caminho canônico do credentials.json (montado pelo initContainer)."""
-    home = Path(os.environ.get("HOME", "/home/claude"))
-    return home / ".claude" / "credentials.json"
+def _assert_no_bare_in_argv(argv: list) -> None:
+    """Falha se ``--bare`` aparecer no argv do claude.
 
+    Bare mode não lê ``CLAUDE_CODE_OAUTH_TOKEN`` (doc Anthropic, 2026-06-13).
+    Um ``--bare`` acidental silenciaria a auth sem qualquer erro óbvio —
+    por isso é uma regressão fatal. Esta guarda detect-e-aborta antes do spawn.
 
-def _is_expiring_soon(creds: dict, window_s: int = 300) -> bool:
-    """True se o ``accessToken`` expira nos próximos *window_s* segundos.
-
-    O campo ``expiresAt`` segue o formato do Claude Code: inteiro de
-    milissegundos de epoch (ms). Ausente ou inválido → assume que NÃO
-    expira em breve (fail-open: não dispara refresh desnecessário).
+    Raises:
+        RuntimeError: se ``--bare`` for encontrado.
     """
-    oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
-    expires_at_ms = (oauth or {}).get("expiresAt") if isinstance(oauth, dict) else None
-    if expires_at_ms is None:
-        expires_at_ms = creds.get("expiresAt") if isinstance(creds, dict) else None
-    if not isinstance(expires_at_ms, (int, float)):
-        return False
-    expires_at_s = float(expires_at_ms) / 1000.0
-    return (expires_at_s - time.time()) < window_s
-
-
-# mtime do credentials.json na última leitura bem-sucedida — permite
-# detectar quando outro pod escreveu um token novo sem ter que relê-lo
-# incondicionalmente a cada dispatch.
-_creds_last_mtime: float = 0.0
-
-
-def _refresh_oauth_with_lock(creds_path: Optional[Path] = None) -> bool:
-    """Lê ``credentials.json`` sob lock exclusivo e atualiza ``ANTHROPIC_AUTH_TOKEN``.
-
-    Sequência:
-    1. Abre o arquivo em modo ``r+`` (leitura+escrita, não trunca).
-    2. Adquire ``LOCK_EX`` (bloqueia até o lock ser obtido — outros pods
-       que chegarem aqui ficam em espera).
-    3. Relê o conteúdo (pode ter mudado desde o open, pois outro pod pode
-       ter acabado de escrever).
-    4. Verifica ``expiresAt``; se expirando em <5 min, loga aviso (refresh
-       real via ``claude`` CLI não é tentado — o ``claude -p`` subprocess
-       faz o refresh in-place quando necessário). O lock garante que apenas
-       um pod detecta/age sobre a expiração de cada vez.
-    5. Exporta o token mais fresco como ``ANTHROPIC_AUTH_TOKEN``.
-    6. Libera o lock ao sair do ``with`` (``LOCK_UN`` automático no close).
-
-    Best-effort: erros de I/O ou parse viram ``logger.warning`` e a função
-    retorna ``False`` — o dispatch continua com o token anterior (se havia
-    um carregado no startup), que pode ser válido ainda.
-
-    Returns:
-        ``True`` se ``ANTHROPIC_AUTH_TOKEN`` foi (re)carregado com sucesso.
-    """
-    global _creds_last_mtime  # noqa: PLW0603
-    if creds_path is None:
-        creds_path = _creds_path()
-    if not creds_path.exists():
-        logger.debug("credentials.json não encontrado em %s — skip refresh", creds_path)
-        return False
-    try:
-        current_mtime = creds_path.stat().st_mtime
-    except OSError as exc:
-        logger.warning("stat(%s) falhou: %s", creds_path, exc)
-        return False
-    # Evita releitura desnecessária quando mtime não mudou (arquivo idêntico
-    # ao último load). O flock é obtido mesmo assim para serializar quaisquer
-    # concurrent refreshes que possam estar em voo.
-    try:
-        with open(creds_path, "r+", encoding="utf-8") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
-            try:
-                fh.seek(0)
-                raw = fh.read()
-            finally:
-                # Liberação explícita antes do close para minimizar a janela
-                # de lock ao usar o token (não precisamos do lock durante o
-                # os.environ write — é local ao processo).
-                fcntl.flock(fh, fcntl.LOCK_UN)
-    except OSError as exc:
-        logger.warning("flock/read em %s falhou: %s", creds_path, exc)
-        return False
-
-    try:
-        creds = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("credentials.json malformado em %s: %s", creds_path, exc)
-        return False
-
-    if _is_expiring_soon(creds):
-        logger.warning(
-            "ANTHROPIC_AUTH_TOKEN está expirando em breve em %s — "
-            "rode `deploy.py k8s claude-renew` para renovar",
-            creds_path,
+    if "--bare" in argv:
+        raise RuntimeError(
+            "FATAL: '--bare' detectado no argv do claude — bare mode NÃO lê "
+            "CLAUDE_CODE_OAUTH_TOKEN, o que silenciaria a auth por assinatura. "
+            "Remova --bare do dispatch argv (issue #603)."
         )
-
-    # Extrai token — mesma lógica de _load_oauth_token_into_env.
-    oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
-    token = (oauth or {}).get("accessToken") if isinstance(oauth, dict) else None
-    if not token:
-        token = creds.get("accessToken") if isinstance(creds, dict) else None
-    if not token:
-        logger.warning(
-            "credentials.json não contém accessToken em %s — "
-            "claude CLI vai reportar 'Not logged in'",
-            creds_path,
-        )
-        return False
-
-    os.environ["ANTHROPIC_AUTH_TOKEN"] = token
-    _creds_last_mtime = current_mtime
-    logger.debug(
-        "ANTHROPIC_AUTH_TOKEN (re)carregado de %s (len=%d, mtime=%.0f)",
-        creds_path, len(token), current_mtime,
-    )
-    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -353,52 +261,6 @@ async def _heartbeat_loop(lease_path: Path, stop_event: asyncio.Event) -> None:
     await _core.heartbeat_loop(
         lease_path, stop_event, heartbeat_s=_LEASE_HEARTBEAT_S,
     )
-
-
-# --------------------------------------------------------------------------- #
-# OAuth token extraction — claude CLI no Linux NÃO lê
-# ``~/.claude/credentials.json`` automaticamente (esse caminho é uma
-# convenção macOS — no Linux ele só lê variáveis de ambiente). Extraímos
-# o ``accessToken`` no startup e o exportamos como ``ANTHROPIC_AUTH_TOKEN``
-# antes de spawnar o subprocess do claude.
-# --------------------------------------------------------------------------- #
-
-
-def _load_oauth_token_into_env() -> bool:
-    """Lê ``credentials.json`` (mountado pelo initContainer) e exporta
-    ``ANTHROPIC_AUTH_TOKEN`` na env do processo.
-
-    Returns ``True`` se token foi carregado; ``False`` caso contrário (file
-    ausente, JSON malformado, sem ``claudeAiOauth.accessToken``). O server
-    continua subindo em qualquer caso — a falha real aparece quando o
-    ``claude -p`` rodar e reportar ``Not logged in``.
-    """
-    home = Path(os.environ.get("HOME", "/home/claude"))
-    creds_path = home / ".claude" / "credentials.json"
-    if not creds_path.exists():
-        logger.warning("credentials.json não encontrado em %s", creds_path)
-        return False
-    try:
-        creds = json.loads(creds_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("não foi possível parsear %s: %s", creds_path, exc)
-        return False
-    # macOS Keychain JSON: {"claudeAiOauth": {"accessToken": "..."}}
-    oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
-    token = (oauth or {}).get("accessToken") if isinstance(oauth, dict) else None
-    if not token:
-        # Fallback: tenta "accessToken" no root level (formatos diferentes).
-        token = creds.get("accessToken") if isinstance(creds, dict) else None
-    if not token:
-        logger.warning(
-            "credentials.json não contém claudeAiOauth.accessToken nem "
-            "accessToken root-level — claude CLI vai reportar 'Not logged in'",
-        )
-        return False
-    os.environ["ANTHROPIC_AUTH_TOKEN"] = token
-    logger.info("ANTHROPIC_AUTH_TOKEN carregado de %s (len=%d)",
-                creds_path, len(token))
-    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -1825,8 +1687,12 @@ _CLAUDE_OAUTH_URL_RE = re.compile(r"https://(?:claude\.ai|anthropic\.com)/[^\s'\
 
 
 def _run_in_pod_oauth(state: _OAuthBrokerState) -> None:
-    """Background thread: executa ``claude auth login`` capturando URL OAuth."""
-    creds_path = _creds_path()
+    """Background thread: executa ``claude auth login`` capturando URL OAuth.
+
+    NOTA (issue #603): este fluxo é legado — a abordagem preferida é
+    ``claude setup-token`` no host + Secret CLAUDE_CODE_OAUTH_TOKEN.
+    Mantido para compatibilidade com ``deploy.py k8s claude-login --in-pod``.
+    """
     with state._lock:
         state.status = "pending"
         state.started_at = time.time()
@@ -1874,6 +1740,8 @@ def _run_in_pod_oauth(state: _OAuthBrokerState) -> None:
 
     if proc.returncode == 0:
         email: Optional[str] = None
+        home = Path(os.environ.get("HOME", "/home/claude"))
+        creds_path = home / ".claude" / "credentials.json"
         if creds_path.exists():
             try:
                 creds_data = json.loads(creds_path.read_text(encoding="utf-8"))
@@ -1883,7 +1751,6 @@ def _run_in_pod_oauth(state: _OAuthBrokerState) -> None:
                     email = oauth_data.get("email")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[in-pod-oauth] failed to read credentials.json: %s", exc)
-        _refresh_oauth_with_lock(creds_path)
         with state._lock:
             state.status = "complete"
             state.email = email
@@ -2485,9 +2352,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         name=f"lease-hb-{task_id}",
     )
 
-    # Mecanismo 1 — OAuth: reload do token antes do spawn, serializado pelo
-    # flock — garante que todos os pods leiam o token mais recente sem race.
-    _refresh_oauth_with_lock()
+    # Auth via CLAUDE_CODE_OAUTH_TOKEN (issue #603): token de 1 ano injetado
+    # pelo K8s Secret — não requer reload antes do spawn.
 
     # Persistir metadata ANTES do spawn (pro endpoint /resume-info poder
     # detectar dispatches in-flight). Atomic via _save_session_meta.
@@ -2559,6 +2425,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     if max_budget and max_budget != "0":
         cmd.extend(["--max-budget-usd", max_budget])
     cmd.append(full_prompt)
+
+    # Guard de segurança (issue #603): --bare silencia CLAUDE_CODE_OAUTH_TOKEN.
+    _assert_no_bare_in_argv(cmd)
 
     timeout = dispatch_timeout_s if dispatch_timeout_s is not None else int(
         os.environ.get("DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S", "7200")
@@ -4218,13 +4087,22 @@ def main(passthrough: Optional[List[str]] = None) -> int:
         logger.error("could not create work root %s: %s", root, exc)
         return 78
 
-    # Carrega o OAuth token do ``credentials.json`` (montado pelo
-    # initContainer via Secret claude-credentials) e exporta como
-    # ``ANTHROPIC_AUTH_TOKEN``. SEM isso o claude CLI roda como
-    # "Not logged in" porque no Linux ele NÃO lê
-    # ``~/.claude/credentials.json`` automaticamente (esse path é
-    # convenção macOS — Linux só lê env vars).
-    _load_oauth_token_into_env()
+    # Auth (issue #603): CLAUDE_CODE_OAUTH_TOKEN injetado pelo K8s Secret
+    # (env: - name: CLAUDE_CODE_OAUTH_TOKEN; valueFrom: secretKeyRef).
+    # O claude -p lê este env diretamente — não exportamos ANTHROPIC_AUTH_TOKEN
+    # (que venceria na precedência e poderia mascarar o token de assinatura).
+    oauth_tok = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+    if oauth_tok:
+        logger.info(
+            "CLAUDE_CODE_OAUTH_TOKEN presente (len=%d) — auth por assinatura ativa",
+            len(oauth_tok),
+        )
+    else:
+        logger.warning(
+            "CLAUDE_CODE_OAUTH_TOKEN não encontrado — rode "
+            "`deploy.py k8s claude-setup-token` para configurar. "
+            "O claude CLI reportará 'Not logged in'."
+        )
 
     # Escreve presença antes do cleanup (issue #495): garante que este pod
     # conste como vivo durante a varredura, evitando auto-recuperação do

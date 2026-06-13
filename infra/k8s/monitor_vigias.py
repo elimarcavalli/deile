@@ -162,7 +162,10 @@ async def vigia_oauth(
     renew: Callable[[], Awaitable[Any]],
 ) -> None:
     """V1 + V1b. ``renew`` is an async callable returning an object with
-    ``ok`` / ``error`` (``try_refresh_claude_credentials`` in production)."""
+    ``ok`` / ``error``. Since issue #603 (setup-token, ~1-year
+    ``CLAUDE_CODE_OAUTH_TOKEN``) there is no headless refresh, so ``renew``
+    reports ``ok=False`` and this vigia notifies the human to re-run
+    ``deploy.py k8s claude-setup-token`` instead of self-healing."""
     status = _detect_oauth_needs_renew(ctx)
     if not status["pods"]:
         return  # claude-worker not deployed — nothing to guard
@@ -199,11 +202,12 @@ async def vigia_oauth(
         renew_reason=str(getattr(outcome, "error", "") or getattr(outcome, "message", "")),
     )
     if fatal:
-        body = ("Renovação automática headless falhou (refresh_token expirado ou sem "
-                "credential file). Ação: `claude auth login --switch` no host + "
-                "`deploy.py k8s claude-login`.")
+        body = ("Token de auth do claude-worker expirado ou ausente. Ação: rode "
+                "`claude setup-token` no host + `deploy.py k8s claude-setup-token` "
+                "(token de ~1 ano, issue #603).")
     else:
-        body = "Renovação automática falhou (transiente). Nova tentativa no próximo tick."
+        body = ("Auth do claude-worker indisponível (transiente). Se persistir, "
+                "renove com `deploy.py k8s claude-setup-token`.")
     ctx.notifier.notify(_OAUTH_FINGERPRINT, "P0", "OAuth claude-worker expirado", body)
 
 

@@ -21,6 +21,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import monitor_core as core
@@ -302,10 +303,9 @@ def _resolve_repo() -> str:
     ``require=False`` + graceful fallback: a missing repo degrades with a
     ``WARNING``, never raises — the deterministic Phase-A tick must never crash
     the heartbeat (a hard fail-loud belongs to the pipeline's startup, not to
-    the supervisor's per-tick sweep). The import is lazy (mirrors the existing
-    ``_claude_creds_refresh`` import) so the flattened ``/app/monitor_tick.py``
-    keeps a clean module-import surface, and any config-layer error falls back
-    to the raw env rather than killing the tick.
+    the supervisor's per-tick sweep). The import is lazy so the flattened
+    ``/app/monitor_tick.py`` keeps a clean module-import surface, and any
+    config-layer error falls back to the raw env rather than killing the tick.
     """
     env_repo = os.environ.get("DEILE_PIPELINE_REPO", "").strip()
     try:
@@ -324,9 +324,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     user_id = _read_user_id(state_dir)
 
     async def renew():
-        from deile.orchestration.pipeline._claude_creds_refresh import \
-            try_refresh_claude_credentials
-        return await try_refresh_claude_credentials(namespace=namespace, min_expiry_window_s=0.0)
+        # Issue #603: auth migrou para o token de ~1 ano (setup-token,
+        # CLAUDE_CODE_OAUTH_TOKEN via Secret). Não há mais refresh headless
+        # in-pod — quando o token de fato expira (~1×/ano) o Humano renova com
+        # ``deploy.py k8s claude-setup-token``. O vigia de OAuth, ao receber
+        # este resultado, notifica em vez de tentar curar sozinho.
+        return SimpleNamespace(
+            ok=False,
+            error="setup-token (issue #603): sem refresh headless; "
+            "renove com `deploy.py k8s claude-setup-token`",
+        )
 
     try:
         asyncio.run(run_tick(

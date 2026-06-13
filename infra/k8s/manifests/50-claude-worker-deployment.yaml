@@ -1,14 +1,22 @@
 # claude-worker — pod paralelo ao deile-worker que executa `claude -p` em
 # worktrees isolados sob o PVC claude-worker-home.
 #
-# Issue #309 fase 2.
+# Issue #309 fase 2. Auth migrada para CLAUDE_CODE_OAUTH_TOKEN (issue #603).
 # Spec: docs/superpowers/specs/2026-05-26-claude-worker-design.md
 #
-# Threat model: ver seção 7 da spec. Credentials no PVC mode 0600;
+# Threat model: ver seção 7 da spec.
 # NetworkPolicy egress whitelisted via manifest 40 + ConfigMap 47.
 #
+# Auth (issue #603): CLAUDE_CODE_OAUTH_TOKEN injetado via secretKeyRef do
+# Secret claude-credentials (key: CLAUDE_CODE_OAUTH_TOKEN). Token de 1 ano
+# via `claude setup-token` (doc Anthropic). Sem initContainer bootstrap-creds,
+# sem credentials.json no PVC. O wrapper.py não inclui CLAUDE_CODE_OAUTH_TOKEN
+# em _SENSITIVE_KEYS — o token DEVE chegar ao subprocess do claude -p.
+# ANTHROPIC_AUTH_TOKEN e ANTHROPIC_API_KEY NÃO são exportados (precedência
+# alta mascararia o CLAUDE_CODE_OAUTH_TOKEN — issue #603 §1).
+#
 # Secret claude-worker-bearer: criado programaticamente por
-# _kubectl_sync_bearer_token() (deploy.py k8s claude-login) ANTES
+# _kubectl_sync_bearer_token() (deploy.py k8s claude-setup-token) ANTES
 # desta manifest ser aplicada — elimina race condition do issue #356.
 apiVersion: apps/v1
 kind: Deployment
@@ -50,69 +58,6 @@ spec:
         fsGroupChangePolicy: "OnRootMismatch"
         seccompProfile: { type: RuntimeDefault }
 
-      # InitContainer idempotente — preserva token refrescado in-pod entre
-      # restarts. Antes (pré-PR OAuth auto-renew) esta etapa SEMPRE copiava
-      # o credentials.json do Secret pro PVC, sobrescrevendo qualquer token
-      # mais recente que o ``claude -p`` havia obtido via refresh in-pod
-      # (a cada restart o pod voltava com o token velho — eventualmente
-      # expirado se ``claude-login`` não tivesse rodado nas últimas 8h).
-      #
-      # Comportamento novo: compara ``expiresAt`` do Secret vs PVC. Copia
-      # apenas quando (a) PVC não tem credentials ainda OU (b) o Secret tem
-      # um token MAIS RECENTE (operador acabou de rodar ``claude-login``).
-      # Em todos os outros casos preserva o token do PVC, que é tipicamente
-      # o resultado do refresh in-pod feito pelo próprio claude CLI.
-      #
-      # Mecanismo de força: ``claude-login --switch`` (troca de conta) precisa
-      # vencer essa proteção — ele deleta o credentials.json do PVC ANTES do
-      # rollout (via Job dedicado em ``_claude_install._force_clear_pvc_creds``).
-      # Após o delete, o init detecta arquivo ausente e copia normalmente.
-      #
-      # Roda como uid 10001 (PSS restricted-compliant); fsGroup garante perms.
-      initContainers:
-        - name: bootstrap-creds
-          image: deile-stack:local
-          imagePullPolicy: Never
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -eu
-              mkdir -p /home/claude/.claude
-              CREDS_PVC=/home/claude/.claude/credentials.json
-              CREDS_SECRET=/run/secrets/claude/credentials.json
-              PY_READ_EXP='import json,sys;d=json.load(open(sys.argv[1]));o=d.get("claudeAiOauth") or {};print(int(o.get("expiresAt") or d.get("expiresAt") or 0))'
-              if [ ! -f "$CREDS_PVC" ]; then
-                echo "bootstrap-creds: PVC sem credentials.json - copiando do Secret"
-                cp "$CREDS_SECRET" "$CREDS_PVC"
-                chmod 0600 "$CREDS_PVC"
-              else
-                PVC_EXP=$(python3 -c "$PY_READ_EXP" "$CREDS_PVC" 2>/dev/null || echo 0)
-                SECRET_EXP=$(python3 -c "$PY_READ_EXP" "$CREDS_SECRET" 2>/dev/null || echo 0)
-                if [ "${SECRET_EXP:-0}" -gt "${PVC_EXP:-0}" ]; then
-                  echo "bootstrap-creds: Secret mais recente (Secret=$SECRET_EXP > PVC=$PVC_EXP) - copiando"
-                  cp "$CREDS_SECRET" "$CREDS_PVC"
-                  chmod 0600 "$CREDS_PVC"
-                else
-                  echo "bootstrap-creds: PVC preservado (PVC=$PVC_EXP >= Secret=$SECRET_EXP)"
-                fi
-              fi
-              ls -la "$CREDS_PVC"
-          volumeMounts:
-            - name: claude-credentials
-              mountPath: /run/secrets/claude
-              readOnly: true
-            - name: claude-home
-              mountPath: /home/claude
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 10001
-            runAsGroup: 10001
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
-            seccompProfile: { type: RuntimeDefault }
-
       containers:
         - name: claude-worker
           image: deile-stack:local
@@ -148,6 +93,16 @@ spec:
             # Knob SEPARADO do workdir (CLEANUP_RETENTION_DAYS, mais curto).
             # Editável pelo painel [d] (kubectl set env + rollout, sem rebuild).
             - { name: DEILE_CLAUDE_JSONL_RETENTION_DAYS, value: "30" }
+            # Auth (issue #603): token de assinatura Claude (1 ano via
+            # claude setup-token). NÃO incluído em _SENSITIVE_KEYS do wrapper
+            # (precisa chegar ao subprocess do claude -p).
+            # BILLING: a partir de 15/jun/2026 consome crédito mensal de
+            # Agent SDK (separado do uso interativo) — monitore o consumo.
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: claude-credentials
+                  key: CLAUDE_CODE_OAUTH_TOKEN
           ports:
             - { name: claude-api, containerPort: 8767, protocol: TCP }
           volumeMounts:
@@ -185,10 +140,6 @@ spec:
             seccompProfile: { type: RuntimeDefault }
 
       volumes:
-        - name: claude-credentials
-          secret:
-            secretName: claude-credentials
-            defaultMode: 0o400
         - name: claude-worker-bearer
           secret:
             secretName: claude-worker-bearer

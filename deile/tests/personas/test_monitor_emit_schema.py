@@ -159,15 +159,18 @@ class TestPhaseAEmits:
 class TestNoInteractiveOAuth:
     def test_persona_has_no_claude_auth_login(self, persona):
         assert "claude auth login" not in persona, (
-            "the interactive `claude auth login` (impossible headless) must be removed; "
-            "V1 now renews via try_refresh_claude_credentials"
+            "the interactive `claude auth login` (impossible headless) must be "
+            "removed; auth migrated to setup-token (issue #603)"
         )
 
-    def test_phase_a_uses_real_refresh(self, phase_a):
-        assert "try_refresh_claude_credentials" in phase_a
-        # The bug was the monitor EXECUTING interactive login headless
-        # (`kubectl exec ... claude auth login`). A host-side remediation hint in
-        # a notification body is fine; an exec of it is not.
+    def test_phase_a_has_no_headless_refresh(self, phase_a):
+        # Issue #603: auth migrou para o token de ~1 ano (setup-token,
+        # CLAUDE_CODE_OAUTH_TOKEN via Secret). Não há mais refresh headless —
+        # o símbolo do módulo removido NÃO pode reaparecer no Phase A.
+        assert "try_refresh_claude_credentials" not in phase_a
+        assert "_claude_creds_refresh" not in phase_a
+        # E a remediação continua sendo um HINT (notificação), nunca um exec
+        # de login interativo dentro do pod.
         assert not re.search(r"exec\b[^\n]*auth login", phase_a)
 
 

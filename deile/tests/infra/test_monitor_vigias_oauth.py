@@ -1,10 +1,12 @@
 """Tests for V1 (OAuth) of ``infra/k8s/monitor_vigias.py``.
 
 V1 is the headline fix: the old persona ran ``claude auth login`` (interactive,
-impossible headless) and hammered it ~100×/day. The new V1 calls an injected
-headless ``renew`` coroutine (``try_refresh_claude_credentials`` in production),
-emits ONE structured action, and on a fatal/unrenewable result notifies P0 ONCE
-(cooldown-gated) instead of retrying forever.
+impossible headless) and hammered it ~100×/day. V1 calls an injected ``renew``
+coroutine, emits ONE structured action, and on a fatal/unrenewable result
+notifies P0 ONCE (cooldown-gated) instead of retrying forever. Since issue #603
+(setup-token, ~1-year ``CLAUDE_CODE_OAUTH_TOKEN``) the production ``renew``
+reports ``ok=False`` — there is no headless refresh — so V1 always degrades to
+the notify path when the token actually expires.
 """
 from __future__ import annotations
 

@@ -443,6 +443,99 @@ def test_selecting_claude_worker_when_absent_triggers_install_flow(
 
 
 # ============================================================================
+# Issue #603 — [T] login via setup-token (token ~1 ano)
+# ============================================================================
+
+
+def test_t_key_opens_setup_token_modal(mock_data_with_claude):
+    """``[T]`` abre o modal de confirmação Y/N do setup-token (issue #603)."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    result = view.handle_key("T", MagicMock())
+
+    assert view.mode is not None and view.mode[0] == "setup_token_confirm", (
+        f"expected setup_token modal triggered; view.mode={view.mode}, "
+        f"result={result}"
+    )
+
+
+def test_t_key_blocked_when_install_in_progress(mock_data_with_claude):
+    """``[T]`` enquanto install/login em background → mensagem de bloqueio."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view._install_in_progress = True
+    view.handle_key("T", MagicMock())
+
+    assert view.mode is None  # não abriu modal
+    assert "em andamento" in view.last_msg.lower()
+
+
+def test_setup_token_confirm_triggers_perform_setup_token(
+    mock_data_with_claude, monkeypatch,
+):
+    """Confirmar (Y) o modal de setup-token dispara ``setup_token_claude_worker``
+    via thread daemon (espelho do fluxo [L]/bootstrap)."""
+    import _claude_install
+    from _panel import DispatchMatrixView
+
+    captured = {"called": False, "kwargs": None}
+
+    def fake_setup(**kwargs):
+        captured["called"] = True
+        captured["kwargs"] = kwargs
+        return _claude_install.ClaudeLoginResult(
+            ok=True, secret_applied=True,
+            deployment_applied=True, rollout_ready=True,
+        )
+
+    monkeypatch.setattr(
+        _claude_install, "setup_token_claude_worker", fake_setup,
+    )
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view.handle_key("T", MagicMock())          # abre modal
+    view.handle_key("Y", MagicMock())          # confirma
+
+    if view._install_thread is not None:
+        view._install_thread.join(timeout=2.0)
+
+    assert captured["called"] is True
+    assert view.last_ok is True
+    assert captured["kwargs"].get("interactive") is False
+
+
+def test_perform_setup_token_blocking_mode_runs_inline(
+    mock_data_with_claude, monkeypatch,
+):
+    """``_perform_setup_token(_blocking=True)`` executa inline e publica
+    sucesso — caminho síncrono usado pelos testes."""
+    import _claude_install
+    from _panel import DispatchMatrixView
+
+    calls = {"n": 0}
+
+    def fake_setup(**kwargs):
+        calls["n"] += 1
+        return _claude_install.ClaudeLoginResult(
+            ok=True, secret_applied=True,
+            deployment_applied=True, rollout_ready=True,
+        )
+
+    monkeypatch.setattr(
+        _claude_install, "setup_token_claude_worker", fake_setup,
+    )
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view._perform_setup_token(_blocking=True)
+
+    assert calls["n"] == 1
+    assert view._install_in_progress is False
+    assert view.last_ok is True
+
+
+# ============================================================================
 # Bug #2 hotfix: _perform_install NÃO BLOQUEIA o painel TUI
 # ============================================================================
 

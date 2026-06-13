@@ -279,9 +279,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
-  # Headless OAuth renewal (Phase A V1): try_refresh_claude_credentials reads the
-  # in-pod token and patches the claude-credentials Secret. Same grant the
-  # claude-creds-renewer SA holds in manifest 51 — strictly a subset.
+  # Secret access to the claude-credentials Secret. Issue #603 removed the
+  # headless OAuth renewal (auth is now the ~1-year setup-token); the grant is
+  # kept for parity with the claude-creds-renewer SA in manifest 51 and any
+  # setup-token Secret updates routed through this SA.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "patch", "create"]

@@ -44,7 +44,7 @@ Três resolvers independentes, todos por-stage (`classify, refine, implement, pr
 `infra/k8s/claude_worker_server.py`: lease/heartbeat (`.lease.json`, TTL 30s, hb 5s), session-metadata (`~/.../tasks/<task_id>/session.json` para resume), workspace isolado (`$ROOT/<task_id>`), `startup_cleanup()` (GC de workdirs stale), contrato HTTP (`/v1/dispatch`, `/v1/health`, `/v1/progress`, `/v1/pod-status`). **Tudo isto é agnóstico de CLI** e vira o core compartilhado.
 
 ### 0.4 Específico-do-claude (NÃO reaproveitar — vira adapter)
-argv mounting (`claude -p --permission-mode bypassPermissions --output-format json --model --effort`), parsing do `--output-format json`, OAuth handling (todo o `_claude_creds_refresh`, initContainer bootstrap-creds, CronJob renew), `_coerce_claude_effort`, `_ULTRACODE_PREAMBLE`.
+argv mounting (`claude -p --permission-mode bypassPermissions --output-format json --model --effort`), parsing do `--output-format json`, auth handling (token de ~1 ano via `claude setup-token` / `CLAUDE_CODE_OAUTH_TOKEN`; o antigo `_claude_creds_refresh` + initContainer bootstrap-creds + CronJob renew foram REMOVIDOS na issue #603), `_coerce_claude_effort`, `_ULTRACODE_PREAMBLE`.
 
 ### 0.5 Painel
 `DispatchMatrixView` (tecla `[d]`): matriz stages × (Worker, Model, Reasoning); seta via `kubectl set env deploy/deile-pipeline DEILE_PIPELINE_*`. **Ponto de extensão #4** (incluir novos workers + buscar modelos via `/v1/models`).
