@@ -121,12 +121,14 @@ spec:
             httpGet: { path: /v1/health, port: claude-api }
             initialDelaySeconds: 5
             periodSeconds: 20
+            timeoutSeconds: 5
             failureThreshold: 4
           livenessProbe:
             httpGet: { path: /v1/health, port: claude-api }
             initialDelaySeconds: 30
             periodSeconds: 30
-            failureThreshold: 3
+            timeoutSeconds: 5
+            failureThreshold: 5
           resources:
             requests: { cpu: "100m", memory: "1Gi" }
             limits:   { cpu: "2000m", memory: "6Gi" }
