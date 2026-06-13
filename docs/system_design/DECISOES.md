@@ -639,6 +639,23 @@
 
 ---
 
+## Decisão #52 — Auth do claude-worker via `claude setup-token` (token ~1 ano), substitui OAuth-8h + auto-renew
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 patch |
+| Pilar dono | 14-Containerização, 08-Segurança, 04-Componentes |
+| Decisão | A autenticação do `claude-worker` migra do OAuth interativo de curta duração (~8h, exigia auto-renew headless a cada 4h) para o token de longa duração emitido por `claude setup-token` (escopo `inference-only`, validade ~1 ano — doc `code.claude.com/docs/en/authentication`). O token é injetado no pod via env var `CLAUDE_CODE_OAUTH_TOKEN` montada por `secretKeyRef` (manifest 50) a partir do Secret `claude-credentials`; **não há mais `credentials.json`, initContainer `bootstrap-creds`, nem CronJob de renovação**. O export de `ANTHROPIC_AUTH_TOKEN` foi removido, e `ANTHROPIC_API_KEY` é **stripado explicitamente** do env do papel `claude-worker` no `wrapper.py` (a API key vence o token de assinatura na cadeia de auth do CLI — vazá-la cobraria via key e quebraria a frota). `--bare` é **proibido** no argv do `claude -p` (bare mode NÃO lê `CLAUDE_CODE_OAUTH_TOKEN`), com guard defensivo `_assert_no_bare_in_argv(cmd)` no `claude_worker_server.py`. Novo verb `deploy.py k8s claude-setup-token` (idempotente, aceita `--token` ou `CLAUDE_CODE_OAUTH_TOKEN`) re-aplica Secret + manifests + rollout; novo hotkey `[T]` na `DispatchMatrixView` do painel espelha o `[L]` (switch-login) para o fluxo setup-token. O módulo morto `_claude_creds_refresh.py` (refresh OAuth headless via `kubectl exec`) e seu teste foram removidos; o `implementer.py` deixou de interceptar `WORKER_AUTH_EXPIRED` para refresh+retry — agora apenas **propaga** o erro pro stage handler (que bloqueia a issue), e o vigia de OAuth do `deile-monitor` reporta `ok=False` e notifica o Humano para rodar `claude-setup-token`. A ServiceAccount/RBAC `claude-creds-renewer` (manifest 51) é **mantida** — reusada por `deile-pipeline` (manifest 46) e `deile-monitor` (manifest 55) para scaling/Secret-update on-demand. Renovação: re-rodar `deploy.py k8s claude-setup-token` ~1×/ano quando o token expirar. |
+| Evidência | `infra/k8s/deploy.py` (`k8s_claude_setup_token`); `infra/k8s/_claude_install.py` (`setup_token_claude_worker`, `_kubectl_apply_oauth_token_secret`); `infra/k8s/claude_worker_server.py` (`_assert_no_bare_in_argv` + guard no `dispatch_handler`); `infra/k8s/wrapper.py` (strip de `ANTHROPIC_API_KEY` no `_run_claude_worker`; `_SENSITIVE_KEYS`); `infra/k8s/_panel.py` (hotkey `[T]` + `_open_setup_token_modal`/`_handle_setup_token_confirm`/`_perform_setup_token`); manifest 50 (`CLAUDE_CODE_OAUTH_TOKEN` via `secretKeyRef`); manifest 51 (CronJob removido, SA mantida); `infra/k8s/monitor_tick.py` + `monitor_vigias.py` (renew sem refresh headless). Testes: `deile/tests/infrastructure/test_claude_worker_setup_token.py`, `deile/tests/infra/test_wrapper_claude_worker.py`, `deile/tests/infra/test_dispatch_matrix_view.py`. Removidos: `deile/orchestration/pipeline/_claude_creds_refresh.py`, `deile/tests/orchestration/pipeline/test_oauth_auto_refresh.py`. |
+| Motivação | O OAuth de ~8h obrigava um CronJob de renovação a cada 4h via `kubectl exec` in-pod (`_claude_creds_refresh`), frágil (o "refresh" não trocava o `refresh_token`; o access expirava em ~8h e derrubava a frota inteira em 401/`WORKER_AUTH_EXPIRED`, mascarando "pipeline travado" sem causa de código). O `claude setup-token` entrega um token de ~1 ano: elimina o CronJob, o módulo de refresh e a classe inteira de falhas de expiração de curto prazo. A migração também fecha o gap de segurança onde `ANTHROPIC_API_KEY` poderia vazar pro subprocess e cobrar via key em vez de assinatura. |
+| Fora do escopo | Substituir `kubectl`/`secretKeyRef` por um sidecar credential proxy ou integração Vault (FU da #43). Rotação automática do token de ~1 ano (continua manual via `claude-setup-token`). |
+
+### Histórico
+
+- **2026-06-13** — Decisão criada. Migração de auth do claude-worker para `claude setup-token` (issue #603, PR #680). Export de `ANTHROPIC_AUTH_TOKEN` removido; `CLAUDE_CODE_OAUTH_TOKEN` via Secret; CronJob de renovação e `_claude_creds_refresh` removidos; `ANTHROPIC_API_KEY` stripado; `--bare` proibido. Hotkey `[T]` no painel + verb `deploy.py k8s claude-setup-token`.
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |

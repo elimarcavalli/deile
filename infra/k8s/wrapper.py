@@ -1058,6 +1058,19 @@ def _run_claude_worker(passthrough: List[str]) -> int:
     _load_secret_files(Path("/run/secrets/deile"))
     _setup_forge_credentials()
 
+    # Auth (issue #603): o ``claude -p`` autentica via CLAUDE_CODE_OAUTH_TOKEN
+    # (setup-token, ~1 ano). ANTHROPIC_API_KEY tem precedência sobre o token na
+    # cadeia de auth do CLI — se vazasse pro subprocess, cobraria via API key
+    # (não assinatura) e poderia quebrar a frota. Removido explicitamente do
+    # env do pod ANTES de qualquer dispatch (o ``deile`` role faz o mesmo via
+    # ``_patch_deile_bootstrap``; aqui não há bootstrap de providers).
+    if os.environ.pop("ANTHROPIC_API_KEY", None) is not None:
+        print(
+            "wrapper(claude-worker): ANTHROPIC_API_KEY removido do env "
+            "(auth via CLAUDE_CODE_OAUTH_TOKEN — issue #603)",
+            file=sys.stderr,
+        )
+
     # Política V1: NÃO carregamos provedores LLM nem instalamos whitelist
     # do agente DEILE in-process. O claude_worker_server gerencia a CLI
     # claude por subprocess; o sandboxing efetivo é a allowlist de repos

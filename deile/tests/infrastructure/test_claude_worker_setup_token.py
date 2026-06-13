@@ -98,6 +98,39 @@ def test_assert_no_bare_similar_flags_ok(cws_mod):
     cws_mod._assert_no_bare_in_argv(["claude", "-p", "--bare-metal-flag", "prompt"])
 
 
+def test_canonical_dispatch_argv_has_no_bare(cws_mod):
+    """O argv canônico do dispatch (espelho de ``dispatch_handler``) NÃO contém
+    ``--bare`` e passa pelo guard sem erro.
+
+    Bare mode não lê ``CLAUDE_CODE_OAUTH_TOKEN`` (doc Anthropic), então o
+    ``claude -p`` do dispatch jamais pode receber ``--bare`` — caso contrário
+    a auth por setup-token (issue #603) seria silenciosamente ignorada.
+    """
+    cmd = [
+        "claude", "-p",
+        "--permission-mode", "bypassPermissions",
+        "--output-format", "json",
+        "-r", "0123456789abcdef",
+        "--model", "claude-opus-4-8",
+        "--effort", "high",
+        "--max-budget-usd", "8",
+        "prompt do dispatch",
+    ]
+    assert "--bare" not in cmd
+    cws_mod._assert_no_bare_in_argv(cmd)
+
+
+def test_dispatch_handler_invokes_bare_guard(cws_mod):
+    """O ``dispatch_handler`` chama ``_assert_no_bare_in_argv(cmd)`` após montar
+    o argv — garante que o guard está REALMENTE wired no caminho de dispatch,
+    não apenas testável em isolamento."""
+    source = Path(cws_mod.__file__).read_text(encoding="utf-8")
+    assert "_assert_no_bare_in_argv(cmd)" in source, (
+        "o guard anti-`--bare` precisa ser invocado sobre o cmd montado no "
+        "dispatch (issue #603)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Verificação do CLAUDE_CODE_OAUTH_TOKEN no startup
 # ---------------------------------------------------------------------------
@@ -109,6 +142,9 @@ def test_main_logs_warning_when_oauth_token_absent(cws_mod, monkeypatch, tmp_pat
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_HOST", "127.0.0.1")
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_PORT", "19999")
+    # Bearer de teste (fallback env de _read_auth_token) — sem ele o startup
+    # aborta na checagem do bearer ANTES de chegar no warning do OAuth.
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_AUTH_TOKEN", "test-bearer-token")
 
     warnings_logged = []
 
