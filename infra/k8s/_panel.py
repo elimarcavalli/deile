@@ -4111,9 +4111,16 @@ class LiveSessionView(View):
             return ActionResult.refresh()
 
         if isinstance(reply, ApiError):
-            _audit_pod_action("kill", resource, result="failed",
-                              detail=f"HTTP {reply.status}: {reply.message}")
-            app.push_toast("⚠", f"kill: HTTP {reply.status} — {reply.message}")
+            if reply.status == 409:
+                # CA7/CA2: 409 = ação despachada ao servidor, processo já não existe.
+                # Alinha com _apply_cleanup-409: result="allowed" (não "failed").
+                _audit_pod_action("kill", resource, result="allowed",
+                                  detail="409 server: task já encerrada (sem processo vivo)")
+                app.push_toast("ℹ", "task já encerrada (sem processo vivo)")
+            else:
+                _audit_pod_action("kill", resource, result="failed",
+                                  detail=f"HTTP {reply.status}: {reply.message}")
+                app.push_toast("⚠", f"kill: HTTP {reply.status} — {reply.message}")
             return ActionResult.refresh()
 
         killed = bool((reply or {}).get("killed"))

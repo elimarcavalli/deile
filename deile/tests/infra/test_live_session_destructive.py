@@ -12,7 +12,7 @@ Cobertura:
   CA9  — confirm_action resolvido antes de _export_mode/_prompt_open;
           k/C inertes durante filtro ou export.
 
-16 testes.
+20 testes.
 """
 from __future__ import annotations
 
@@ -189,15 +189,24 @@ def test_kill_200_returns_refresh():
 
 
 def test_kill_409_toasts_and_stays():
-    """CA2: kill retornando HTTP 409 → toast + stay."""
+    """CA2/CA7: kill retornando HTTP 409 → toast amigável + stay + audit result=allowed."""
     view = _make_view()
     app = _FakeApp()
     client = _fake_client(kill_reply=ApiError(status=409, message="no alive process"))
     _patch_client(view, client)
+    audit_log = []
 
-    view.confirm_action = "k"
-    view._apply_kill(app)
-    assert any("409" in str(t) for t in app.toasts)
+    import _panel_data as _pd
+    original = _pd._audit_pod_action
+    try:
+        _pd._audit_pod_action = lambda *a, **kw: audit_log.append(kw)
+        view.confirm_action = "k"
+        view._apply_kill(app)
+    finally:
+        _pd._audit_pod_action = original
+
+    assert any("já encerrada" in str(t) for t in app.toasts)
+    assert any(e.get("result") == "allowed" for e in audit_log)
 
 
 # ---------------------------------------------------------------------------
