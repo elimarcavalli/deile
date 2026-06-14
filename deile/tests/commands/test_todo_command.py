@@ -301,6 +301,37 @@ class TestHACKandXXX:
         assert "XXX" in rendered
 
 
+class TestAgeColumn:
+    async def test_age_column_shows_days(self, tmp_path: Path):
+        """Coluna Idade exibe Nd (ex.: 1d) em vez de '?' — regressão do bug #690.
+
+        O git blame --line-porcelain emite 'committer-time' (hífen); o fix
+        normaliza para 'committer_time' (underscore) antes de armazenar no
+        blame_map, garantindo que _calc_age_days receba o timestamp correto.
+        """
+        import re
+
+        repo = tmp_path / "age_repo"
+        repo.mkdir()
+        _run_git(repo, "init")
+
+        (repo / "todo_age.py").write_text("# TODO: check age column\n")
+        _run_git(repo, "add", "todo_age.py")
+        _run_git(repo, "commit", "-m", "commit with todo")
+
+        with _cd(repo):
+            result = await _cmd().execute(_ctx())
+
+        assert result.success
+        rendered = _render(result.content)
+        # A coluna Idade deve conter ao menos um valor numérico (ex.: "0d", "1d")
+        assert re.search(r"\d+d", rendered), (
+            f"Expected a numeric age like '0d' or '1d' in table, got:\n{rendered}"
+        )
+        # Não deve exibir "?" para arquivos corretamente comitados
+        assert "?" not in rendered.split("Idade")[-1].split("\n")[0]
+
+
 # ---------------------------------------------------------------------------
 # Helper: change directory as context manager
 # ---------------------------------------------------------------------------
