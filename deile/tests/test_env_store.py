@@ -257,6 +257,35 @@ class TestUnsetVar:
         result = unset_var("GHOST", home=tmp_path)
         assert result is False
 
+    def test_disk_failure_preserves_environ(self, tmp_path, monkeypatch):
+        # Bug A: when _save_raw returns False, the key must NOT be removed from
+        # os.environ — otherwise memory and disk diverge (credencial reaparece no boot).
+        import deile.config.env_store as _m
+        from deile.config.env_store import store_var, unset_var
+
+        monkeypatch.delenv("BUGTEST_TOKEN", raising=False)
+        store_var("BUGTEST_TOKEN", "secretval", home=tmp_path)
+
+        monkeypatch.setattr(_m, "_save_raw", lambda _path, _data: False)
+
+        result = unset_var("BUGTEST_TOKEN", home=tmp_path)
+        assert result is True  # key existed in store
+        assert os.environ.get("BUGTEST_TOKEN") == "secretval"  # environ unchanged
+
+
+@pytest.mark.unit
+class TestSaveRawOrphanCleanup:
+    def test_no_orphan_tmp_on_json_type_error(self, tmp_path):
+        # Bug B: a failed json.dump must not leave a .tmp file in ~/.deile.
+        from deile.config.env_store import _save_raw
+
+        path = tmp_path / ".deile" / "settings.json"
+        result = _save_raw(path, {"key": object()})  # object() is not JSON-serializable
+
+        assert result is False
+        tmp_files = list((tmp_path / ".deile").glob("*.tmp"))
+        assert tmp_files == [], f"Orphan tmp files found: {tmp_files}"
+
 
 @pytest.mark.unit
 class TestListVars:
