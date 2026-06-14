@@ -212,3 +212,115 @@ class TestMentionPrConcurrencyGuardPreserved:
         assert not outcome.ok
         # O guard retorna DISPATCH_SKIPPED_CONCURRENT (ou similar) — basta ok=False.
         assert outcome.error, "error deve estar preenchido quando bloqueado"
+
+
+# ---------------------------------------------------------------------------
+# Regressão #713: DISPATCH_SKIPPED_STILL_RUNNING não deve consumir tentativa
+# ---------------------------------------------------------------------------
+
+class TestMentionSkipStillRunningGuard:
+    """Guard: DISPATCH_SKIPPED_STILL_RUNNING não consome tentativa de resume.
+
+    Sem o guard, ``_dispatch_mention_group`` chamava ``update_from_worker``
+    incondicionalmente — mesmo quando o dispatch foi *pulado* porque o
+    claude-worker já estava rodando. Isso incrementava ``attempt`` +1 por tick
+    até ``resume_max_attempts``, disparando ``_comment_mention_gave_up`` e
+    abandonando uma PR saudável em progresso.
+    """
+
+    async def test_attempt_not_incremented_on_skip_still_running(self):
+        """attempt NÃO deve mudar quando DISPATCH_SKIPPED_STILL_RUNNING é retornado.
+
+        Sem o guard:
+          attempt = resume_max - 1  → tick skip → attempt = resume_max
+          → próximo tick: ceiling dispara → PR abandonada.
+        Com o guard: attempt permanece em resume_max - 1 enquanto o worker vive.
+        """
+        from deile.orchestration.pipeline.stages import (
+            MentionTrigger, _dispatch_mention_group,
+        )
+        from deile.orchestration.pipeline.labels import MENTION_DONE
+
+        # _make_monitor sobrescreve impl.mention quando impl é MagicMock —
+        # por isso configuramos o outcome DEPOIS de criar o monitor.
+        monitor, github = _make_monitor()
+        monitor.implementer.mention = AsyncMock(
+            return_value=WorkOutcome(
+                ok=False, text="",
+                error="DISPATCH_SKIPPED_STILL_RUNNING: dispatch #123 still alive",
+            )
+        )
+
+        pr_number = 99
+        resume_max = monitor.config.resume_max_attempts  # default 10
+        # Semeia attempt no limite − 1: sem o guard o próximo tick alcança o teto.
+        state = monitor._resume_tracker.get(pr_number)
+        state.attempt = resume_max - 1
+
+        pr = _pr_ref(pr_number)
+        group = [MentionTrigger(trigger_type="assignee", pr=pr)]
+        dedup_key = f"pr:{pr_number}:assignee"
+
+        await _dispatch_mention_group(monitor, dedup_key, group, "deile-one", 0.0)
+
+        # (a) attempt NÃO deve ter sido incrementado.
+        after = monitor._resume_tracker.get(pr_number).attempt
+        assert after == resume_max - 1, (
+            f"DISPATCH_SKIPPED_STILL_RUNNING deve preservar attempt; "
+            f"esperado {resume_max - 1}, obtido {after}"
+        )
+
+        # (b) ~mention:processado NÃO deve ter sido aplicado.
+        for call_args in github.add_labels.call_args_list:
+            labels = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("labels", [])
+            assert MENTION_DONE not in labels, (
+                f"~mention:processado não deve ser aplicado em DISPATCH_SKIPPED_STILL_RUNNING; "
+                f"encontrado em add_labels({call_args})"
+            )
+
+    async def test_gave_up_not_triggered_after_multiple_skips(self):
+        """Múltiplos ticks de DISPATCH_SKIPPED_STILL_RUNNING não devem dar gave_up.
+
+        Demonstra que o guard bloqueia a regressão: sem ele, após 2 ticks
+        (attempt sobe de resume_max-1 para resume_max, depois dispara o ceiling)
+        a PR seria abandonada. Com o guard, 2 ticks são inofensivos.
+        """
+        from deile.orchestration.pipeline.stages import (
+            MentionTrigger, _dispatch_mention_group,
+        )
+        from deile.orchestration.pipeline.labels import MENTION_DONE
+
+        monitor, github = _make_monitor()
+        monitor.implementer.mention = AsyncMock(
+            return_value=WorkOutcome(
+                ok=False, text="",
+                error="DISPATCH_SKIPPED_STILL_RUNNING: dispatch #456 still alive",
+            )
+        )
+
+        pr_number = 100
+        resume_max = monitor.config.resume_max_attempts
+        state = monitor._resume_tracker.get(pr_number)
+        state.attempt = resume_max - 1
+
+        pr = _pr_ref(pr_number)
+        group = [MentionTrigger(trigger_type="assignee", pr=pr)]
+        dedup_key = f"pr:{pr_number}:assignee"
+
+        # Dois ticks consecutivos de skip.
+        await _dispatch_mention_group(monitor, dedup_key, group, "deile-one", 0.0)
+        await _dispatch_mention_group(monitor, dedup_key, group, "deile-one", 0.0)
+
+        # Attempt permanece inalterado após 2 ticks.
+        after = monitor._resume_tracker.get(pr_number).attempt
+        assert after == resume_max - 1, (
+            f"Dois ticks de DISPATCH_SKIPPED_STILL_RUNNING não devem queimar o ceiling; "
+            f"esperado {resume_max - 1}, obtido {after}"
+        )
+
+        # ~mention:processado nunca deve ter sido aplicado.
+        for call_args in github.add_labels.call_args_list:
+            labels = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("labels", [])
+            assert MENTION_DONE not in labels, (
+                "~mention:processado não deve ser aplicado em DISPATCH_SKIPPED_STILL_RUNNING"
+            )

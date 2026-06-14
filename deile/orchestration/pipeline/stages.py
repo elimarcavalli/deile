@@ -782,6 +782,19 @@ async def _dispatch_mention_group(
         logger.warning("mention dispatch error for %s: %s", dedup_key, exc)
         return
 
+    # Skip-because-still-running is NOT a real attempt — the previous dispatch
+    # is still alive in the worker, so no new work happened this tick. Return
+    # BEFORE ``update_from_worker`` (which bumps attempt +1 per call): a long
+    # resume spanning more ticks than ``resume_max_attempts`` would otherwise
+    # burn its whole budget on no-op skips and block a healthy PR in progress
+    # (same root cause as the implement #509 and pr_review regressions).
+    if not outcome.ok and "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
+        logger.info(
+            "mention %s: dispatch skipped (claude ainda alive) — sem consumir tentativa",
+            dedup_key,
+        )
+        return
+
     if sticky:
         # Absorb the worker's ground-truth bookkeeping (attempt/fingerprint)
         # so the ceiling advances and a stuck loop is bounded.
