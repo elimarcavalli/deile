@@ -151,3 +151,45 @@ class TestSettingsJsonLoadingCostCap:
         assert s.pipeline_cost_cap_usd == Decimal("2.00")
         assert s.pipeline_cost_cap_usd_implement == Decimal("5.00")
         assert s.pipeline_cost_cap_usd_classify is None
+
+
+class TestToOptionalPositiveDecimalNonFinite:
+    """Regression tests for issue #712: NaN/Infinity must raise ValueError, not crash."""
+
+    @pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "inf", "Inf", "-inf"])
+    def test_non_finite_string_raises_value_error(self, value):
+        with pytest.raises(ValueError, match="finite"):
+            _to_optional_positive_decimal(value)
+
+    @pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "inf"])
+    def test_non_finite_string_does_not_raise_invalid_operation(self, value):
+        import decimal
+        try:
+            _to_optional_positive_decimal(value)
+            pytest.fail("Expected ValueError but got no exception")
+        except ValueError:
+            pass  # correct
+        except decimal.InvalidOperation:
+            pytest.fail("Raised decimal.InvalidOperation instead of ValueError — bug #712")
+
+    def test_nan_decimal_direct_raises_value_error(self):
+        with pytest.raises(ValueError, match="finite"):
+            _to_optional_positive_decimal(Decimal("NaN"))
+
+    def test_infinity_decimal_direct_raises_value_error(self):
+        with pytest.raises(ValueError, match="finite"):
+            _to_optional_positive_decimal(Decimal("Infinity"))
+
+    def test_nan_via_apply_overrides_does_not_raise(self):
+        """apply_overrides must skip NaN gracefully — no crash on settings load (issue #712)."""
+        cfg = {"pipeline": {"cost_caps_usd": {"implement": "NaN"}}}
+        s = Settings()
+        s.apply_overrides(cfg)  # must not raise
+        assert s.pipeline_cost_cap_usd_implement is None
+
+    def test_infinity_via_apply_overrides_does_not_become_valid_cap(self):
+        """Infinity must not pass as a valid cost cap — it would disable the cost guard."""
+        cfg = {"pipeline": {"cost_caps_usd": {"implement": "Infinity"}}}
+        s = Settings()
+        s.apply_overrides(cfg)  # must not raise
+        assert s.pipeline_cost_cap_usd_implement is None
