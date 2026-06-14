@@ -2933,3 +2933,112 @@ def test_estimate_context_tokens_zero_when_missing(
     mod = claude_worker_module
     monkeypatch.setattr(mod, "_resolve_jsonl_path", lambda s, w: None)
     assert mod._estimate_context_tokens("sess", tmp_path) == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Issue #515 — versioned agent personalization: skill/CLAUDE.md injection
+# ─────────────────────────────────────────────────────────────────────────────
+
+import stat
+
+_AGENTS_DIR_CW = (
+    Path(__file__).resolve().parents[3] / "infra" / "k8s" / "agents" / "claude-worker"
+)
+
+
+def test_versioned_skill_file_exists_and_readable() -> None:
+    """Issue #515 AC#1 — skill brainstorm deve existir na fonte versionada."""
+    skill_path = _AGENTS_DIR_CW / "skills" / "brainstorm" / "SKILL.md"
+    assert skill_path.is_file(), (
+        f"Skill versionada ausente: {skill_path}. "
+        "A fonte em infra/k8s/agents/ é a origem canônica injetada pelo initContainer "
+        "(issue #515 AC#1)."
+    )
+    content = skill_path.read_text(encoding="utf-8")
+    assert len(content) > 100, (
+        f"Skill {skill_path} parece vazia ou truncada ({len(content)} chars)."
+    )
+
+
+def test_versioned_claude_md_exists_and_readable() -> None:
+    """Issue #515 AC#2 — CLAUDE.md versionado deve existir na fonte."""
+    claude_md = _AGENTS_DIR_CW / "CLAUDE.md"
+    assert claude_md.is_file(), (
+        f"CLAUDE.md versionado ausente: {claude_md} (issue #515 AC#2)."
+    )
+    content = claude_md.read_text(encoding="utf-8")
+    assert len(content) > 50, f"CLAUDE.md parece vazio ({len(content)} chars)."
+
+
+def test_versioned_command_plan_exists() -> None:
+    """Issue #515 — command plan.md deve existir na fonte versionada."""
+    cmd_path = _AGENTS_DIR_CW / "commands" / "plan.md"
+    assert cmd_path.is_file(), (
+        f"Command plan.md ausente: {cmd_path} (issue #515)."
+    )
+
+
+def test_initcontainer_script_uses_chmod_0644() -> None:
+    """Issue #515 AC#1 — o script do initContainer inject-agents usa chmod 0644.
+
+    Verifica o YAML do manifest diretamente (sem precisar de k8s em execução).
+    O mode 0644 garante que o owner 10001:10001 (uid deile) pode ler/escrever
+    mas outros não podem — exigência explícita do AC#1.
+    """
+    import yaml
+
+    manifest_path = (
+        Path(__file__).resolve().parents[3]
+        / "infra" / "k8s" / "manifests" / "50-claude-worker-deployment.yaml"
+    )
+    assert manifest_path.is_file(), f"Manifest ausente: {manifest_path}"
+    docs = list(yaml.safe_load_all(manifest_path.read_text(encoding="utf-8")))
+    deployment = next(
+        (d for d in docs if d and d.get("kind") == "Deployment"), None
+    )
+    assert deployment is not None, "Deployment não encontrado no manifest 50."
+    init_containers = (
+        (deployment.get("spec", {}) or {})
+        .get("template", {})
+        .get("spec", {})
+        .get("initContainers") or []
+    )
+    inject = next((c for c in init_containers if c.get("name") == "inject-agents"), None)
+    assert inject is not None, "initContainer 'inject-agents' não encontrado."
+    args = inject.get("args") or []
+    script = " ".join(str(a) for a in args)
+    assert "chmod 0644" in script, (
+        "initContainer 'inject-agents' não chama 'chmod 0644'. "
+        "AC#1 exige mode 0644 nos arquivos injetados (issue #515)."
+    )
+
+
+def test_initcontainer_script_fails_fast_on_missing_source() -> None:
+    """Issue #515 AC#5 — o script do initContainer usa 'set -eu' (fail-fast).
+
+    Se a fonte estiver ausente, o initContainer deve falhar imediatamente
+    (não subir o pod meio-configurado silenciosamente).
+    """
+    import yaml
+
+    manifest_path = (
+        Path(__file__).resolve().parents[3]
+        / "infra" / "k8s" / "manifests" / "50-claude-worker-deployment.yaml"
+    )
+    docs = list(yaml.safe_load_all(manifest_path.read_text(encoding="utf-8")))
+    deployment = next((d for d in docs if d and d.get("kind") == "Deployment"), None)
+    assert deployment is not None
+    init_containers = (
+        (deployment.get("spec", {}) or {})
+        .get("template", {})
+        .get("spec", {})
+        .get("initContainers") or []
+    )
+    inject = next((c for c in init_containers if c.get("name") == "inject-agents"), None)
+    assert inject is not None
+    args = inject.get("args") or []
+    script = " ".join(str(a) for a in args)
+    assert "set -eu" in script, (
+        "initContainer 'inject-agents' não usa 'set -eu'. "
+        "AC#5 exige fail-fast quando a fonte estiver ausente (issue #515)."
+    )

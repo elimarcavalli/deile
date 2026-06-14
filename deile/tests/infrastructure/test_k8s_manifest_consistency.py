@@ -480,3 +480,231 @@ def test_pipeline_critical_env_no_duplicates_and_non_empty(
         "(settings.json → built-in) sem log — declare o valor explicitamente "
         "ou remova a entrada do manifest."
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Issue #515 — personalização versionada dos workers (agents ConfigMaps)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_AGENTS_DIR = MANIFEST_DIR.parent / "agents"
+_CONFIGMAP_LIMIT_BYTES = 1 * 1024 * 1024  # 1 MiB limite rígido do Kubernetes
+
+
+def _get_configmap(docs: list[dict], name: str) -> dict | None:
+    for d in docs:
+        if d.get("kind") == "ConfigMap" and (d.get("metadata", {}) or {}).get("name") == name:
+            return d
+    return None
+
+
+def _get_deployment(docs: list[dict], name: str) -> dict | None:
+    for d in docs:
+        if d.get("kind") == "Deployment" and (d.get("metadata", {}) or {}).get("name") == name:
+            return d
+    return None
+
+
+def _pod_spec(deployment: dict) -> dict:
+    return (deployment.get("spec", {}) or {}).get("template", {}).get("spec", {}) or {}
+
+
+def test_agents_configmaps_exist(docs: list[dict]) -> None:
+    """Issue #515 — ConfigMaps de agents devem existir nos manifests."""
+    cm_claude = _get_configmap(docs, "claude-worker-agents")
+    assert cm_claude is not None, (
+        "ConfigMap 'claude-worker-agents' ausente nos manifests. "
+        "Adicione 48-claude-worker-agents-configmap.yaml (issue #515)."
+    )
+    cm_deile = _get_configmap(docs, "deile-worker-agents")
+    assert cm_deile is not None, (
+        "ConfigMap 'deile-worker-agents' ausente nos manifests. "
+        "Adicione 48b-deile-worker-agents-configmap.yaml (issue #515)."
+    )
+
+
+def test_claude_worker_agents_configmap_size(docs: list[dict]) -> None:
+    """Issue #515 AC#7 — conteúdo do ConfigMap claude-worker-agents < 1 MiB."""
+    cm = _get_configmap(docs, "claude-worker-agents")
+    assert cm is not None, "ConfigMap 'claude-worker-agents' ausente — rode test_agents_configmaps_exist."
+    data = cm.get("data") or {}
+    total = sum(len((v or "").encode("utf-8")) for v in data.values())
+    assert total < _CONFIGMAP_LIMIT_BYTES, (
+        f"ConfigMap 'claude-worker-agents' excede o limite de 1 MiB do Kubernetes: "
+        f"{total} bytes. Para catálogos maiores, use entrega via imagem baked (issue #516)."
+    )
+
+
+def test_deile_worker_agents_configmap_size(docs: list[dict]) -> None:
+    """Issue #515 AC#7 — conteúdo do ConfigMap deile-worker-agents < 1 MiB."""
+    cm = _get_configmap(docs, "deile-worker-agents")
+    assert cm is not None, "ConfigMap 'deile-worker-agents' ausente — rode test_agents_configmaps_exist."
+    data = cm.get("data") or {}
+    total = sum(len((v or "").encode("utf-8")) for v in data.values())
+    assert total < _CONFIGMAP_LIMIT_BYTES, (
+        f"ConfigMap 'deile-worker-agents' excede o limite de 1 MiB do Kubernetes: "
+        f"{total} bytes. Para catálogos maiores, use entrega via imagem baked (issue #516)."
+    )
+
+
+def test_claude_worker_has_inject_agents_initcontainer(docs: list[dict]) -> None:
+    """Issue #515 AC#2 — claude-worker deve ter initContainer inject-agents."""
+    dep = _get_deployment(docs, "claude-worker")
+    assert dep is not None, "Deployment 'claude-worker' não encontrado nos manifests."
+    pod_spec = _pod_spec(dep)
+    init_containers = pod_spec.get("initContainers") or []
+    names = [c.get("name") for c in init_containers]
+    assert "inject-agents" in names, (
+        f"Deployment 'claude-worker' não tem initContainer 'inject-agents': {names}. "
+        "O initContainer é obrigatório para injetar CLAUDE.md/skills no PVC (issue #515)."
+    )
+
+
+def test_claude_worker_inject_agents_uses_chmod_0644(docs: list[dict]) -> None:
+    """Issue #515 AC#1 — initContainer inject-agents deve usar chmod 0644 nos arquivos."""
+    dep = _get_deployment(docs, "claude-worker")
+    assert dep is not None, "Deployment 'claude-worker' não encontrado."
+    pod_spec = _pod_spec(dep)
+    init_containers = pod_spec.get("initContainers") or []
+    inject = next((c for c in init_containers if c.get("name") == "inject-agents"), None)
+    assert inject is not None, "initContainer 'inject-agents' não encontrado."
+    args = inject.get("args") or []
+    script = " ".join(args)
+    assert "chmod 0644" in script, (
+        "initContainer 'inject-agents' não chama 'chmod 0644'. "
+        "O AC#1 exige mode 0644 nos arquivos injetados (issue #515)."
+    )
+
+
+def test_claude_worker_inject_agents_idempotent_by_cmp(docs: list[dict]) -> None:
+    """Issue #515 AC#2/#4a — idempotência por conteúdo (cmp -s), não por timestamp."""
+    dep = _get_deployment(docs, "claude-worker")
+    assert dep is not None
+    pod_spec = _pod_spec(dep)
+    init_containers = pod_spec.get("initContainers") or []
+    inject = next((c for c in init_containers if c.get("name") == "inject-agents"), None)
+    assert inject is not None, "initContainer 'inject-agents' não encontrado."
+    args = inject.get("args") or []
+    script = " ".join(args)
+    assert "cmp -s" in script or "cmp" in script, (
+        "initContainer 'inject-agents' não usa 'cmp -s' para comparação de conteúdo. "
+        "AC#2/#4a exige idempotência por hash/diff de conteúdo, não por timestamp "
+        "(expiresAt era lógica específica de credencial, não reutilizável aqui — issue #515)."
+    )
+
+
+def test_claude_worker_inject_agents_mounts_configmap(docs: list[dict]) -> None:
+    """Issue #515 — initContainer inject-agents deve montar o ConfigMap claude-worker-agents."""
+    dep = _get_deployment(docs, "claude-worker")
+    assert dep is not None
+    pod_spec = _pod_spec(dep)
+    # verifica que o volume claude-agents-source usa o ConfigMap correto
+    volumes = pod_spec.get("volumes") or []
+    agents_vol = next((v for v in volumes if v.get("name") == "claude-agents-source"), None)
+    assert agents_vol is not None, (
+        "Volume 'claude-agents-source' ausente no Deployment 'claude-worker'. "
+        "Adicione o volume que mapeia ConfigMap 'claude-worker-agents' (issue #515)."
+    )
+    cm_name = (agents_vol.get("configMap") or {}).get("name")
+    assert cm_name == "claude-worker-agents", (
+        f"Volume 'claude-agents-source' não aponta para 'claude-worker-agents': {cm_name!r}."
+    )
+
+
+def test_deile_worker_mounts_agents_configmap_readonly(docs: list[dict]) -> None:
+    """Issue #515 AC#3/#4b — deile-worker deve montar deile-agents ro em /etc/deile/agents."""
+    dep = _get_deployment(docs, "deile-worker")
+    assert dep is not None, "Deployment 'deile-worker' não encontrado."
+    pod_spec = _pod_spec(dep)
+    containers = pod_spec.get("containers") or []
+    worker = next((c for c in containers if c.get("name") == "worker"), None)
+    assert worker is not None, "Container 'worker' não encontrado em deile-worker."
+
+    mounts = worker.get("volumeMounts") or []
+    agents_mount = next((m for m in mounts if m.get("name") == "deile-agents"), None)
+    assert agents_mount is not None, (
+        "VolumeMount 'deile-agents' ausente no container 'worker' do deile-worker. "
+        "O mount é obrigatório para DEILE.md e skills (issue #515 AC#3)."
+    )
+    assert agents_mount.get("readOnly") is True, (
+        "VolumeMount 'deile-agents' não é readOnly. "
+        "AC#4b: o ConfigMap deve ser montado ro — idempotente por construção (issue #515)."
+    )
+    assert agents_mount.get("mountPath") == "/etc/deile/agents", (
+        f"VolumeMount 'deile-agents' não está em /etc/deile/agents: "
+        f"{agents_mount.get('mountPath')!r} (issue #515)."
+    )
+
+
+def test_deile_worker_agents_volume_uses_correct_configmap(docs: list[dict]) -> None:
+    """Issue #515 — volume deile-agents deve referenciar ConfigMap deile-worker-agents."""
+    dep = _get_deployment(docs, "deile-worker")
+    assert dep is not None
+    pod_spec = _pod_spec(dep)
+    volumes = pod_spec.get("volumes") or []
+    agents_vol = next((v for v in volumes if v.get("name") == "deile-agents"), None)
+    assert agents_vol is not None, (
+        "Volume 'deile-agents' ausente no Deployment 'deile-worker' (issue #515)."
+    )
+    cm_name = (agents_vol.get("configMap") or {}).get("name")
+    assert cm_name == "deile-worker-agents", (
+        f"Volume 'deile-agents' não aponta para 'deile-worker-agents': {cm_name!r}."
+    )
+
+
+def test_agents_versioned_source_files_exist() -> None:
+    """Issue #515 AC#8 — arquivos-fonte versionados devem existir em infra/k8s/agents/."""
+    required = [
+        _AGENTS_DIR / "claude-worker" / "CLAUDE.md",
+        _AGENTS_DIR / "claude-worker" / "skills" / "brainstorm" / "SKILL.md",
+        _AGENTS_DIR / "claude-worker" / "skills" / "brainstorm" / "PROVENANCE",
+        _AGENTS_DIR / "claude-worker" / "commands" / "plan.md",
+        _AGENTS_DIR / "deile-worker" / "DEILE.md",
+        _AGENTS_DIR / "deile-worker" / "skills" / "deile-systematic-debug" / "SKILL.md",
+    ]
+    missing = [str(p) for p in required if not p.is_file()]
+    assert not missing, (
+        f"Arquivos-fonte versionados ausentes em infra/k8s/agents/ (issue #515 AC#8):\n"
+        + "\n".join(f"  {p}" for p in missing)
+        + "\nEsses arquivos são a fonte autoritativa; o ConfigMap é derivado deles."
+    )
+
+
+def test_brainstorm_skill_provenance_has_commit_sha() -> None:
+    """Issue #515 AC#8 — PROVENANCE da skill brainstorm deve registrar commit SHA."""
+    provenance = _AGENTS_DIR / "claude-worker" / "skills" / "brainstorm" / "PROVENANCE"
+    if not provenance.is_file():
+        pytest.skip("PROVENANCE ausente — coberto por test_agents_versioned_source_files_exist")
+    content = provenance.read_text(encoding="utf-8")
+    # commit SHA: 40 chars hex
+    import re
+    sha_pattern = re.compile(r"\b[0-9a-f]{40}\b")
+    assert sha_pattern.search(content), (
+        f"PROVENANCE da skill brainstorm não contém commit SHA (40 hex chars): "
+        f"{provenance}. AC#8 exige pin explícito a commit/tag para reprodutibilidade."
+    )
+
+
+def test_claude_worker_agents_configmap_keys_match_sources() -> None:
+    """Issue #515 AC#8 — chaves do ConfigMap devem ter conteúdo idêntico às fontes versionadas."""
+    source_map = {
+        "CLAUDE.md": _AGENTS_DIR / "claude-worker" / "CLAUDE.md",
+        "plan.md": _AGENTS_DIR / "claude-worker" / "commands" / "plan.md",
+    }
+    docs = _load_all_docs()
+    cm = _get_configmap(docs, "claude-worker-agents")
+    if cm is None:
+        pytest.skip("ConfigMap ausente — coberto por test_agents_configmaps_exist")
+    data = cm.get("data") or {}
+    mismatches: list[str] = []
+    for key, src_path in source_map.items():
+        if not src_path.is_file():
+            mismatches.append(f"{key}: fonte ausente em {src_path}")
+            continue
+        src_content = src_path.read_text(encoding="utf-8").strip()
+        cm_content = (data.get(key) or "").strip()
+        if src_content != cm_content:
+            mismatches.append(
+                f"{key}: divergência entre fonte ({src_path}) e ConfigMap. "
+                f"Sincronize o conteúdo (issue #515 AC#8)."
+            )
+    assert not mismatches, "\n".join(mismatches)

@@ -114,6 +114,13 @@ spec:
               mountPath: /etc/deile/settings.json
               subPath: worker-settings.json
               readOnly: true
+            # DEILE.md + skills do deile-worker (issue #515) — montado read-only
+            # em /etc/deile/agents/. Idempotente por construção (ro ConfigMap).
+            # O loader resolve deile_md.user_path e skills_paths via
+            # worker-settings.json (manifest 47, chaves deile_md + skills_paths).
+            - name: deile-agents
+              mountPath: /etc/deile/agents
+              readOnly: true
           readinessProbe:
             httpGet: { path: /v1/health, port: worker-api }
             initialDelaySeconds: 5
@@ -154,6 +161,17 @@ spec:
           configMap:
             name: deile-runtime-config
             defaultMode: 292   # 0o444
+        # DEILE.md + skills do deile-worker (issue #515). items: cria a estrutura
+        # de diretórios necessária para o skills_paths loader.
+        - name: deile-agents
+          configMap:
+            name: deile-worker-agents
+            defaultMode: 292   # 0o444 — leitura para uid 10001
+            items:
+              - key: DEILE.md
+                path: DEILE.md
+              - key: deile-systematic-debug-SKILL.md
+                path: skills/deile-systematic-debug/SKILL.md
 ---
 apiVersion: v1
 kind: Service

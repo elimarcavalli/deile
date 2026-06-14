@@ -1,0 +1,13 @@
+# Provenance — brainstorm skill
+#
+# Fonte: https://github.com/obra/superpowers
+# Commit: 6fd4507659784c351abbd2bc264c7162cfd386dc
+# Caminho no upstream: skills/brainstorming/SKILL.md
+# Licença: MIT (Copyright (c) 2025 Jesse Vincent)
+# Revisão manual: sim — skill revisada antes do merge do PR #515.
+#   Conteúdo avaliado: instruções de brainstorming colaborativo para design
+#   antes de implementação. Sem injeção de prompt maliciosa detectada.
+#   Revisor: auto/issue-515 (claude-worker pod, dispatch local).
+#
+# Para atualizar: copiar SKILL.md do commit novo e atualizar este PROVENANCE.
+# O teste em test_k8s_manifest_consistency.py falha se a fonte divergir do ref pinado.
