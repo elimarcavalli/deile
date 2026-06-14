@@ -147,9 +147,9 @@ class SecretsScanner:
         whitelist = [
             # Common placeholders
             re.compile(r'(your_api_key_here|replace_with_your_key|example_key|dummy_token)', re.IGNORECASE),
-            re.compile(r'(lorem ipsum|sample|test|demo|placeholder)', re.IGNORECASE),
+            re.compile(r'^(lorem ipsum|sample|test|demo|placeholder)$', re.IGNORECASE),
             re.compile(r'^[X\*]+$'),  # Masked values
-            re.compile(r'(123456|password|secret|token)$', re.IGNORECASE),  # Common examples
+            re.compile(r'^(123456|password|secret|token)$', re.IGNORECASE),  # Common examples
             
             # File paths and URLs without sensitive info
             re.compile(r'^(https?://|file://|/[a-zA-Z0-9/_\-\.]+)$'),
