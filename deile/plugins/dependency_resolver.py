@@ -75,8 +75,27 @@ class DependencyResolver:
         return load_order
 
     def check_circular_dependencies(self) -> List[List[str]]:
-        """Detecta dependências circulares"""
-        # Implementação básica - pode ser expandida
-        circular_deps = []
-        # TODO: Implementar detecção de ciclos no grafo
-        return circular_deps
+        """Detecta dependências circulares via DFS com marcação branco/cinza/preto."""
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: Dict[str, int] = {node: WHITE for node in self.dependency_graph}
+        cycles: List[List[str]] = []
+
+        def dfs(node: str, stack: List[str]) -> None:
+            color[node] = GRAY
+            stack.append(node)
+            for dep in self.dependency_graph[node].dependencies:
+                if dep not in self.dependency_graph:
+                    continue
+                if color[dep] == GRAY:
+                    cycle_start = stack.index(dep)
+                    cycles.append(stack[cycle_start:] + [dep])
+                elif color[dep] == WHITE:
+                    dfs(dep, stack)
+            stack.pop()
+            color[node] = BLACK
+
+        for node in list(self.dependency_graph):
+            if color[node] == WHITE:
+                dfs(node, [])
+
+        return cycles
