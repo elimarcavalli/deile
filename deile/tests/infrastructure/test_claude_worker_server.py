@@ -1208,16 +1208,24 @@ async def test_sessions_list_filters_orphan_dirs(
 async def test_session_command_redacts_secrets(
     claude_worker_module, monkeypatch, tmp_path,
 ):
-    """``GET /v1/sessions/{id}/command`` redacts ``*_API_KEY``/``*_TOKEN``."""
+    """``GET /v1/sessions/{id}/command`` redacts secrets in env AND in cmd argv.
+
+    Issue #709: cmd[-1] == full_prompt, so secrets in the prompt must not leak
+    via the ``cmd`` field in the default (non-admin) response path.
+    """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-real-secret-value")
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret_42")
     monkeypatch.setenv("BENIGN_FLAG", "true")
+    # A well-formed GitHub PAT (ghp_ + 36 alphanumeric chars) that SecretsScanner
+    # recognises at ≥0.95 confidence and will redact.
+    secret_token = "ghp_" + "A" * 36
+    full_prompt = f"implement the feature using token {secret_token}"
     _write_session_meta(tmp_path, "deadbeefcafebabe", {
         "task_id": "deadbeefcafebabe",
         "session_id": "sx",
-        "command": ["claude", "-p", "--session-id", "sx", "prompt"],
-        "full_prompt": "do thing",
+        "command": ["claude", "-p", "--session-id", "sx", full_prompt],
+        "full_prompt": full_prompt,
         "subprocess_pid": 1234,
     })
 
@@ -1229,12 +1237,61 @@ async def test_session_command_redacts_secrets(
         assert resp.status == 200
         body = await resp.json()
 
+    # Benign argv elements are preserved.
     assert body["cmd"][0] == "claude"
-    assert body["full_prompt"] == "do thing"
+    assert body["cmd"][1] == "-p"
+    # Secret token must NOT appear verbatim in cmd[-1] (issue #709).
+    assert secret_token not in body["cmd"][-1]
+    # full_prompt field must also be redacted on the default path.
+    assert secret_token not in body["full_prompt"]
+    # Environment secrets are redacted.
     env = body["env_redacted"]
     assert env["ANTHROPIC_API_KEY"] == "***"
     assert env["GITHUB_TOKEN"] == "***"
     assert env["BENIGN_FLAG"] == "true"
+
+
+async def test_session_command_raw_exposes_unredacted_cmd(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """``?raw=true`` with admin bearer returns unredacted cmd and full_prompt.
+
+    The raw path is gated by the admin bearer token (via
+    ``DEILE_CLAUDE_WORKER_ADMIN_AUTH_TOKEN``) plus ``X-Deile-Actor`` header.
+    In this test the admin token equals the worker bearer so both the
+    middleware check and the admin gate are satisfied with the same credential.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Set the admin token equal to the worker bearer used for this test app so
+    # the middleware (which checks Authorization against the worker bearer)
+    # passes, and the admin gate (which checks Authorization against the admin
+    # token) also passes.
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ADMIN_AUTH_TOKEN", "test-token")
+    secret_token = "ghp_" + "B" * 36
+    full_prompt = f"implement the feature using token {secret_token}"
+    _write_session_meta(tmp_path, "cafebabe01234567", {
+        "task_id": "cafebabe01234567",
+        "session_id": "sy",
+        "command": ["claude", "-p", "--session-id", "sy", full_prompt],
+        "full_prompt": full_prompt,
+        "subprocess_pid": 5678,
+    })
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/sessions/cafebabe01234567/command?raw=true",
+            headers={
+                **_AUTH_HEADERS,
+                "X-Deile-Actor": "operator@example.com",
+            },
+        )
+        assert resp.status == 200
+        body = await resp.json()
+
+    # Raw path: the secret token must appear verbatim in both cmd and full_prompt.
+    assert secret_token in body["cmd"][-1]
+    assert secret_token in body["full_prompt"]
 
 
 async def test_session_command_returns_404_for_unknown_task(
