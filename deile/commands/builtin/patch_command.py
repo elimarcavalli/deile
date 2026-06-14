@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -177,7 +178,7 @@ class PatchCommand(DirectCommand):
             border_style="dim"
         )
         
-        return CommandResult.success_result(f"{table}\n\n{usage_panel}", "rich")
+        return CommandResult.success_result(Group(table, usage_panel), "rich")
     
     async def _generate_patch(self, plan_id: str, output_format: str, 
                             output_path: Optional[str], include_artifacts: bool) -> CommandResult:

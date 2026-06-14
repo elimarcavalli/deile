@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -132,7 +133,7 @@ class ApplyCommand(DirectCommand):
             border_style="dim",
         )
 
-        return CommandResult.success_result(f"{table}\n\n{usage_panel}", "rich")
+        return CommandResult.success_result(Group(table, usage_panel), "rich")
 
     def get_help(self) -> str:
         """Get command help."""
