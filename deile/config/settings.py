@@ -338,6 +338,8 @@ def _to_optional_positive_decimal(value: Any) -> Optional[Decimal]:
     if value is None:
         return None
     if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError(f"cost cap must be finite, got {value!r}")
         if value <= 0:
             raise ValueError(f"cost cap must be positive, got {value}")
         return value
@@ -350,6 +352,8 @@ def _to_optional_positive_decimal(value: Any) -> Optional[Decimal]:
         d = Decimal(stripped)
     except InvalidOperation:
         raise ValueError(f"invalid decimal {stripped!r} for cost cap")
+    if not d.is_finite():
+        raise ValueError(f"cost cap must be finite, got {stripped!r}")
     if d <= 0:
         raise ValueError(f"cost cap must be positive, got {d}")
     return d
