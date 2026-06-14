@@ -345,3 +345,91 @@ def test_assert_safe_root_accepts_home_subdir():
     home_sub = Path.home().resolve() / "deile"
     # Should not raise (whether or not the directory actually exists)
     _assert_safe_root(home_sub)
+
+
+# ---------------------------------------------------------------------------
+# 12. Path traversal security tests (issue #708)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.security
+async def test_remove_traversal_branch_rejected(repo_tmp_path, monkeypatch):
+    """branch='../../../../tmp/x' must be rejected before any rmtree call."""
+    import shutil as _shutil
+
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
+
+    rmtree_calls = []
+    monkeypatch.setattr(_shutil, "rmtree", lambda *a, **kw: rmtree_calls.append(a))
+
+    tool = WorktreeTool()
+    result = await tool.execute(
+        _ctx(action="remove", branch="../../../../tmp/x", base_path=str(repo_tmp_path))
+    )
+
+    assert result.status == ToolStatus.ERROR
+    assert result.metadata["error_code"] == "PATH_TRAVERSAL"
+    assert rmtree_calls == [], "shutil.rmtree must not be called on a traversal path"
+
+
+@pytest.mark.security
+async def test_remove_traversal_subdir_rejected(repo_tmp_path, monkeypatch):
+    """subdir='..' must be rejected before any rmtree call."""
+    import shutil as _shutil
+
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
+
+    rmtree_calls = []
+    monkeypatch.setattr(_shutil, "rmtree", lambda *a, **kw: rmtree_calls.append(a))
+
+    tool = WorktreeTool()
+    result = await tool.execute(
+        _ctx(action="remove", branch="some-branch", subdir="..", base_path=str(repo_tmp_path))
+    )
+
+    assert result.status == ToolStatus.ERROR
+    assert result.metadata["error_code"] == "PATH_TRAVERSAL"
+    assert rmtree_calls == [], "shutil.rmtree must not be called on a traversal path"
+
+
+@pytest.mark.security
+async def test_remove_traversal_does_not_bypass_protected(repo_tmp_path, monkeypatch):
+    """branch='../main' must not bypass the protected-worktree guard via traversal."""
+    import shutil as _shutil
+
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
+    # Lay down a directory that would match .worktrees/../main == .worktrees-sibling
+    (repo_tmp_path / "main").mkdir(parents=True)
+
+    rmtree_calls = []
+    monkeypatch.setattr(_shutil, "rmtree", lambda *a, **kw: rmtree_calls.append(a))
+
+    tool = WorktreeTool()
+    result = await tool.execute(
+        _ctx(action="remove", branch="../main", base_path=str(repo_tmp_path))
+    )
+
+    assert result.status == ToolStatus.ERROR
+    # Must be stopped by PATH_TRAVERSAL before reaching REMOVE_PROTECTED
+    assert result.metadata["error_code"] == "PATH_TRAVERSAL"
+    assert rmtree_calls == [], "shutil.rmtree must not be called on a traversal path"
+
+
+@pytest.mark.security
+async def test_remove_legitimate_slash_branch_resolves_inside_worktrees(repo_tmp_path):
+    """branch='auto/issue-1' (slash in name) must resolve inside .worktrees/ and succeed."""
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
+    branch_dir = repo_tmp_path / ".worktrees" / "auto" / "issue-1"
+    branch_dir.mkdir(parents=True)
+
+    tool = WorktreeTool()
+    result = await tool.execute(
+        _ctx(action="remove", branch="auto/issue-1", base_path=str(repo_tmp_path))
+    )
+
+    assert result.status == ToolStatus.SUCCESS
+    assert not branch_dir.exists()

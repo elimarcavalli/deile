@@ -44,6 +44,22 @@ logger = logging.getLogger(__name__)
 _PROTECTED_SUBDIRS = {"main"}  # worktrees that must never be removed
 
 
+def _safe_worktree_target(
+    worktrees_dir: Path, subdir: Optional[str], branch: str
+) -> Optional[Path]:
+    """Return the resolved target path if it stays inside worktrees_dir, else None.
+
+    Defends against path traversal: branch='../../../../tmp/x' or subdir='..'
+    both collapse to a path outside worktrees_dir after resolve().
+    """
+    raw = (worktrees_dir / subdir / branch) if subdir else (worktrees_dir / branch)
+    try:
+        raw.resolve().relative_to(worktrees_dir.resolve())
+    except ValueError:
+        return None
+    return raw
+
+
 class WorktreeTool(Tool):
     """Create, list and remove branch worktrees via the LLM."""
 
@@ -227,10 +243,15 @@ class WorktreeTool(Tool):
             )
 
         worktrees_dir = base_path / ".worktrees"
-        if subdir:
-            target = worktrees_dir / subdir / branch
-        else:
-            target = worktrees_dir / branch
+        target = _safe_worktree_target(worktrees_dir, subdir, branch)
+        if target is None:
+            return ToolResult.error_result(
+                message=(
+                    f"path traversal detected: branch={branch!r} subdir={subdir!r} "
+                    "resolves outside .worktrees/"
+                ),
+                error_code="PATH_TRAVERSAL",
+            )
 
         if not target.exists():
             return ToolResult.error_result(

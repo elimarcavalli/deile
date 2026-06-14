@@ -114,6 +114,12 @@ class WorktreeManager:
             raise WorktreeError(f"branch must be a non-main branch name, got {branch!r}")
         await self.ensure_main()
         target = self.branches_dir / branch
+        try:
+            target.resolve().relative_to(self.branches_dir.resolve())
+        except ValueError:
+            raise WorktreeError(
+                f"path traversal detected: branch {branch!r} resolves outside branches_dir"
+            )
         if (target / ".git").exists():
             if force_recreate:
                 logger.info("force_recreate=True: removing stale worktree %s", target)
