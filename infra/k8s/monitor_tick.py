@@ -180,13 +180,16 @@ async def run_tick(
     emitter = core.Emitter(str(audit_path), flags, clock=lambda: now, tick_n=tick_n)
     start = now
 
-    # Step 2 — kill-switch / auto-resume.
+    # Steer commands first — a queued 'resume' must be able to lift an active
+    # timed pause before the kill-switch short-circuits the tick (issue #696).
+    _process_steer_commands(sd, state, emitter, now)
+
+    # Kill-switch / auto-resume (re-evaluated after steer commands drain).
     if _handle_kill_switch(sd, state, emitter, now):
         core.save_state(str(state_path), state)
         return {"paused": True, "needs_phase_b": False}
 
-    # Steer commands (may re-pause; re-check).
-    _process_steer_commands(sd, state, emitter, now)
+    # Re-check: a steer 'pause' command applied above may have re-paused.
     if (sd / "monitor-pause").exists() and state.get("paused_until"):
         core.save_state(str(state_path), state)
         return {"paused": True, "needs_phase_b": False}
