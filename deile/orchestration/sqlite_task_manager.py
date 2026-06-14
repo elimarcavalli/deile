@@ -459,6 +459,7 @@ class SQLiteTaskManager:
 
                 # Atualiza cache
                 self._task_cache[list_id] = tasks
+                self._cache_timestamps[list_id] = asyncio.get_event_loop().time()
                 return tasks
 
     async def get_next_tasks(self, list_id: str) -> List[Task]:
