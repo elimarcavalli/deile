@@ -250,7 +250,7 @@ Implemente a issue #{number} de {repo} e abra uma {pr_noun}. Execute de verdade 
 _WORKER_PR_BRIEF = """\
 {pr_noun} #{number} de {repo}. Descubra o que fazer pelo ESTADO REAL da {pr_noun}, não pelo trigger.
 
-CHECKPOINT OBRIGATÓRIO: execução é FALHA sem 1+ comentário visível via {comment_pr_cmd}. Esse comentário tem que ser SUBSTANTIVO — resultado da SUÍTE COMPLETA + resumo do que foi revisado no diff + a VALIDAÇÃO DAS AFIRMAÇÕES da PR contra o código (PASSO 1). NUNCA só a URL/marcador: o marcador é a ÚLTIMA LINHA e NÃO substitui a justificativa escrita (uma só, no merge/review — não re-comente).
+CHECKPOINT OBRIGATÓRIO: execução é FALHA sem 1+ comentário visível via {comment_pr_cmd}. Esse comentário tem que ser SUBSTANTIVO — resultado do portão de regressão (CI 100% verde OU SUÍTE COMPLETA in-pod) + resumo do que foi revisado no diff + a VALIDAÇÃO DAS AFIRMAÇÕES da PR contra o código (PASSO 1). NUNCA só a URL/marcador: o marcador é a ÚLTIMA LINHA e NÃO substitui a justificativa escrita (uma só, no merge/review — não re-comente).
 
 PASSO 0 — Checkout + estado:
 1. Clone se preciso ({clone_cmd}); `{checkout_pr_cmd}`.
@@ -277,7 +277,11 @@ REGRA — execute o pedido SEMPRE (não importa o autor):
 PASSO 2 — Executar a work-list:
 - NÃO se auto-mencione (anti-eco — identidade vem do `.user.login`).
 - Review: `{review_post_cmd}` (APPROVE/REQUEST_CHANGES). Merge: `{merge_cmd}` (fallback `{merge_fallback_cmd}`); confirme `{check_merged_cmd}`. Comment: `{comment_pr_cmd}`.
-- Para revisar/mergear: rode a SUÍTE COMPLETA `{full_suite_cmd}` ({pip_guard}). Vermelha por sua mudança = bloqueante; vermelha por testes pré-existentes intocados = documenta e segue.
+- **PORTÃO DE REGRESSÃO — ADAPTATIVO ao repo (DEILE é project-agnostic):** PRIMEIRO cheque se o repo-alvo tem CI: `gh pr checks {number}` (ou `glab ci status`).
+  - **TEM CI** (retorna checks): NÃO rode a suíte in-pod — o CI é o portão. Exija TODOS os checks **100% verdes** antes de mergear. Algum vermelho/falho → leia o log da falha (`gh run view --log-failed` / `gh pr checks {number} --watch` curto), CORRIJA o código, `git push` na branch (re-dispara o CI) e repita ATÉ 100% verde. Só mergeie com CI 100% verde.
+  - **SEM CI** ("no checks reported"): você É o portão — rode a SUÍTE COMPLETA `{full_suite_cmd}` ({pip_guard}). Vermelha por sua mudança = bloqueante; vermelha por testes pré-existentes intocados = documenta e segue (prove por bisseção, abaixo).
+  - **CI ainda RODANDO (pending) na hora de decidir:** NÃO bloqueie a sessão esperando (o reaper trata sessão longa como travada e a derruba). Faça a review de código agora, grave em `.deile-progress.md` que aguarda CI, e ENCERRE sem mergear — o próximo tick recheca o status e mergeia quando verde.
+- **FOCO DA REVIEW — testes/CI cobrem REGRESSÃO; você cobre o que eles NÃO pegam:** (1) claim-vs-código (PASSO 1); (2) completude vs os ACs da issue (passou no teste ≠ resolveu o problema); (3) QUALIDADE dos testes novos — asseguram o comportamento real do bug ou são tautológicos/vazios? (verde com teste fraco = falsa segurança); (4) escopo — só mexeu no que devia, sem scope creep; (5) segurança — secrets/injection/gates de permissão; (6) design — SOLID, padrões do projeto, sem duplicação. CI/suíte verde NÃO substitui esse julgamento.
 - **Suite com failures suspeitas de regressão?** ANTES de votar REQUEST_CHANGES, prove via bisseção empírica: `git checkout $(git merge-base origin/{main} HEAD) -- <arquivos modificados pela PR> && pytest <testes falhando> -q && git checkout HEAD -- <mesmos arquivos>`. Se as failures persistem no baseline sem o diff = **pré-existentes, NÃO bloqueantes** (APPROVE com nota); só introduzidas pela PR = REQUEST_CHANGES.
 - **Quando sou autor+assignee (PR própria, sou o time):** zero regressão funcional + suíte verde → **MERGEAR DIRETO** (`{merge_cmd}` — não dá pra aprovar formalmente a própria PR; o merge É o veredito). ACs abertos só de doc/qualidade NÃO bloqueiam o merge → mergeie e abra UMA sub-issue de follow-up agregada (anti-flood) com o checklist. Só NÃO mergeie se há bug funcional, regressão real ou requisito CORE não atendido — aí grave o achado e o PRÓXIMO tick implementa (não re-comenta).
 - Se PR fecha issue (`Closes #N` no body): leia `gh issue view N` e confronte entrega vs requisito.
