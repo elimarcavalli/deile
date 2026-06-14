@@ -49,6 +49,7 @@ def _load_raw(path):
 
 
 def _save_raw(path, data):
+    tmp_name = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
@@ -59,11 +60,12 @@ def _save_raw(path, data):
             suffix=".tmp",
             delete=False,
         ) as tmp:
+            tmp_name = tmp.name  # capture before any write so except can clean up
             json.dump(data, tmp, indent=2)
             tmp.flush()
             os.fsync(tmp.fileno())
-            tmp_name = tmp.name
         os.replace(tmp_name, path)
+        tmp_name = None  # atomic replace succeeded; nothing left to clean up
         try:
             os.chmod(path, 0o600)
         except OSError:
@@ -71,6 +73,11 @@ def _save_raw(path, data):
         return True
     except (OSError, TypeError, ValueError) as exc:
         logger.error("env_store: cannot write %s: %s", path, exc)
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
         return False
 
 
@@ -162,12 +169,13 @@ def unset_var(key, home=None):
         data = _load_raw(path)
         exports = dict(_get_exports(data))
         existed = key in exports
+        ok = False
         if existed:
             del exports[key]
             _set_exports(data, exports)
-            _save_raw(path, data)
+            ok = _save_raw(path, data)
 
-    if existed:
+    if existed and ok:
         os.environ.pop(key, None)
     return existed
 
