@@ -146,3 +146,30 @@ class TestResolveStageCostCapUsd:
             resolve_stage_cost_cap_usd
         monkeypatch.setenv("DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT", "")
         assert resolve_stage_cost_cap_usd("implement") is None
+
+    def test_nan_env_raises_value_error(self, monkeypatch):
+        from deile.orchestration.pipeline.dispatch_resolver import \
+            resolve_stage_cost_cap_usd
+        monkeypatch.setenv("DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT", "NaN")
+        with pytest.raises(ValueError):
+            resolve_stage_cost_cap_usd("implement")
+
+    def test_snan_env_raises_value_error(self, monkeypatch):
+        from deile.orchestration.pipeline.dispatch_resolver import \
+            resolve_stage_cost_cap_usd
+        monkeypatch.setenv("DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT", "sNaN")
+        with pytest.raises(ValueError):
+            resolve_stage_cost_cap_usd("implement")
+
+    def test_infinity_env_raises_value_error(self, monkeypatch):
+        from deile.orchestration.pipeline.dispatch_resolver import \
+            resolve_stage_cost_cap_usd
+        monkeypatch.setenv("DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT", "Infinity")
+        with pytest.raises(ValueError):
+            resolve_stage_cost_cap_usd("implement")
+
+    def test_finite_positive_env_returns_decimal(self, monkeypatch):
+        from deile.orchestration.pipeline.dispatch_resolver import \
+            resolve_stage_cost_cap_usd
+        monkeypatch.setenv("DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT", "5.00")
+        assert resolve_stage_cost_cap_usd("implement") == Decimal("5.00")

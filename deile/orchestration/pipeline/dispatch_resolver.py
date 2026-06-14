@@ -480,16 +480,20 @@ def resolve_stage_cost_cap_usd(stage: str) -> Optional[Decimal]:
         stripped = raw.strip()
         try:
             d = Decimal(stripped)
+            if not d.is_finite():
+                raise InvalidOperation(f"non-finite value {stripped!r}")
+            if d <= 0:
+                msg = f"cost cap must be positive, got {d} ({context})"
+                if strict:
+                    raise ValueError(msg)
+                logger.warning("dispatch_resolver: %s — ignoring", msg)
+                return None
+        except ValueError:
+            raise
         except InvalidOperation as exc:
             msg = f"invalid decimal {stripped!r} for cost cap ({context})"
             if strict:
                 raise ValueError(msg) from exc
-            logger.warning("dispatch_resolver: %s — ignoring", msg)
-            return None
-        if d <= 0:
-            msg = f"cost cap must be positive, got {d} ({context})"
-            if strict:
-                raise ValueError(msg)
             logger.warning("dispatch_resolver: %s — ignoring", msg)
             return None
         return d
