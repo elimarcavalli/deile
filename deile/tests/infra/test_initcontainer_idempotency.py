@@ -32,18 +32,18 @@ class TestManifestAuthSetupToken:
     def test_no_bootstrap_creds_initcontainer(self):
         """O manifest 50 NÃO deve ter o initContainer ``bootstrap-creds``.
 
-        O initContainer foi removido na migração para setup-token. Sua presença
-        indicaria que o manifest não foi atualizado e o pod tentaria copiar
-        credentials.json de um Secret que não tem mais esse formato.
+        O initContainer de auth foi removido na migração para setup-token. Sua
+        presença indicaria que o manifest não foi atualizado e o pod tentaria
+        copiar credentials.json de um Secret que não tem mais esse formato.
+
+        Nota (issue #515): o manifest PODE ter outros initContainers legítimos
+        (ex.: ``inject-agents``, que copia CLAUDE.md/skills do ConfigMap para o
+        PVC — não toca credenciais). O invariante de #603 é específico ao
+        ``bootstrap-creds``, não um banimento genérico de initContainers.
         """
         text = _MANIFEST.read_text(encoding="utf-8")
-        # Verifica que não há definição de initContainers (só comentários podem
-        # mencionar bootstrap-creds para documentar a remoção).
-        assert "initContainers:" not in text, (
-            "initContainers: encontrado no manifest 50 — "
-            "deve ter sido removido na migração para setup-token (issue #603)"
-        )
-        # Verifica que não há entry com name: bootstrap-creds (YAML ativo).
+        # Verifica que não há entry com name: bootstrap-creds (YAML ativo). Só
+        # comentários podem mencionar bootstrap-creds para documentar a remoção.
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("- name: bootstrap-creds") or stripped == "name: bootstrap-creds":

@@ -2,6 +2,9 @@
 # worktrees isolados sob o PVC claude-worker-home.
 #
 # Issue #309 fase 2. Auth migrada para CLAUDE_CODE_OAUTH_TOKEN (issue #603).
+# Issue #515: initContainer inject-agents injeta CLAUDE.md + skills/commands
+# do ConfigMap claude-worker-agents no PVC /home/claude/.claude/ de forma
+# idempotente por hash de conteúdo (cmp -s, não expiresAt).
 # Spec: docs/superpowers/specs/2026-05-26-claude-worker-design.md
 #
 # Threat model: ver seção 7 da spec.
@@ -57,6 +60,60 @@ spec:
         # chown se uid/gid do root do volume divergir do fsGroup.
         fsGroupChangePolicy: "OnRootMismatch"
         seccompProfile: { type: RuntimeDefault }
+
+      # initContainer inject-agents (issue #515) — copia CLAUDE.md + skills +
+      # commands do ConfigMap claude-worker-agents para o PVC /home/claude/.claude/
+      # de forma idempotente por conteúdo (cmp -s). Falha rápida se a fonte
+      # estiver ausente (set -eu) — o pod não sobe meio-configurado.
+      initContainers:
+        - name: inject-agents
+          image: deile-stack:local
+          imagePullPolicy: Never
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              SRC=/run/agents
+              DEST=/home/claude/.claude
+
+              install_file() {
+                src="$1"
+                dest="$2"
+                if [ ! -f "$src" ]; then
+                  echo "inject-agents: ERROR fonte ausente: $src" >&2
+                  exit 1
+                fi
+                mkdir -p "$(dirname "$dest")"
+                if [ -f "$dest" ] && cmp -s "$src" "$dest"; then
+                  echo "inject-agents: preserved $dest (conteudo identico por cmp)"
+                  return
+                fi
+                cp "$src" "$dest"
+                chmod 0644 "$dest"
+                echo "inject-agents: wrote $dest"
+              }
+
+              install_file "$SRC/CLAUDE.md"              "$DEST/CLAUDE.md"
+              install_file "$SRC/brainstorm-SKILL.md"   "$DEST/skills/brainstorm/SKILL.md"
+              install_file "$SRC/plan.md"               "$DEST/commands/plan.md"
+              echo "inject-agents: concluido"
+          volumeMounts:
+            - name: claude-agents-source
+              mountPath: /run/agents
+              readOnly: true
+            - name: claude-home
+              mountPath: /home/claude
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+          resources:
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits:   { cpu: "100m", memory: "64Mi" }
 
       containers:
         - name: claude-worker
@@ -158,6 +215,12 @@ spec:
         - name: allowed-repos
           configMap:
             name: claude-worker-allowed-repos
+            defaultMode: 0o444
+        # Fonte de skills/CLAUDE.md/commands para o initContainer inject-agents
+        # (issue #515). Read-only — o init copia para o PVC.
+        - name: claude-agents-source
+          configMap:
+            name: claude-worker-agents
             defaultMode: 0o444
 ---
 apiVersion: v1
