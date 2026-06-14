@@ -3389,6 +3389,29 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             )
             monitor._stats.errors += 1
             return
+    # CI-gate determinístico (issue #85 Phase 2): NÃO despachar a review
+    # enquanto o CI do repo-alvo ainda está rodando. O tick é de ~60s; sem este
+    # gate a review seria redispachada a cada tick durante os minutos do CI,
+    # cada dispatch abrindo uma sessão claude que só veria "CI pending" e
+    # encerraria — custo + churn de label, sem progresso. ``pending`` = CI em
+    # execução → skip este tick (NÃO consome tentativa); o próximo tick recheca.
+    # ``passing``/``failing``/``none`` seguem o fluxo normal e o brief decide
+    # (verde → merge, vermelho → corrige até verde, sem-CI → suíte in-pod).
+    # Best-effort: falha de API no check NÃO bloqueia o dispatch (fail-open).
+    try:
+        _ci_status = await monitor.forge.get_ci_status(target.number)
+    except Exception as exc:  # noqa: BLE001 — fail-open: CI check não trava review
+        logger.debug(
+            "get_ci_status falhou para PR #%d (%s); prossegue sem gate",
+            target.number, exc,
+        )
+        _ci_status = "none"
+    if _ci_status == "pending":
+        logger.info(
+            "pr_review #%d: CI em execução (pending) — skip dispatch neste tick "
+            "(aguarda CI terminar; reconcile no próximo)", target.number,
+        )
+        return
     is_resume = REVIEW_IN_PROGRESS in target.labels
     # FIX #6 (Decisão #33): monitor único (shard_count==1) NÃO deve claimar
     # ~batch: — gera add/remove do label a cada tick sem necessidade, pois

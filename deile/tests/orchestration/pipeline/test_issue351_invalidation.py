@@ -456,3 +456,104 @@ async def test_review_one_open_pr_invalidates_concluded_with_new_code_commits():
 
     # Comment was posted on the concluded PR.
     forge.comment_on_pr.assert_awaited()
+
+
+# --- issue #85 Phase 2: CI-gate determinístico antes do dispatch de review -----
+
+@pytest.mark.asyncio
+async def test_review_one_open_pr_skips_dispatch_when_ci_pending():
+    """CI rodando (pending) → review NÃO é despachada neste tick (evita churn
+    de redispatch a cada tick de 60s durante os minutos do CI). Issue #85."""
+    from pathlib import Path
+
+    from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                     PipelineMonitor)
+    from deile.orchestration.pipeline.stages import review_one_open_pr
+
+    cfg = PipelineConfig(
+        repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
+        use_pid_lock=False, reaper_stale_seconds=0,
+    )
+    pr = MagicMock()
+    pr.number = 701
+    pr.head_ref = "auto/issue-701"
+    pr.is_draft = False
+    pr.labels = []
+    pr.batch_id = None
+
+    forge = MagicMock()
+    forge.list_open_prs = AsyncMock(return_value=[pr])
+    forge.list_issues_with_label = AsyncMock(return_value=[])
+    forge.branch_exists = AsyncMock(return_value=True)
+    forge.get_ci_status = AsyncMock(return_value="pending")
+    forge.claim_with_batch = AsyncMock()
+    forge.add_labels = AsyncMock()
+
+    monitor = PipelineMonitor(
+        cfg, github=forge, worktrees=MagicMock(), claude=MagicMock(),
+        notifier=MagicMock(),
+    )
+    monitor.implementer = MagicMock()
+    monitor.implementer.review = AsyncMock()
+    monitor._owns_pr_branch = lambda *a, **k: True
+
+    await review_one_open_pr(monitor)
+
+    # CI pending → nenhum dispatch, nenhuma mutação de label de claim.
+    forge.add_labels.assert_not_called()
+    monitor.implementer.review.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_review_one_open_pr_proceeds_when_ci_passing():
+    """CI verde (passing) → o gate NÃO bloqueia; a review prossegue (claim de
+    ownership acontece). Issue #85."""
+    from pathlib import Path
+
+    from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                     PipelineMonitor)
+    from deile.orchestration.pipeline.stages import review_one_open_pr
+
+    cfg = PipelineConfig(
+        repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
+        use_pid_lock=False, reaper_stale_seconds=0,
+    )
+    pr = MagicMock()
+    pr.number = 702
+    pr.head_ref = "auto/issue-702"
+    pr.is_draft = False
+    pr.labels = []
+    pr.batch_id = None
+
+    forge = MagicMock()
+    forge.list_open_prs = AsyncMock(return_value=[pr])
+    forge.list_issues_with_label = AsyncMock(return_value=[])
+    forge.branch_exists = AsyncMock(return_value=True)
+    forge.get_ci_status = AsyncMock(return_value="passing")
+    forge.claim_with_batch = AsyncMock(return_value="sha8")
+    forge.add_labels = AsyncMock()
+
+    notifier = MagicMock()
+    notifier.pr_picked_up = AsyncMock()
+    notifier.pr_reviewed = AsyncMock()
+
+    monitor = PipelineMonitor(
+        cfg, github=forge, worktrees=MagicMock(), claude=MagicMock(),
+        notifier=notifier,
+    )
+    monitor.implementer = MagicMock()
+    monitor.implementer.review = AsyncMock(return_value=MagicMock(ok=True, text="REVIEWED"))
+    monitor._owns_pr_branch = lambda *a, **k: True
+
+    # O fluxo downstream do dispatch toca vários colaboradores async não-mockados
+    # neste teste-de-gate; toleramos um erro APÓS o gate — só nos importa provar
+    # que o gate consultou o CI e NÃO retornou cedo (ownership foi reivindicada).
+    try:
+        await review_one_open_pr(monitor)
+    except Exception:  # noqa: BLE001 — downstream do gate, fora do escopo deste teste
+        pass
+
+    # CI passing → o gate NÃO bloqueia: get_ci_status foi consultado e o fluxo
+    # prosseguiu além do gate (ownership reivindicada via add_labels).
+    forge.get_ci_status.assert_awaited_once()
+    forge.add_labels.assert_called()
