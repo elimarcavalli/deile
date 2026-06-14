@@ -95,6 +95,25 @@ async def test_auto_resume_when_pause_expired(tick, tmp_path, capsys):
 # Steer commands
 # ---------------------------------------------------------------------------
 
+async def test_steer_resume_lifts_active_pause(tick, tmp_path, capsys):
+    """Queued 'resume' command must lift a timed pause that has not yet expired.
+
+    Mirrors test_auto_resume_when_pause_expired but via queued command, not expiry.
+    Covers the bug from issue #696: _process_steer_commands now runs before
+    _handle_kill_switch so the resume is processed before the kill-switch fires.
+    """
+    sd = _state_dir(tmp_path)
+    (sd / "monitor-pause").write_text("")
+    json.dump({"paused_until": "2026-06-02T23:00:00Z"}, open(sd / "monitor-state.json", "w"))
+    (sd / "monitor-commands" / "cmd1").write_text("resume")
+    res = await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0))
+    assert res["paused"] is False
+    assert not (sd / "monitor-pause").exists()
+    state = json.load(open(sd / "monitor-state.json"))
+    assert state["paused_until"] is None
+    assert "monitor.command from=bot kind=resume" in capsys.readouterr().out
+
+
 async def test_steer_pause_creates_flag_and_consumes_file(tick, tmp_path, capsys):
     sd = _state_dir(tmp_path)
     (sd / "monitor-commands" / "cmd1").write_text("pause 30m")
