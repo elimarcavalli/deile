@@ -51,7 +51,7 @@ class SemanticMemory:
         bloquear o loop nesse caminho viola o princípio 03 §1.
         """
         record = dict(knowledge)
-        record['stored_at'] = record.get('extracted_at', 0)
+        record['stored_at'] = record.get('extracted_at', record.get('stored_at', 0))
         self._knowledge_base.append(record)
 
         await asyncio.to_thread(_append_jsonl_record, self.knowledge_file, record)
