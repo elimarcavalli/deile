@@ -163,9 +163,15 @@ class BashExecuteTool(SyncTool):
                     except Exception:  # noqa: BLE001 - best effort cleanup
                         pass
 
+        except TimeoutError:
+            # Command legitimately timed out — propagate to caller instead of
+            # re-executing the same command via subprocess (which would cause
+            # double execution of any side-effects and double the wall-time).
+            raise
         except Exception as e:
             logger.error(f"PTY execution failed: {e}")
-            # Fallback to regular subprocess
+            # Fallback to regular subprocess only for PTY setup/IO errors
+            # (e.g. OSError from pty.openpty).
             return self._execute_with_subprocess(command, working_dir, env, timeout)
     
     def _execute_with_subprocess(self,
