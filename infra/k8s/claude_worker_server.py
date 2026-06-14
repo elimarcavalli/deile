@@ -3061,19 +3061,28 @@ async def sessions_command_handler(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("audit logging for RAW_PROMPT_ACCESS failed", exc_info=True)
         full_prompt_field = raw_prompt
+        cmd_field = meta.get("command") or []
     else:
-        # Default path: redact known secrets from the prompt.
+        # Default path: redact known secrets from the prompt AND from each
+        # argv element (issue #709 — cmd[-1] == full_prompt leaks secrets
+        # via the non-admin path even when full_prompt was being redacted).
+        raw_cmd = meta.get("command") or []
         try:
             from deile.security.secrets_scanner import SecretsScanner
             _scanner = SecretsScanner()
             full_prompt_field, _ = _scanner.redact_text(raw_prompt)
+            cmd_field = [
+                _scanner.redact_text(arg)[0] if isinstance(arg, str) else arg
+                for arg in raw_cmd
+            ]
         except Exception:
             logger.warning("prompt redaction failed, returning empty prompt", exc_info=True)
             full_prompt_field = ""
+            cmd_field = []
 
     return web.json_response({
         "task_id": task_id,
-        "cmd": meta.get("command") or [],
+        "cmd": cmd_field,
         "full_prompt": full_prompt_field,
         "stage": meta.get("stage"),
         "branch": meta.get("branch"),
