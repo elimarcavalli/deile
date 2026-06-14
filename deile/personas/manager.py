@@ -184,13 +184,34 @@ class PersonaManager:
         # We need to convert our unified PersonaConfig to the expected format
         try:
             # Convert unified config to base.py PersonaConfig format
-            from .base import PersonaConfig as PydanticPersonaConfig
+            from .base import AgentCapability, PersonaConfig as PydanticPersonaConfig
+
+            # Map capability strings to AgentCapability enum values.
+            # Unknown strings are skipped with a WARNING (policy: never break on bad input).
+            # If all strings are invalid/list is empty, fall back to CODE_ANALYSIS with WARNING.
+            mapped_capabilities: list = []
+            for cap_str in persona_config.capabilities:
+                try:
+                    mapped_capabilities.append(AgentCapability(cap_str))
+                except ValueError:
+                    logger.warning(
+                        "Unknown capability '%s' for persona '%s'; skipping.",
+                        cap_str,
+                        persona_id,
+                    )
+
+            if not mapped_capabilities:
+                logger.warning(
+                    "No valid capabilities resolved for persona '%s'; defaulting to CODE_ANALYSIS.",
+                    persona_id,
+                )
+                mapped_capabilities = [AgentCapability.CODE_ANALYSIS]
 
             pydantic_config = PydanticPersonaConfig(
                 name=persona_config.persona_id.title(),
                 persona_id=persona_config.persona_id,
                 description=f"AI assistant specialized in {', '.join(persona_config.capabilities)}",
-                capabilities=[],  # TODO: Map to AgentCapability enum
+                capabilities=mapped_capabilities,
                 model_preferences=persona_config.model_preferences.to_dict(),
                 communication_style=persona_config.communication_style.value,
                 system_instruction=instructions
