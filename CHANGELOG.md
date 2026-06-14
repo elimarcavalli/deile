@@ -5,19 +5,58 @@ All notable changes to the DEILE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] - 2026-06-09 — DEILE-One (frota multi-CLI)
+## [1.1.0] - 2026-06-13 — DEILE-One (frota multi-CLI + endurecimento de produção)
+
+> Sucede a `1.0.0` (linha de base clássica). Entrega a **frota multi-CLI** plugável,
+> fecha os gaps de produção da frota (custo central, allowlist enforçada, baseline de
+> testes limpo), completa os três sinais OTLP do dispatch (traces + logs + métricas),
+> migra a auth do `claude-worker` para token de ~1 ano, e faz uma rodada de auditoria
+> de endurecimento nos subsistemas plugáveis (tools/commands/parsers/memory/storage).
 
 ### Added
-- **Frota de CLI workers plugáveis (Decisão #51)** — além de `deile-worker` e `claude-worker`, qualquer CLI de codificação vira um worker despachável escrevendo **um adapter** (`infra/k8s/cli_adapters/<kind>.py`) que satisfaz o Protocol `CliAdapter` (`infra/k8s/cli_adapters/base.py`). O auto-discovery em `cli_adapters/__init__.py` monta `ADAPTERS = {kind: adapter}` como **fonte única**, que dirige `dispatch_resolver`, painel e geração de manifest/NetworkPolicy — adicionar worker não edita nenhum consumidor.
-- **Server genérico de worker** — `infra/k8s/cli_worker_server.py` reusa `infra/k8s/_worker_core.py` (lease/heartbeat/subprocess one-shot/HTTP bearer/cleanup/gate pós-run de commit+push+test). Endpoints: `GET /v1/health`, `GET /v1/models`, `POST /v1/dispatch`, `GET /v1/progress/{task_id}`, `GET /v1/dispatches/{task_id}/resume-info`. O gate de sucesso é `parse_output().ok AND wrapper_gate()` — o exit-code do CLI não é confiável.
-- **Roteamento per-estágio** — `deile/orchestration/pipeline/dispatch_resolver.py` resolve o worker de cada estágio (`classify`/`refine`/`implement`/`pr_review`/`follow_ups`) via `DEILE_PIPELINE_DISPATCH_<STAGE>` > global `DEILE_PIPELINE_DISPATCH_MODE` (default `deile-worker`); `get_valid_dispatchers()` deriva a lista válida do registro de adapters. Modelo/reasoning per-estágio via `DEILE_PIPELINE_MODEL_<STAGE>` / `DEILE_PIPELINE_REASONING_<STAGE>`.
-- **Resume nativo por worker (anti-sangria)** — cada worker retoma a sessão nativa no mesmo workdir em vez de re-gastar tokens; erro de provider (402/429/insufficient) é classificado INCOMPLETO (`_worker_core.classify_provider_error`) para o pipeline retomar. Workers com `supports_resume=True` ganham PVC por worker (`<kind>-worker-home`) + CronJob de cleanup.
-- **Custo durável + auditoria de frota** — `infra/k8s/cli_worker_server.py` colhe o custo de cada sessão para um ledger durável (`<root>/.cost-ledger.jsonl`, dedup por `task_id`) antes de podar o log volumoso; `infra/k8s/jsonl_cost.py` é a fonte única de preço, `infra/k8s/fleet_progress_parse.py` a dos parsers de `.progress` por kind, e `infra/k8s/fleet_tokens_audit.py` (tela `[T]okens` do painel) agrega tokens/custo por worker × modelo.
-- **Scale-to-zero on-demand** — workers nascem `replicas:0` (custo zero ocioso); `deile/orchestration/pipeline/cli_worker_scaler.py` escala 0→1 sob demanda com cooldown. Gerador `infra/k8s/_cli_worker_gen.py` + template `infra/k8s/manifests/templates/cli-worker.yaml.tmpl` (manifests gerados são efêmeros/gitignored).
-- **Verbos novos do `deploy.py`** — `k8s build-cli-workers [--kind <k>]` (imagem via `Dockerfile.cli-worker` multi-stage), `k8s gen-worker <kind>`, `k8s cli-worker-install <kind>`, `k8s cli-worker-login <kind>`, `k8s cli-worker-uninstall <kind>`.
+- **Frota de CLI workers plugáveis (Decisão #51, #614)** — além de `deile-worker` e `claude-worker`, qualquer CLI de codificação vira um worker despachável escrevendo **um adapter** (`infra/k8s/cli_adapters/<kind>.py`) que satisfaz o Protocol `CliAdapter` (`infra/k8s/cli_adapters/base.py`). O auto-discovery em `cli_adapters/__init__.py` monta `ADAPTERS = {kind: adapter}` como **fonte única**, que dirige `dispatch_resolver`, painel e geração de manifest/NetworkPolicy — adicionar worker não edita nenhum consumidor.
+- **Server genérico de worker (#614)** — `infra/k8s/cli_worker_server.py` reusa `infra/k8s/_worker_core.py` (lease/heartbeat/subprocess one-shot/HTTP bearer/cleanup/gate pós-run de commit+push+test). Endpoints: `GET /v1/health`, `GET /v1/models`, `POST /v1/dispatch`, `GET /v1/progress/{task_id}`, `GET /v1/dispatches/{task_id}/resume-info`. O gate de sucesso é `parse_output().ok AND wrapper_gate()` — o exit-code do CLI não é confiável.
+- **Roteamento per-estágio (#614)** — `deile/orchestration/pipeline/dispatch_resolver.py` resolve o worker de cada estágio (`classify`/`refine`/`implement`/`pr_review`/`follow_ups`) via `DEILE_PIPELINE_DISPATCH_<STAGE>` > global `DEILE_PIPELINE_DISPATCH_MODE` (default `deile-worker`); `get_valid_dispatchers()` deriva a lista válida do registro de adapters. Modelo/reasoning per-estágio via `DEILE_PIPELINE_MODEL_<STAGE>` / `DEILE_PIPELINE_REASONING_<STAGE>`.
+- **Resume nativo por worker, anti-sangria (#614)** — cada worker retoma a sessão nativa no mesmo workdir em vez de re-gastar tokens; erro de provider (402/429/insufficient) é classificado INCOMPLETO (`_worker_core.classify_provider_error`) para o pipeline retomar. Workers com `supports_resume=True` ganham PVC por worker (`<kind>-worker-home`) + CronJob de cleanup.
+- **Custo durável por-PVC + auditoria de frota (#614)** — `cli_worker_server` colhe o custo de cada sessão para um ledger durável (`<root>/.cost-ledger.jsonl`, dedup por `task_id`) antes de podar o log volumoso; `infra/k8s/jsonl_cost.py` é a fonte única de preço, `infra/k8s/fleet_progress_parse.py` a dos parsers de `.progress` por kind, e `infra/k8s/fleet_tokens_audit.py` (tela `[T]okens`) agrega tokens/custo por worker × modelo.
+- **Scale-to-zero on-demand (#614)** — workers nascem `replicas:0` (custo zero ocioso); `cli_worker_scaler.py` escala 0→1 sob demanda com cooldown. Gerador `infra/k8s/_cli_worker_gen.py` + template `infra/k8s/manifests/templates/cli-worker.yaml.tmpl` (manifests gerados são efêmeros/gitignored).
+- **Verbos novos do `deploy.py` (#614)** — `k8s build-cli-workers [--kind <k>]` (imagem via `Dockerfile.cli-worker` multi-stage), `k8s gen-worker <kind>`, `k8s cli-worker-install <kind>`, `k8s cli-worker-login <kind>`, `k8s cli-worker-uninstall <kind>`.
+- **Bloco `usage` estruturado no `/v1/dispatch` (#638)** — `WorkResult` ganha `tokens_by_model`/`model`, preenchidos server-side pelo parser único `fleet_progress_parse`; o resume-info também expõe o uso.
+- **Custo central da frota no `UsageRepository` (#638)** — novo `deile/orchestration/pipeline/fleet_cost_recorder.py`: o pipeline (componente longevo) faz PUSH de 1 registro por modelo no SQLite central (caminho `wait` direto; fire-and-forget capturado no reconcile via resume-info, dedup por task_id). Sobrevive ao scale-to-zero/`force-delete`, que o ledger por-PVC não sobrevivia; a tela `[T]okens` lê o store central primeiro.
+- **Métricas OTLP do dispatch (#455)** — `deile/observability/dispatch_metrics.py` (MeterProvider isolado, kill-switch, drop counter throttled): `deile.dispatch.total`/`.failed.total`/`.duration_ms`/`.tool_burst.total`, `deile.forge.pr_review.total`, `deile.git.push.total` — todas com labels de cardinalidade limitada. Completa a trinca traces (#443) + logs (#454) + métricas.
+- **Propagação W3C traceparent cross-pod (#457)** — `deile.dispatch` vira filho do span `pipeline.dispatch_request` (mesmo trace_id) pela injeção/extração de `traceparent` pipeline→worker, com fallback a span raiz quando ausente.
+- **Atributos SemConv `vcs.*` dual-emitidos (#456)** — `semconv_mapping.apply_semconv_attrs` mapeia attrs de `git.*`/`forge.*` para `vcs.ref.head.name`/`vcs.repository.url`/`vcs.change.id`/`vcs.change.state` nos child spans, sob toggle `DEILE_OTLP_SEMCONV_ENABLED` (default on).
+- **Activity sources configuráveis (#447)** — `settings.panel.activity_sources` permite escolher quais deployments o widget ACTIVITY acompanha (lista/role/cor/ordem) sem editar Python nem re-deployar; valida DNS-1123 e rejeita duplicatas.
+- **Controles destrutivos na LiveSessionView (#462)** — `[k]` kill e `[C]` cleanup com confirmação inline de 2-keypress, defesa TOCTOU no servidor (409) e audit `{allowed, failed, cancelled}`.
+- **Auth do `claude-worker` via `claude setup-token` (#603, Decisão #52)** — verb `deploy.py k8s claude-setup-token` + hotkey `[T]` no painel; token de ~1 ano em `CLAUDE_CODE_OAUTH_TOKEN` injetado por env var via Secret K8s.
 
 ### Changed
 - **Painel TUI** — `DispatchMatrixView` (`[d]`) passa a matriz de estágios × {Worker, Model, Reasoning}; tela `[T]okens` vira auditoria da frota.
+- **Auth do claude-worker migrada (#603)** — remove o OAuth de ~8h (credentials.json + flock + initContainer `bootstrap-creds` + CronJob de renovação 4h) em favor do token de ~1 ano. `claude-login`/`claude-renew` ficam **DEPRECATED**. Billing: a partir de 15/jun/2026, uso via `claude -p` em planos de assinatura consome crédito mensal de Agent SDK separado do interativo.
+- **Endurecimento server-side do `deile-worker` (#620)** — graceful shutdown (SIGTERM dreva tasks com timeout, 503 durante shutdown, hard-deadline `os._exit`), métricas, idempotência, rate-limit, validação de schema; client-side retry + circuit breaker (AC4/AC5).
+- **Definition-of-Done do implement gateada por evidência de AC (#609)** — briefs confrontam entrega vs ACs; skip de `@integration` não conta como verde; spikes usam `Refs` (não `Closes`); `mark_draft_cmd` branch-keyed nos dois forges.
+- **Repo do forge project-agnostic, fail-loud (#612)** — `resolve_forge_repo()` aborta com `ConfigurationError` se não configurado (em vez de cair no hardcoded `elimarcavalli/deile`); repo-alvo vem do ConfigMap `deile-runtime-config` chave `pipeline.repo`. `deile-monitor` passa a ler o repo pelo resolver canônico, não por `DEILE_PIPELINE_REPO`.
+- **Refator DRY (#643)** — helpers compartilhados em `cli_adapters/base.py`, catálogo OpenRouter em `_catalog.py`, helpers kubectl, engine de cost-ledger em `_worker_core.py`, single-source de `PIPELINE_STAGES` + aliases de dispatch.
+- **Auditoria de endurecimento dos subsistemas plugáveis** — slash commands (#657, incl. timeout defensivo em `ensure_gh_authenticated`), `except Exception: pass` → DEBUG-then-suppress (#656), schema inline para `python_execute`/`pip_install` (#651), `run_tests` function-callable (#652), rede de regressão para os parsers (#659).
+- **Painel `[A]` restaura a ActionsView e conserta o focus trap da Activity (#667)**.
+- **`fix(panel)`: kill-409 auditado como `allowed` (#678)** — alinha ao cleanup-409 (ação despachada ao servidor é allowed; `failed` só p/ timeout/conn/5xx).
+
+### Fixed
+- **Custo Gemini gravado como zero em silêncio (#661)** — `GeminiProvider._compute_cost` não existia (nome certo: `estimate_cost`); o `AttributeError` era engolido pelo fail-open, zerando o custo de toda request Gemini. Implementado + WARNING em cost=0 com tokens faturados (#665).
+- **TOCTOU no cleanup de workdir de pod morto (#649)** — o guard de #520 re-admitia o workdir olhando só a idade do heartbeat, ignorando o registro de presença (#495).
+- **Guards de redispatch de reviewer + cap de concorrência (#668)** — menção de reviewer gateada por `~mention:processado`; honra `~workflow:bloqueada` no filtro de candidatos; cap de reviews por `max_parallel`; cap global de claude concorrentes via contagem de leases vivos no PVC (cross-pod), substituindo a frágil soma-de-labels.
+- **Cost-cap global via settings.json estava morto (#666)** — `resolve_stage_cost_cap_usd` nível 4 lia campo inexistente; campo adicionado. `get_config_manager()` ganha lock + double-checked locking (Decisão #11).
+- **`ProceduralMemory` fazia I/O JSON síncrono no event loop (#663)** — roteado via `asyncio.to_thread`; tolera `patterns.json` corrompido no `initialize()` (#662).
+- **3 testes defasados em `orchestration/pipeline` (#642, fecha #640)** — alinhados à extensão do reaper (#427); nenhum código de produto alterado.
+- **`fix(docker)`: COPY de `_worker_core.py` para `/app`** (módulo novo da frota faltava na imagem do claude-worker).
+- Cobertura de regressão: gaps de export (#461), timeout em `ensure_gh_authenticated` (#655), skip de testes de kill-switch sem o extra `[otel]`.
+
+### Security
+- **Allowlist de repos enforçada por request, antes do clone (#639)** — `_worker_core.check_repo_allowed` retorna 403 `REPO_NOT_ALLOWED` nos **dois** servidores de dispatch, fechando o gap onde só havia fail-fast no startup do `wrapper.py` (vetor de exfiltração por prompt-injection). Egress ainda não é host-whitelisted em L3/L4 — a allowlist é o controle de aplicação.
+- **Strip real de `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` do subprocess do `claude -p` (#603)** — antes estava só na docstring; venciam o `CLAUDE_CODE_OAUTH_TOKEN` na precedência e cobravam via API. Guard anti-`--bare` (bare mode não lê o token).
+
+### Dependencies
+- Bumps: `idna` 3.17→3.18 (#635), `tqdm` 4.67.3→4.68.1 (#636), `wcwidth` 0.7.0→0.8.1 (#637).
 
 ## [1.0.0] - 2026-06-08
 

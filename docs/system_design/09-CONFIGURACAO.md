@@ -204,8 +204,8 @@ O daemon em si vive em `elimarcavalli/deilebot` e tem extras próprios (`discord
 
 | Variável | Uso | Default |
 |---|---|---|
-| `DEILE_PIPELINE_REPO` | **Deprecated alias** — use `DEILE_FORGE_REPO`. Repositório alvo (`owner/repo` GH ou `group/.../project` GL) | `elimarcavalli/deile` |
-| `DEILE_FORGE_REPO` | Project path do forge ativo (`owner/repo` GH ou `group/(subgroup/)*project` GL) — Decisão #41 | (cai pra `DEILE_PIPELINE_REPO`) |
+| `DEILE_PIPELINE_REPO` | **Removida do código de domínio** (issue #612). Sobrevive só nos manifests como alvo do clone inicial; `Settings` a ignora — o `deile-monitor` lê o repo pelo resolver canônico, não por esta var | (sem default) |
+| `DEILE_FORGE_REPO` | Project path do forge ativo (`owner/repo` GH ou `group/(subgroup/)*project` GL) — Decisão #41. **Sem default hardcoded:** `resolve_forge_repo()` aborta com `ConfigurationError` quando ausente no caminho de produção (issue #612, fail-loud), degradando com WARNING só nas surfaces graciosas (painel/CLI). Fonte única no ConfigMap `deile-runtime-config` chave `pipeline.repo` | (vazio — falha alto se não configurado) |
 | `DEILE_FORGE_KIND` | `github`\|`gitlab`\|`auto` (default `auto`: detecta por URL host → path heuristic) — Decisão #41 | `auto` |
 | `DEILE_GITHUB_HOST` | Hosts GitHub adicionais (CSV; ex.: `ghe.empresa.com`). `github.com` é sempre aceito | `github.com` |
 | `DEILE_GITLAB_HOST` | Hosts GitLab adicionais (CSV; ex.: `gitlab.empresa.com`). `gitlab.com` é sempre aceito | `gitlab.com` |

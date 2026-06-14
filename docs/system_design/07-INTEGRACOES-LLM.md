@@ -56,10 +56,11 @@ Os CLIs raramente expõem custo de forma confiável; o custo é colhido do log d
 |---|---|
 | Fonte única de preço dos modelos da frota (não-claude): tabela por substring + fallback conservador + custo de um bloco de tokens | `infra/k8s/jsonl_cost.py` (`FLEET_PRICING_BY_SUBSTRING`, `fleet_pricing_for`, `fleet_cost_of_model`) |
 | Preço declarado pelo adapter (`ModelInfo.price_in`/`price_out`/`cached_in`) prevalece sobre a tabela quando presente | `cli_adapters/base.py:ModelInfo` → `jsonl_cost.fleet_pricing_for(declared=...)` |
-| Ledger durável append-only (path em `DEILE_CLI_WORKER_COST_LEDGER_PATH`, default `<root>/.cost-ledger.jsonl`, dedup por task_id) | `infra/k8s/cli_worker_server.py` |
-| Auditoria (lê ledger dos podados + progresso vivo) por worker × modelo | `infra/k8s/fleet_tokens_audit.py` (tela `[T]okens` do painel) |
+| Ledger durável append-only por-PVC (fallback local; path em `DEILE_CLI_WORKER_COST_LEDGER_PATH`, default `<root>/.cost-ledger.jsonl`, dedup por task_id) | `infra/k8s/cli_worker_server.py` |
+| **Push central do custo da frota para o `UsageRepository`** (1 registro por modelo; caminho `wait` direto, fire-and-forget capturado no reconcile via resume-info; dedup por task_id) — issue #638 | `deile/orchestration/pipeline/fleet_cost_recorder.py` |
+| Auditoria por worker × modelo (lê o **store central primeiro**, depois ledger dos podados + progresso vivo) | `infra/k8s/fleet_tokens_audit.py` (tela `[T]okens` do painel) |
 
-> O custo dos providers **in-process** continua pelo `UsageRepository` (seção "Budget e custo" abaixo); a frota CLI tem contabilidade própria via ledger. A unificação push-central é follow-up (issue #638).
+> O custo dos providers **in-process** sempre passou pelo `UsageRepository` (seção "Budget e custo" abaixo). Desde a issue **#638 (resolvida na 1.1.0)**, o custo da frota CLI também é **empurrado centralmente** para o `UsageRepository`: o worker devolve um bloco `usage` estruturado no `/v1/dispatch` (parser único `fleet_progress_parse`) e o pipeline (componente longevo) grava 1 registro por modelo — sobrevivendo ao scale-to-zero/`force-delete`, que o ledger por-PVC não sobrevivia. O ledger por-PVC permanece como fallback local. Preço pela fonte única `jsonl_cost.fleet_cost_of_model`; escrita best-effort (falha nunca derruba o dispatch nem o tick).
 
 ## Catálogo e tiers
 

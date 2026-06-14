@@ -124,15 +124,15 @@ via `dispatch_resolver` (mesmo padrão dos per-stage models da decisão #41).
 | Image | `deile-stack:local` (compartilhada; `claude` CLI baked via npm `@anthropic-ai/claude-code`) |
 | Args | `python3 /app/wrapper.py claude-worker` |
 | Port | `8767` |
-| PVC | `claude-worker-home` (1Gi RWO, `/home/claude` — persiste credentials + worktrees) |
-| Secrets | `claude-credentials` (OAuth Pro/Max) + `claude-worker-bearer` (HTTP bearer) |
-| InitContainer | `bootstrap-creds` — copia Secret → PVC writable em `~/.claude/credentials.json` mode `0600` |
+| PVC | `claude-worker-home` (1Gi RWO, `/home/claude` — persiste worktrees) |
+| Secrets | `claude-credentials` (chave `CLAUDE_CODE_OAUTH_TOKEN`, token ~1 ano) + `claude-worker-bearer` (HTTP bearer) |
+| Auth | `CLAUDE_CODE_OAUTH_TOKEN` injetado como **env var** via `secretKeyRef` (issue #603/Decisão #52). **Sem** initContainer, **sem** `credentials.json`, **sem** CronJob de renovação. O wrapper remove `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` do env do subprocess (venceriam na precedência) |
 | NetworkPolicy | ingress só do `deile-pipeline`; egress 443 whitelisted + DNS |
-| ConfigMap | `claude-worker-allowed-repos` (regex de URLs git permitidas, enforcement no `wrapper.py`) |
+| ConfigMap | `claude-worker-allowed-repos` (regex de URLs git permitidas; enforcement no `wrapper.py` **e por request, antes do clone**, via `_worker_core.check_repo_allowed` → 403 `REPO_NOT_ALLOWED` — issue #639) |
 | Endpoints HTTP | `POST /v1/dispatch`, `GET /v1/health`, `GET /v1/progress/{task_id}`, `GET /v1/dispatches/{task_id}/resume-info`, **`GET /v1/sessions`** (Decisão #44), **`GET /v1/sessions/{task_id}/{command,chat,stdout}`**, **`POST /v1/sessions/{task_id}/kill`** (gated por confirm token), **`DELETE /v1/sessions/{task_id}/cleanup`** |
 
-Setup: `python3 infra/k8s/deploy.py k8s claude-login` (idempotente).
-Operação: per-stage routing via `DispatchMatrixView` (`[d]`) no painel TUI.
+Setup: `python3 infra/k8s/deploy.py k8s claude-setup-token` (preferido — Humano roda `claude setup-token` no host, exporta `CLAUDE_CODE_OAUTH_TOKEN` e roda o verb; renova ~1×/ano). O legado `k8s claude-login`/`claude-renew` (OAuth ~8h) está **DEPRECATED** (issue #603).
+Operação: per-stage routing via `DispatchMatrixView` (`[d]`) no painel TUI; bootstrap por setup-token também via hotkey `[T]`.
 
 Detalhe completo: [`docs/superpowers/specs/2026-05-26-claude-worker-design.md`](../superpowers/specs/2026-05-26-claude-worker-design.md).
 

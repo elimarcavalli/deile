@@ -385,8 +385,8 @@ Quando uma issue recebe `~workflow:nova` (ou o bot é atribuído/mencionado), o 
 Cada etapa aponta para um worker da frota:
 
 - 🐍 **`deile-worker`** (`:8766`) — roda o **DEILE Python in-process**, usando seus próprios provedores de LLM.
-- 🤖 **`claude-worker`** (`:8767`) — roda o **`claude -p`** (Claude Code CLI) em worktrees isolados sob PVC, com credenciais OAuth.
-- 🧩 **Frota de CLI workers plugáveis** — além dos dois núcleos, qualquer CLI de codificação vira um worker despachável escrevendo **um adapter** (`infra/k8s/cli_adapters/<kind>.py`, que satisfaz o Protocol `CliAdapter`); o auto-discovery monta `ADAPTERS` como **fonte única** que dirige resolver, painel e geração de manifest/NetworkPolicy — nenhum consumidor é editado (ver Decisão #51). Cada worker é um pod com Service próprio (portas derivadas do `default_port` do adapter), nasce `replicas:0` (scale-to-zero) e é escalado 0→1 sob demanda (`cli_worker_scaler.py`). Server genérico `infra/k8s/cli_worker_server.py` reusa `_worker_core.py` (lease/heartbeat/subprocess/gate de commit+push+test). **Resume nativo** no mesmo workdir (sem re-gastar tokens) quando o adapter declara `supports_resume`; o **custo de cada sessão** é colhido para um ledger durável antes de o log volumoso ser podado e auditado pela tela `[T]okens` do painel.
+- 🤖 **`claude-worker`** (`:8767`) — roda o **`claude -p`** (Claude Code CLI) em worktrees isolados sob PVC; auth via `CLAUDE_CODE_OAUTH_TOKEN` (token de ~1 ano gerado por `claude setup-token`, injetado por env var a partir de Secret — issue #603, sem `credentials.json`/initContainer).
+- 🧩 **Frota de CLI workers plugáveis** — além dos dois núcleos, qualquer CLI de codificação vira um worker despachável escrevendo **um adapter** (`infra/k8s/cli_adapters/<kind>.py`, que satisfaz o Protocol `CliAdapter`); o auto-discovery monta `ADAPTERS` como **fonte única** que dirige resolver, painel e geração de manifest/NetworkPolicy — nenhum consumidor é editado (ver Decisão #51). Cada worker é um pod com Service próprio (portas derivadas do `default_port` do adapter), nasce `replicas:0` (scale-to-zero) e é escalado 0→1 sob demanda (`cli_worker_scaler.py`). Server genérico `infra/k8s/cli_worker_server.py` reusa `_worker_core.py` (lease/heartbeat/subprocess/gate de commit+push+test). **Resume nativo** no mesmo workdir (sem re-gastar tokens) quando o adapter declara `supports_resume`; o **custo de cada sessão** é empurrado centralmente para o `UsageRepository` (SQLite central) pelo pipeline via o bloco `usage` da resposta do `/v1/dispatch` (issue #638 — sobrevive ao scale-to-zero), com fallback no ledger durável por-PVC; a tela `[T]okens` do painel lê o store central primeiro.
 
 ### 📌 Roteamento de menção/atribuição (`process_mentions` é um roteador)
 
@@ -470,7 +470,7 @@ Todos os pods compartilham uma **única imagem** `deile-stack:local` (`imagePull
 |---|---|---|
 | `deilebot` | `:8765` | Bridge de I/O (Discord e outros canais) — vive num repo separado |
 | `deile-worker` | `:8766` | Roda **DEILE Python in-process**; alvo de dispatch HTTP do pipeline |
-| `claude-worker` | `:8767` | Roda **`claude -p`** em worktrees isolados; OAuth no PVC `claude-worker-home` |
+| `claude-worker` | `:8767` | Roda **`claude -p`** em worktrees isolados; auth via `CLAUDE_CODE_OAUTH_TOKEN` env (Secret `claude-credentials`, token ~1 ano — issue #603) |
 | `deile-pipeline` | `:8768` (status, in-process) | O **monitor de forge** — não recebe dispatch (sem Service de ingestão de tarefas); expõe só o Service read-only `deile-pipeline-status` p/ o painel. No mais, só "chama pra fora" |
 | `deile-monitor` | `:8769` | **Supervisor determinístico do cluster** (vigias V1–V8); distinto do pipeline. Expõe um control-plane on-demand (status sem-LLM, ordens, Q&A read-only) consumido pelo `deilebot` |
 | `deile-shell` | — | Sandbox `kubectl exec`-only, toolset cheio; prompt vem do humano |
@@ -492,7 +492,8 @@ Imprime um plano antes de qualquer ação mutante; `--yes` pula o prompt, `--dry
 | Escalar workers | `... k8s scale --worker 2 --claude-worker 1` |
 | Pausar / retomar (scale 0/1; preserva dados) | `... k8s stop` / `... k8s start` |
 | Status / painel TUI / logs | `... k8s status` / `... k8s panel` / `... k8s logs [bot\|worker\|pipeline\|claude-worker]` |
-| Bootstrap / renovar OAuth do claude-worker | `... k8s claude-login [--switch\|--no-interactive]` / `... k8s claude-renew` |
+| Bootstrap claude-worker (token ~1 ano) | `... k8s claude-setup-token` (preferido — issue #603; renovar ~1×/ano re-rodando o verb) |
+| Bootstrap/renovar via OAuth legado (DEPRECATED) | `... k8s claude-login [--switch\|--no-interactive]` / `... k8s claude-renew` |
 | **Frota CLI:** buildar imagem(ns) per-tool | `... k8s build-cli-workers [--kind <k>]` (via `Dockerfile.cli-worker`) |
 | **Frota CLI:** gerar manifest / instalar / login OAuth / remover | `... k8s gen-worker <kind>` · `... k8s cli-worker-install <kind>` · `... k8s cli-worker-login <kind> [--switch\|--no-interactive]` · `... k8s cli-worker-uninstall <kind>` |
 | Clonar repo no `deile-shell` | `... k8s clone <owner/repo>` |
@@ -507,7 +508,7 @@ Multi-stage sobre **Python 3.11 (slim)**. Instala, em camadas verificáveis: `gh
 
 `runAsNonRoot uid 10001` · `capabilities drop ALL` · `readOnlyRootFilesystem` · `allowPrivilegeEscalation: false` · `seccompProfile RuntimeDefault` · `automountServiceAccountToken: false` (exceto os pods que precisam renovar OAuth via `kubectl exec`) · PSS `restricted` no namespace · **NetworkPolicy `default-deny-all`** + opt-ins explícitos por porta · **secrets montados como arquivos** em `/run/secrets/<role>/` (nunca via `env:`, então `/proc/<pid>/environ` fica limpo) · `bootstrap_providers()` popa as API keys de `os.environ` após instanciar os providers.
 
-> 🚫 **Honestidade:** a "whitelist de egress" do `claude-worker` (`api.anthropic.com`, `github.com`, `gitlab.com`, granularidade de repo) é **enforçada na aplicação** (`wrapper.py` + ConfigMap `claude-worker-allowed-repos`, fail-closed), **não** em L3/L4 — a NetworkPolicy libera TCP 443 genérico. É um controle de aplicação, não firewall de rede.
+> 🚫 **Honestidade:** a "whitelist de egress" do `claude-worker` (`api.anthropic.com`, `github.com`, `gitlab.com`, granularidade de repo) é **enforçada na aplicação** (`wrapper.py` + ConfigMap `claude-worker-allowed-repos`, fail-closed), **não** em L3/L4 — a NetworkPolicy libera TCP 443 genérico. É um controle de aplicação, não firewall de rede. A allowlist de repos agora é **reverificada por request, antes de qualquer clone**, nos **dois** servidores de dispatch (`_worker_core.check_repo_allowed` → 403 `REPO_NOT_ALLOWED`), fechando o gap onde só havia fail-fast no startup (issue #639).
 
 ### 🌐 Multi-namespace
 
@@ -527,10 +528,10 @@ O DEILE roda **múltiplas stacks lado a lado**, uma por namespace (`deile` é a 
 ### 📈 OpenTelemetry (`deile/observability/`)
 Tracer + métricas CNCF, com **fallback no-op** quando o SDK está ausente, `DEILE_OTLP_ENDPOINT` vazio ou `DEILE_OBSERVABILITY_DISABLED=true`. Toda chamada é best-effort — **nunca quebra o turno**.
 
-- **Spans:** `deile.turn` (1 por interação), `deile.tool.<name>` (1 por execução), `deile.llm.call` (1 por chamada de provider). Adapter de dispatch: root span `deile.dispatch` + eventos `dispatch.*` e child spans `git.commit` / `git.push` / `forge.pr_open` / `forge.pr_review`.
-- **Métricas:** `deile.tokens.total`, `deile.cost.usd.total`, `deile.tool.duration_ms`, `deile.turn.duration_ms`, `deile.errors.total`.
+- **Spans:** `deile.turn` (1 por interação), `deile.tool.<name>` (1 por execução), `deile.llm.call` (1 por chamada de provider). Adapter de dispatch: root span `deile.dispatch` + eventos `dispatch.*` e child spans `git.commit` / `git.push` / `forge.pr_open` / `forge.pr_review`. **Propagação W3C traceparent pipeline→worker (issue #457):** o `deile.dispatch` vira filho do span `pipeline.dispatch_request`; os child spans `git.*`/`forge.*` **dual-emitem atributos SemConv `vcs.*`** (`vcs.ref.head.name`, `vcs.repository.url`, `vcs.change.id/state` — issue #456, toggle `DEILE_OTLP_SEMCONV_ENABLED`, default on).
+- **Métricas:** do turno/tool — `deile.tokens.total`, `deile.cost.usd.total`, `deile.tool.duration_ms`, `deile.turn.duration_ms`, `deile.errors.total`; **do dispatch autônomo (issue #455, `dispatch_metrics.py`)** — `deile.dispatch.total` / `.failed.total` / `.duration_ms` / `.tool_burst.total`, `deile.forge.pr_review.total`, `deile.git.push.total` (todas com labels de cardinalidade limitada — enum fechado, nunca `task_id`/`session_id`/`sha`/`model`).
 - **Sem segredos** em atributos — apenas tamanhos, tokens, custo e IDs opacos (redação automática de tokens). `session_id` deliberadamente **não** é label (controle de cardinalidade).
-- **Env:** `DEILE_OTLP_ENDPOINT` (vazio = off), `DEILE_OTLP_HEADERS`, `DEILE_OTLP_INSECURE`, `DEILE_OTLP_SERVICE_NAME`, `DEILE_OTLP_SAMPLE_RATIO`, `DEILE_OBSERVABILITY_DISABLED`.
+- **Env:** `DEILE_OTLP_ENDPOINT` (vazio = off), `DEILE_OTLP_HEADERS`, `DEILE_OTLP_INSECURE`, `DEILE_OTLP_SERVICE_NAME`, `DEILE_OTLP_SAMPLE_RATIO`, `DEILE_OTLP_SEMCONV_ENABLED`, `DEILE_OBSERVABILITY_DISABLED`.
 
 ### 🩺 Runtime state por processo (`deile/runtime/`)
 Cada processo DEILE publica seu estado vivo em `~/.deile/run/<instance_id>.json` (escrita atômica + cleanup no `atexit`), com heartbeat a cada 2 s. O `current_action` é um enum (`idle`/`starting`/`tool_execution`/`llm_call`/`shutting_down`) e o state file acumula tokens/custo/turns/tool_calls/errors — **sem segredos, prompts ou tool_args**. Um **status server por Unix-socket** (`<id>.sock`, `chmod 0600`) responde `STATUS`/`METRICS`/`FLUSH` em protocolo de linha; um `registry.json` (lock `fcntl.flock`, GC de PIDs mortos) dá visão de frota. No Windows, vira no-op.
@@ -571,10 +572,11 @@ Os stores relacionais são **SQLite auto-criados em runtime** (o ledger de custo
 | Store | Arquivo | Dono |
 |---|---|---|
 | Tarefas & listas | `./.deile/db/tasks.db` (legacy: `./deile_tasks.db`) | `deile/orchestration/sqlite_task_manager.py` |
-| Telemetria de uso/custo | `~/.deile/db/usage.db` | `deile/storage/usage_repository.py` |
+| Telemetria de uso/custo | `~/.deile/db/usage.db` | `deile/storage/usage_repository.py` (inclui o custo da frota CLI empurrado centralmente — issue #638) |
 | Memória episódica | `episodes.db` | `deile/memory/episodic_memory.py` (`aiosqlite`) |
 | Cron genérico | `data/cron.db` | `deile/cron/store.py` (`CronStore`) |
-| Ledger de custo durável | `~/.claude/cost-ledger.jsonl` | `claude-worker` (JSONL append-only, dedup por `session_id`) |
+| Ledger de custo durável (claude-worker) | `~/.claude/cost-ledger.jsonl` | `claude-worker` (JSONL append-only, dedup por `session_id`) |
+| Ledger de custo durável (frota CLI) | `<root>/.cost-ledger.jsonl` por PVC | `cli_worker_server` (fallback local; dedup por `task_id`) |
 
 ```
 .deile/db/tasks.db          ── task_lists ──1:N── tasks   (legacy: ./deile_tasks.db)
@@ -585,6 +587,8 @@ data/cron.db                ── cron entries  (CronStore + CronRunner)
 ```
 
 > 💰 **Ledger de custo (issue #445):** os transcripts do `claude -p` acoplam continuidade `--resume` (volumoso, efêmero) e auditoria de custo (minúsculo, permanente). No cleanup, o custo de cada sessão órfã é **colhido para o ledger durável antes** de o transcript ser podado — custo histórico permanente em escala de KB, transcripts podam livremente. A ferramenta `infra/k8s/session_tokens_audit.py` lê o ledger (sessões podadas) + o JSONL vivo (recentes) com custo idêntico (mesma tabela de preços em `jsonl_cost.py`).
+>
+> 💰 **Custo central da frota CLI (issue #638):** o custo dos workers da frota multi-CLI não depende mais só do ledger por-PVC (que sumia no scale-to-zero ou `force-delete`). O pipeline (componente longevo) lê o bloco `usage` estruturado da resposta do `/v1/dispatch` e grava 1 registro por modelo no `UsageRepository` central via `fleet_cost_recorder` (caminho `wait` direto, fire-and-forget capturado no reconcile via resume-info, dedup por `task_id`). Preço pela fonte única `jsonl_cost.fleet_cost_of_model`; escrita best-effort — falha nunca derruba o dispatch. A tela `[T]okens` do painel lê o store central como fonte primária.
 
 ---
 
@@ -699,7 +703,7 @@ python3 -m pytest deile/tests/path/test_x.py -v   # um arquivo
 | Erro `--strict-markers` no pytest | Marker novo não registrado — registre em `pytest.ini` |
 | Tool "não encontrada" | Garanta que está em `DEFAULT_TOOL_PACKAGES` ou registrada via `register_tool` |
 | Mudança de código no cluster sem efeito | `/app` é baked — rode `deploy.py k8s build --restart` |
-| Pod em erro de auth / `WORKER_AUTH_EXPIRED` | OAuth do claude-worker expirou — `deploy.py k8s claude-renew` |
+| Pod em erro de auth / `WORKER_AUTH_EXPIRED` | Token do claude-worker expirou/ausente — re-rode `deploy.py k8s claude-setup-token` (token de ~1 ano; `claude-renew` só se ainda em OAuth legado) |
 | Erro de banco durante uma tarefa | O agente **para e reporta** — scripts SQL -> humano |
 
 ---
