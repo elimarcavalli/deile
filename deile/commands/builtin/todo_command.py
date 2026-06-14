@@ -202,7 +202,7 @@ class TodoCommand(DirectCommand):
                 elif " " in raw_line:
                     # key-value (primeiro espaço separa chave do valor)
                     idx = raw_line.index(" ")
-                    key = raw_line[:idx]
+                    key = raw_line[:idx].replace("-", "_")
                     value = raw_line[idx + 1:]
                     if current_line is not None:
                         current_info[key] = value
