@@ -260,7 +260,7 @@ class EventBus:
         try:
             # Adiciona à fila apropriada baseado na prioridade
             queue = self._event_queues[event.priority]
-            await queue.put(event)
+            queue.put_nowait(event)
 
             self._stats["events_published"] += 1
             logger.debug(f"Evento {event.event_type.value} publicado (ID: {event.event_id})")
