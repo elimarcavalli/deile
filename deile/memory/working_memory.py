@@ -333,10 +333,12 @@ class WorkingMemory:
             # Feedback positivo aumenta TTL
             entry.ttl *= 1.5
             entry.tags.add("positive_feedback")
+            self._tag_index.setdefault("positive_feedback", set()).add(entry_id)
         elif feedback_type == "negative":
             # Feedback negativo diminui TTL
             entry.ttl *= 0.5
             entry.tags.add("negative_feedback")
+            self._tag_index.setdefault("negative_feedback", set()).add(entry_id)
 
         logger.debug(f"Feedback aplicado à entrada {entry_id}: {feedback_type}")
         return True
