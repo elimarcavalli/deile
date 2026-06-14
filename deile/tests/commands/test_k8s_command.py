@@ -321,6 +321,25 @@ class TestCmdRestart:
         # Result depends on outcomes — just confirm it runs without crashing
         assert result is not None
 
+    async def test_restart_unknown_deployment_rejected(self):
+        with patch("deile.commands.builtin.k8s_command._run_kubectl") as mock_kubectl:
+            result = await _cmd_restart("deile", "kube-dns")
+        assert result.success is False
+        mock_kubectl.assert_not_called()
+
+    async def test_restart_allowlisted_deployment_passes(self):
+        call_count = [0]
+
+        async def fake_run(args, timeout=30.0):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return True, "restarted", ""
+            return True, "rolled out", ""
+
+        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+            result = await _cmd_restart("deile", "deile-worker")
+        assert result.success is True
+
 
 # ---------------------------------------------------------------------------
 # _cmd_status
