@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from rich.console import Group
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
@@ -130,7 +131,7 @@ class DiffCommand(DirectCommand):
             border_style="dim"
         )
         
-        return CommandResult.success_result(f"{table}\n\n{usage_panel}", "rich")
+        return CommandResult.success_result(Group(table, usage_panel), "rich")
     
     async def _show_plan_diff(self, plan_id: str, format_type: str, show_content: bool) -> CommandResult:
         """Show differences for a specific plan"""

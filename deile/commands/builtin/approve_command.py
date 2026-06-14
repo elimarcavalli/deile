@@ -1,5 +1,6 @@
 """Approve Command - Approve or reject plan steps"""
 
+from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -128,10 +129,7 @@ class ApproveCommand(DirectCommand):
             border_style="dim"
         )
         
-        # Combine table and usage
-        content = f"{table}\n\n{usage_panel}"
-        
-        return CommandResult.success_result(content, "rich")
+        return CommandResult.success_result(Group(table, usage_panel), "rich")
     
     async def _approve_step(self, plan_id: str, step_id: str, approved: bool) -> CommandResult:
         """Approve or reject a specific step"""

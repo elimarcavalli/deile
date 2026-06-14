@@ -1,5 +1,6 @@
 """Stop Command - Stop running plan execution"""
 
+from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -111,7 +112,7 @@ class StopCommand(DirectCommand):
             border_style="dim"
         )
         
-        return CommandResult.success_result(f"{table}\n\n{usage_panel}", "rich")
+        return CommandResult.success_result(Group(table, usage_panel), "rich")
     
     async def _stop_plan(self, plan_id: str, force: bool = False) -> CommandResult:
         """Stop a specific plan"""
