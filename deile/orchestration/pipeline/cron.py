@@ -64,8 +64,10 @@ def _parse_field(token: str, lo: int, hi: int) -> List[int]:
         part = part.strip()
         if not part:
             raise CronExpressionError(f"empty field token in {token!r}")
+        has_step = False
         step = 1
         if "/" in part:
+            has_step = True
             base, step_str = part.split("/", 1)
             try:
                 step = int(step_str)
@@ -85,7 +87,9 @@ def _parse_field(token: str, lo: int, hi: int) -> List[int]:
                 raise CronExpressionError(f"invalid range {base!r}") from exc
         else:
             try:
-                start = end = int(base)
+                start = int(base)
+                # Vixie-cron: N/step == N-MAX/step (step from N to field maximum)
+                end = hi if has_step else start
             except ValueError as exc:
                 raise CronExpressionError(f"invalid literal {base!r}") from exc
         if start < lo or end > hi or start > end:
