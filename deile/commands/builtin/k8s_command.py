@@ -365,6 +365,14 @@ async def _cmd_restart(namespace: str, deployment: str) -> CommandResult:
     if deployment.lower() == "all":
         targets = list(K8S_DEPLOYMENTS)
     else:
+        resolved = _LOG_TARGET_MAP.get(deployment)
+        if resolved is not None:
+            deployment = resolved
+        elif deployment not in K8S_DEPLOYMENTS:
+            valid = ", ".join(sorted(_LOG_TARGET_MAP.keys()) + ["all"])
+            return CommandResult.error_result(
+                f"Unknown deployment '{deployment}'. Valid: {valid}"
+            )
         targets = [deployment]
 
     lines = []
