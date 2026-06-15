@@ -145,10 +145,15 @@ def test_run_monitor_starts_with_monitor_persona(wrapper_mod, tmp_path, monkeypa
     monkeypatch.setattr(wrapper_mod, "_patch_deile_bootstrap", fake_patch_bootstrap)
     monkeypatch.setattr(wrapper_mod, "_install_monitor_negative_whitelist", fake_install_whitelist)
 
-    # Patch the deile.cli import
+    # Patch the deile.cli import. Use monkeypatch.setitem so the ORIGINAL
+    # deile.cli module object is restored at teardown — a bare
+    # ``del sys.modules["deile.cli"]`` would evict the real module, forcing a
+    # fresh re-import elsewhere and orphaning import bindings made at collection
+    # time (e.g. test_cli_flags' ``from deile.cli import main``), which then
+    # patch a different module object than the one cli_main() closes over.
     fake_cli_mod = MagicMock()
     fake_cli_mod.main = fake_deile_main
-    sys.modules["deile.cli"] = fake_cli_mod
+    monkeypatch.setitem(sys.modules, "deile.cli", fake_cli_mod)
 
     rc = wrapper_mod._run_monitor([])
     assert rc == 0
@@ -157,8 +162,6 @@ def test_run_monitor_starts_with_monitor_persona(wrapper_mod, tmp_path, monkeypa
     argv = called.get("argv", [])
     assert argv[0] == "deile"
     assert "--persona" not in argv  # garantia que removemos a flag inválida
-
-    del sys.modules["deile.cli"]
 
 
 # ---------------------------------------------------------------------------
