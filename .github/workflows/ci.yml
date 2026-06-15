@@ -20,6 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Testes de infra (cli_worker_repo_cycle) fazem `git commit` REAL em repos
+      # temporários; o runner não tem identidade git global, causando
+      # "Author identity unknown" (rc=128). Configura uma identidade de CI.
+      - name: Configure git identity (testes que commitam)
+        run: |
+          git config --global user.email "ci@deile.local"
+          git config --global user.name "DEILE CI"
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
