@@ -59,12 +59,13 @@ class TestRunFailure:
 class TestTimeout:
     async def test_timeout_terminates(self, tmp_path):
         slow = tmp_path / "slow-claude"
-        slow.write_text("#!/bin/sh\nsleep 30\n")
+        slow.write_text("#!/bin/sh\nsleep 3\n")
         slow.chmod(0o755)
         d = ClaudeDispatcher(claude_path=str(slow), timeout_seconds=1)
         result = await d.run("anything", cwd=tmp_path)
         assert not result.ok
         assert result.returncode == 124
+        assert result.duration_seconds < 5
 
 
 class TestPrompts:
