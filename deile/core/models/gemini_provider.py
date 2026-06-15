@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
@@ -52,12 +53,29 @@ logger = logging.getLogger(__name__)
 #         '_async_httpx_client'")>
 #
 # Two such errors at every worker boot (observed in deile-worker pod logs).
-# The fix upstream needs ``hasattr`` guards (and presumably exists in 2.x,
-# but the major bump is breaking). The local fix is a defensive wrapper that
-# preserves the close-if-initialized semantics and silently no-ops the
-# missing-attribute case — which is exactly what aclose() means anyway.
+# The fix upstream needs ``hasattr`` guards. Across SDK versions the exact set
+# of lazily-initialized internals that aclose() touches DRIFTS: 1.47.0 derefs
+# ``_async_httpx_client`` / ``_aiohttp_session``; 2.x adds ``_http_options``.
+# Hardcoding the names is therefore fragile. The local fix is a defensive
+# wrapper that silently no-ops whenever the original aclose() trips over a
+# never-initialized INTERNAL attribute (underscore-prefixed) on the client —
+# which is exactly what "close a client that never opened" means — while
+# re-raising anything else so genuine bugs stay loud.
 #
 # Idempotent (won't re-patch if our marker is present).
+
+# CPython's missing-attribute message is ``'<Type>' object has no attribute
+# '<name>'``. We swallow only when the missing attribute is INTERNAL
+# (leading underscore) — the lazy-init family — and re-raise otherwise. A
+# missing PUBLIC attribute, or an AttributeError with any other message, is a
+# real bug and must surface.
+_GENAI_LAZY_ATTR_RE = re.compile(r"has no attribute '_")
+
+
+def _is_genai_lazy_attr_error(exc: AttributeError) -> bool:
+    """True if ``exc`` is google-genai's never-initialized-internal signature."""
+    return bool(_GENAI_LAZY_ATTR_RE.search(str(exc)))
+
 
 def _install_genai_aclose_guard() -> None:
     if getattr(_GenaiBaseApiClient.aclose, "_deile_guarded", False):
@@ -68,12 +86,12 @@ def _install_genai_aclose_guard() -> None:
         try:
             await _original_aclose(self)
         except AttributeError as exc:
-            # SDK bug — referencing a lazy attribute that was never created.
-            # Nothing to close, so the close completed trivially.
-            if "_async_httpx_client" in str(exc) or "_aiohttp_session" in str(exc):
+            # SDK bug — referencing a lazy internal attribute that was never
+            # created. Nothing to close, so the close completed trivially.
+            if _is_genai_lazy_attr_error(exc):
                 logger.debug(
-                    "google-genai aclose: lazy client never initialized "
-                    "(%s) — safe no-op",
+                    "google-genai aclose: lazy client internal never "
+                    "initialized (%s) — safe no-op",
                     exc,
                 )
                 return

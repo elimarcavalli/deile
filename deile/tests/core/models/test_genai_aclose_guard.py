@@ -1,26 +1,32 @@
 """Regression tests for the google-genai aclose() defensive monkey-patch.
 
-google-genai 1.47.0 has a bug in ``BaseApiClient.aclose()``: it dereferences
-``self._async_httpx_client`` (and ``self._aiohttp_session``) unconditionally,
-but those are LAZY-initialized. When the client is GC'd before any async
-request fires, ``aclose()`` raises ``AttributeError`` — and because it runs
-as a fire-and-forget Task scheduled from ``__del__``, the exception is never
-retrieved and asyncio logs the noisy stack trace twice at every worker boot.
+google-genai's ``BaseApiClient.aclose()`` dereferences lazily-initialized
+internal attributes. When the client is GC'd before any async request fires,
+those attributes never existed, so ``aclose()`` raises ``AttributeError`` — and
+because it runs as a fire-and-forget Task scheduled from ``__del__``, the
+exception is never retrieved and asyncio logs the noisy stack trace at every
+worker boot.
 
-The patch lives in ``deile/core/models/gemini_provider.py`` and:
+The exact set of internals aclose() touches DRIFTS across SDK versions
+(1.47.0: ``_async_httpx_client`` / ``_aiohttp_session``; 2.x adds
+``_http_options``), so the guard in ``deile/core/models/gemini_provider.py``
+keys off the SIGNATURE — a missing underscore-prefixed (internal) attribute on
+the client — not a hardcoded name list. It:
 
 1. Wraps ``BaseApiClient.aclose`` once (idempotent guard).
-2. Catches AttributeError with ``_async_httpx_client`` or ``_aiohttp_session``
-   in the message → silent no-op.
-3. Re-raises any OTHER AttributeError (don't mask unrelated bugs).
-4. Preserves the original close path when attributes ARE initialized.
+2. Swallows AttributeError whose message names a missing INTERNAL attribute
+   (``_is_genai_lazy_attr_error``) → silent no-op.
+3. Re-raises any OTHER AttributeError (missing public attr, unrelated message)
+   so genuine bugs stay loud.
+
+These tests exercise the decision predicate directly (version-independent) plus
+one end-to-end test against a real ``BaseApiClient`` — instead of hand-building
+SimpleNamespace stand-ins that mirror a specific SDK version's aclose() body.
 """
 
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from google.genai._api_client import BaseApiClient
@@ -28,6 +34,7 @@ from google.genai._api_client import BaseApiClient
 # Trigger the patch install (idempotent — already done if gemini_provider was
 # imported elsewhere).
 import deile.core.models.gemini_provider  # noqa: F401
+from deile.core.models.gemini_provider import _is_genai_lazy_attr_error
 
 
 def test_aclose_is_guarded():
@@ -45,57 +52,31 @@ def test_install_is_idempotent():
     assert first is second
 
 
-async def test_missing_async_httpx_client_is_silently_swallowed():
-    """The original SDK bug — never-initialized async client — must no-op."""
-    instance = SimpleNamespace()
-    # Bind the patched method to the bare instance — no `_async_httpx_client`.
-    # If the patch missed, this raises AttributeError; with the patch, it
-    # returns None silently.
-    result = await BaseApiClient.aclose(instance)
-    assert result is None
+@pytest.mark.parametrize(
+    "attr",
+    ["_async_httpx_client", "_aiohttp_session", "_http_options", "_some_future_attr"],
+)
+def test_lazy_attr_error_swallowed_for_internal_names(attr):
+    """Any missing INTERNAL (underscore) attribute is the lazy-init family.
+
+    Covers the historical names AND a hypothetical future one — proving the
+    guard survives SDK version drift without a code change.
+    """
+    exc = AttributeError(f"'BaseApiClient' object has no attribute '{attr}'")
+    assert _is_genai_lazy_attr_error(exc) is True
 
 
-async def test_missing_aiohttp_session_is_silently_swallowed():
-    """Same as above but for the second lazy attribute the SDK touches."""
-
-    class _Closeable:
-        def __init__(self):
-            self.aclose = AsyncMock(return_value=None)
-
-    instance = SimpleNamespace(_async_httpx_client=_Closeable())
-    # _aiohttp_session is missing — the original aclose would fail here.
-    # The guard catches it as the same SDK lazy-attr family.
-    result = await BaseApiClient.aclose(instance)
-    assert result is None
-    instance._async_httpx_client.aclose.assert_awaited_once()
-
-
-async def test_unrelated_attribute_error_is_re_raised():
-    """Don't mask unrelated bugs — only the known SDK lazy-attr names are quiet."""
-
-    class _Bomb:
-        async def aclose(self):
-            raise AttributeError("some_completely_unrelated_attr is gone")
-
-    instance = SimpleNamespace(
-        _async_httpx_client=_Bomb(),
-        _aiohttp_session=None,
-    )
-    with pytest.raises(AttributeError, match="some_completely_unrelated_attr"):
-        await BaseApiClient.aclose(instance)
-
-
-async def test_happy_path_with_initialized_clients():
-    """When both lazy attrs are real, aclose() calls through normally."""
-    httpx_client = SimpleNamespace(aclose=AsyncMock(return_value=None))
-    aiohttp_session = SimpleNamespace(close=AsyncMock(return_value=None))
-    instance = SimpleNamespace(
-        _async_httpx_client=httpx_client,
-        _aiohttp_session=aiohttp_session,
-    )
-    await BaseApiClient.aclose(instance)
-    httpx_client.aclose.assert_awaited_once()
-    aiohttp_session.close.assert_awaited_once()
+@pytest.mark.parametrize(
+    "message",
+    [
+        "some_completely_unrelated_attr is gone",  # custom message, not the CPython shape
+        "'BaseApiClient' object has no attribute 'public_thing'",  # public attr = real bug
+        "'GeminiProvider' object has no attribute 'model'",  # unrelated public attr
+    ],
+)
+def test_unrelated_attribute_error_is_not_swallowed(message):
+    """Don't mask unrelated bugs — only missing INTERNAL attrs are quiet."""
+    assert _is_genai_lazy_attr_error(AttributeError(message)) is False
 
 
 async def test_patch_silences_the_real_scenario():
@@ -105,8 +86,11 @@ async def test_patch_silences_the_real_scenario():
     instantiates a client, never sends a request, then GC kicks in and
     schedules aclose(). With the guard, aclose() returns cleanly; without it,
     asyncio would log a 'Task exception was never retrieved' AttributeError.
+
+    Constructed via ``object.__new__`` so NONE of the lazy internals exist —
+    whatever attribute the installed SDK's aclose() reaches for first, the
+    guard must absorb it.
     """
-    # We construct an instance bypassing __init__ so no httpx_client exists.
     client = object.__new__(BaseApiClient)
     # Schedule aclose() exactly like __del__ does — fire-and-forget — and
     # await it deterministically here so the test verifies the no-raise path.

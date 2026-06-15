@@ -145,7 +145,12 @@ class TestHighlightRegexTermTimeoutNoSpans:
         if not _HAS_REGEX:
             pytest.skip("regex module not installed — AC-A5 requires regex>=2024.0")
 
-        line = "a" * 5000
+        # Catastrophic backtracking for (a+)+$ only triggers when the match
+        # FAILS — a string of pure 'a's matches greedily in microseconds and
+        # produces a span. The trailing '!' (no 'a', so '$' can never be
+        # reached) forces the engine through ~2^N partitions until the 0.1s
+        # budget fires TimeoutError.
+        line = "a" * 5000 + "!"
         terms_info = [("regex", "(a+)+$",
                        _regex.compile("(a+)+$", _regex.IGNORECASE))]
         t0 = time.monotonic()
@@ -505,9 +510,12 @@ class TestRegexTimeoutAbortsUnder100ms:
         kind, raw, compiled = terms[0]
         assert kind == "regex"
         assert hasattr(compiled, "search")
-        # Should be a regex module pattern, not re module
-        assert type(compiled).__module__.startswith("regex"), (
-            f"Expected regex.Pattern, got {type(compiled)}"
+        # Deve ser um pattern da lib ``regex``, não do ``re`` builtin. Versões
+        # recentes do pacote ``regex`` expõem o Pattern pela extensão C como
+        # ``_regex.Pattern`` (``__module__ == "_regex"``); versões antigas como
+        # ``regex.Pattern``. Ambos pertencem à lib ``regex`` — aceitar os dois.
+        assert type(compiled).__module__ in ("regex", "_regex"), (
+            f"Expected regex/_regex Pattern, got {type(compiled)}"
         )
 
 

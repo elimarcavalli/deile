@@ -87,6 +87,16 @@ def in_memory_exporter(monkeypatch):
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     monkeypatch.setattr("deile.observability.tracer._provider", provider)
 
+    # Registra também como TracerProvider GLOBAL do OpenTelemetry. Os testes que
+    # usam a API nativa (``trace.get_tracer`` / ``propagate.inject``) leem o
+    # provider global — sem isto, ``get_tracer_provider()`` devolve o proxy NoOp
+    # (``_TRACER_PROVIDER is None``) e nenhum span/traceparent é gravado. O
+    # ``set_tracer_provider`` oficial só registra uma vez por processo, então em
+    # teste setamos o atributo direto via monkeypatch (revertido no teardown,
+    # não vaza para outros testes).
+    import opentelemetry.trace as _ot_trace
+    monkeypatch.setattr(_ot_trace, "_TRACER_PROVIDER", provider, raising=False)
+
     # Ligar OTLP via env para get_tracer() escolher OtlpTracer.
     monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
 

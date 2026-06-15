@@ -25,6 +25,9 @@ class TestInitLogging:
         log_dir = tmp_path / "logs" / "test-pod"
         monkeypatch.setenv("DEILE_LOG_DIR", str(log_dir))
         monkeypatch.setenv("DEILE_POD_NAME", "test-pod")
+        # Assert the genuine DEFAULT level — must be hermetic against an
+        # ambient DEILE_LOG_LEVEL (the CI workflow sets it to DEBUG globally).
+        monkeypatch.delenv("DEILE_LOG_LEVEL", raising=False)
 
         handler = init_logging(pod_name="test-pod", max_mb=1, backup_count=2)
 
