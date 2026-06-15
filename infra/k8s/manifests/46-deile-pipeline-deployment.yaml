@@ -202,7 +202,12 @@ spec:
             # claude-worker pods ociosos. Operador pode override via painel TUI
             # `[d]` (DispatchMatrixView) — o `kubectl set env` aplica patch
             # incremental, mantém estes como base.
-            - { name: DEILE_PIPELINE_DISPATCH_MODE,        value: "deile-worker" }
+            # GLOBAL = "claude" (NÃO "claude-worker", que dá CrashLoop no
+            # validador legado is_claude_mode): roteamento all-claude-worker
+            # provado em produção. O global "claude" é alias→claude-worker no
+            # resolver E válido em is_claude_mode. Per-stage abaixo são todos
+            # claude-worker (canônico). Ver memória dispatch-mode-global-vocab.
+            - { name: DEILE_PIPELINE_DISPATCH_MODE,        value: "claude" }
             - { name: DEILE_PIPELINE_DISPATCH_CLASSIFY,    value: "claude-worker" }
             - { name: DEILE_PIPELINE_DISPATCH_REFINE,      value: "claude-worker" }
             - { name: DEILE_PIPELINE_DISPATCH_IMPLEMENT,   value: "claude-worker" }
@@ -230,10 +235,11 @@ spec:
             - { name: DEILE_PIPELINE_REASONING_IMPLEMENT,  value: "ultracode" }
             - { name: DEILE_PIPELINE_REASONING_PR_REVIEW,  value: "medium" }
             - { name: DEILE_PIPELINE_REASONING_FOLLOW_UPS, value: "medium" }
-            # Paralelismo: até 5 grupos simultâneos. claude-worker tem 3
-            # réplicas, deile-worker 2 réplicas → ~5 dispatches reais
-            # concorrentes antes da fila.
-            - { name: DEILE_PIPELINE_MAX_PARALLEL,         value: "5" }
+            # Paralelismo: 2 grupos simultâneos, alinhado ao cap de concorrência
+            # do claude-worker (lease-count, DEILE_CLAUDE_MAX_CONCURRENT=2). Com
+            # all-claude-worker, MAX_PARALLEL>2 só gera 409 (worker recusa lease
+            # excedente) + churn de label sem ganho de throughput.
+            - { name: DEILE_PIPELINE_MAX_PARALLEL,         value: "2" }
             # Timeouts per-stage (issue #530). Sem estas entradas, um
             # `kubectl apply` cru remove os overrides injetados via
             # `kubectl set env` e cada stage cai para o fallback global
