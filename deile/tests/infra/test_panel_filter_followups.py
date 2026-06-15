@@ -145,7 +145,12 @@ class TestHighlightRegexTermTimeoutNoSpans:
         if not _HAS_REGEX:
             pytest.skip("regex module not installed — AC-A5 requires regex>=2024.0")
 
-        line = "a" * 5000
+        # Catastrophic backtracking for (a+)+$ only triggers when the match
+        # FAILS — a string of pure 'a's matches greedily in microseconds and
+        # produces a span. The trailing '!' (no 'a', so '$' can never be
+        # reached) forces the engine through ~2^N partitions until the 0.1s
+        # budget fires TimeoutError.
+        line = "a" * 5000 + "!"
         terms_info = [("regex", "(a+)+$",
                        _regex.compile("(a+)+$", _regex.IGNORECASE))]
         t0 = time.monotonic()
