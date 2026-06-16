@@ -288,11 +288,9 @@ jobs:
   #      resolve em venv limpo (princípio arquitetural #14).
   #      A extra [bot] depende de git URL externa (elimarcavalli/deilebot) e
   #      requer BOT_REPO_TOKEN — testada no workflow install-smoke.yml dedicado.
-  #   5. Docker build da imagem deile-stack:local + smoke de import dos módulos
-  #      dos pods. Cache de layers via actions/cache para manter tempo aceitável.
-  #      O bind-mount do Dockerfile para `deilebot/` (BuildKit) exige que o dir
-  #      exista no contexto — criamos um placeholder vazio (WITH_BOT=0 default
-  #      não usa o conteúdo, apenas precisa que o source exista para o mount).
+  #   5. Docker build da imagem REAL deile-stack:local (clone do deilebot +
+  #      WITH_BOT=1, espelhando a produção) + smoke de import dos módulos dos
+  #      pods. Cache de layers via type=gha.
   # Qualquer falha aqui bloqueia o merge.
   # ──────────────────────────────────────────────────────────────────────────
   build-and-package:
@@ -376,17 +374,29 @@ jobs:
       # ------------------------------------------------------------------
       # Docker build da imagem de produção (GATE)
       #
-      # O Dockerfile usa --mount=type=bind,source=deilebot para o step do
-      # builder. Mesmo com WITH_BOT=0 (default), o BuildKit exige que o
-      # diretório fonte exista no contexto de build; sem ele, o mount falha.
-      # Criamos um placeholder vazio — WITH_BOT=0 não usa o conteúdo.
+      # O Dockerfile usa --mount=type=bind,source=deilebot no builder e faz um
+      # COPY incondicional de /build/deilebot no stage final — que só existe com
+      # WITH_BOT=1. Por isso buildamos a imagem REAL: clone do deilebot + WITH_BOT=1
+      # (espelha deploy.py:397, que usa WITH_BOT=1 quando deilebot/ está presente).
       #
       # Cache de layers: usamos o cache embutido do buildx (type=gha) para
       # reutilizar camadas de pip install entre runs (a camada mais pesada).
       # Mesmo sem cache pré-aquecido o build conclui em ~5 min no runner.
       # ------------------------------------------------------------------
-      - name: Placeholder deilebot/ para bind-mount do BuildKit (WITH_BOT=0)
-        run: mkdir -p deilebot
+      # Clona o deilebot/ no contexto e builda WITH_BOT=1 — a imagem REAL de
+      # produção (deploy.py:397 usa WITH_BOT=1 quando deilebot/ existe). O bind
+      # mount do Dockerfile exige deilebot/ presente; o COPY final de
+      # /build/deilebot só existe com WITH_BOT=1.
+      - name: Clona deilebot/ no contexto (imagem real, WITH_BOT=1)
+        env:
+          BOT_REPO_TOKEN: ${{ secrets.BOT_REPO_TOKEN }}
+        run: |
+          if [ -z "$BOT_REPO_TOKEN" ]; then
+            echo "::error::BOT_REPO_TOKEN ausente — necessário para clonar deilebot e buildar a imagem real (WITH_BOT=1)"
+            exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${BOT_REPO_TOKEN}@github.com/elimarcavalli/deilebot.git" deilebot
+          test -d deilebot/deilebot || { echo "::error::clone do deilebot incompleto"; exit 1; }
 
       - name: Set up Docker Buildx
         # docker/setup-buildx-action v3
@@ -401,7 +411,7 @@ jobs:
           load: true
           tags: deile-stack:local
           build-args: |
-            WITH_BOT=0
+            WITH_BOT=1
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
