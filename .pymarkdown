@@ -1,0 +1,37 @@
+{
+  "mode": {
+    "strict-config": true
+  },
+  "plugins": {
+    "md013": {
+      "enabled": false
+    },
+    "md024": {
+      "enabled": false
+    },
+    "md033": {
+      "enabled": false
+    },
+    "md040": {
+      "enabled": false
+    },
+    "md028": {
+      "enabled": false
+    },
+    "md031": {
+      "enabled": false
+    },
+    "md032": {
+      "enabled": false
+    },
+    "md004": {
+      "enabled": false
+    },
+    "md038": {
+      "enabled": false
+    },
+    "md022": {
+      "enabled": false
+    }
+  }
+}

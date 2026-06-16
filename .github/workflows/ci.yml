@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Run tests daily at 2 AM UTC
+    # Roda diariamente às 02:00 UTC
     - cron: "0 2 * * *"
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
         python-version: ["3.11"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       # Testes de infra (cli_worker_repo_cycle) fazem `git commit` REAL em repos
       # temporários; o runner não tem identidade git global, causando
@@ -30,15 +30,15 @@ jobs:
           git config --global user.name "DEILE CI"
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Cache pip dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -53,24 +53,12 @@ jobs:
           pip install -e ".[test,otel]"
           pip install pytest-cov pytest-xdist pytest-mock coverage
 
-      - name: Lint with ruff (if available)
-        run: |
-          pip install ruff || echo "Ruff not available, skipping lint"
-          ruff check . || echo "Ruff check completed with issues"
-        continue-on-error: true
-
-      - name: Type check with mypy (if available)
-        run: |
-          pip install mypy || echo "mypy not available, skipping type check"
-          mypy deile/ || echo "mypy check completed with issues"
-        continue-on-error: true
-
       - name: Run tests
         run: |
-          pytest deile/tests/ -q --cov=deile --cov-report=xml --cov-report=term-missing
+          pytest deile/tests/ -q --cov=deile --cov-report=xml --cov-report=term-missing --cov-fail-under=80
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@0f8570b1a125f4937846a11fcfa3bcd548bd8c97 # v4.6.0
         with:
           file: ./coverage.xml
           flags: unittests
@@ -80,10 +68,10 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -103,55 +91,84 @@ jobs:
         continue-on-error: true
 
   code-quality:
+    # GATE efetivo — sem continue-on-error.
+    # Falha bloqueia merge. Ratchet: erros só podem diminuir.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
       - name: Install quality tools
         run: |
-          pip install -r requirements.txt
-          pip install flake8 black isort radon
+          pip install black==26.5.1 isort==8.0.1 ruff==0.15.17 radon mypy mypy-baseline interrogate
 
-      - name: Check code formatting with Black
-        run: |
-          black --check --diff deile/
-        continue-on-error: true
+      # --- GATE: formatação (falha se código não está normalizado) ---
+      - name: Gate — black --check
+        run: black --check deile/
 
-      - name: Check import sorting with isort
-        run: |
-          isort --check-only --diff deile/
-        continue-on-error: true
+      - name: Gate — isort --check-only
+        run: isort --check-only deile/
 
-      - name: Calculate code complexity
-        run: |
-          radon cc deile/ -a
-        continue-on-error: true
+      - name: Gate — ruff check
+        run: ruff check deile/
 
-      - name: Generate complexity report
+      # --- GATE: complexidade ciclomática ---
+      # Baseline: média A (3.24). Teto: B (média ≤ 10.0).
+      # Se a média subir para B ou pior, o gate falha.
+      # Ratchet: ao atingir A consistentemente, abaixe o teto para A (<= 5).
+      - name: Gate — radon CC (média ≤ B)
         run: |
-          radon mi deile/
+          AVG=$(radon cc deile/ -a | tail -1 | grep -oE '[0-9]+\.[0-9]+')
+          echo "Complexidade ciclomática média: $AVG"
+          python3 -c "
+          avg = float('$AVG')
+          # B = CC entre 6 e 10; A = CC <= 5
+          # Teto inicial: B (avg <= 10). Baseline medido: 3.24 (A).
+          if avg > 10.0:
+              raise SystemExit(f'Complexidade média {avg:.2f} excede teto B (10.0). Refatore antes de mergear.')
+          print(f'OK: complexidade média {avg:.2f} dentro do teto B (10.0)')
+          "
+
+      # --- GATE: mypy escalonado via baseline ---
+      # Estratégia: mypy-baseline (registra 617 erros como baseline; gate só
+      # em erros NOVOS). Ratchet: o arquivo mypy-baseline.txt só pode encolher.
+      # Para atualizar o baseline após correções: mypy deile/ --ignore-missing-imports | mypy-baseline sync
+      - name: Gate — mypy (apenas erros novos vs baseline)
+        run: |
+          pip install -e ".[test,otel]" -q
+          mypy deile/ --ignore-missing-imports | mypy-baseline filter
+        # mypy-baseline filter: exit 0 se nenhum erro NOVO; exit 1 se há regressão.
+
+      # --- GATE: cobertura de docstrings ---
+      # Baseline: 39.9%. Threshold inicial: 39% (margem 1 ponto).
+      # Ratchet: só pode aumentar. Config em pyproject.toml [tool.interrogate].
+      - name: Gate — interrogate (docstring coverage >= 39%)
+        run: interrogate deile/ --config pyproject.toml
+
+      # --- Relatório informativo de complexidade MI (não bloqueia) ---
+      - name: Info — radon MI report (não bloqueia)
+        run: radon mi deile/ --min B
         continue-on-error: true
 
   functional-tests:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -e ".[test,otel]"
 
       - name: Test DEILE CLI basic functionality
         run: |
@@ -181,17 +198,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip  
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install -e ".[test,otel]"
           pip install pytest-benchmark
 
       - name: Run performance benchmarks
@@ -203,10 +220,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, code-quality]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -227,49 +244,63 @@ jobs:
         continue-on-error: true
 
   documentation:
+    # GATE efetivo — sem continue-on-error nos steps críticos.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
       - name: Install documentation tools
         run: |
-          pip install -r requirements.txt
-          pip install sphinx sphinx-rtd-theme || echo "Sphinx not configured"
+          pip install pymarkdownlnt
 
-      - name: Validate documentation files
-        run: |
-          find docs/ -name "*.md" -exec echo "Checking {}" \; -exec head -5 {} \; || echo "No docs directory"
-          ls -la docs/ || echo "No docs directory found"
+      # --- GATE: estrutura básica de markdown ---
+      # Config em .pymarkdown (desabilita MD013/MD024/MD040 e outros ruidosos;
+      # ativa MD001 heading levels, MD041 first heading e integridade estrutural).
+      - name: Gate — markdown lint (docs/system_design/)
+        run: pymarkdown scan docs/system_design/
 
-      - name: Check README
-        run: |
-          test -f README.md && echo "README.md exists" || echo "No README.md found"
-          test -f README_NEW_ARCHITECTURE.md && echo "Architecture README exists" || echo "No architecture README"
+      # --- GATE: consistência doc↔código ---
+      # Verifica invariantes declarados nos docs vs realidade do código:
+      # - --cov-fail-under existe em pytest.ini/pyproject.toml/ci.yml
+      # - links cruzados de docs/system_design/ apontam para arquivos existentes
+      # - ci.yml contém gate pytest
+      - name: Gate — consistência doc↔código
+        run: python scripts/validate_doc_consistency.py
+
+      # --- GATE: README existe ---
+      - name: Gate — README.md existe
+        run: test -f README.md
+
+      # --- Informativo: lista docs (não bloqueia) ---
+      - name: Info — lista documentos do sistema
+        run: find docs/ -name "*.md" | sort
+        continue-on-error: true
 
   notify-on-failure:
     runs-on: ubuntu-latest
-    needs: [test, security-scan, code-quality, functional-tests]
+    needs: [test, security-scan, code-quality, functional-tests, documentation]
     if: failure()
     steps:
       - name: Notify on failure
         run: |
-          echo "CI Pipeline failed. Check the logs for details."
-          echo "Failed jobs need attention before merging."
+          echo "CI Pipeline falhou. Verifique os logs para detalhes."
+          echo "Jobs com falha precisam de atenção antes do merge."
 
   deployment-ready:
     runs-on: ubuntu-latest
     needs:
-      [test, security-scan, code-quality, functional-tests, build-and-package]
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+      [test, security-scan, code-quality, functional-tests, build-and-package, documentation]
+    if: github.ref == 'refs/heads/main'
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Mark as deployment ready
         run: |
-          echo "All checks passed! Ready for deployment."
+          echo "Todos os checks passaram! Pronto para deploy."
           echo "Version: $(date +%Y.%m.%d)-$(git rev-parse --short HEAD)"
           echo "Branch: ${{ github.ref }}"
 
