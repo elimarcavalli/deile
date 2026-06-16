@@ -29,12 +29,17 @@ from unittest.mock import patch
 import pytest
 
 from deile.tools.base import ToolContext
-from deile.tools.file_tools import (DeleteFileTool, ListFilesTool,
-                                    LocalFileAccessViolation, ReadFileTool,
-                                    ResolvedPath, WriteFileTool,
-                                    _looks_like_outside_project,
-                                    _resolve_project_path,
-                                    _validate_path_within_working_directory)
+from deile.tools.file_tools import (
+    DeleteFileTool,
+    ListFilesTool,
+    LocalFileAccessViolation,
+    ReadFileTool,
+    ResolvedPath,
+    WriteFileTool,
+    _looks_like_outside_project,
+    _resolve_project_path,
+    _validate_path_within_working_directory,
+)
 
 # ---------------------------------------------------------------------------
 # 1. Pure-function tests for _resolve_project_path
@@ -239,7 +244,7 @@ def test_non_string_rejected(cwd):
 @pytest.mark.parametrize(
     "input_path",
     [
-        "foo\x00.py",          # null byte
+        "foo\x00.py",  # null byte
         "foo<bar.py",
         "foo>bar.py",
         "foo|bar.py",
@@ -397,7 +402,7 @@ def test_looks_like_outside_project_true(path):
         "foo.py",
         "src/main.py",
         "./local.py",
-        "a/../b.py",   # internal .. doesn't trigger heuristic
+        "a/../b.py",  # internal .. doesn't trigger heuristic
         ".github/ISSUE_TEMPLATE/",
         "",
         "   ",

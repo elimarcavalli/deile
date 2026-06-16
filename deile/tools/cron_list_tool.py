@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from deile.cron.store import open_cron_store
-from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
-                              ToolResult, ToolSchema)
+from deile.tools.base import (
+    SecurityLevel,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 
 
 class CronListTool(Tool):
@@ -49,7 +55,8 @@ class CronListTool(Tool):
         except Exception as exc:  # noqa: BLE001
             return ToolResult.error_result(
                 message=f"could not list cron entries: {exc}",
-                error=exc, error_code="LIST_FAILED",
+                error=exc,
+                error_code="LIST_FAILED",
             )
 
         if creator:

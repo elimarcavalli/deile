@@ -16,10 +16,13 @@ pytestmark = pytest.mark.unit
 
 def _otlp_metric_exporter_available() -> bool:
     try:
-        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import \
-            OTLPMetricExporter  # noqa: F401
-        from opentelemetry.sdk.metrics.export import \
-            PeriodicExportingMetricReader  # noqa: F401
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (  # noqa: F401
+            OTLPMetricExporter,
+        )
+        from opentelemetry.sdk.metrics.export import (  # noqa: F401
+            PeriodicExportingMetricReader,
+        )
+
         return True
     except ImportError:
         return False

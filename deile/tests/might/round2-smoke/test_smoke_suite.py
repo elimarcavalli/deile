@@ -52,7 +52,9 @@ class TestResult:
     error: Optional[str] = None
 
 
-async def _run_turn(agent: DeileAgent, session_id: str, user_input: str) -> Dict[str, Any]:
+async def _run_turn(
+    agent: DeileAgent, session_id: str, user_input: str
+) -> Dict[str, Any]:
     """Run one turn and return response + tool calls used."""
     start = time.time()
     try:
@@ -113,22 +115,32 @@ async def t_a1_simple_qa(agent: DeileAgent) -> TestResult:
 
 async def t_a2_multi_turn_context(agent: DeileAgent) -> TestResult:
     """2 turnos — segundo turno deve usar informacao do primeiro."""
-    r = TestResult(test_id="A2", name="multi-turn context", status="fail", duration_s=0.0)
+    r = TestResult(
+        test_id="A2", name="multi-turn context", status="fail", duration_s=0.0
+    )
     session = await _make_session(agent, "a2")
-    t1 = await _run_turn(agent, session.session_id, "Meu nome é Xandao. Repita meu nome.")
+    t1 = await _run_turn(
+        agent, session.session_id, "Meu nome é Xandao. Repita meu nome."
+    )
     if t1["status"] != "ok":
         r.error = f"turn1: {t1.get('error')}"
         return r
-    t2 = await _run_turn(agent, session.session_id, "Qual e o nome que eu te disse antes?")
+    t2 = await _run_turn(
+        agent, session.session_id, "Qual e o nome que eu te disse antes?"
+    )
     r.duration_s = t1["duration_s"] + t2["duration_s"]
     if t2["status"] != "ok":
         r.error = f"turn2: {t2.get('error')}"
         return r
-    r.response_preview = f"T1: {(t1['content'] or '')[:60]} | T2: {(t2['content'] or '')[:60]}"
+    r.response_preview = (
+        f"T1: {(t1['content'] or '')[:60]} | T2: {(t2['content'] or '')[:60]}"
+    )
     if "xandao" in (t2["content"] or "").lower():
         r.status = "pass"
     else:
-        r.notes.append("turn2 nao recuperou nome do turn1 — contexto pode estar quebrado")
+        r.notes.append(
+            "turn2 nao recuperou nome do turn1 — contexto pode estar quebrado"
+        )
     return r
 
 
@@ -149,6 +161,7 @@ async def t_b1_read_file_tool(agent: DeileAgent) -> TestResult:
     r.tool_calls = turn.get("tool_calls", [])
     read_called = any("read" in tc.lower() for tc in r.tool_calls)
     import re as _re
+
     has_version = bool(_re.search(r"\d+\.\d+\.\d+", turn["content"] or ""))
     if read_called and has_version:
         r.status = "pass"
@@ -175,7 +188,9 @@ async def t_d1_bash_tool(agent: DeileAgent) -> TestResult:
         return r
     r.response_preview = (turn["content"] or "")[:120]
     r.tool_calls = turn.get("tool_calls", [])
-    bash_called = any("bash" in tc.lower() or "execute" in tc.lower() for tc in r.tool_calls)
+    bash_called = any(
+        "bash" in tc.lower() or "execute" in tc.lower() for tc in r.tool_calls
+    )
     expected_dir = PROJECT_ROOT.name
     if bash_called and expected_dir in (turn["content"] or ""):
         r.status = "pass"
@@ -203,8 +218,7 @@ async def t_e1_grep_tool(agent: DeileAgent) -> TestResult:
     r.response_preview = (turn["content"] or "")[:200]
     r.tool_calls = turn.get("tool_calls", [])
     search_called = any(
-        any(k in tc.lower() for k in ("search", "grep", "find"))
-        for tc in r.tool_calls
+        any(k in tc.lower() for k in ("search", "grep", "find")) for tc in r.tool_calls
     )
     if search_called and "agent" in (turn["content"] or "").lower():
         r.status = "pass"
@@ -230,7 +244,9 @@ async def t_f1_help_command(agent: DeileAgent) -> TestResult:
     found = [c for c in expected_cmds if c in content]
     if len(found) >= 3:
         r.status = "pass"
-        r.notes.append(f"listou {len(found)}/{len(expected_cmds)} comandos esperados: {found}")
+        r.notes.append(
+            f"listou {len(found)}/{len(expected_cmds)} comandos esperados: {found}"
+        )
     else:
         r.notes.append(f"listou apenas {found} de {expected_cmds}")
     return r
@@ -255,7 +271,9 @@ async def t_f2_history_command(agent: DeileAgent) -> TestResult:
 
 async def t_i1_persona_loaded(agent: DeileAgent) -> TestResult:
     """Persona default carregou pelo agent inicializado."""
-    r = TestResult(test_id="I1", name="default persona loaded", status="fail", duration_s=0.0)
+    r = TestResult(
+        test_id="I1", name="default persona loaded", status="fail", duration_s=0.0
+    )
     start = time.time()
     try:
         # O agent já foi inicializado pelo runner — a persona ativa
@@ -263,7 +281,12 @@ async def t_i1_persona_loaded(agent: DeileAgent) -> TestResult:
         pm = getattr(agent, "persona_manager", None)
         active = None
         if pm is not None:
-            for attr in ("get_active_persona", "active_persona", "current_persona", "get_current"):
+            for attr in (
+                "get_active_persona",
+                "active_persona",
+                "current_persona",
+                "get_current",
+            ):
                 obj = getattr(pm, attr, None)
                 if callable(obj):
                     try:
@@ -277,7 +300,9 @@ async def t_i1_persona_loaded(agent: DeileAgent) -> TestResult:
         r.duration_s = time.time() - start
         if active is not None:
             r.status = "pass"
-            r.response_preview = f"persona: {getattr(active, 'name', None) or str(active)[:80]}"
+            r.response_preview = (
+                f"persona: {getattr(active, 'name', None) or str(active)[:80]}"
+            )
         else:
             r.notes.append("agent.persona_manager não expôs persona ativa")
     except Exception as exc:
@@ -349,7 +374,9 @@ async def main() -> int:
     print("=" * 80)
 
     RESULTS_PATH.write_text(
-        json.dumps({"model": MODEL_KEY, "results": [asdict(r) for r in results]}, indent=2),
+        json.dumps(
+            {"model": MODEL_KEY, "results": [asdict(r) for r in results]}, indent=2
+        ),
         encoding="utf-8",
     )
     print(f"saved: {RESULTS_PATH}")

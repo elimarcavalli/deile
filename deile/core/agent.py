@@ -14,12 +14,14 @@ from .exceptions import DEILEError, ModelError
 # Module-level import so that `except _BudgetExceeded:` clauses don't NameError
 # if the import inside a try block ever raises (extremely rare but possible).
 try:
-    from deile.storage.usage_repository import \
-        BudgetExceeded as _BudgetExceeded
+    from deile.storage.usage_repository import BudgetExceeded as _BudgetExceeded
 except Exception:  # pragma: no cover — defensive only
+
     class _BudgetExceeded(Exception):  # type: ignore[no-redef]
         provider_id = None
         limit_type = None
+
+
 from ..commands.registry import get_command_registry
 from ..config.settings import get_settings
 from ..orchestration.workflow_executor import get_workflow_executor
@@ -37,8 +39,11 @@ from .context_manager import ContextManager
 from .intent_analyzer import get_intent_analyzer
 from .models.reasoning import resolve_session_reasoning
 from .models.router import ModelRouter
-from .proactive_analyzer import (ProactiveAction, ProactiveAnalyzer,
-                                 get_proactive_analyzer)
+from .proactive_analyzer import (
+    ProactiveAction,
+    ProactiveAnalyzer,
+    get_proactive_analyzer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +75,7 @@ def _normalize_history_content(content: Any) -> str:
     try:
         if _PLAIN_CONSOLE is None:
             from rich.console import Console
+
             _PLAIN_CONSOLE = Console(
                 force_terminal=False,
                 no_color=True,
@@ -100,6 +106,7 @@ def _open_turn_span(
     """
     try:
         from deile.observability import get_tracer  # noqa: PLC0415
+
         span_cm = get_tracer().turn(
             session_id=str(session_id),
             turn_number=int(turn_number),
@@ -122,12 +129,14 @@ def _record_turn_error(span: Any, exc: BaseException, component: str) -> None:
     if span is not None:
         try:
             from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+
             span.set_status(Status(StatusCode.ERROR, description=type(exc).__name__))
             span.record_exception(exc)
         except Exception:  # noqa: BLE001 — observability nunca quebra
             pass
     try:
         from deile.observability import get_metrics  # noqa: PLC0415
+
         get_metrics().record_error(type(exc).__name__, component)
     except Exception:  # noqa: BLE001
         pass
@@ -145,7 +154,10 @@ def _finalize_turn_span(span_cm: Any, duration_ms: int, persona: str) -> None:
             pass
     try:
         from deile.observability import get_metrics  # noqa: PLC0415
-        get_metrics().record_turn_duration(persona=persona or "unknown", duration_ms=duration_ms)
+
+        get_metrics().record_turn_duration(
+            persona=persona or "unknown", duration_ms=duration_ms
+        )
     except Exception:  # noqa: BLE001
         pass
 
@@ -157,11 +169,15 @@ def _is_permanent_provider_error(exc: Exception) -> bool:
     user so they can correct their configuration instead of silently cascading.
     Transient errors (rate_limit, server) may be retried via cascade.
     """
-    from deile.core.models.errors import \
-        ProviderInvocationError  # noqa: PLC0415
+    from deile.core.models.errors import ProviderInvocationError  # noqa: PLC0415
+
     if not isinstance(exc, ProviderInvocationError):
         return False
-    return exc.envelope.error_type in ("auth", "invalid_request", "context_length_exceeded")
+    return exc.envelope.error_type in (
+        "auth",
+        "invalid_request",
+        "context_length_exceeded",
+    )
 
 
 def _coerce_model_handle(value: Any) -> Optional[str]:
@@ -190,12 +206,16 @@ def _provider_for_handle(model_router: ModelRouter, handle: str) -> Optional[Any
     return None
 
 
-def _available_models_for_provider(model_router: ModelRouter, provider_id: str) -> List[str]:
-    return sorted({
-        getattr(provider, "model_name", "?")
-        for provider in model_router.providers.values()
-        if getattr(provider, "provider_id", None) == provider_id
-    })
+def _available_models_for_provider(
+    model_router: ModelRouter, provider_id: str
+) -> List[str]:
+    return sorted(
+        {
+            getattr(provider, "model_name", "?")
+            for provider in model_router.providers.values()
+            if getattr(provider, "provider_id", None) == provider_id
+        }
+    )
 
 
 def _get_config_default_model() -> Optional[str]:
@@ -274,22 +294,24 @@ def _select_configured_model_provider(
 def _self_record_circuit(provider_id: str, *, success: bool) -> None:
     """Notify TierRouter's CircuitBreaker of a provider call outcome."""
     try:
-        from deile.core.models.tier_router import \
-            get_tier_router  # noqa: PLC0415
+        from deile.core.models.tier_router import get_tier_router  # noqa: PLC0415
+
         tr = get_tier_router()
         if success:
             tr.record_success(provider_id)
         else:
             tr.record_failure(provider_id)
     except Exception as exc:
-        logger.debug("circuit-record failed for %s (success=%s): %s", provider_id, success, exc)
+        logger.debug(
+            "circuit-record failed for %s (success=%s): %s", provider_id, success, exc
+        )
 
 
 async def _emit_router_event(event_type: str, payload: dict) -> None:
     """Best-effort observability emit; never raises."""
     try:
-        from deile.storage.debug_logger import \
-            get_debug_logger  # noqa: PLC0415
+        from deile.storage.debug_logger import get_debug_logger  # noqa: PLC0415
+
         await get_debug_logger().log_router_event(event_type, payload)
     except Exception:
         pass
@@ -297,6 +319,7 @@ async def _emit_router_event(event_type: str, payload: dict) -> None:
 
 class AgentStatus(Enum):
     """Status do agente"""
+
     IDLE = "idle"
     PROCESSING = "processing"
     EXECUTING_TOOL = "executing_tool"
@@ -307,6 +330,7 @@ class AgentStatus(Enum):
 @dataclass
 class AgentSession:
     """Sessão do agente com estado persistente"""
+
     session_id: str
     user_id: Optional[str] = None
     working_directory: Path = field(default_factory=lambda: Path.cwd())
@@ -343,16 +367,18 @@ class AgentSession:
             last_activity=float(snap.get("last_activity") or time.time()),
             persisted=True,
         )
-    
+
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Obtém valor do contexto da sessão"""
         return self.context_data.get(key, default)
-    
+
     def set_context_value(self, key: str, value: Any) -> None:
         """Define valor no contexto da sessão"""
         self.context_data[key] = value
-    
-    def add_to_history(self, role: str, content: Any, metadata: Optional[Dict] = None) -> None:
+
+    def add_to_history(
+        self, role: str, content: Any, metadata: Optional[Dict] = None
+    ) -> None:
         """Adiciona entrada ao histórico da conversa.
 
         Coerces `content` to plain text. Slash-command handlers (and some tools)
@@ -365,7 +391,7 @@ class AgentSession:
             "role": role,
             "content": _normalize_history_content(content),
             "timestamp": time.time(),
-            "metadata": metadata or {}
+            "metadata": metadata or {},
         }
         self.conversation_history.append(entry)
 
@@ -373,6 +399,7 @@ class AgentSession:
 @dataclass
 class AgentResponse:
     """Resposta do agente"""
+
     content: str
     status: AgentStatus
     tool_results: List[ToolResult] = field(default_factory=list)
@@ -380,12 +407,12 @@ class AgentResponse:
     metadata: Dict[str, Any] = field(default_factory=dict)
     execution_time: float = 0.0
     error: Optional[Exception] = None
-    
+
     @property
     def is_success(self) -> bool:
         """Verifica se a resposta foi bem-sucedida"""
         return self.status != AgentStatus.ERROR and self.error is None
-    
+
     @property
     def has_tool_results(self) -> bool:
         """Verifica se há resultados de tools"""
@@ -394,11 +421,11 @@ class AgentResponse:
 
 class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
     """Orquestrador principal do DEILE
-    
+
     Coordena a interação entre parsers, tools, context manager e modelos de IA
     implementando o padrão Mediator para centralizar a lógica de orquestração.
     """
-    
+
     def __init__(
         self,
         tool_registry: Optional[ToolRegistry] = None,
@@ -406,22 +433,23 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         context_manager: Optional[ContextManager] = None,
         model_router: Optional[ModelRouter] = None,
         display_manager: Optional[DisplayManager] = None,
-        config_manager = None
+        config_manager=None,
     ):
         self.config_manager = config_manager
         self.tool_registry = tool_registry or get_tool_registry()
         self.parser_registry = parser_registry or get_parser_registry()
         self.context_manager = context_manager or ContextManager()
         self.model_router = model_router or ModelRouter()
-        
+
         # Initialize display system - requires Rich Console
         if display_manager:
             self.display_manager = display_manager
         else:
             from rich.console import Console
+
             console = Console()
             self.display_manager = DisplayManager(console)
-        
+
         # Initialize command system
         self.command_registry = get_command_registry(config_manager)
 
@@ -431,8 +459,12 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         self._status = AgentStatus.IDLE
         self._sessions: Dict[str, AgentSession] = {}
         self._request_count = 0
-        self._skill_loader = None  # set by _auto_discover_components; used by reload_skills()
-        self._skills_watcher = None  # set by _auto_discover_components; stopped in shutdown()
+        self._skill_loader = (
+            None  # set by _auto_discover_components; used by reload_skills()
+        )
+        self._skills_watcher = (
+            None  # set by _auto_discover_components; stopped in shutdown()
+        )
 
         # Initialize PersonaManager - será inicializado via async initialize()
         self.persona_manager: Optional[PersonaManager] = None
@@ -442,7 +474,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         self.workflow_executor = None
 
         # Initialize IntentAnalyzer for intelligent workflow detection
-        intent_config_path = Path(__file__).parent.parent / "config" / "intent_patterns.yaml"
+        intent_config_path = (
+            Path(__file__).parent.parent / "config" / "intent_patterns.yaml"
+        )
         self.intent_analyzer = get_intent_analyzer(intent_config_path)
 
         # Initialize ProactiveAnalyzer for automatic tool execution
@@ -473,22 +507,30 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         """Inicializa componentes assíncronos do agente"""
         try:
             # Inicializa PersonaManager com integração de memória
-            memory_manager = getattr(self, 'memory_manager', None)
+            memory_manager = getattr(self, "memory_manager", None)
             self.persona_manager = PersonaManager(memory_manager=memory_manager)
             await self.persona_manager.initialize()
 
             # Validate memory integration
-            if memory_manager and hasattr(self.persona_manager, 'validate_memory_integration'):
+            if memory_manager and hasattr(
+                self.persona_manager, "validate_memory_integration"
+            ):
                 if self.persona_manager.validate_memory_integration():
-                    logger.info("PersonaManager memory integration validated successfully")
+                    logger.info(
+                        "PersonaManager memory integration validated successfully"
+                    )
                 else:
-                    logger.warning("PersonaManager memory integration validation failed")
+                    logger.warning(
+                        "PersonaManager memory integration validation failed"
+                    )
 
             # Ativa persona padrão
             await self.persona_manager.switch_persona("developer")
 
             # Inicializa ProactiveAnalyzer
-            self.proactive_analyzer = get_proactive_analyzer(str(self.settings.working_directory))
+            self.proactive_analyzer = get_proactive_analyzer(
+                str(self.settings.working_directory)
+            )
 
             # Configura integração profunda com persona systems
             await self._setup_persona_integration()
@@ -498,7 +540,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             # Inicializa WorkflowExecutor
             self.workflow_executor = get_workflow_executor()
 
-            logger.info("Agent initialized successfully with PersonaManager and WorkflowExecutor")
+            logger.info(
+                "Agent initialized successfully with PersonaManager and WorkflowExecutor"
+            )
 
         except Exception as e:
             logger.error(f"Error initializing agent: {e}")
@@ -509,25 +553,22 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
     def status(self) -> AgentStatus:
         """Status atual do agente"""
         return self._status
-    
+
     @property
     def request_count(self) -> int:
         """Contador de requisições processadas"""
         return self._request_count
-    
+
     async def process_input(
-        self,
-        user_input: str,
-        session_id: str = "default",
-        **kwargs
+        self, user_input: str, session_id: str = "default", **kwargs
     ) -> AgentResponse:
         """Processa entrada do usuário através do pipeline completo
-        
+
         Args:
             user_input: Entrada do usuário
             session_id: ID da sessão
             **kwargs: Parâmetros adicionais
-            
+
         Returns:
             AgentResponse: Resposta processada do agente
         """
@@ -537,6 +578,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         # Issue #303 — conta turno no runtime state (singleton, best-effort).
         try:
             from deile.runtime.instance_state import get_instance_state
+
             get_instance_state().update_stats(turns=1)
         except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
             pass
@@ -547,7 +589,11 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         _turn_span_cm, _turn_span = _open_turn_span(
             session_id=session_id,
             turn_number=self._request_count,
-            persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            persona=(
+                str(self.current_persona)
+                if getattr(self, "current_persona", None)
+                else ""
+            ),
             input_length=len(user_input or ""),
         )
 
@@ -564,6 +610,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
 
             if extra_system_prompt is not None:
                 from deile.core.bot_hooks import sanitize_extra_system_prompt
+
                 session.context_data["extra_system_prompt"] = (
                     sanitize_extra_system_prompt(str(extra_system_prompt))
                 )
@@ -574,7 +621,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             # Comandos desconhecidos (ex: /ideias-projetos) caem no LLM como linguagem natural.
             _stripped = user_input.strip()
             _is_known_slash = False
-            if _stripped.startswith('/'):
+            if _stripped.startswith("/"):
                 _cmd = _stripped[1:].split()[0] if _stripped[1:] else ""
                 if _cmd and self.command_registry.has_command(_cmd):
                     _is_known_slash = True
@@ -590,9 +637,11 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
 
             if _is_known_slash:
                 return await self._process_slash_command(_stripped, session, start_time)
-            
+
             # AUTONOMY PHASE: Try autonomous processing first
-            autonomous_result = await self.process_autonomous_request(user_input, session)
+            autonomous_result = await self.process_autonomous_request(
+                user_input, session
+            )
             if autonomous_result:
                 # If autonomous processing succeeded, return early
                 response = AgentResponse(
@@ -600,13 +649,16 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                     status=AgentStatus.IDLE,
                     tool_results=[],
                     parse_result=None,
-                    execution_time=time.time() - start_time
+                    execution_time=time.time() - start_time,
                 )
-                session.add_to_history("assistant", autonomous_result, {
-                    "autonomous": True,
-                    "execution_time": time.time() - start_time
-                })
-                logger.info(f"✅ Autonomous processing successful for: '{user_input[:50]}...'")
+                session.add_to_history(
+                    "assistant",
+                    autonomous_result,
+                    {"autonomous": True, "execution_time": time.time() - start_time},
+                )
+                logger.info(
+                    f"✅ Autonomous processing successful for: '{user_input[:50]}...'"
+                )
                 return response
 
             # Fase 1: Parsing da entrada
@@ -616,7 +668,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             proactive_results = await self._execute_proactive_tools(user_input, session)
 
             # NOVA FUNCIONALIDADE: Detecta se precisa criar workflow automático
-            workflow_needed = await self._should_create_workflow(user_input, parse_result)
+            workflow_needed = await self._should_create_workflow(
+                user_input, parse_result
+            )
 
             if workflow_needed and self.workflow_executor:
                 # Cria e executa workflow automaticamente
@@ -625,8 +679,10 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 )
             else:
                 # Fase 2: Execução iterativa de tools e Function Calling
-                response_content, tool_results = await self._process_iterative_function_calling(
-                    user_input, parse_result, session
+                response_content, tool_results = (
+                    await self._process_iterative_function_calling(
+                        user_input, parse_result, session
+                    )
                 )
 
             # Fase 2.5: deterministic validation gate (anti-hallucination + post-write).
@@ -654,6 +710,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             # AC2: populate usage metadata for in-process bridge (cross-repo contract)
             try:
                 from deile.core.usage_envelope import build_usage_envelope
+
                 response.metadata["usage"] = build_usage_envelope(session_id)
             except Exception:
                 pass
@@ -696,8 +753,13 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                     execution_time=time.time() - start_time,
                 )
             # FORCED_MODEL_NOT_REGISTERED gets the same structured treatment
-            if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
-                self.logger.warning("Forced model not registered surfaced to user: %s", e)
+            if (
+                isinstance(e, ModelError)
+                and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED"
+            ):
+                self.logger.warning(
+                    "Forced model not registered surfaced to user: %s", e
+                )
                 return AgentResponse(
                     content=str(e),
                     status=AgentStatus.ERROR,
@@ -715,25 +777,29 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 content=error_msg,
                 status=AgentStatus.ERROR,
                 error=e,
-                execution_time=time.time() - start_time
+                execution_time=time.time() - start_time,
             )
         finally:
             # Issue #303 fase 4 — fecha o span do turn + métrica de duração.
             _finalize_turn_span(
                 _turn_span_cm,
                 duration_ms=int((time.time() - start_time) * 1000),
-                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+                persona=(
+                    str(self.current_persona)
+                    if getattr(self, "current_persona", None)
+                    else ""
+                ),
             )
 
     def get_session(self, session_id: str) -> Optional[AgentSession]:
         """Obtém sessão por ID"""
         return self._sessions.get(session_id)
-    
+
     def create_session(self, session_id: str, **kwargs) -> AgentSession:
         """Cria nova sessão com working directory normalizado"""
         if session_id in self._sessions:
             raise DEILEError(f"Session {session_id} already exists")
-        
+
         # ROBUSTEZ: Normalização do working_directory
         raw_working_dir = kwargs.get("working_directory", Path.cwd())
         try:
@@ -741,64 +807,76 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 normalized_working_dir = Path(raw_working_dir).resolve()
             else:
                 normalized_working_dir = Path(raw_working_dir).resolve()
-            
+
             # Verifica se o diretório existe
             if not normalized_working_dir.exists():
-                self.logger.warning(f"Working directory does not exist: {normalized_working_dir}, using current directory")
+                self.logger.warning(
+                    f"Working directory does not exist: {normalized_working_dir}, using current directory"
+                )
                 normalized_working_dir = Path.cwd().resolve()
-            
+
             # Verifica se é um diretório
             if not normalized_working_dir.is_dir():
-                self.logger.warning(f"Working directory is not a directory: {normalized_working_dir}, using current directory")
+                self.logger.warning(
+                    f"Working directory is not a directory: {normalized_working_dir}, using current directory"
+                )
                 normalized_working_dir = Path.cwd().resolve()
-                
+
         except Exception as e:
-            self.logger.error(f"Error normalizing working directory: {e}, using current directory")
+            self.logger.error(
+                f"Error normalizing working directory: {e}, using current directory"
+            )
             normalized_working_dir = Path.cwd().resolve()
-        
-        self.logger.debug(f"Creating session {session_id} with working_directory: {normalized_working_dir}")
-        
+
+        self.logger.debug(
+            f"Creating session {session_id} with working_directory: {normalized_working_dir}"
+        )
+
         session = AgentSession(
             session_id=session_id,
             user_id=kwargs.get("user_id"),
-            working_directory=normalized_working_dir
+            working_directory=normalized_working_dir,
         )
         self._sessions[session_id] = session
         return session
-    
+
     def delete_session(self, session_id: str) -> bool:
         """Remove sessão"""
         if session_id in self._sessions:
             del self._sessions[session_id]
             return True
         return False
-    
+
     async def get_available_tools(self) -> List[Dict[str, Any]]:
         """Lista tools disponíveis"""
         tools = []
         for tool in self.tool_registry.list_enabled():
-            tools.append({
-                "name": tool.name,
-                "description": tool.description,
-                "category": tool.category,
-                "version": tool.version,
-                "execution_count": tool.execution_count
-            })
+            tools.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "category": tool.category,
+                    "version": tool.version,
+                    "execution_count": tool.execution_count,
+                }
+            )
         return tools
-    
+
     async def get_available_parsers(self) -> List[Dict[str, Any]]:
         """Lista parsers disponíveis"""
         parsers = []
         for parser in self.parser_registry.list_enabled():
-            parsers.append({
-                "name": parser.name,
-                "description": parser.description,
-                "priority": parser.priority,
-                "version": parser.version,
-                "patterns": parser.patterns
-            })
+            parsers.append(
+                {
+                    "name": parser.name,
+                    "description": parser.description,
+                    "priority": parser.priority,
+                    "version": parser.version,
+                    "patterns": parser.patterns,
+                }
+            )
         return parsers
-    
+
     async def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do agente"""
         return {
@@ -807,23 +885,35 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             "active_sessions": len(self._sessions),
             "tools": self.tool_registry.get_stats(),
             "parsers": self.parser_registry.get_stats(),
-            "context_manager": await self.context_manager.get_stats() if hasattr(self.context_manager, 'get_stats') else {},
-            "model_router": await self.model_router.get_stats() if hasattr(self.model_router, 'get_stats') else {},
-            "intent_analyzer": self.intent_analyzer.get_metrics() if hasattr(self.intent_analyzer, 'get_metrics') else {}
+            "context_manager": (
+                await self.context_manager.get_stats()
+                if hasattr(self.context_manager, "get_stats")
+                else {}
+            ),
+            "model_router": (
+                await self.model_router.get_stats()
+                if hasattr(self.model_router, "get_stats")
+                else {}
+            ),
+            "intent_analyzer": (
+                self.intent_analyzer.get_metrics()
+                if hasattr(self.intent_analyzer, "get_metrics")
+                else {}
+            ),
         }
-    
+
     def clear_conversation_history(self) -> None:
         """Limpa o histórico de conversas do agente"""
-        if hasattr(self.context_manager, 'clear'):
+        if hasattr(self.context_manager, "clear"):
             self.context_manager.clear()
-        
+
         # Limpar histórico de todas as sessões ativas
         for session in self._sessions.values():
-            if hasattr(session, 'messages'):
+            if hasattr(session, "messages"):
                 session.messages.clear()
-            if hasattr(session, 'clear_history'):
+            if hasattr(session, "clear_history"):
                 session.clear_history()
-    
+
     async def get_or_create_session(
         self,
         session_id: str,
@@ -962,30 +1052,35 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             session.context_data["_console"] = _console
         session.context_data["session_id"] = session_id
         return session
-    
-    async def _process_slash_command(self, user_input: str, session: AgentSession, start_time: float) -> AgentResponse:
+
+    async def _process_slash_command(
+        self, user_input: str, session: AgentSession, start_time: float
+    ) -> AgentResponse:
         """Processa comando slash diretamente"""
         try:
             # Parse comando slash
-            parts = user_input[1:].split(' ', 1)  # Remove '/' e separa comando dos args
+            parts = user_input[1:].split(" ", 1)  # Remove '/' e separa comando dos args
             command_name = parts[0]
             args = parts[1] if len(parts) > 1 else ""
-            
+
             # Cria contexto do comando
             from ..commands.base import CommandContext
+
             context = CommandContext(
                 user_input=user_input,
                 args=args,
                 session_id=session.session_id,
-                working_directory=str(session.working_directory)
+                working_directory=str(session.working_directory),
             )
             # Injeta referências adicionais
             context.agent = self
             context.config_manager = self.config_manager
             context.session = session
-            
+
             # Executa comando
-            command_result = await self.command_registry.execute_command(command_name, context)
+            command_result = await self.command_registry.execute_command(
+                command_name, context
+            )
 
             # Skills (and future LLM commands) return content_type="llm_prompt".
             # Route the prompt through the LLM pipeline instead of returning it raw.
@@ -998,8 +1093,10 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 # history e mutar entry[content]" que dependia da entrada
                 # slash já existir).
                 session.add_to_history("user", prompt)
-                response_content, tool_results = await self._process_iterative_function_calling(
-                    prompt, None, session
+                response_content, tool_results = (
+                    await self._process_iterative_function_calling(
+                        prompt, None, session
+                    )
                 )
                 response = AgentResponse(
                     content=response_content,
@@ -1013,10 +1110,14 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                         "is_slash_command": True,
                     },
                 )
-                session.add_to_history("assistant", response_content, {
-                    "command": command_name,
-                    "command_status": command_result.status.value,
-                })
+                session.add_to_history(
+                    "assistant",
+                    response_content,
+                    {
+                        "command": command_name,
+                        "command_status": command_result.status.value,
+                    },
+                )
                 return response
 
             # Converte resultado do comando para AgentResponse. O metadata
@@ -1025,11 +1126,13 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             # cheguem ao loop da CLI; chaves fixas do agente sobrescrevem
             # caso colidam.
             merged_meta: Dict[str, Any] = dict(command_result.metadata or {})
-            merged_meta.update({
-                "command_executed": command_name,
-                "command_status": command_result.status.value,
-                "is_slash_command": True,
-            })
+            merged_meta.update(
+                {
+                    "command_executed": command_name,
+                    "command_status": command_result.status.value,
+                    "is_slash_command": True,
+                }
+            )
             response = AgentResponse(
                 content=command_result.content or f"Command /{command_name} executed",
                 status=AgentStatus.IDLE,
@@ -1040,10 +1143,14 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             )
 
             # Adiciona resposta ao histórico
-            session.add_to_history("assistant", response.content, {
-                "command": command_name,
-                "command_status": command_result.status.value
-            })
+            session.add_to_history(
+                "assistant",
+                response.content,
+                {
+                    "command": command_name,
+                    "command_status": command_result.status.value,
+                },
+            )
 
             return response
 
@@ -1054,27 +1161,26 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 status=AgentStatus.ERROR,
                 tool_results=[],
                 parse_result=None,
-                execution_time=time.time() - start_time
+                execution_time=time.time() - start_time,
             )
-    
-    async def _parse_input(self, user_input: str, session: AgentSession) -> Optional[ParseResult]:
+
+    async def _parse_input(
+        self, user_input: str, session: AgentSession
+    ) -> Optional[ParseResult]:
         """Fase 1: Parsing da entrada do usuário"""
         try:
             # Passa working_directory para parsers que precisam
             result = await self.parser_registry.parse(
-                user_input, 
-                working_directory=str(session.working_directory)
+                user_input, working_directory=str(session.working_directory)
             )
             # self.logger.debug(f"Parse result: {result.status.value}")
             return result
         except Exception as e:
             self.logger.warning(f"Parsing failed: {e}")
             return None
-    
+
     async def _execute_tools(
-        self,
-        parse_result: Optional[ParseResult],
-        session: AgentSession
+        self, parse_result: Optional[ParseResult], session: AgentSession
     ) -> List[ToolResult]:
         """Fase 2: Execução de tools baseada no parsing"""
         if not parse_result or not parse_result.tool_requests:
@@ -1084,6 +1190,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         tool_results = []
         # Issue #303 — singleton de runtime state; publish_action é best-effort.
         from deile.runtime.instance_state import get_instance_state
+
         _istate = get_instance_state()
 
         for tool_name in parse_result.tool_requests:
@@ -1092,8 +1199,16 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 # ctx.extra (D4 plano DEILE) — tools que precisam leem dali.
                 _bot_ctx = session.context_data.get("bot_context") or {}
                 context = ToolContext(
-                    user_input=session.conversation_history[-1]["content"] if session.conversation_history else "",
-                    parsed_args=parse_result.commands[0].arguments if parse_result.commands else {},
+                    user_input=(
+                        session.conversation_history[-1]["content"]
+                        if session.conversation_history
+                        else ""
+                    ),
+                    parsed_args=(
+                        parse_result.commands[0].arguments
+                        if parse_result.commands
+                        else {}
+                    ),
                     session_data=session.context_data,
                     working_directory=str(session.working_directory),
                     file_list=parse_result.file_references,
@@ -1128,7 +1243,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 error_result = ToolResult(
                     status=ToolStatus.ERROR,
                     error=e,
-                    message=f"Failed to execute tool {tool_name}: {str(e)}"
+                    message=f"Failed to execute tool {tool_name}: {str(e)}",
                 )
                 tool_results.append(error_result)
                 self.logger.error(f"Tool execution failed: {e}")
@@ -1143,7 +1258,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                     pass
 
         return tool_results
-    
+
     # Non-streaming tool-loop. Still active when the streaming path bails out
     # or when a caller explicitly requests non-streaming behavior. All providers
     # registered via ``bootstrap_providers()`` implement either ``chat_with_tools``
@@ -1153,7 +1268,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         self,
         user_input: str,
         parse_result: Optional[ParseResult],
-        session: AgentSession
+        session: AgentSession,
     ) -> tuple[str, List[ToolResult]]:
         """Processa function calling — Gemini via Chat Session; outros providers via chat_with_tools."""
         self._status = AgentStatus.GENERATING_RESPONSE
@@ -1164,13 +1279,14 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 user_input=user_input,
                 parse_result=parse_result,
                 tool_results=[],
-                session=session
+                session=session,
             )
 
             # Classify intent tier and store in session for routing hints
             model_tier: Optional[Any] = None
             try:
                 from deile.core.intent_tier_mapper import classify_tier
+
                 intent_result = await self.intent_analyzer.analyze(
                     user_input=user_input,
                     parse_result=parse_result,
@@ -1199,17 +1315,32 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             # Budget enforcement — BudgetExceeded must propagate; other errors fail open
             try:
                 from deile.storage.usage_repository import (
-                    BudgetExceeded, BudgetGuard, get_usage_repository)
+                    BudgetExceeded,
+                    BudgetGuard,
+                    get_usage_repository,
+                )
+
                 _guard: Any = getattr(self, "_budget_guard_singleton", None)
                 if _guard is None:
                     # YAML lives at deile/config/model_providers.yaml; agent.py is at deile/core/agent.py
-                    _yaml = Path(__file__).resolve().parents[1] / "config" / "model_providers.yaml"
+                    _yaml = (
+                        Path(__file__).resolve().parents[1]
+                        / "config"
+                        / "model_providers.yaml"
+                    )
                     try:
-                        self._budget_guard_singleton = BudgetGuard.from_yaml(_yaml, get_usage_repository())
+                        self._budget_guard_singleton = BudgetGuard.from_yaml(
+                            _yaml, get_usage_repository()
+                        )
                         _guard = self._budget_guard_singleton
                     except Exception as _init_err:
-                        logger.debug("BudgetGuard init failed (%s) — checks disabled this session", _init_err)
-                        self._budget_guard_singleton = False  # sentinel: tried and failed
+                        logger.debug(
+                            "BudgetGuard init failed (%s) — checks disabled this session",
+                            _init_err,
+                        )
+                        self._budget_guard_singleton = (
+                            False  # sentinel: tried and failed
+                        )
                 if _guard:
                     _guard.check_all(
                         session_id=session.session_id,
@@ -1234,8 +1365,8 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             _t0 = time.time()
 
             # ── Gemini path: Chat Session with _gemini_chat_with_tools ──────────
-            if hasattr(model_provider, 'create_chat_session') and hasattr(
-                model_provider, '_gemini_chat_with_tools'
+            if hasattr(model_provider, "create_chat_session") and hasattr(
+                model_provider, "_gemini_chat_with_tools"
             ):
                 logger.debug("Using Chat Session with manual function calling (Gemini)")
 
@@ -1252,28 +1383,36 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 message_content: Any = user_input
                 if isinstance(context, dict) and "file_data_parts" in context:
                     from .models.gemini_provider import GeminiProvider
+
                     message_parts: List[Any] = [user_input]
                     for file_data in context["file_data_parts"]:
                         if "file_data" in file_data:
                             file_uri = file_data["file_data"]["file_uri"]
                             file_obj = GeminiProvider.build_file_attachment_part(
                                 file_uri=file_uri,
-                                mime_type=file_data["file_data"].get("mime_type", "text/plain"),
+                                mime_type=file_data["file_data"].get(
+                                    "mime_type", "text/plain"
+                                ),
                             )
                             message_parts.append(file_obj)
                     message_content = message_parts
-                    logger.info("Sent message with %d file attachments", len(context["file_data_parts"]))
+                    logger.info(
+                        "Sent message with %d file attachments",
+                        len(context["file_data_parts"]),
+                    )
 
                 try:
                     # `_gemini_chat_with_tools` agora devolve 3-tuple:
                     # (text, tool_results, ModelUsage agregado). Antes desse
                     # fix, retornava só 2-tuple e o usage era descartado —
                     # gemini nunca registrava nada na DB de custos.
-                    content, tool_results, _gemini_usage = await model_provider._gemini_chat_with_tools(
-                        chat=chat,
-                        message=message_content,
-                        working_directory=str(session.working_directory),
-                        session_data=session.context_data,
+                    content, tool_results, _gemini_usage = (
+                        await model_provider._gemini_chat_with_tools(
+                            chat=chat,
+                            message=message_content,
+                            working_directory=str(session.working_directory),
+                            session_data=session.context_data,
+                        )
                     )
                     # Persiste o usage agregado — sem isso, o caminho legado
                     # (que ainda é o default no agent) seguiria sem registrar
@@ -1286,7 +1425,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                             latency_ms=latency_ms,
                             success=True,
                         )
-                    except Exception as _rec_err:  # noqa: BLE001 — telemetry must never block
+                    except (
+                        Exception
+                    ) as _rec_err:  # noqa: BLE001 — telemetry must never block
                         logger.debug(
                             "gemini usage record (agent path) failed: %s",
                             _rec_err,
@@ -1314,15 +1455,22 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                     },
                 )
 
-                logger.info("Chat session completed with %d tool execution(s)", len(tool_results))
+                logger.info(
+                    "Chat session completed with %d tool execution(s)",
+                    len(tool_results),
+                )
                 _record_model_used(session, model_provider)
                 return content, tool_results
 
             # ── New providers: Anthropic / OpenAI / DeepSeek via chat_with_tools ─
-            elif hasattr(model_provider, 'chat_with_tools'):
-                from deile.core.models.base import \
-                    ModelMessage  # local import to avoid cycle
-                logger.debug("Using chat_with_tools for provider=%s", model_provider.provider_id)
+            elif hasattr(model_provider, "chat_with_tools"):
+                from deile.core.models.base import (  # local import to avoid cycle
+                    ModelMessage,
+                )
+
+                logger.debug(
+                    "Using chat_with_tools for provider=%s", model_provider.provider_id
+                )
 
                 system_instruction = None
                 raw_messages: List[Any] = []
@@ -1351,11 +1499,15 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                         )
                 # If context produced no messages, fall back to the raw user_input
                 if not messages_for_provider:
-                    messages_for_provider = [ModelMessage(role="user", content=user_input)]
+                    messages_for_provider = [
+                        ModelMessage(role="user", content=user_input)
+                    ]
 
                 # Get ToolSchema objects from registered, enabled tools
                 tools = [
-                    t.schema for t in get_tool_registry().list_enabled() if getattr(t, "schema", None) is not None
+                    t.schema
+                    for t in get_tool_registry().list_enabled()
+                    if getattr(t, "schema", None) is not None
                 ]
 
                 # Cascade retry loop: on provider failure, mark CB and try next tier provider.
@@ -1365,9 +1517,13 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 MAX_CASCADE_ATTEMPTS = 3  # safe default for tier=None (no cascade) path
                 if model_tier is not None:
                     try:
-                        from deile.core.models.tier_router import \
-                            get_tier_router as _gtr_init
-                        cascade_len = len(_gtr_init().policy().cascade_for_tier(model_tier))
+                        from deile.core.models.tier_router import (
+                            get_tier_router as _gtr_init,
+                        )
+
+                        cascade_len = len(
+                            _gtr_init().policy().cascade_for_tier(model_tier)
+                        )
                         if cascade_len > 0:
                             MAX_CASCADE_ATTEMPTS = max(cascade_len, 1)
                     except Exception:
@@ -1385,12 +1541,14 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                     tried_providers.add(model_provider.provider_id)
                     try:
                         # Provider records its own usage internally via _record_usage()
-                        content, tool_results_raw, _usage = await model_provider.chat_with_tools(
-                            messages=messages_for_provider,
-                            tools=tools,
-                            system_instruction=system_instruction,
-                            session_id=session.session_id,
-                            reasoning_effort=resolve_session_reasoning(session),
+                        content, tool_results_raw, _usage = (
+                            await model_provider.chat_with_tools(
+                                messages=messages_for_provider,
+                                tools=tools,
+                                system_instruction=system_instruction,
+                                session_id=session.session_id,
+                                reasoning_effort=resolve_session_reasoning(session),
+                            )
                         )
                         _self_record_circuit(model_provider.provider_id, success=True)
                         last_error = None
@@ -1420,8 +1578,10 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                         ):
                             raise
                         try:
-                            from deile.core.models.tier_router import \
-                                get_tier_router as _gtr
+                            from deile.core.models.tier_router import (
+                                get_tier_router as _gtr,
+                            )
+
                             next_provider = _gtr().select(
                                 model_tier, skip_provider_ids=tried_providers
                             )
@@ -1439,7 +1599,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                         )
                         # Re-run budget check against the new provider — daily/monthly
                         # limits are per-provider, not session-wide.
-                        _guard_local: Any = getattr(self, "_budget_guard_singleton", None)
+                        _guard_local: Any = getattr(
+                            self, "_budget_guard_singleton", None
+                        )
                         if _guard_local:
                             # _BudgetExceeded is module-level; if check_all raises it, propagate.
                             _guard_local.check_all(
@@ -1483,7 +1645,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 # ``BaseModelProvider.chat_with_tools``, so the ``elif hasattr(..., 'chat_with_tools')``
                 # branch above always matches. This ``else`` only fires if a custom provider
                 # explicitly overrides hasattr() to return False, which is not a supported pattern.
-                provider_id = getattr(model_provider, "provider_id", type(model_provider).__name__)
+                provider_id = getattr(
+                    model_provider, "provider_id", type(model_provider).__name__
+                )
                 model_name = getattr(model_provider, "model_name", None) or getattr(
                     model_provider, "model_id", "unknown"
                 )
@@ -1524,8 +1688,14 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             ):
                 raise
             from deile.core.models.errors import ProviderInvocationError
-            if isinstance(e, ProviderInvocationError) and e.envelope.is_context_length_exceeded:
-                self.logger.warning("Context length exceeded for model %s", e.envelope.model_id)
+
+            if (
+                isinstance(e, ProviderInvocationError)
+                and e.envelope.is_context_length_exceeded
+            ):
+                self.logger.warning(
+                    "Context length exceeded for model %s", e.envelope.model_id
+                )
                 return (
                     f"O histórico desta conversa excedeu o limite de contexto do modelo **{e.envelope.model_id}**.\n\n"
                     "**Como resolver:**\n"
@@ -1533,7 +1703,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                     "• `/model select` — escolha um modelo com janela de contexto maior\n"
                     "• Divida sua pergunta em partes menores e mais objetivas\n"
                 ), []
-            self.logger.error(f"Chat session function calling failed: {e}", exc_info=True)
+            self.logger.error(
+                f"Chat session function calling failed: {e}", exc_info=True
+            )
             return f"I encountered an error during function calling: {str(e)}", []
 
     # ------------------------------------------------------------------
@@ -1581,8 +1753,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             retry=self._process_iterative_function_calling,
         )
 
-
-    async def _should_create_workflow(self, user_input: str, parse_result: Optional[ParseResult]) -> bool:
+    async def _should_create_workflow(
+        self, user_input: str, parse_result: Optional[ParseResult]
+    ) -> bool:
         """Determina se deve criar workflow automaticamente usando análise de intenção avançada
 
         Esta versão refatorada usa o sistema IntentAnalyzer que implementa:
@@ -1609,7 +1782,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             intent_result = await self.intent_analyzer.analyze(
                 user_input=user_input,
                 parse_result=parse_result,
-                session_context=session_context
+                session_context=session_context,
             )
 
             # Log da análise para debugging e métricas
@@ -1622,7 +1795,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             requires_workflow = intent_result.requires_workflow(
                 confidence_threshold=0.50,  # Reduzido para ser mais inclusivo
                 complexity_threshold=0.35,  # Reduzido para detectar mais casos
-                global_settings=getattr(self.intent_analyzer, 'global_settings', {})
+                global_settings=getattr(self.intent_analyzer, "global_settings", {}),
             )
 
             # Log da decisão final
@@ -1660,14 +1833,17 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
 
             # Prepara dados contextuais
             context = {
-                'conversation_length': len(session.conversation_history),
-                'previous_tool_usage': sum(
-                    1 for entry in session.conversation_history[-5:]  # últimas 5 entradas
-                    if entry.get('metadata', {}).get('tool_results', 0) > 0
+                "conversation_length": len(session.conversation_history),
+                "previous_tool_usage": sum(
+                    1
+                    for entry in session.conversation_history[-5:]  # últimas 5 entradas
+                    if entry.get("metadata", {}).get("tool_results", 0) > 0
                 ),
-                'session_age': time.time() - session.created_at,
-                'working_directory': str(session.working_directory),
-                'recent_topics': self._extract_recent_topics(session.conversation_history[-3:])
+                "session_age": time.time() - session.created_at,
+                "working_directory": str(session.working_directory),
+                "recent_topics": self._extract_recent_topics(
+                    session.conversation_history[-3:]
+                ),
             }
 
             return context
@@ -1681,10 +1857,13 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         topics = []
 
         for entry in recent_history:
-            content = entry.get('content', '').lower()
+            content = entry.get("content", "").lower()
 
             # Extrai palavras-chave técnicas simples
-            technical_words = re.findall(r'\b(?:function|class|method|api|database|file|code|system|error|bug|feature|implement|create|analyze|fix|debug)\b', content)
+            technical_words = re.findall(
+                r"\b(?:function|class|method|api|database|file|code|system|error|bug|feature|implement|create|analyze|fix|debug)\b",
+                content,
+            )
             topics.extend(technical_words)
 
         # Remove duplicatas mantendo ordem
@@ -1694,7 +1873,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         self,
         user_input: str,
         parse_result: Optional[ParseResult],
-        session: AgentSession
+        session: AgentSession,
     ) -> tuple[str, List[ToolResult]]:
         """Processa solicitação criando workflow automático"""
 
@@ -1703,47 +1882,57 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
 
             # Prepara contexto para workflow
             context = {
-                'user_input': user_input,
-                'session_id': session.session_id,
-                'working_directory': str(session.working_directory)
+                "user_input": user_input,
+                "session_id": session.session_id,
+                "working_directory": str(session.working_directory),
             }
 
             # Se há parse result, usa informações dele
             if parse_result:
-                context['tool_requests'] = parse_result.tool_requests
-                context['file_references'] = parse_result.file_references
+                context["tool_requests"] = parse_result.tool_requests
+                context["file_references"] = parse_result.file_references
                 if parse_result.commands:
-                    context['parsed_commands'] = [cmd.action for cmd in parse_result.commands]
+                    context["parsed_commands"] = [
+                        cmd.action for cmd in parse_result.commands
+                    ]
 
             # Cria e inicia workflow
             workflow_result = await self.workflow_executor.start_workflow_execution(
-                objective=user_input,
-                context=context
+                objective=user_input, context=context
             )
 
-            workflow_id = workflow_result['workflow_id']
+            workflow_id = workflow_result["workflow_id"]
 
             # Aguarda conclusão do workflow
-            completion_result = await self.workflow_executor.wait_for_workflow_completion(
-                workflow_id=workflow_id,
-                timeout=timedelta(minutes=10)  # Timeout de 10 minutos
+            completion_result = (
+                await self.workflow_executor.wait_for_workflow_completion(
+                    workflow_id=workflow_id,
+                    timeout=timedelta(minutes=10),  # Timeout de 10 minutos
+                )
             )
 
             # Prepara resposta baseada no resultado
-            if completion_result['success']:
+            if completion_result["success"]:
                 response_content = "✅ **Workflow concluído com sucesso!**\n\n"
                 response_content += f"**Objetivo:** {user_input}\n"
-                response_content += f"**Total de etapas:** {workflow_result['total_steps']}\n"
+                response_content += (
+                    f"**Total de etapas:** {workflow_result['total_steps']}\n"
+                )
                 response_content += f"**Status:** {completion_result['status']}\n\n"
                 response_content += "Todos os passos foram executados sequencialmente e validados com sucesso."
 
                 # Cria tool results sintéticos para compatibilidade
-                tool_results = [ToolResult(
-                    status=ToolStatus.SUCCESS,
-                    message=f"Workflow {workflow_id} completed successfully",
-                    output=completion_result['final_stats'],
-                    metadata={'workflow_id': workflow_id, 'type': 'workflow_completion'}
-                )]
+                tool_results = [
+                    ToolResult(
+                        status=ToolStatus.SUCCESS,
+                        message=f"Workflow {workflow_id} completed successfully",
+                        output=completion_result["final_stats"],
+                        metadata={
+                            "workflow_id": workflow_id,
+                            "type": "workflow_completion",
+                        },
+                    )
+                ]
 
             else:
                 response_content = "❌ **Workflow falhou durante execução**\n\n"
@@ -1752,12 +1941,19 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 response_content += f"**Erro:** {completion_result.get('message', 'Erro desconhecido')}\n\n"
                 response_content += "Verifique os logs para mais detalhes sobre o erro."
 
-                tool_results = [ToolResult(
-                    status=ToolStatus.ERROR,
-                    message=f"Workflow {workflow_id} failed",
-                    error_message=completion_result.get('message', 'Workflow execution failed'),
-                    metadata={'workflow_id': workflow_id, 'type': 'workflow_failure'}
-                )]
+                tool_results = [
+                    ToolResult(
+                        status=ToolStatus.ERROR,
+                        message=f"Workflow {workflow_id} failed",
+                        error_message=completion_result.get(
+                            "message", "Workflow execution failed"
+                        ),
+                        metadata={
+                            "workflow_id": workflow_id,
+                            "type": "workflow_failure",
+                        },
+                    )
+                ]
 
             return response_content, tool_results
 
@@ -1769,7 +1965,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             error_response += "Executando fallback para processamento tradicional..."
 
             # Fallback para processamento tradicional
-            return await self._process_iterative_function_calling(user_input, parse_result, session)
+            return await self._process_iterative_function_calling(
+                user_input, parse_result, session
+            )
 
     def reload_skills(self) -> int:
         """Re-scan all skill directories and hot-reload the command registry.
@@ -1824,13 +2022,15 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 # via the unified registry to include bundled, which the
                 # loader hides by design (legacy slash-command contract).
                 from ..skills.registry import get_skill_registry
+
                 _by_src: dict = {}
                 for _sk in get_skill_registry().list_all():
                     _by_src[_sk.source] = _by_src.get(_sk.source, 0) + 1
                 self.logger.info(
                     "Skills carregadas: total=%d (%s); %d invocáveis como /<nome>",
                     sum(_by_src.values()),
-                    ", ".join(f"{k}={v}" for k, v in sorted(_by_src.items())) or "vazio",
+                    ", ".join(f"{k}={v}" for k, v in sorted(_by_src.items()))
+                    or "vazio",
                     invocable_count,
                 )
 
@@ -1841,13 +2041,17 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                     self._skills_watcher = SkillsWatcher(
                         project_dir=Path(project_dir) if project_dir else None,
                         extra_paths=[
-                            p for p in _settings_mgr.get_all_skills_paths() if p.is_dir()
+                            p
+                            for p in _settings_mgr.get_all_skills_paths()
+                            if p.is_dir()
                         ],
                         command_registry=self.command_registry,
                     )
                     self._skills_watcher.start()
                 except Exception as _watcher_exc:
-                    self.logger.warning("Skills hot-reload not started: %s", _watcher_exc)
+                    self.logger.warning(
+                        "Skills hot-reload not started: %s", _watcher_exc
+                    )
             except Exception as _skill_exc:
                 self.logger.warning("Skill loading failed: %s", _skill_exc)
 
@@ -1857,8 +2061,10 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             # )
         except Exception as e:
             self.logger.warning(f"Auto-discovery failed: {e}")
-    
-    async def _execute_proactive_tools(self, user_input: str, session: AgentSession) -> List[ToolResult]:
+
+    async def _execute_proactive_tools(
+        self, user_input: str, session: AgentSession
+    ) -> List[ToolResult]:
         """Wrapper sem streaming — drena o stream e devolve só os ToolResults.
 
         Usado pelo caminho não-streaming (``process_input``) que não tem para
@@ -1895,8 +2101,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         # Local import mirrors ``process_input_stream`` — keeps stream_events
         # out of the module-level import graph to avoid the circular import we
         # had before agent → models.stream_events → core.agent.
-        from deile.core.models.stream_events import (StreamEventType,
-                                                     UnifiedStreamEvent)
+        from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 
         if not self.proactive_analyzer:
             yield ("results", [])
@@ -1904,7 +2109,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
 
         try:
             self.proactive_analyzer.working_directory = session.working_directory
-            intents = self.proactive_analyzer.analyze_input(user_input, session.context_data)
+            intents = self.proactive_analyzer.analyze_input(
+                user_input, session.context_data
+            )
 
             if not intents:
                 yield ("results", [])
@@ -1943,7 +2150,9 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 )
                 # parsed_args is the public part of the ToolContext that we want
                 # to surface as the call's "arguments" in the transcript.
-                visible_args: Dict[str, Any] = dict(getattr(context, "parsed_args", {}) or {})
+                visible_args: Dict[str, Any] = dict(
+                    getattr(context, "parsed_args", {}) or {}
+                )
 
                 yield UnifiedStreamEvent(
                     type=StreamEventType.TOOL_USE_START,
@@ -1959,20 +2168,24 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
 
                 try:
                     result = await self.tool_registry.execute_tool(tool_name, context)
-                    result.metadata.update({
-                        "proactive_execution": True,
-                        "proactive_confidence": intent.confidence,
-                        "proactive_reason": intent.context,
-                    })
+                    result.metadata.update(
+                        {
+                            "proactive_execution": True,
+                            "proactive_confidence": intent.confidence,
+                            "proactive_reason": intent.context,
+                        }
+                    )
                     proactive_results.append(result)
                     self.logger.debug(
                         f"Proactive execution: {tool_name} with confidence "
                         f"{intent.confidence:.2f}"
                     )
-                    status = "success" if result.status == ToolStatus.SUCCESS else "error"
-                    summary = (
-                        getattr(result, "message", "") or ""
-                    )[:200] or ("ok" if status == "success" else "error")
+                    status = (
+                        "success" if result.status == ToolStatus.SUCCESS else "error"
+                    )
+                    summary = (getattr(result, "message", "") or "")[:200] or (
+                        "ok" if status == "success" else "error"
+                    )
                     yield UnifiedStreamEvent(
                         type=StreamEventType.TOOL_RESULT,
                         tool_call_id=tc_id,
@@ -2029,7 +2242,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             ProactiveAction.CHECK_FILE_EXISTS: "check_file_exists",
             # New autonomous actions
             ProactiveAction.SUGGEST_ALTERNATIVES: "list_files",  # Fallback to listing
-            ProactiveAction.CHAIN_LIST_AND_READ: "list_files"   # Start with listing
+            ProactiveAction.CHAIN_LIST_AND_READ: "list_files",  # Start with listing
         }
         return mapping.get(action)
 
@@ -2040,18 +2253,18 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
 
         try:
             # Integration with context manager
-            if hasattr(self.context_manager, 'set_persona_integration'):
+            if hasattr(self.context_manager, "set_persona_integration"):
                 self.context_manager.set_persona_integration(self.persona_manager)
             else:
                 # Add persona manager reference to context manager
                 self.context_manager.persona_manager = self.persona_manager
 
             # Integration with tool registry (for persona-specific tool preferences)
-            if hasattr(self.tool_registry, 'register_persona_tools'):
+            if hasattr(self.tool_registry, "register_persona_tools"):
                 self.tool_registry.register_persona_tools(self.persona_manager)
 
             # Integration with intent analyzer
-            if hasattr(self.intent_analyzer, 'set_persona_context'):
+            if hasattr(self.intent_analyzer, "set_persona_context"):
                 self.intent_analyzer.set_persona_context(self.persona_manager)
 
             logger.info("Persona integration setup completed successfully")
@@ -2059,11 +2272,15 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         except Exception as e:
             logger.warning(f"Some persona integration features unavailable: {e}")
 
-    def enable_persona_enhancement(self, persona_manager: PersonaManager = None) -> None:
+    def enable_persona_enhancement(
+        self, persona_manager: PersonaManager = None
+    ) -> None:
         """Enable persona enhancement for this agent"""
         if persona_manager:
             self.persona_manager = persona_manager
-            self.persona_manager.set_memory_manager(getattr(self, 'memory_manager', None))
+            self.persona_manager.set_memory_manager(
+                getattr(self, "memory_manager", None)
+            )
 
         self.persona_enhanced = True
         logger.info("Persona enhancement enabled")
@@ -2072,14 +2289,18 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         """Disable persona enhancement for this agent"""
         self.persona_enhanced = False
         logger.info("Persona enhancement disabled")
-    
+
     def __str__(self) -> str:
-        return f"DeileAgent(status={self._status.value}, sessions={len(self._sessions)})"
-    
+        return (
+            f"DeileAgent(status={self._status.value}, sessions={len(self._sessions)})"
+        )
+
     def __repr__(self) -> str:
-        return (f"<DeileAgent: status={self._status.value}, "
-                f"requests={self._request_count}, "
-                f"sessions={len(self._sessions)}>")
+        return (
+            f"<DeileAgent: status={self._status.value}, "
+            f"requests={self._request_count}, "
+            f"sessions={len(self._sessions)}>"
+        )
 
 
 # Função helper para instância singleton

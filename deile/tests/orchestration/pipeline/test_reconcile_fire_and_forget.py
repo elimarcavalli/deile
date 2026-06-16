@@ -19,23 +19,34 @@ from unittest.mock import AsyncMock, MagicMock
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.implementer import WorkerImplementer
-from deile.orchestration.pipeline.labels import (REFINAR, REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING,
-                                                 WORKFLOW_ARCHITECTURE,
-                                                 WORKFLOW_BLOCKED,
-                                                 WORKFLOW_NEW,
-                                                 WORKFLOW_REFINING,
-                                                 WORKFLOW_REVIEWED,
-                                                 WORKFLOW_REVIEWING)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.labels import (
+    REFINAR,
+    REVIEW_IN_PROGRESS,
+    REVIEW_PENDING,
+    WORKFLOW_ARCHITECTURE,
+    WORKFLOW_BLOCKED,
+    WORKFLOW_NEW,
+    WORKFLOW_REFINING,
+    WORKFLOW_REVIEWED,
+    WORKFLOW_REVIEWING,
+)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
 _NOTIFIER_METHODS = (
-    "issue_picked_up", "issue_reviewed", "implementation_started",
-    "implementation_finished", "implementation_parked", "implementation_resumed",
-    "implementation_blocked", "pr_picked_up", "pr_reviewed",
-    "issue_auto_classified", "follow_ups_processed", "error",
-    "pr_auto_classified", "mention_processed",
+    "issue_picked_up",
+    "issue_reviewed",
+    "implementation_started",
+    "implementation_finished",
+    "implementation_parked",
+    "implementation_resumed",
+    "implementation_blocked",
+    "pr_picked_up",
+    "pr_reviewed",
+    "issue_auto_classified",
+    "follow_ups_processed",
+    "error",
+    "pr_auto_classified",
+    "mention_processed",
 )
 
 
@@ -43,9 +54,15 @@ class _Client:
     """Worker fake fire-and-forget: dispatch nowait → task_id; reconcile lê
     resume-info. ``results`` mapeia task_id → payload de resume-info."""
 
-    def __init__(self, *, verdict: str = "", ok: bool = True,
-                 is_error: bool = False, running: bool = False,
-                 gone: bool = False):
+    def __init__(
+        self,
+        *,
+        verdict: str = "",
+        ok: bool = True,
+        is_error: bool = False,
+        running: bool = False,
+        gone: bool = False,
+    ):
         self.payloads: List[dict] = []
         self._verdict = verdict
         self._ok = ok
@@ -59,37 +76,51 @@ class _Client:
         if wait:
             return {"ok": self._ok, "summary": self._verdict}
         if not self._ok:
-            from deile.infrastructure.deile_worker_client import \
-                WorkerDispatchError
+            from deile.infrastructure.deile_worker_client import WorkerDispatchError
+
             raise WorkerDispatchError("rejected", error_code="WORKER_REJECTED")
         self._seq += 1
         return {"task_id": f"t-{self._seq:03d}", "status": "running"}
 
     async def get_resume_info(self, task_id, *, endpoint_url=None):
         if self._gone:
-            from deile.infrastructure.deile_worker_client import \
-                WorkerDispatchError
+            from deile.infrastructure.deile_worker_client import WorkerDispatchError
+
             raise WorkerDispatchError("gone", error_code="NOT_FOUND")
         if self._running:
             return {
-                "last_completed_at": None, "last_is_error": None,
-                "last_result_full": "", "last_result_summary": "",
-                "claude_alive": True, "workdir_exists": True,
+                "last_completed_at": None,
+                "last_is_error": None,
+                "last_result_full": "",
+                "last_result_summary": "",
+                "claude_alive": True,
+                "workdir_exists": True,
             }
         return {
-            "last_completed_at": 1_700_000_000, "last_is_error": self._is_error,
+            "last_completed_at": 1_700_000_000,
+            "last_is_error": self._is_error,
             "last_result_full": self._verdict,
             "last_result_summary": self._verdict[:200],
-            "claude_alive": False, "workdir_exists": True,
+            "claude_alive": False,
+            "workdir_exists": True,
         }
 
 
-def _issue(number: int, *labels: str, title: str = "t", body: str = "corpo",
-           author: str = "alice") -> IssueRef:
+def _issue(
+    number: int,
+    *labels: str,
+    title: str = "t",
+    body: str = "corpo",
+    author: str = "alice",
+) -> IssueRef:
     return IssueRef(
-        number=number, title=title,
+        number=number,
+        title=title,
         url=f"https://github.com/owner/name/issues/{number}",
-        labels=tuple(labels), body=body, state="open", author=author,
+        labels=tuple(labels),
+        body=body,
+        state="open",
+        author=author,
     )
 
 
@@ -97,18 +128,31 @@ def _ledger_path() -> Path:
     return Path(tempfile.mkdtemp(prefix=".test_ledger_")) / "dispatches.json"
 
 
-def _make(client: _Client, *, label_map=None, prs=None, max_parallel=2,
-          get_issue_body="corpo refinado", get_pr_ret="open"):
+def _make(
+    client: _Client,
+    *,
+    label_map=None,
+    prs=None,
+    max_parallel=2,
+    get_issue_body="corpo refinado",
+    get_pr_ret="open",
+):
     lm = dict(label_map or {})
     registry: Dict[int, IssueRef] = {}
     for issues in lm.values():
         for i in issues:
             registry.setdefault(i.number, i)
     cfg = PipelineConfig(
-        repo="owner/name", base_repo_path=Path("/tmp/fake"), notify_user_id="42",
-        dispatch_mode="deile_worker", enable_refinement_gate=True,
-        max_parallel=max_parallel, enable_resume=False, enable_classify=False,
-        enable_pr_triage=False, enable_mention_handling=False,
+        repo="owner/name",
+        base_repo_path=Path("/tmp/fake"),
+        notify_user_id="42",
+        dispatch_mode="deile_worker",
+        enable_refinement_gate=True,
+        max_parallel=max_parallel,
+        enable_resume=False,
+        enable_classify=False,
+        enable_pr_triage=False,
+        enable_mention_handling=False,
     )
     github = MagicMock()
     github.ensure_pipeline_labels = AsyncMock()
@@ -135,13 +179,22 @@ def _make(client: _Client, *, label_map=None, prs=None, max_parallel=2,
         labels = base.labels if base is not None else ("feature",)
         author = base.author if base is not None else "alice"
         return _issue(number, *labels, author=author, body=get_issue_body)
+
     github.get_issue = AsyncMock(side_effect=_get_issue)
 
     async def _get_pr(number):
-        return None if get_pr_ret is None else PrRef(
-            number=number, title="t", url="u",
-            labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-1",
+        return (
+            None
+            if get_pr_ret is None
+            else PrRef(
+                number=number,
+                title="t",
+                url="u",
+                labels=(REVIEW_IN_PROGRESS,),
+                head_ref="auto/issue-1",
+            )
         )
+
     github.get_pr = AsyncMock(side_effect=_get_pr)
 
     notifier = MagicMock()
@@ -150,7 +203,9 @@ def _make(client: _Client, *, label_map=None, prs=None, max_parallel=2,
 
     ledger = DispatchLedger(path=_ledger_path())
     monitor = PipelineMonitor(
-        cfg, github=github, notifier=notifier,
+        cfg,
+        github=github,
+        notifier=notifier,
         implementer=WorkerImplementer(client=client, ledger=ledger),
     )
     monitor._test_registry = registry
@@ -177,11 +232,13 @@ def _pr_transitions(github):
 # Dispatch-side é NÃO-BLOQUEANTE (só claima + grava ledger)
 # ===========================================================================
 
+
 class TestDispatchIsNonBlocking:
     async def test_critique_only_claims_and_records_ledger(self):
         client = _Client(verdict="VEREDITO: CLARO")
         monitor, github, ledger = _make(
-            client, label_map={WORKFLOW_NEW: [_issue(1, "feature")]},
+            client,
+            label_map={WORKFLOW_NEW: [_issue(1, "feature")]},
         )
         await monitor._review_one_new_issue()
         # Claimou nova→em_revisao, mas NÃO aplicou veredito (sem revisada ainda).
@@ -197,8 +254,11 @@ class TestDispatchIsNonBlocking:
         monitor, github, ledger = _make(
             client,
             label_map={
-                REFINAR: [_issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="b0")],
-                WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [],
+                REFINAR: [
+                    _issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="b0")
+                ],
+                WORKFLOW_REFINING: [],
+                WORKFLOW_ARCHITECTURE: [],
             },
         )
         await monitor._refine_one_issue()
@@ -211,19 +271,23 @@ class TestDispatchIsNonBlocking:
 # reconcile_critique_issues
 # ===========================================================================
 
+
 class TestReconcileCritique:
     def _seed(self, monitor, github, number, *type_labels):
         own = monitor.identity.ownership_label()
         github.list_issues_with_label = AsyncMock(
             side_effect=lambda label, **_: (
                 [_issue(number, WORKFLOW_REVIEWING, own)]
-                if label == WORKFLOW_REVIEWING else []
+                if label == WORKFLOW_REVIEWING
+                else []
             )
         )
 
     async def test_running_keeps_lock(self):
         client = _Client(verdict="VEREDITO: CLARO", running=True)
-        monitor, github, _ = _make(client, label_map={WORKFLOW_NEW: [_issue(1, "feature")]})
+        monitor, github, _ = _make(
+            client, label_map={WORKFLOW_NEW: [_issue(1, "feature")]}
+        )
         await monitor._review_one_new_issue()
         self._seed(monitor, github, 1)
         github.transition_issue.reset_mock()
@@ -233,7 +297,9 @@ class TestReconcileCritique:
 
     async def test_done_clear_goes_revisada(self):
         client = _Client(verdict="Analisei.\nVEREDITO: CLARO")
-        monitor, github, ledger = _make(client, label_map={WORKFLOW_NEW: [_issue(1, "feature")]})
+        monitor, github, ledger = _make(
+            client, label_map={WORKFLOW_NEW: [_issue(1, "feature")]}
+        )
         await monitor._review_one_new_issue()
         self._seed(monitor, github, 1)
         await monitor._reconcile_critique_issues()
@@ -242,7 +308,9 @@ class TestReconcileCritique:
 
     async def test_done_vago_goes_arquitetura(self):
         client = _Client(verdict="VEREDITO: VAGO: falta contrato")
-        monitor, github, _ = _make(client, label_map={WORKFLOW_NEW: [_issue(2, "feature")]})
+        monitor, github, _ = _make(
+            client, label_map={WORKFLOW_NEW: [_issue(2, "feature")]}
+        )
         await monitor._review_one_new_issue()
         self._seed(monitor, github, 2)
         await monitor._reconcile_critique_issues()
@@ -250,7 +318,9 @@ class TestReconcileCritique:
 
     async def test_gone_clears_ledger_no_transition(self):
         client = _Client(verdict="VEREDITO: CLARO", gone=True)
-        monitor, github, ledger = _make(client, label_map={WORKFLOW_NEW: [_issue(1, "feature")]})
+        monitor, github, ledger = _make(
+            client, label_map={WORKFLOW_NEW: [_issue(1, "feature")]}
+        )
         await monitor._review_one_new_issue()
         self._seed(monitor, github, 1)
         github.transition_issue.reset_mock()
@@ -264,12 +334,17 @@ class TestReconcileCritique:
 # reconcile_refine_issues
 # ===========================================================================
 
+
 class TestReconcileRefine:
     def _make_refine(self, client, body="corpo", get_issue_body="reescrito"):
         issue = _issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body=body)
         monitor, github, ledger = _make(
             client,
-            label_map={REFINAR: [issue], WORKFLOW_REFINING: [], WORKFLOW_ARCHITECTURE: [issue]},
+            label_map={
+                REFINAR: [issue],
+                WORKFLOW_REFINING: [],
+                WORKFLOW_ARCHITECTURE: [issue],
+            },
             get_issue_body=get_issue_body,
         )
         return monitor, github, ledger, issue
@@ -290,7 +365,9 @@ class TestReconcileRefine:
         before = "x" * 200
         after = "x" * 201  # +0,5% → cosmético
         client = _Client(verdict="Só corrigi arquivo:linha.\nREFINO: OK")
-        monitor, github, _, issue = self._make_refine(client, body=before, get_issue_body=after)
+        monitor, github, _, issue = self._make_refine(
+            client, body=before, get_issue_body=after
+        )
         await monitor._refine_one_issue()
         self._seed(monitor, github, issue)
         await monitor._reconcile_refine_issues()
@@ -304,7 +381,9 @@ class TestReconcileRefine:
         before = "x" * 100
         after = "y" * 400  # +300% → mudança real
         client = _Client(verdict="Reescrevi bastante.\nREFINO: OK")
-        monitor, github, _, issue = self._make_refine(client, body=before, get_issue_body=after)
+        monitor, github, _, issue = self._make_refine(
+            client, body=before, get_issue_body=after
+        )
         await monitor._refine_one_issue()
         self._seed(monitor, github, issue)
         await monitor._reconcile_refine_issues()
@@ -313,7 +392,9 @@ class TestReconcileRefine:
     async def test_convergence_promotes_to_revisada(self):
         client = _Client(verdict="Pronto.\nREFINO: OK")
         # before_body (no ledger) == after_body (get_issue) ⇒ convergiu (idêntico).
-        monitor, github, _, issue = self._make_refine(client, body="estavel", get_issue_body="estavel")
+        monitor, github, _, issue = self._make_refine(
+            client, body="estavel", get_issue_body="estavel"
+        )
         await monitor._refine_one_issue()
         self._seed(monitor, github, issue)
         await monitor._reconcile_refine_issues()
@@ -327,7 +408,9 @@ class TestReconcileRefine:
         before = "x" * 200
         after = "x" * 201  # cosmético, MAS verdict unknown → não tolera
         client = _Client(verdict="Mexi em algo mas não declarei veredito.")
-        monitor, github, _, issue = self._make_refine(client, body=before, get_issue_body=after)
+        monitor, github, _, issue = self._make_refine(
+            client, body=before, get_issue_body=after
+        )
         await monitor._refine_one_issue()
         self._seed(monitor, github, issue)
         await monitor._reconcile_refine_issues()
@@ -340,10 +423,13 @@ class TestReconcileRefine:
         self._seed(monitor, github, issue)
         await monitor._reconcile_refine_issues()
         added = [
-            lb for c in github.add_labels.await_args_list
-            if c.args[1] == 6 for lb in c.args[2]
+            lb
+            for c in github.add_labels.await_args_list
+            if c.args[1] == 6
+            for lb in c.args[2]
         ]
         from deile.orchestration.pipeline.labels import WORKFLOW_WAITING
+
         assert WORKFLOW_WAITING in added
 
     async def test_running_keeps_lock(self):
@@ -360,26 +446,40 @@ class TestReconcileRefine:
 # reconcile_review_prs (ground-truth)
 # ===========================================================================
 
+
 class TestReconcileReviewPrs:
     def _fresh_pr(self):
-        return PrRef(number=10, title="prt", url="https://x/pull/10",
-                     labels=(REVIEW_PENDING,), head_ref="auto/issue-1")
+        return PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_PENDING,),
+            head_ref="auto/issue-1",
+        )
 
     def _seed_in_progress(self, monitor, github):
-        in_progress = PrRef(number=10, title="prt", url="https://x/pull/10",
-                            labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-1")
+        in_progress = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_IN_PROGRESS,),
+            head_ref="auto/issue-1",
+        )
         github.list_open_prs = AsyncMock(return_value=[in_progress])
 
     async def test_merged_goes_concluida(self):
         client = _Client(verdict="merged")
         monitor, github, ledger = _make(
-            client, prs=[self._fresh_pr()], get_pr_ret=None,  # get_pr None = merged
+            client,
+            prs=[self._fresh_pr()],
+            get_pr_ret=None,  # get_pr None = merged
         )
         monitor.config.enable_refinement_gate = False
         await monitor._review_one_open_pr()
         self._seed_in_progress(monitor, github)
         await monitor._reconcile_review_prs()
         from deile.orchestration.pipeline.labels import REVIEW_CONCLUDED
+
         assert (10, REVIEW_IN_PROGRESS, REVIEW_CONCLUDED) in _pr_transitions(github)
         assert monitor.notifier.pr_reviewed.await_count == 1
         _, kw = monitor.notifier.pr_reviewed.await_args
@@ -393,6 +493,7 @@ class TestReconcileReviewPrs:
         self._seed_in_progress(monitor, github)
         await monitor._reconcile_review_prs()
         from deile.orchestration.pipeline.labels import REVIEW_CONCLUDED
+
         assert (10, REVIEW_IN_PROGRESS, REVIEW_CONCLUDED) in _pr_transitions(github)
         _, kw = monitor.notifier.pr_reviewed.await_args
         assert kw.get("merged") is False
@@ -405,8 +506,10 @@ class TestReconcileReviewPrs:
         self._seed_in_progress(monitor, github)
         await monitor._reconcile_review_prs()
         added = [
-            lb for c in github.add_labels.await_args_list
-            if c.args[1] == 10 for lb in c.args[2]
+            lb
+            for c in github.add_labels.await_args_list
+            if c.args[1] == 10
+            for lb in c.args[2]
         ]
         assert WORKFLOW_BLOCKED in added
 
@@ -425,17 +528,23 @@ class TestReconcileReviewPrs:
 # Concorrência — _count_total_in_flight ⇒ claima até available
 # ===========================================================================
 
+
 class TestConcurrency:
     async def test_critique_dispatches_up_to_available(self):
         client = _Client(verdict="VEREDITO: CLARO")
         news = [_issue(n, "feature", title=f"t{n}") for n in (1, 2, 3, 4)]
         monitor, github, _ = _make(
-            client, label_map={WORKFLOW_NEW: news}, max_parallel=3,
+            client,
+            label_map={WORKFLOW_NEW: news},
+            max_parallel=3,
         )
         await monitor._review_one_new_issue()
         # Sem nada em voo: available = 3 ⇒ claima 3 (nova→em_revisao).
-        claims = [t for t in _transitions(github)
-                  if t[1] == WORKFLOW_NEW and t[2] == WORKFLOW_REVIEWING]
+        claims = [
+            t
+            for t in _transitions(github)
+            if t[1] == WORKFLOW_NEW and t[2] == WORKFLOW_REVIEWING
+        ]
         assert len(claims) == 3
         assert len(client.payloads) == 3
 
@@ -446,11 +555,15 @@ class TestConcurrency:
         # Uma issue já em em_implementacao (1 slot ocupado).
         in_impl = _issue(99, "feature", "~workflow:em_implementacao", own)
         from deile.orchestration.pipeline.labels import WORKFLOW_IMPLEMENTING
+
         lm = {WORKFLOW_NEW: news, WORKFLOW_IMPLEMENTING: [in_impl]}
         monitor, github, _ = _make(client, label_map=lm, max_parallel=3)
         await monitor._review_one_new_issue()
-        claims = [t for t in _transitions(github)
-                  if t[1] == WORKFLOW_NEW and t[2] == WORKFLOW_REVIEWING]
+        claims = [
+            t
+            for t in _transitions(github)
+            if t[1] == WORKFLOW_NEW and t[2] == WORKFLOW_REVIEWING
+        ]
         # available = 3 - 1 (em voo) = 2.
         assert len(claims) == 2
 
@@ -461,8 +574,11 @@ class TestConcurrency:
         backlog de parked stakeholders fixava ``in_flight`` em ``max_parallel`` e
         esfomeava toda crítica nova (#515 ficou em nova por horas com in_flight=3
         = 1 órfã em_arquitetura + 2 aguardando_stakeholder)."""
-        from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
-                                                         WORKFLOW_WAITING)
+        from deile.orchestration.pipeline.labels import (
+            WORKFLOW_ARCHITECTURE,
+            WORKFLOW_WAITING,
+        )
+
         client = _Client(verdict="VEREDITO: CLARO")
         news = [_issue(n, "feature", title=f"t{n}") for n in (1, 2, 3)]
         own = "~by:default"
@@ -474,8 +590,11 @@ class TestConcurrency:
         lm = {WORKFLOW_NEW: news, WORKFLOW_ARCHITECTURE: parked}
         monitor, github, _ = _make(client, label_map=lm, max_parallel=3)
         await monitor._review_one_new_issue()
-        claims = [t for t in _transitions(github)
-                  if t[1] == WORKFLOW_NEW and t[2] == WORKFLOW_REVIEWING]
+        claims = [
+            t
+            for t in _transitions(github)
+            if t[1] == WORKFLOW_NEW and t[2] == WORKFLOW_REVIEWING
+        ]
         # available = 3 - 0 (parados não contam) = 3 ⇒ todas as 3 novas claimadas.
         assert len(claims) == 3
 
@@ -484,17 +603,20 @@ class TestConcurrency:
 # Reaper estendido — refino claimed-por-dispatch (só com ledger entry)
 # ===========================================================================
 
+
 class TestReaperRefineExtended:
     async def test_reaps_refine_only_with_ledger_entry(self):
         import time
 
         from deile.orchestration.pipeline.stages import reap_orphan_claims
+
         client = _Client()
         own = "~by:default"
         # Issue em em_arquitetura há muito tempo, COM ledger entry (dispatch travado).
         issue = _issue(50, "feature", WORKFLOW_ARCHITECTURE, own)
         monitor, github, ledger = _make(
-            client, label_map={WORKFLOW_ARCHITECTURE: [issue]},
+            client,
+            label_map={WORKFLOW_ARCHITECTURE: [issue]},
         )
         monitor.config.reaper_stale_seconds = 60
         ledger.record(DispatchLedger.key_for_issue(50), task_id="stuck", session_id="")
@@ -502,8 +624,10 @@ class TestReaperRefineExtended:
         await reap_orphan_claims(monitor)
         # Reapou: removeu em_arquitetura, recolocou nova.
         added = [
-            lb for c in github.add_labels.await_args_list
-            if c.args[1] == 50 for lb in c.args[2]
+            lb
+            for c in github.add_labels.await_args_list
+            if c.args[1] == 50
+            for lb in c.args[2]
         ]
         assert WORKFLOW_NEW in added
         # Limpou o ledger (task abandonada).
@@ -519,12 +643,14 @@ class TestReaperRefineExtended:
         import time
 
         from deile.orchestration.pipeline.stages import reap_orphan_claims
+
         client = _Client()
         own = "~by:default"
         # Issue em em_arquitetura em descanso (sem ledger entry, dentro do hard-TTL).
         issue = _issue(51, "feature", WORKFLOW_ARCHITECTURE, own)
         monitor, github, _ = _make(
-            client, label_map={WORKFLOW_ARCHITECTURE: [issue]},
+            client,
+            label_map={WORKFLOW_ARCHITECTURE: [issue]},
         )
         monitor.config.reaper_stale_seconds = 60
         monitor.config.reaper_arch_hard_seconds = 7200
@@ -533,8 +659,10 @@ class TestReaperRefineExtended:
         await reap_orphan_claims(monitor)
         # NÃO reapou (descanso entre passes dentro do hard-TTL).
         added = [
-            lb for c in github.add_labels.await_args_list
-            if c.args[1] == 51 for lb in c.args[2]
+            lb
+            for c in github.add_labels.await_args_list
+            if c.args[1] == 51
+            for lb in c.args[2]
         ]
         assert WORKFLOW_NEW not in added
 
@@ -555,8 +683,11 @@ class TestRefineAntiLoopSameTick:
         stale = _issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="b")
         monitor, github, ledger = _make(
             client,
-            label_map={REFINAR: [stale], WORKFLOW_REFINING: [],
-                       WORKFLOW_ARCHITECTURE: [stale]},
+            label_map={
+                REFINAR: [stale],
+                WORKFLOW_REFINING: [],
+                WORKFLOW_ARCHITECTURE: [stale],
+            },
         )
         # Simula: reconcile já promoveu #6 a revisada NESTE tick.
         monitor._refine_promoted_this_tick.add(6)
@@ -574,8 +705,11 @@ class TestRefineAntiLoopSameTick:
         stale = _issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="b")
         monitor, github, ledger = _make(
             client,
-            label_map={REFINAR: [stale], WORKFLOW_REFINING: [],
-                       WORKFLOW_ARCHITECTURE: [stale]},
+            label_map={
+                REFINAR: [stale],
+                WORKFLOW_REFINING: [],
+                WORKFLOW_ARCHITECTURE: [stale],
+            },
         )
         assert 6 not in monitor._refine_promoted_this_tick
         await monitor._refine_one_issue()
@@ -587,15 +721,20 @@ class TestRefineAntiLoopSameTick:
         issue = _issue(6, "feature", REFINAR, WORKFLOW_ARCHITECTURE, body="estavel")
         monitor, github, _ = _make(
             client,
-            label_map={REFINAR: [issue], WORKFLOW_REFINING: [],
-                       WORKFLOW_ARCHITECTURE: [issue]},
+            label_map={
+                REFINAR: [issue],
+                WORKFLOW_REFINING: [],
+                WORKFLOW_ARCHITECTURE: [issue],
+            },
             get_issue_body="estavel",
         )
         await monitor._refine_one_issue()
         own = monitor.identity.ownership_label()
         seeded = _issue(6, "feature", WORKFLOW_ARCHITECTURE, REFINAR, own)
         github.list_issues_with_label = AsyncMock(
-            side_effect=lambda label, **_: ([seeded] if label == WORKFLOW_ARCHITECTURE else [])
+            side_effect=lambda label, **_: (
+                [seeded] if label == WORKFLOW_ARCHITECTURE else []
+            )
         )
         await monitor._reconcile_refine_issues()
         assert 6 in monitor._refine_promoted_this_tick

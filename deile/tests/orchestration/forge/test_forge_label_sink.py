@@ -1,11 +1,9 @@
 """AC3b — ForgeClient on_label_change sink: no-op-safe + monitor wiring."""
+
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from deile.orchestration.forge.base import ForgeConfig, ForgeKind
 from deile.orchestration.forge.github_forge import GitHubForge
@@ -48,9 +46,13 @@ class TestForgeSinkNoopSafe:
     async def test_transition_issue_no_sink(self):
         gh = _github_forge()
         assert gh.on_label_change is None
-        with patch.object(gh, "_run_checked", side_effect=_fake_run_checked), \
-             patch.object(gh, "_run", side_effect=_fake_run):
-            await gh.transition_issue(1, from_label="~workflow:nova", to_label="~workflow:em_revisao")
+        with (
+            patch.object(gh, "_run_checked", side_effect=_fake_run_checked),
+            patch.object(gh, "_run", side_effect=_fake_run),
+        ):
+            await gh.transition_issue(
+                1, from_label="~workflow:nova", to_label="~workflow:em_revisao"
+            )
 
 
 def _boom(kind, num, rem, add):
@@ -75,9 +77,13 @@ class TestForgeSinkExceptionSwallowed:
     async def test_transition_issue_sink_raises_swallowed(self):
         gh = _github_forge()
         gh.on_label_change = _boom
-        with patch.object(gh, "_run_checked", side_effect=_fake_run_checked), \
-             patch.object(gh, "_run", side_effect=_fake_run):
-            await gh.transition_issue(1, from_label="~workflow:nova", to_label="~workflow:em_revisao")
+        with (
+            patch.object(gh, "_run_checked", side_effect=_fake_run_checked),
+            patch.object(gh, "_run", side_effect=_fake_run),
+        ):
+            await gh.transition_issue(
+                1, from_label="~workflow:nova", to_label="~workflow:em_revisao"
+            )
 
 
 class TestMonitorWiresOnLabelChange:
@@ -97,6 +103,6 @@ class TestMonitorWiresOnLabelChange:
             worktrees=MagicMock(),
             claude=MagicMock(),
         )
-        assert monitor.forge.on_label_change is not None, (
-            "PipelineMonitor.__init__ must wire forge.on_label_change"
-        )
+        assert (
+            monitor.forge.on_label_change is not None
+        ), "PipelineMonitor.__init__ must wire forge.on_label_change"

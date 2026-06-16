@@ -111,7 +111,9 @@ class WorktreeManager:
         clean (gap #12: avoids contamination from a previous failed run).
         """
         if not branch or branch == self.main_branch:
-            raise WorktreeError(f"branch must be a non-main branch name, got {branch!r}")
+            raise WorktreeError(
+                f"branch must be a non-main branch name, got {branch!r}"
+            )
         await self.ensure_main()
         target = self.branches_dir / branch
         try:
@@ -132,8 +134,9 @@ class WorktreeManager:
         logger.info("copying %s -> %s", self.main_worktree, target)
         # `cp -r` mirrors the spec literally; shutil.copytree refuses an
         # existing destination, which we've already ruled out above.
-        await asyncio.to_thread(shutil.copytree, self.main_worktree, target,
-                                symlinks=False, ignore=None)
+        await asyncio.to_thread(
+            shutil.copytree, self.main_worktree, target, symlinks=False, ignore=None
+        )
 
         # A partir daqui, qualquer falha precisa **reverter** o ``copytree``
         # acima — sem rollback, a próxima tick reusaria a worktree
@@ -143,7 +146,9 @@ class WorktreeManager:
             # Inside the copy, point origin at the parent base_repo so commits
             # land back there (and from there get pushed to the upstream forge
             # — GitHub or GitLab — by the pipeline).
-            await self._git_in(target, "remote", "set-url", "origin", str(self.base_repo))
+            await self._git_in(
+                target, "remote", "set-url", "origin", str(self.base_repo)
+            )
 
             # Ensure a ``forge`` remote pointing directly at the upstream forge
             # exists so ``gh pr create`` / ``glab mr create`` and ``git push
@@ -156,7 +161,11 @@ class WorktreeManager:
             rc, _, err = await self._git_in_capture(target, "checkout", "-b", branch)
             if rc != 0:
                 # Branch may already exist; try plain checkout and surface both errors on failure.
-                logger.debug("checkout -b %s failed (%s); trying plain checkout", branch, err.strip()[:200])
+                logger.debug(
+                    "checkout -b %s failed (%s); trying plain checkout",
+                    branch,
+                    err.strip()[:200],
+                )
                 rc2, _, err2 = await self._git_in_capture(target, "checkout", branch)
                 if rc2 != 0:
                     raise WorktreeError(
@@ -217,11 +226,21 @@ class WorktreeManager:
                 continue
             if branch_name in merged_set:
                 try:
-                    await asyncio.to_thread(shutil.rmtree, candidate, ignore_errors=False)
-                    logger.info("cleaned up merged worktree: %s (branch=%s)", candidate, branch_name)
+                    await asyncio.to_thread(
+                        shutil.rmtree, candidate, ignore_errors=False
+                    )
+                    logger.info(
+                        "cleaned up merged worktree: %s (branch=%s)",
+                        candidate,
+                        branch_name,
+                    )
                     deleted += 1
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("cleanup_merged_branches: failed to remove %s: %s", candidate, exc)
+                    logger.warning(
+                        "cleanup_merged_branches: failed to remove %s: %s",
+                        candidate,
+                        exc,
+                    )
 
         return deleted
 
@@ -255,7 +274,10 @@ class WorktreeManager:
         forge_url = ""
         for remote_name in ("forge", "github", "origin"):
             rc, candidate, _ = await self._git_in_capture(
-                self.base_repo, "remote", "get-url", remote_name,
+                self.base_repo,
+                "remote",
+                "get-url",
+                remote_name,
             )
             if rc == 0 and candidate.strip():
                 forge_url = candidate.strip()
@@ -293,19 +315,27 @@ class WorktreeManager:
         logged at WARNING (the forge remote is convenience, not required).
         """
         rc_existing, existing_url, _ = await self._git_in_capture(
-            worktree, "remote", "get-url", name,
+            worktree,
+            "remote",
+            "get-url",
+            name,
         )
         try:
             if rc_existing == 0:
                 if existing_url.strip() != url:
                     await self._git_in(worktree, "remote", "set-url", name, url)
-                    logger.debug("updated %r remote in %s to %s", name, worktree, url[:80])
+                    logger.debug(
+                        "updated %r remote in %s to %s", name, worktree, url[:80]
+                    )
             else:
                 await self._git_in(worktree, "remote", "add", name, url)
                 logger.debug("added %r remote %s to %s", name, url[:80], worktree)
         except WorktreeError as exc:
             logger.warning(
-                "_set_remote: could not set %r remote in %s: %s", name, worktree, exc,
+                "_set_remote: could not set %r remote in %s: %s",
+                name,
+                worktree,
+                exc,
             )
 
     # Backwards-compat alias (issue #297): existing test code and external
@@ -321,7 +351,8 @@ class WorktreeManager:
     @staticmethod
     async def _git(*args: str) -> None:
         proc = await asyncio.create_subprocess_exec(
-            "git", *args,
+            "git",
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -342,7 +373,10 @@ class WorktreeManager:
     @staticmethod
     async def _git_in_capture(cwd: Path, *args: str):
         proc = await asyncio.create_subprocess_exec(
-            "git", "-C", str(cwd), *args,
+            "git",
+            "-C",
+            str(cwd),
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

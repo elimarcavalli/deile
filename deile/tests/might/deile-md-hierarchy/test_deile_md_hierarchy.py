@@ -145,7 +145,9 @@ async def main():
     print("\n--- METADATA ---")
     print(f"  duration: {dt:.2f}s")
     print(f"  model_used: {response.metadata.get('model_used', '?')}")
-    print(f"  status: {response.status.value if hasattr(response.status, 'value') else response.status}")
+    print(
+        f"  status: {response.status.value if hasattr(response.status, 'value') else response.status}"
+    )
 
     # ── Veredito por camada ───────────────────────────────────────────────
     text = response.content or ""
@@ -154,15 +156,23 @@ async def main():
     cwd_ok, cwd_match = _check_cwd(text)
 
     print("\n--- LAYER VERDICT ---")
-    print(f"  🔴 CORE   (frase sobre IA autônoma): {'PASS' if core_ok else 'FAIL'}"
-          + (f"  → match: {core_match!r}" if core_match else ""))
-    print(f"  🟡 USER   (olá meu cupinxa):          {'PASS' if user_ok else 'FAIL'}"
-          + (f"  → match: {user_match!r}" if user_match else ""))
-    print(f"  🟢 CWD    (receita de bolo):          {'PASS' if cwd_ok else 'FAIL'}"
-          + (f"  → match: {cwd_match!r}" if cwd_match else ""))
+    print(
+        f"  🔴 CORE   (frase sobre IA autônoma): {'PASS' if core_ok else 'FAIL'}"
+        + (f"  → match: {core_match!r}" if core_match else "")
+    )
+    print(
+        f"  🟡 USER   (olá meu cupinxa):          {'PASS' if user_ok else 'FAIL'}"
+        + (f"  → match: {user_match!r}" if user_match else "")
+    )
+    print(
+        f"  🟢 CWD    (receita de bolo):          {'PASS' if cwd_ok else 'FAIL'}"
+        + (f"  → match: {cwd_match!r}" if cwd_match else "")
+    )
 
     overall = core_ok and user_ok and cwd_ok
-    print(f"\n  ▶ OVERALL: {'PASS — DEILE respeitou as 3 camadas' if overall else 'FAIL — alguma camada não foi respeitada'}")
+    print(
+        f"\n  ▶ OVERALL: {'PASS — DEILE respeitou as 3 camadas' if overall else 'FAIL — alguma camada não foi respeitada'}"
+    )
 
     # Exit code para CI / scripts
     sys.exit(0 if overall else 1)

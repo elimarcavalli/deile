@@ -35,22 +35,20 @@ def mock_data_with_claude():
     from _panel_data import ClaudeWorkerStatus, StageDispatchEntry
 
     data.stage_dispatch.get_all_stages.return_value = [
-        StageDispatchEntry("classify", "deile-worker",
-                           "anthropic:haiku", "env"),
-        StageDispatchEntry("refine", "deile-worker",
-                           "anthropic:sonnet", "env"),
-        StageDispatchEntry("implement", "claude-worker",
-                           "anthropic:claude-opus-4-8", "env"),
-        StageDispatchEntry("pr_review", "claude-worker",
-                           "anthropic:claude-opus-4-8", "env"),
+        StageDispatchEntry("classify", "deile-worker", "anthropic:haiku", "env"),
+        StageDispatchEntry("refine", "deile-worker", "anthropic:sonnet", "env"),
+        StageDispatchEntry(
+            "implement", "claude-worker", "anthropic:claude-opus-4-8", "env"
+        ),
+        StageDispatchEntry(
+            "pr_review", "claude-worker", "anthropic:claude-opus-4-8", "env"
+        ),
         StageDispatchEntry("follow_ups", "deile-worker", None, "default"),
     ]
-    data.stage_dispatch.get_claude_worker_status.return_value = (
-        ClaudeWorkerStatus(
-            deployment_applied=True,
-            pod_ready=True,
-            logged_in_email="user@example.com",
-        )
+    data.stage_dispatch.get_claude_worker_status.return_value = ClaudeWorkerStatus(
+        deployment_applied=True,
+        pod_ready=True,
+        logged_in_email="user@example.com",
     )
     data.namespace = "deile"
     return data
@@ -67,12 +65,10 @@ def mock_data_no_claude():
         StageDispatchEntry(s, "deile-worker", None, "default")
         for s in ("classify", "refine", "implement", "pr_review", "follow_ups")
     ]
-    data.stage_dispatch.get_claude_worker_status.return_value = (
-        ClaudeWorkerStatus(
-            deployment_applied=False,
-            pod_ready=False,
-            logged_in_email=None,
-        )
+    data.stage_dispatch.get_claude_worker_status.return_value = ClaudeWorkerStatus(
+        deployment_applied=False,
+        pod_ready=False,
+        logged_in_email=None,
     )
     data.namespace = "deile"
     return data
@@ -89,8 +85,7 @@ def test_view_renders_5_stages(mock_data_with_claude):
     text = console.export_text()
 
     # All 5 stages visible.
-    for stage in ("classify", "refine", "implement", "pr_review",
-                  "follow_ups"):
+    for stage in ("classify", "refine", "implement", "pr_review", "follow_ups"):
         assert stage in text, f"stage {stage} missing from render"
 
     # Worker values visible.
@@ -98,8 +93,7 @@ def test_view_renders_5_stages(mock_data_with_claude):
     assert "deile-worker" in text
 
     # Pelo menos um model slug visível.
-    assert ("anthropic:claude-opus-4-8" in text
-            or "claude-opus-4-8" in text)
+    assert "anthropic:claude-opus-4-8" in text or "claude-opus-4-8" in text
 
 
 def test_view_shows_claude_worker_ready_in_header(mock_data_with_claude):
@@ -127,9 +121,9 @@ def test_view_shows_install_hint_when_claude_absent(mock_data_no_claude):
     text = console.export_text()
 
     # Deve hintar a action de install — "instalar" PT ou "install" EN ou "[I]".
-    assert ("instalar" in text.lower()
-            or "install" in text.lower()
-            or "[i]" in text.lower())
+    assert (
+        "instalar" in text.lower() or "install" in text.lower() or "[i]" in text.lower()
+    )
 
 
 def test_view_navigation_keys_update_cursor(mock_data_with_claude):
@@ -165,6 +159,7 @@ def test_q_returns_to_dashboard(mock_data_with_claude):
     # Deve sinalizar nav back para dashboard (ou back/quit). ActionResult
     # não pode ser None — qualquer das três é aceitável para o skeleton.
     from _panel import Action
+
     assert result is not None
     assert result.kind in (Action.NAV, Action.BACK, Action.QUIT)
 
@@ -192,8 +187,8 @@ def test_worker_picker_offers_all_fleet_dispatchers(mock_data_with_claude):
     descoberta no registro de adapters) — não uma lista hardcoded.
     """
     from _panel import DispatchMatrixView
-    from deile.orchestration.pipeline.dispatch_resolver import \
-        get_valid_dispatchers
+
+    from deile.orchestration.pipeline.dispatch_resolver import get_valid_dispatchers
 
     view = DispatchMatrixView(data=mock_data_with_claude)
     options = view._worker_picker_options()
@@ -213,8 +208,8 @@ def test_model_picker_for_cli_worker_uses_adapter_catalog(mock_data_with_claude)
     Os valores das opções são os ids NATIVOS (bare) que vão pro env; os
     rótulos enriquecidos (preço/auth) ficam em ``_option_labels``.
     """
-    from _panel import DispatchMatrixView
     import cli_adapters
+    from _panel import DispatchMatrixView
 
     view = DispatchMatrixView(data=mock_data_with_claude)
     options = view._model_picker_options(worker="codex-worker")
@@ -223,8 +218,7 @@ def test_model_picker_for_cli_worker_uses_adapter_catalog(mock_data_with_claude)
     assert option_ids == adapter_ids, "picker não cobre o catálogo do codex"
     # gpt-5.3-codex deve aparecer com label enriquecido (preço + auth chatgpt).
     label = view._option_labels.get("gpt-5.3-codex", "")
-    assert "$" in label and "chatgpt" in label, \
-        f"label enriquecido ausente: {label!r}"
+    assert "$" in label and "chatgpt" in label, f"label enriquecido ausente: {label!r}"
 
 
 def test_model_picker_apply_uses_bare_id_not_label(mock_data_with_claude):
@@ -237,8 +231,9 @@ def test_model_picker_apply_uses_bare_id_not_label(mock_data_with_claude):
     # (sem "$", sem "[", sem "  — ") — só o display é decorado.
     for opt in options:
         if opt in view._option_labels:
-            assert "$" not in opt and "[" not in opt and "— " not in opt, \
-                f"opção {opt!r} carrega decoração — apply enviaria valor sujo"
+            assert (
+                "$" not in opt and "[" not in opt and "— " not in opt
+            ), f"opção {opt!r} carrega decoração — apply enviaria valor sujo"
 
 
 def test_model_picker_restricted_when_claude_worker(mock_data_with_claude):
@@ -252,12 +247,14 @@ def test_model_picker_restricted_when_claude_worker(mock_data_with_claude):
     # Toda opção (exceto sentinelas de "default/clear") deve ser anthropic:*.
     for opt in options:
         is_anthropic = opt.startswith("anthropic:")
-        is_sentinel = ("default" in opt.lower() or "clear" in opt.lower())
-        assert is_anthropic or is_sentinel, \
-            f"option {opt!r} não é anthropic-eligible nem sentinela"
+        is_sentinel = "default" in opt.lower() or "clear" in opt.lower()
+        assert (
+            is_anthropic or is_sentinel
+        ), f"option {opt!r} não é anthropic-eligible nem sentinela"
     # Pelo menos um anthropic concreto deve existir.
-    assert any(o.startswith("anthropic:") for o in options), \
-        "picker restrito não tem nenhum anthropic:* concreto"
+    assert any(
+        o.startswith("anthropic:") for o in options
+    ), "picker restrito não tem nenhum anthropic:* concreto"
 
 
 def test_model_picker_open_when_deile_worker(mock_data_with_claude):
@@ -270,8 +267,9 @@ def test_model_picker_open_when_deile_worker(mock_data_with_claude):
     # Pelo menos 2 providers diferentes devem aparecer (ex: anthropic,
     # openai, deepseek, google) — confirma que não há restrição.
     providers = {opt.split(":", 1)[0] for opt in options if ":" in opt}
-    assert len(providers) >= 2, \
-        f"só providers {providers} no picker — esperado múltiplos"
+    assert (
+        len(providers) >= 2
+    ), f"só providers {providers} no picker — esperado múltiplos"
 
 
 def test_enter_on_worker_column_routes_to_worker_picker(mock_data_with_claude):
@@ -288,6 +286,7 @@ def test_enter_on_worker_column_routes_to_worker_picker(mock_data_with_claude):
     assert view.mode[0] == "worker"
     # ActionResult não é NOOP (algo aconteceu).
     from _panel import Action
+
     assert result.kind != Action.NOOP
 
 
@@ -303,6 +302,7 @@ def test_enter_on_model_column_routes_to_model_picker(mock_data_with_claude):
     assert view.mode is not None
     assert view.mode[0] == "model"
     from _panel import Action
+
     assert result.kind != Action.NOOP
 
 
@@ -320,6 +320,7 @@ def test_enter_on_global_row_opens_global_picker(mock_data_with_claude):
     assert view.mode is not None
     assert view.mode[0] in ("global_worker", "global_model")
     from _panel import Action
+
     assert result.kind != Action.NOOP
 
 
@@ -343,7 +344,8 @@ def test_esc_in_picker_closes_picker_modal(mock_data_with_claude):
 
 
 def test_i_key_triggers_install_modal_when_claude_absent(
-    mock_data_no_claude, monkeypatch,
+    mock_data_no_claude,
+    monkeypatch,
 ):
     """[I] quando claude-worker NÃO instalado → mostra modal de install."""
     from _panel import DispatchMatrixView
@@ -353,8 +355,7 @@ def test_i_key_triggers_install_modal_when_claude_absent(
 
     # State: modal de install aberto (via mode state).
     assert view.mode is not None and "install" in str(view.mode).lower(), (
-        f"expected install modal triggered; view.mode={view.mode}, "
-        f"result={result}"
+        f"expected install modal triggered; view.mode={view.mode}, " f"result={result}"
     )
 
 
@@ -381,8 +382,7 @@ def test_l_key_triggers_switch_login_when_claude_installed(
     result = view.handle_key("L", MagicMock())
 
     assert view.mode is not None and (
-        "login" in str(view.mode).lower()
-        or "switch" in str(view.mode).lower()
+        "login" in str(view.mode).lower() or "switch" in str(view.mode).lower()
     ), (
         f"expected switch-login modal triggered; view.mode={view.mode}, "
         f"result={result}"
@@ -398,13 +398,18 @@ def test_l_key_noop_when_claude_not_installed(mock_data_no_claude):
     view.handle_key("L", MagicMock())
 
     # Não pode abrir switch login se não há claude
-    assert view.mode == initial_mode or "login" not in str(
-        view.mode or "",
-    ).lower()
+    assert (
+        view.mode == initial_mode
+        or "login"
+        not in str(
+            view.mode or "",
+        ).lower()
+    )
 
 
 def test_selecting_claude_worker_when_absent_triggers_install_flow(
-    mock_data_no_claude, monkeypatch,
+    mock_data_no_claude,
+    monkeypatch,
 ):
     """Selecionar claude-worker no picker quando Deployment absent →
     install antes de persist."""
@@ -418,12 +423,17 @@ def test_selecting_claude_worker_when_absent_triggers_install_flow(
         bootstrap_called["flag"] = True
         bootstrap_called["kwargs"] = kwargs
         return _claude_install.ClaudeLoginResult(
-            ok=True, account_email="user@new.com",
-            secret_applied=True, deployment_applied=True, rollout_ready=True,
+            ok=True,
+            account_email="user@new.com",
+            secret_applied=True,
+            deployment_applied=True,
+            rollout_ready=True,
         )
 
     monkeypatch.setattr(
-        _claude_install, "bootstrap_claude_worker", fake_bootstrap,
+        _claude_install,
+        "bootstrap_claude_worker",
+        fake_bootstrap,
     )
 
     view = DispatchMatrixView(data=mock_data_no_claude)
@@ -473,7 +483,8 @@ def test_t_key_blocked_when_install_in_progress(mock_data_with_claude):
 
 
 def test_setup_token_confirm_triggers_perform_setup_token(
-    mock_data_with_claude, monkeypatch,
+    mock_data_with_claude,
+    monkeypatch,
 ):
     """Confirmar (Y) o modal de setup-token dispara ``setup_token_claude_worker``
     via thread daemon (espelho do fluxo [L]/bootstrap)."""
@@ -486,17 +497,21 @@ def test_setup_token_confirm_triggers_perform_setup_token(
         captured["called"] = True
         captured["kwargs"] = kwargs
         return _claude_install.ClaudeLoginResult(
-            ok=True, secret_applied=True,
-            deployment_applied=True, rollout_ready=True,
+            ok=True,
+            secret_applied=True,
+            deployment_applied=True,
+            rollout_ready=True,
         )
 
     monkeypatch.setattr(
-        _claude_install, "setup_token_claude_worker", fake_setup,
+        _claude_install,
+        "setup_token_claude_worker",
+        fake_setup,
     )
 
     view = DispatchMatrixView(data=mock_data_with_claude)
-    view.handle_key("T", MagicMock())          # abre modal
-    view.handle_key("Y", MagicMock())          # confirma
+    view.handle_key("T", MagicMock())  # abre modal
+    view.handle_key("Y", MagicMock())  # confirma
 
     if view._install_thread is not None:
         view._install_thread.join(timeout=2.0)
@@ -507,7 +522,8 @@ def test_setup_token_confirm_triggers_perform_setup_token(
 
 
 def test_perform_setup_token_blocking_mode_runs_inline(
-    mock_data_with_claude, monkeypatch,
+    mock_data_with_claude,
+    monkeypatch,
 ):
     """``_perform_setup_token(_blocking=True)`` executa inline e publica
     sucesso — caminho síncrono usado pelos testes."""
@@ -519,12 +535,16 @@ def test_perform_setup_token_blocking_mode_runs_inline(
     def fake_setup(**kwargs):
         calls["n"] += 1
         return _claude_install.ClaudeLoginResult(
-            ok=True, secret_applied=True,
-            deployment_applied=True, rollout_ready=True,
+            ok=True,
+            secret_applied=True,
+            deployment_applied=True,
+            rollout_ready=True,
         )
 
     monkeypatch.setattr(
-        _claude_install, "setup_token_claude_worker", fake_setup,
+        _claude_install,
+        "setup_token_claude_worker",
+        fake_setup,
     )
 
     view = DispatchMatrixView(data=mock_data_with_claude)
@@ -539,8 +559,10 @@ def test_perform_setup_token_blocking_mode_runs_inline(
 # Bug #2 hotfix: _perform_install NÃO BLOQUEIA o painel TUI
 # ============================================================================
 
+
 def test_perform_install_runs_in_background_thread_by_default(
-    mock_data_with_claude, monkeypatch,
+    mock_data_with_claude,
+    monkeypatch,
 ):
     """``_perform_install(force_relogin=True)`` retorna imediatamente sem
     bloquear o caller; bootstrap roda em thread daemon — fix do freeze
@@ -560,12 +582,17 @@ def test_perform_install_runs_in_background_thread_by_default(
         _time.sleep(0.5)
         finished.set()
         return _claude_install.ClaudeLoginResult(
-            ok=True, account_email="x@y.com",
-            secret_applied=True, deployment_applied=True, rollout_ready=True,
+            ok=True,
+            account_email="x@y.com",
+            secret_applied=True,
+            deployment_applied=True,
+            rollout_ready=True,
         )
 
     monkeypatch.setattr(
-        _claude_install, "bootstrap_claude_worker", slow_bootstrap,
+        _claude_install,
+        "bootstrap_claude_worker",
+        slow_bootstrap,
     )
 
     view = DispatchMatrixView(data=mock_data_with_claude)
@@ -593,7 +620,8 @@ def test_perform_install_runs_in_background_thread_by_default(
 
 
 def test_perform_install_blocking_mode_runs_inline(
-    mock_data_with_claude, monkeypatch,
+    mock_data_with_claude,
+    monkeypatch,
 ):
     """Modo ``_blocking=True`` (usado por ``_on_worker_selected``) executa
     inline — preserva a verificação de cw_status logo depois do install."""
@@ -605,12 +633,17 @@ def test_perform_install_blocking_mode_runs_inline(
     def fake_bootstrap(**kwargs):
         call_count["n"] += 1
         return _claude_install.ClaudeLoginResult(
-            ok=True, account_email="user@blocking.com",
-            secret_applied=True, deployment_applied=True, rollout_ready=True,
+            ok=True,
+            account_email="user@blocking.com",
+            secret_applied=True,
+            deployment_applied=True,
+            rollout_ready=True,
         )
 
     monkeypatch.setattr(
-        _claude_install, "bootstrap_claude_worker", fake_bootstrap,
+        _claude_install,
+        "bootstrap_claude_worker",
+        fake_bootstrap,
     )
 
     view = DispatchMatrixView(data=mock_data_with_claude)
@@ -623,7 +656,8 @@ def test_perform_install_blocking_mode_runs_inline(
 
 
 def test_concurrent_install_request_is_ignored(
-    mock_data_with_claude, monkeypatch,
+    mock_data_with_claude,
+    monkeypatch,
 ):
     """Apertar [I]/[L] enquanto bootstrap em background NÃO spawna nova
     thread — devolve mensagem informativa."""
@@ -640,12 +674,17 @@ def test_concurrent_install_request_is_ignored(
         bootstrap_calls["n"] += 1
         release.wait(timeout=2.0)
         return _claude_install.ClaudeLoginResult(
-            ok=True, account_email="single@call.com",
-            secret_applied=True, deployment_applied=True, rollout_ready=True,
+            ok=True,
+            account_email="single@call.com",
+            secret_applied=True,
+            deployment_applied=True,
+            rollout_ready=True,
         )
 
     monkeypatch.setattr(
-        _claude_install, "bootstrap_claude_worker", bootstrap_that_waits,
+        _claude_install,
+        "bootstrap_claude_worker",
+        bootstrap_that_waits,
     )
 
     view = DispatchMatrixView(data=mock_data_with_claude)
@@ -688,7 +727,8 @@ def test_u_key_blocked_when_install_in_progress(mock_data_with_claude):
 
 
 def test_perform_uninstall_runs_in_background_thread_by_default(
-    mock_data_with_claude, monkeypatch,
+    mock_data_with_claude,
+    monkeypatch,
 ):
     """``_perform_uninstall`` retorna imediatamente; uninstall roda em
     daemon thread — mesmo padrão de :meth:`_perform_install`."""
@@ -706,7 +746,9 @@ def test_perform_uninstall_runs_in_background_thread_by_default(
         return _claude_install.ClaudeLoginResult(ok=True)
 
     monkeypatch.setattr(
-        _claude_install, "uninstall_claude_worker", slow_uninstall,
+        _claude_install,
+        "uninstall_claude_worker",
+        slow_uninstall,
     )
 
     view = DispatchMatrixView(data=mock_data_with_claude)
@@ -728,7 +770,8 @@ def test_perform_uninstall_runs_in_background_thread_by_default(
 
 
 def test_handle_uninstall_confirm_yes_triggers_perform(
-    mock_data_with_claude, monkeypatch,
+    mock_data_with_claude,
+    monkeypatch,
 ):
     """``[Y]`` no modal de uninstall chama ``_perform_uninstall``."""
     import _claude_install
@@ -741,7 +784,9 @@ def test_handle_uninstall_confirm_yes_triggers_perform(
         return _claude_install.ClaudeLoginResult(ok=True)
 
     monkeypatch.setattr(
-        _claude_install, "uninstall_claude_worker", fake_uninstall,
+        _claude_install,
+        "uninstall_claude_worker",
+        fake_uninstall,
     )
 
     view = DispatchMatrixView(data=mock_data_with_claude)
@@ -766,6 +811,7 @@ def test_handle_uninstall_confirm_no_cancels(mock_data_with_claude):
 # ============================================================================
 # Bug #1 hotfix: deploy.py expõe repo root no sys.path
 # ============================================================================
+
 
 def test_deploy_py_inserts_repo_root_in_syspath():
     """``deploy.py`` insere o repo root no ``sys.path`` para que imports

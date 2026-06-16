@@ -21,6 +21,7 @@ right forge. When a caller does not pass an explicit :class:`ForgeConfig`
 default GitHub configuration on ``github.com`` so the rendered text matches
 the legacy byte-exact GH output.
 """
+
 # Brief unificado pr_unified — refactor #45 / PR #411
 
 from __future__ import annotations
@@ -61,9 +62,10 @@ _IMPACT_TEST_STRATEGY = (
     "TESTES — análise de impacto (NÃO rode a suíte completa; revisor faz isso):\n"
     "   a) `git diff --name-only HEAD` → lista do que editou.\n"
     "   b) Para cada arquivo `deile/X/Y/z.py`: rode `deile/tests/X/Y/test_*.py` + "
-    "qualquer `grep -rln \"from deile.X.Y\" deile/tests/`. Mesma regra por subpacote.\n"
+    'qualquer `grep -rln "from deile.X.Y" deile/tests/`. Mesma regra por subpacote.\n'
     "   c) Comando: `python3 -m pytest <lista_de_testes_impactados> -p no:cov -q`. "
-    + _PIP_GUARD + ". Itere até verde.\n"
+    + _PIP_GUARD
+    + ". Itere até verde.\n"
     "   NUNCA rode `" + _FULL_SUITE_CMD + "` (suíte inteira) — é tarefa do revisor."
 )
 
@@ -104,7 +106,7 @@ def _default_forge_config(repo: str) -> ForgeConfig:
 # in :func:`_build_brief_params` (embeds the per-forge draft/comment commands).
 _DOD_EVIDENCE_BLOCK = (
     "DEFINIÇÃO DE PRONTO — confronte ENTREGA vs os Critérios de Aceite (ACs) da issue. "
-    "\"Compila + PR existe\" NÃO é pronto:\n"
+    '"Compila + PR existe" NÃO é pronto:\n'
     "   a) AC com número/condição testável (HTTP 200, custo %, p95, trigger %) só está PRONTO "
     "com o AC EXECUTADO e o NÚMERO real anexado ao corpo da PR/relatório. Scaffolding/harness "
     "escrito ≠ AC cumprido.\n"
@@ -190,16 +192,22 @@ def _build_brief_params(
     """
     cfg = forge or _default_forge_config(repo)
     cmds = render_brief_cmds(
-        cfg, number=number, branch=branch, main=main,
-        issue_template=issue_template, close_keyword=close_keyword,
+        cfg,
+        number=number,
+        branch=branch,
+        main=main,
+        issue_template=issue_template,
+        close_keyword=close_keyword,
     )
     params: dict[str, Any] = dict(_BRIEF_CONSTANTS)
-    params.update({
-        "repo": repo,
-        "main": main,
-        "branch": branch,
-        "number": number,
-    })
+    params.update(
+        {
+            "repo": repo,
+            "main": main,
+            "branch": branch,
+            "number": number,
+        }
+    )
     params.update(cmds)
     params["dod_block"] = _DOD_EVIDENCE_BLOCK.format(
         number=number,
@@ -503,7 +511,9 @@ _MENTION_ACTION_TEMPLATES: dict[str, tuple[str | None, str]] = {
 }
 
 
-def _format_mention_action(action: str, n: int, pr_noun: str = "PR", *, rich: bool) -> str:
+def _format_mention_action(
+    action: str, n: int, pr_noun: str = "PR", *, rich: bool
+) -> str:
     """Render a mention action label + body. ``rich=True`` wraps the label in
     markdown bold (worker brief style); ``rich=False`` emits plain prose
     (Claude prompt style)."""
@@ -568,12 +578,16 @@ def _render_worker_implement_brief(
     forge: Optional[ForgeConfig] = None,
 ) -> str:
     params = _build_brief_params(
-        repo=repo, main=main, branch=branch, number=number, forge=forge,
+        repo=repo,
+        main=main,
+        branch=branch,
+        number=number,
+        forge=forge,
         close_keyword=_close_keyword(title, body),
         extras={
             "title": title,
             "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]
-                    or "(sem corpo — implemente a partir do título)",
+            or "(sem corpo — implemente a partir do título)",
         },
     )
     return _render_brief(_WORKER_IMPLEMENT_BRIEF, params=params)
@@ -602,7 +616,11 @@ def _render_worker_pr_unified_brief(
     """
     branch_for_render = f"pr/{number}"
     params = _build_brief_params(
-        repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
+        repo=repo,
+        main=main,
+        branch=branch_for_render,
+        number=number,
+        forge=forge,
         extras={"gh_login": gh_login},
     )
     return _render_brief(_WORKER_PR_BRIEF, params=params)
@@ -624,7 +642,11 @@ def _render_worker_pr_address_brief(
     tick IMPLEMENTA" da Decisão #46 materializado num dispatch dedicado.
     """
     params = _build_brief_params(
-        repo=repo, main=main, branch=branch, number=number, forge=forge,
+        repo=repo,
+        main=main,
+        branch=branch,
+        number=number,
+        forge=forge,
     )
     return _render_brief(_WORKER_PR_ADDRESS_BRIEF, params=params)
 
@@ -652,12 +674,16 @@ def _render_worker_implement_resume_brief(
     forge: Optional[ForgeConfig] = None,
 ) -> str:
     params = _build_brief_params(
-        repo=repo, main=main, branch=branch, number=number, forge=forge,
+        repo=repo,
+        main=main,
+        branch=branch,
+        number=number,
+        forge=forge,
         close_keyword=_close_keyword(title, body),
         extras={
             "title": title,
             "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]
-                    or "(sem corpo — continue a partir do título e do trabalho parcial)",
+            or "(sem corpo — continue a partir do título e do trabalho parcial)",
             "progress_block": _PROGRESS_BLOCK,
         },
     )
@@ -753,7 +779,9 @@ Algoritmo:
 
 
 def _refine_body(body: str) -> str:
-    return (body or "").strip()[:ISSUE_BODY_MAX_CHARS] or "(sem corpo — avalie a partir do título)"
+    return (body or "").strip()[
+        :ISSUE_BODY_MAX_CHARS
+    ] or "(sem corpo — avalie a partir do título)"
 
 
 def _view_issue_author_cmd(cfg: ForgeConfig, repo: str, number: int) -> str:
@@ -782,8 +810,12 @@ def _render_worker_critique_brief(
     forge: Optional[ForgeConfig] = None,
 ) -> str:
     params = _build_brief_params(
-        repo=repo, main="main", branch=f"refine-{number}", number=number,
-        forge=forge, issue_template=template,
+        repo=repo,
+        main="main",
+        branch=f"refine-{number}",
+        number=number,
+        forge=forge,
+        issue_template=template,
         extras={
             "title": title,
             "body": _refine_body(body),
@@ -807,15 +839,21 @@ def _render_worker_refine_brief(
     # concrete ForgeConfig for the per-forge author-lookup snippet below.
     cfg_for_author = forge or _default_forge_config(repo)
     params = _build_brief_params(
-        repo=repo, main="main", branch=f"refine-{number}", number=number,
-        forge=forge, issue_template=template,
+        repo=repo,
+        main="main",
+        branch=f"refine-{number}",
+        number=number,
+        forge=forge,
+        issue_template=template,
         extras={
             "title": title,
             "body": _refine_body(body),
             "type": issue_type,
             "title_prefix": title_prefix_for_type(issue_type) or "[FEATURE]",
             "view_pr_author_cmd_for_issue": _view_issue_author_cmd(
-                cfg_for_author, repo, number,
+                cfg_for_author,
+                repo,
+                number,
             ),
         },
     )
@@ -831,7 +869,10 @@ def _render_worker_decompose_brief(
     forge: Optional[ForgeConfig] = None,
 ) -> str:
     params = _build_brief_params(
-        repo=repo, main="main", branch=f"decompose-{number}", number=number,
+        repo=repo,
+        main="main",
+        branch=f"decompose-{number}",
+        number=number,
         forge=forge,
         extras={
             "title": title,
@@ -844,6 +885,7 @@ def _render_worker_decompose_brief(
 # ---------------------------------------------------------------------------
 # Claude mention prompt builder (issue #253)
 # ---------------------------------------------------------------------------
+
 
 def _render_claude_mention_prompt(
     repo: str,
@@ -858,8 +900,10 @@ def _render_claude_mention_prompt(
     trigger_details = _render_trigger_details(all_triggers, rich=False)
     cfg = forge or _default_forge_config(repo)
     pr_noun = "PR" if cfg.kind is ForgeKind.GITHUB else "MR"
-    forge_cli = cfg.cli_path.rsplit("/", 1)[-1] if cfg.cli_path else (
-        "gh" if cfg.kind is ForgeKind.GITHUB else "glab"
+    forge_cli = (
+        cfg.cli_path.rsplit("/", 1)[-1]
+        if cfg.cli_path
+        else ("gh" if cfg.kind is ForgeKind.GITHUB else "glab")
     )
 
     action = _format_mention_action_plain(

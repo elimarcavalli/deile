@@ -14,8 +14,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deile.config.settings import (Settings, _apply_env_overrides,
-                                   _to_pos_int_or_auto, reset_settings)
+from deile.config.settings import (
+    Settings,
+    _apply_env_overrides,
+    _to_pos_int_or_auto,
+    reset_settings,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +32,7 @@ def _reset():
 # ---------------------------------------------------------------------------
 # _to_pos_int_or_auto unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestToPosIntOrAuto:
     def test_numeric_string_returns_int(self):
@@ -71,6 +76,7 @@ class TestToPosIntOrAuto:
 # Env-var layer
 # ---------------------------------------------------------------------------
 
+
 class TestEnvVarAutoMode:
     def test_env_numeric_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_PIPELINE_MAX_PARALLEL", "4")
@@ -95,6 +101,7 @@ class TestEnvVarAutoMode:
 # JSON / apply_overrides path
 # ---------------------------------------------------------------------------
 
+
 class TestJsonPathAutoMode:
     def test_json_numeric_applies(self):
         s = Settings()
@@ -115,6 +122,7 @@ class TestJsonPathAutoMode:
 # ---------------------------------------------------------------------------
 # build_default_pipeline_config with auto mode
 # ---------------------------------------------------------------------------
+
 
 def _patch_build_deps(monkeypatch, settings, tmp_path):
     monkeypatch.setattr("deile.config.settings.get_settings", lambda: settings)
@@ -139,8 +147,8 @@ class TestBuildDefaultPipelineConfigAutoMode:
         s = _make_settings(pipeline_max_parallel=5)
         _patch_build_deps(monkeypatch, s, tmp_path)
 
-        from deile.orchestration.pipeline.monitor import \
-            build_default_pipeline_config
+        from deile.orchestration.pipeline.monitor import build_default_pipeline_config
+
         cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 5
@@ -153,10 +161,14 @@ class TestBuildDefaultPipelineConfigAutoMode:
         fake_proc.returncode = 0
         fake_proc.stdout = "4"
 
-        with patch("shutil.which", return_value="/usr/bin/kubectl"), \
-             patch("subprocess.run", return_value=fake_proc):
-            from deile.orchestration.pipeline.monitor import \
-                build_default_pipeline_config
+        with (
+            patch("shutil.which", return_value="/usr/bin/kubectl"),
+            patch("subprocess.run", return_value=fake_proc),
+        ):
+            from deile.orchestration.pipeline.monitor import (
+                build_default_pipeline_config,
+            )
+
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 4
@@ -166,8 +178,10 @@ class TestBuildDefaultPipelineConfigAutoMode:
         _patch_build_deps(monkeypatch, s, tmp_path)
 
         with patch("shutil.which", return_value=None):
-            from deile.orchestration.pipeline.monitor import \
-                build_default_pipeline_config
+            from deile.orchestration.pipeline.monitor import (
+                build_default_pipeline_config,
+            )
+
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 2
@@ -180,10 +194,14 @@ class TestBuildDefaultPipelineConfigAutoMode:
         fake_proc.returncode = 1
         fake_proc.stderr = "deployment not found"
 
-        with patch("shutil.which", return_value="/usr/bin/kubectl"), \
-             patch("subprocess.run", return_value=fake_proc):
-            from deile.orchestration.pipeline.monitor import \
-                build_default_pipeline_config
+        with (
+            patch("shutil.which", return_value="/usr/bin/kubectl"),
+            patch("subprocess.run", return_value=fake_proc),
+        ):
+            from deile.orchestration.pipeline.monitor import (
+                build_default_pipeline_config,
+            )
+
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 2
@@ -196,23 +214,34 @@ class TestBuildDefaultPipelineConfigAutoMode:
         fake_proc.returncode = 0
         fake_proc.stdout = ""  # empty output
 
-        with patch("shutil.which", return_value="/usr/bin/kubectl"), \
-             patch("subprocess.run", return_value=fake_proc):
-            from deile.orchestration.pipeline.monitor import \
-                build_default_pipeline_config
+        with (
+            patch("shutil.which", return_value="/usr/bin/kubectl"),
+            patch("subprocess.run", return_value=fake_proc),
+        ):
+            from deile.orchestration.pipeline.monitor import (
+                build_default_pipeline_config,
+            )
+
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 2
 
     def test_auto_falls_back_to_2_on_timeout(self, monkeypatch, tmp_path):
         import subprocess
+
         s = _make_settings(pipeline_max_parallel="auto")
         _patch_build_deps(monkeypatch, s, tmp_path)
 
-        with patch("shutil.which", return_value="/usr/bin/kubectl"), \
-             patch("subprocess.run", side_effect=subprocess.TimeoutExpired("kubectl", 10)):
-            from deile.orchestration.pipeline.monitor import \
-                build_default_pipeline_config
+        with (
+            patch("shutil.which", return_value="/usr/bin/kubectl"),
+            patch(
+                "subprocess.run", side_effect=subprocess.TimeoutExpired("kubectl", 10)
+            ),
+        ):
+            from deile.orchestration.pipeline.monitor import (
+                build_default_pipeline_config,
+            )
+
             cfg = build_default_pipeline_config()
 
         assert cfg.max_parallel == 2

@@ -51,7 +51,9 @@ def _make_workdir(root: Path, name: str = "aabbccddeeff0011") -> Path:
     return d
 
 
-def _write_lease(workdir: Path, heartbeat_at: float, pod: str = "test-pod", pid: int = 999999999) -> None:
+def _write_lease(
+    workdir: Path, heartbeat_at: float, pod: str = "test-pod", pid: int = 999999999
+) -> None:
     (workdir / ".lease.json").write_text(
         json.dumps({"heartbeat_at": heartbeat_at, "pid": pid, "pod": pod}),
         encoding="utf-8",
@@ -61,6 +63,7 @@ def _write_lease(workdir: Path, heartbeat_at: float, pod: str = "test-pod", pid:
 # ---------------------------------------------------------------------------
 # _write_presence
 # ---------------------------------------------------------------------------
+
 
 def test_write_presence_creates_file(cws, work_root, monkeypatch):
     """_write_presence cria <root>/.pods/<pod>.presence com JSON correto."""
@@ -92,6 +95,7 @@ def test_write_presence_updates_written_at(cws, work_root, monkeypatch):
 # ---------------------------------------------------------------------------
 # _get_alive_pods
 # ---------------------------------------------------------------------------
+
 
 def test_get_alive_pods_returns_fresh_pod(cws, work_root, monkeypatch):
     """Pod com written_at recente é incluído no conjunto de vivos."""
@@ -136,6 +140,7 @@ def test_get_alive_pods_ignores_corrupt_file(cws, work_root):
 # _lease_is_stale com alive_pods
 # ---------------------------------------------------------------------------
 
+
 def test_lease_is_stale_with_dead_pod_in_alive_pods(cws, work_root):
     """Lease de pod ausente de alive_pods é considerado stale imediatamente."""
     wd = _make_workdir(work_root)
@@ -169,18 +174,22 @@ def test_lease_is_stale_fallback_without_alive_pods(cws, work_root):
 # _workspace_is_stale com alive_pods
 # ---------------------------------------------------------------------------
 
+
 def test_workspace_is_stale_with_dead_pod(cws, work_root):
     """workspace_is_stale retorna True quando pod dono não está em alive_pods."""
     wd = _make_workdir(work_root)
     # Heartbeat fresquíssimo — sem alive_pods, seria ativo.
     _write_lease(wd, time.time(), pod="ghost-pod")
 
-    assert cws._workspace_is_stale(
-        wd,
-        threshold_s=1800,
-        now=time.time(),
-        alive_pods={"other-pod"},
-    ) is True
+    assert (
+        cws._workspace_is_stale(
+            wd,
+            threshold_s=1800,
+            now=time.time(),
+            alive_pods={"other-pod"},
+        )
+        is True
+    )
 
 
 def test_workspace_is_not_stale_when_pod_alive(cws, work_root):
@@ -188,17 +197,21 @@ def test_workspace_is_not_stale_when_pod_alive(cws, work_root):
     wd = _make_workdir(work_root)
     _write_lease(wd, time.time(), pod="alive-pod")
 
-    assert cws._workspace_is_stale(
-        wd,
-        threshold_s=1800,
-        now=time.time(),
-        alive_pods={"alive-pod"},
-    ) is False
+    assert (
+        cws._workspace_is_stale(
+            wd,
+            threshold_s=1800,
+            now=time.time(),
+            alive_pods={"alive-pod"},
+        )
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------
 # startup_cleanup integrado
 # ---------------------------------------------------------------------------
+
 
 def test_startup_cleanup_recovers_dead_pod_lease(cws, work_root, monkeypatch):
     """startup_cleanup remove imediatamente lease de pod morto (sem esperar TTL)."""
@@ -221,7 +234,9 @@ def test_startup_cleanup_recovers_dead_pod_lease(cws, work_root, monkeypatch):
     assert not (wd / ".lease.json").exists()
 
 
-def test_startup_cleanup_skips_live_pod_with_fresh_heartbeat(cws, work_root, monkeypatch):
+def test_startup_cleanup_skips_live_pod_with_fresh_heartbeat(
+    cws, work_root, monkeypatch
+):
     """startup_cleanup não toca workdir cujo pod está na lista de vivos."""
     monkeypatch.setenv("HOME", str(work_root.parent))
     pdir = work_root / ".pods"
@@ -244,7 +259,10 @@ def test_startup_cleanup_skips_live_pod_with_fresh_heartbeat(cws, work_root, mon
 # _cleanup_stale_workspaces integrado
 # ---------------------------------------------------------------------------
 
-def test_cleanup_stale_workspaces_removes_dead_pod_workspace(cws, work_root, monkeypatch):
+
+def test_cleanup_stale_workspaces_removes_dead_pod_workspace(
+    cws, work_root, monkeypatch
+):
     """_cleanup_stale_workspaces remove workspace de pod morto imediatamente."""
     pdir = work_root / ".pods"
     pdir.mkdir()

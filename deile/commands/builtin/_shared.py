@@ -100,6 +100,7 @@ def emit_audit_event(
     """
     try:
         from ...security.audit_logger import get_audit_logger
+
         get_audit_logger().log_event(
             event_type=event_type,
             severity=severity,
@@ -403,6 +404,7 @@ class ArgSpec:
     (False). ``dest`` is the key written to the result dict; if omitted it
     derives from the first long flag.
     """
+
     flags: tuple[str, ...]
     takes_value: bool = False
     dest: str | None = None

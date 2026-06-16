@@ -131,9 +131,15 @@ class AbortReason:
 # Tools whose arguments include a ``path``/``file_path``/``directory`` field
 # and whose loops typically come from a sandbox-rejected path the user actually
 # wanted resolved system-wide. When one of these loops, hint at bash_execute.
-_PATH_TOOL_NAMES = frozenset({
-    "list_files", "read_file", "write_file", "delete_file", "edit_file",
-})
+_PATH_TOOL_NAMES = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "write_file",
+        "delete_file",
+        "edit_file",
+    }
+)
 
 # Substrings in args_preview that indicate the LLM was reaching for a path
 # outside the working_directory — leading slash (system-absolute), parent
@@ -154,8 +160,8 @@ def _bash_failover_hint(tool_name: str, args_preview: str) -> str:
     return (
         " HINT: the path looks like it targets OUTSIDE the project working "
         "directory. file_tools cannot escape the sandbox — use `bash_execute` "
-        "with the absolute path instead (e.g. `bash_execute(command=\"ls "
-        "<abs_path>\")` or `bash_execute(command=\"cat <abs_path>\")`)."
+        'with the absolute path instead (e.g. `bash_execute(command="ls '
+        '<abs_path>")` or `bash_execute(command="cat <abs_path>")`).'
     )
 
 
@@ -276,8 +282,7 @@ class ToolLoopGuard:
                 repeat_count=total_after,
                 total_calls=total_after,
                 detail=(
-                    f"hard call ceiling exceeded: {total_after} > "
-                    f"{self.max_calls}"
+                    f"hard call ceiling exceeded: {total_after} > " f"{self.max_calls}"
                 ),
             )
             self._record_abort(reason)
@@ -287,7 +292,9 @@ class ToolLoopGuard:
         # *this exact hash* has been issued in a row, including the new
         # call. If we've already broken once on this hash, keep returning
         # the same reason for any further calls.
-        consecutive = self._consecutive_repeat + 1 if args_hash == self._last_hash else 1
+        consecutive = (
+            self._consecutive_repeat + 1 if args_hash == self._last_hash else 1
+        )
         if consecutive >= self.repeat_threshold:
             reason = AbortReason(
                 kind=AbortKind.IDENTICAL_REPEAT,
@@ -472,9 +479,11 @@ class ToolLoopGuard:
         # module-import time (helpful when the guard is used in lightweight
         # tests that don't initialize audit logging).
         try:
-            from deile.security.audit_logger import (AuditEventType,
-                                                     SeverityLevel,
-                                                     get_audit_logger)
+            from deile.security.audit_logger import (
+                AuditEventType,
+                SeverityLevel,
+                get_audit_logger,
+            )
 
             get_audit_logger().log_event(
                 event_type=AuditEventType.SUSPICIOUS_ACTIVITY,
@@ -531,8 +540,7 @@ def tool_result_made_progress(result: Any) -> bool:
     status = getattr(result, "status", None)
     if status is not None:
         try:
-            from deile.tools.base import \
-                ToolStatus  # local import to avoid cycle
+            from deile.tools.base import ToolStatus  # local import to avoid cycle
 
             if status == ToolStatus.ERROR:
                 return False
@@ -550,9 +558,7 @@ def tool_result_made_progress(result: Any) -> bool:
 def format_loop_break_message(reason: AbortReason) -> str:
     """Render the abort as a single user-visible string. Used by callers
     that need to embed the abort into the agent's text response."""
-    return (
-        f"[loop-break: {reason.kind.value}] {reason.user_message()}"
-    )
+    return f"[loop-break: {reason.kind.value}] {reason.user_message()}"
 
 
 def make_loop_break_result(reason: AbortReason) -> Tuple["ToolResult", Dict[str, str]]:

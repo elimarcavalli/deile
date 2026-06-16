@@ -15,6 +15,7 @@ from deile.commands.builtin.export_command import ExportCommand
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_session(
     session_id: str = "real-session-123",
     history: Optional[List[Dict[str, Any]]] = None,
@@ -33,7 +34,9 @@ def _make_agent(persona_name: str = "developer") -> MagicMock:
     persona = MagicMock()
     persona.name = persona_name
     agent.persona_manager.get_active_persona.return_value = persona
-    agent.memory_manager.get_memory_usage = AsyncMock(return_value={"total_memory_mb": 5.0})
+    agent.memory_manager.get_memory_usage = AsyncMock(
+        return_value={"total_memory_mb": 5.0}
+    )
     return agent
 
 
@@ -58,7 +61,9 @@ async def test_session_id_matches_real_session():
     session = _make_session(session_id="my-unique-session-abc")
     ctx = _make_context(args="json", session=session)
     cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=False, include_plans=False, include_session=False)
+    data = await cmd._get_export_data(
+        ctx, include_artifacts=False, include_plans=False, include_session=False
+    )
     assert data["conversation"]["session_id"] == "my-unique-session-abc"
     assert data["export_metadata"]["session_id"] == "my-unique-session-abc"
 
@@ -73,7 +78,9 @@ async def test_message_count_matches_session():
     session = _make_session(history=history)
     ctx = _make_context(session=session)
     cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=False, include_plans=False, include_session=False)
+    data = await cmd._get_export_data(
+        ctx, include_artifacts=False, include_plans=False, include_session=False
+    )
     assert data["conversation"]["total_messages"] == 3
     assert len(data["conversation"]["messages"]) == 3
 
@@ -82,7 +89,9 @@ async def test_message_count_matches_session():
 async def test_version_from_version_module():
     ctx = _make_context()
     cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=False, include_plans=False, include_session=False)
+    data = await cmd._get_export_data(
+        ctx, include_artifacts=False, include_plans=False, include_session=False
+    )
     assert data["export_metadata"]["deile_version"] == __version__
     assert data["export_metadata"]["deile_version"] != "4.0.0"
 
@@ -92,7 +101,9 @@ async def test_empty_session_exports_empty_lists():
     session = _make_session(history=[])
     ctx = _make_context(session=session)
     cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=True, include_plans=True, include_session=True)
+    data = await cmd._get_export_data(
+        ctx, include_artifacts=True, include_plans=True, include_session=True
+    )
     assert data["conversation"]["total_messages"] == 0
     assert data["conversation"]["messages"] == []
     assert data["artifacts"]["count"] == 0
@@ -103,7 +114,9 @@ async def test_empty_session_exports_empty_lists():
 async def test_no_hardcoded_session_id():
     ctx = _make_context()
     cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=False, include_plans=False, include_session=False)
+    data = await cmd._get_export_data(
+        ctx, include_artifacts=False, include_plans=False, include_session=False
+    )
     assert data["conversation"]["session_id"] != "session_20250906_184500"
     assert data["export_metadata"]["session_id"] != "session_20250906_184500"
 
@@ -112,7 +125,9 @@ async def test_no_hardcoded_session_id():
 async def test_no_hardcoded_version():
     ctx = _make_context()
     cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=False, include_plans=False, include_session=False)
+    data = await cmd._get_export_data(
+        ctx, include_artifacts=False, include_plans=False, include_session=False
+    )
     assert data["export_metadata"]["deile_version"] != "4.0.0"
 
 
@@ -178,7 +193,9 @@ async def test_no_artifacts_flag_excludes_artifacts(tmp_path):
 async def test_export_metadata_has_data_sources():
     ctx = _make_context()
     cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=False, include_plans=False, include_session=True)
+    data = await cmd._get_export_data(
+        ctx, include_artifacts=False, include_plans=False, include_session=True
+    )
     sources = data["export_metadata"]["data_sources"]
     assert isinstance(sources, list)
     assert len(sources) > 0
@@ -193,7 +210,9 @@ async def test_message_timestamps_are_from_session():
     session = _make_session(history=history)
     ctx = _make_context(session=session)
     cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=False, include_plans=False, include_session=False)
+    data = await cmd._get_export_data(
+        ctx, include_artifacts=False, include_plans=False, include_session=False
+    )
     msgs = data["conversation"]["messages"]
     assert msgs[0]["timestamp"] == "2026-01-01T10:00:00"
 
@@ -203,7 +222,9 @@ async def test_no_agent_graceful_degradation():
     ctx = _make_context(session=_make_session(), agent=None)
     ctx.agent = None
     cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=False, include_plans=False, include_session=True)
+    data = await cmd._get_export_data(
+        ctx, include_artifacts=False, include_plans=False, include_session=True
+    )
     # Should not crash; session_info should exist but model is indisponível
     assert "session_info" in data
     assert data["session_info"]["model"] == "indisponível"

@@ -33,8 +33,18 @@ def test_cancel_preserves_user_entry_and_adds_placeholder() -> None:
     """ESC após o user enviar a mensagem: entrada user fica + placeholder."""
     history = [
         {"role": "user", "content": "earlier turn", "timestamp": 0.0, "metadata": {}},
-        {"role": "assistant", "content": "earlier reply", "timestamp": 0.1, "metadata": {}},
-        {"role": "user", "content": "cancelled message", "timestamp": 0.2, "metadata": {}},
+        {
+            "role": "assistant",
+            "content": "earlier reply",
+            "timestamp": 0.1,
+            "metadata": {},
+        },
+        {
+            "role": "user",
+            "content": "cancelled message",
+            "timestamp": 0.2,
+            "metadata": {},
+        },
     ]
     cli = _make_cli(history)
     cli._rollback_history(baseline_len=2)
@@ -51,9 +61,24 @@ def test_cancel_during_partial_response_removes_partial_keeps_user() -> None:
     """ESC com partial assistant: apaga só o partial, mantém user + placeholder."""
     history = [
         {"role": "user", "content": "earlier turn", "timestamp": 0.0, "metadata": {}},
-        {"role": "assistant", "content": "earlier reply", "timestamp": 0.1, "metadata": {}},
-        {"role": "user", "content": "cancelled message", "timestamp": 0.2, "metadata": {}},
-        {"role": "assistant", "content": "half of a reply", "timestamp": 0.3, "metadata": {}},
+        {
+            "role": "assistant",
+            "content": "earlier reply",
+            "timestamp": 0.1,
+            "metadata": {},
+        },
+        {
+            "role": "user",
+            "content": "cancelled message",
+            "timestamp": 0.2,
+            "metadata": {},
+        },
+        {
+            "role": "assistant",
+            "content": "half of a reply",
+            "timestamp": 0.3,
+            "metadata": {},
+        },
     ]
     cli = _make_cli(history)
     cli._rollback_history(baseline_len=2)
@@ -114,7 +139,9 @@ def test_cancel_then_new_turn_preserves_alternation() -> None:
     cli = _make_cli(history)
     cli._rollback_history(baseline_len=0)
     # Simula a próxima mensagem user que o CLI adicionaria
-    history.append({"role": "user", "content": "next turn", "timestamp": 1.0, "metadata": {}})
+    history.append(
+        {"role": "user", "content": "next turn", "timestamp": 1.0, "metadata": {}}
+    )
 
     # Sequência final: user → assistant(cancelado) → user
     roles = [e["role"] for e in history]

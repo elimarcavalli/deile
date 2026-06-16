@@ -5,6 +5,7 @@ Exercita o pipeline_logger com 6 chamadas prescritas, validando:
 - supressão do passo 4 por dedup cross-evento (TTL 30 s)
 - ausência de campos proibidos no conjunto agregado
 """
+
 from __future__ import annotations
 
 import logging
@@ -36,7 +37,9 @@ def test_lifecycle_canonical_order_and_dedup(caplog):
             added=["~workflow:em_arquitetura"],
         )
         # Passo 3 — emite refinement.refine
-        pl.log_refinement_refine(issue=42, round=1, persona="Refinador", body_chars=800, verdict="OK")
+        pl.log_refinement_refine(
+            issue=42, round=1, persona="Refinador", body_chars=800, verdict="OK"
+        )
         # Passo 4 — repetição exata do passo 2; suprimida por dedup (TTL 30 s)
         pl.log_label_change(
             target_kind="issue",
@@ -45,7 +48,9 @@ def test_lifecycle_canonical_order_and_dedup(caplog):
             added=["~workflow:em_arquitetura"],
         )
         # Passo 5 — emite routing.mention
-        pl.log_routing_mention(target_kind="issue", target=42, action="inject_workflow_nova")
+        pl.log_routing_mention(
+            target_kind="issue", target=42, action="inject_workflow_nova"
+        )
         # Passo 6 — emite routing.pr_unified
         pl.log_routing_pr_unified(target=99, role="author", mode="pr_unified")
 

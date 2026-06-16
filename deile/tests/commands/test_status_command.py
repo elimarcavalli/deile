@@ -68,7 +68,10 @@ class TestStatusComplete:
 
     async def test_mentions_system(self):
         result = await _cmd().execute(_ctx())
-        assert "system" in _render(result.content).lower() or "sistema" in _render(result.content).lower()
+        assert (
+            "system" in _render(result.content).lower()
+            or "sistema" in _render(result.content).lower()
+        )
 
     async def test_mentions_health(self):
         result = await _cmd().execute(_ctx())
@@ -86,9 +89,9 @@ class TestStatusVersion:
         """Version panel must contain the value from deile.__version__."""
         result = await _cmd().execute(_ctx())
         rendered = _render(result.content)
-        assert __version__ in rendered, (
-            f"Expected version {__version__!r} in rendered output but got: {rendered[:300]}"
-        )
+        assert (
+            __version__ in rendered
+        ), f"Expected version {__version__!r} in rendered output but got: {rendered[:300]}"
 
     async def test_no_hardcoded_old_version(self):
         result = await _cmd().execute(_ctx())
@@ -149,6 +152,7 @@ class TestStatusTools:
     async def test_tools_lists_all_registered(self):
         """Tool count in rendered output must match registry."""
         from deile.tools.registry import get_tool_registry
+
         registry = get_tool_registry()
         expected_count = len(registry.list_all())
 
@@ -172,11 +176,14 @@ class TestStatusMemory:
     async def test_memory_returns_real_usage_stats(self):
         """With a MemoryManager attached, /status memory must succeed."""
         from unittest.mock import AsyncMock, MagicMock
+
         mm = MagicMock()
-        mm.get_memory_usage = AsyncMock(return_value={
-            "total_memory_mb": 0.5,
-            "components": {"working_memory": {"entries": 2, "memory_mb": 0.1}},
-        })
+        mm.get_memory_usage = AsyncMock(
+            return_value={
+                "total_memory_mb": 0.5,
+                "components": {"working_memory": {"entries": 2, "memory_mb": 0.1}},
+            }
+        )
 
         class _Agent:
             pass
@@ -192,6 +199,7 @@ class TestStatusMemory:
 
     async def test_memory_subsystem_exception_shows_degraded(self):
         """When MemoryManager.get_memory_usage raises, output shows error gracefully."""
+
         class _BadMM:
             async def get_memory_usage(self):
                 raise RuntimeError("DB offline")
@@ -242,15 +250,20 @@ class TestStatusConnectivity:
         result = await _cmd().execute(_ctx("connectivity"))
         rendered = _render(result.content)
         # Should contain provider names or FALHOU markers
-        assert any(pid in rendered for pid in ("openai", "anthropic", "google", "deepseek"))
+        assert any(
+            pid in rendered for pid in ("openai", "anthropic", "google", "deepseek")
+        )
 
     async def test_connectivity_parallel_execution(self):
         """Probing multiple providers must complete faster than sequential sum."""
+
         async def _slow_probe(host, port=443, timeout=5.0):
             await asyncio.sleep(0.05)
             return False, 50.0
 
-        with patch("deile.commands.builtin.status_command._probe_host", side_effect=_slow_probe):
+        with patch(
+            "deile.commands.builtin.status_command._probe_host", side_effect=_slow_probe
+        ):
             start = time.monotonic()
             result = await _cmd().execute(_ctx("connectivity"))
             elapsed = time.monotonic() - start
@@ -337,6 +350,7 @@ class TestStatusPerf:
 
     async def test_unknown_section_raises_command_error(self):
         from deile.core.exceptions import CommandError
+
         with pytest.raises(CommandError):
             await _cmd().execute(_ctx("nonexistent_section"))
 
@@ -348,15 +362,16 @@ class TestStatusPerf:
 
 class TestStatusAudit:
     async def test_audit_event_emitted(self):
-        from deile.security.audit_logger import (AuditEventType,
-                                                 get_audit_logger)
+        from deile.security.audit_logger import AuditEventType, get_audit_logger
+
         al = get_audit_logger()
         before = len(al.recent_events)
         await _cmd().execute(_ctx())
         after = len(al.recent_events)
         # The status command should emit at least one COMMAND_EXECUTED event
         command_events = [
-            e for e in al.recent_events
+            e
+            for e in al.recent_events
             if e.event_type == AuditEventType.COMMAND_EXECUTED
         ]
         assert len(command_events) >= 1 or after > before
@@ -370,6 +385,7 @@ class TestStatusAudit:
 class TestProbeHostDirect:
     async def test_probe_host_failure_returns_false(self):
         from deile.commands.builtin.status_command import _probe_host
+
         ok, latency = await _probe_host("localhost", port=1, timeout=0.05)
         assert ok is False
         assert latency >= 0
@@ -416,30 +432,30 @@ class TestStatusExceptionBranches:
 
 class TestPermissionsCommandDefaultConstructor:
     async def test_default_constructor_sets_permission_manager(self):
-        from deile.commands.builtin.permissions_command import \
-            PermissionsCommand
+        from deile.commands.builtin.permissions_command import PermissionsCommand
+
         cmd = PermissionsCommand()
         assert cmd.permission_manager is not None
 
     async def test_unknown_action_raises(self):
-        from deile.commands.builtin.permissions_command import \
-            PermissionsCommand
+        from deile.commands.builtin.permissions_command import PermissionsCommand
         from deile.core.exceptions import CommandError
+
         cmd = PermissionsCommand()
         with pytest.raises(CommandError):
             await cmd.execute(_ctx("nonexistent_action_xyz"))
 
     async def test_err_helper_on_missing_restore_arg(self):
-        from deile.commands.builtin.permissions_command import \
-            PermissionsCommand
+        from deile.commands.builtin.permissions_command import PermissionsCommand
         from deile.core.exceptions import CommandError
+
         cmd = PermissionsCommand()
         with pytest.raises(CommandError):
             await cmd.execute(_ctx("enable"))
 
     async def test_get_help_returns_string(self):
-        from deile.commands.builtin.permissions_command import \
-            PermissionsCommand
+        from deile.commands.builtin.permissions_command import PermissionsCommand
+
         cmd = PermissionsCommand()
         help_text = cmd.get_help()
         assert isinstance(help_text, str)

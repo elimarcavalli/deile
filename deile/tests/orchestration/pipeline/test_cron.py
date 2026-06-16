@@ -6,9 +6,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from deile.orchestration.pipeline.cron import (CronExpressionError,
-                                               _parse_field, matches,
-                                               next_after, parse)
+from deile.orchestration.pipeline.cron import (
+    CronExpressionError,
+    _parse_field,
+    matches,
+    next_after,
+    parse,
+)
 
 
 class TestParse:

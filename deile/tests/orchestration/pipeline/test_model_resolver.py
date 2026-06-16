@@ -17,7 +17,10 @@ import pytest
 
 from deile.config.settings import reset_settings
 from deile.orchestration.pipeline.model_resolver import (
-    PIPELINE_STAGES, resolve_stage_cli_model, resolve_stage_model)
+    PIPELINE_STAGES,
+    resolve_stage_cli_model,
+    resolve_stage_model,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -30,8 +33,7 @@ def _isolate_settings(monkeypatch):
     # Clear any pipeline-model env vars so a developer-set var doesn't break
     # the deterministic "unset → None" tests.
     for stage in PIPELINE_STAGES:
-        monkeypatch.delenv(f"DEILE_PIPELINE_MODEL_{stage.upper()}",
-                           raising=False)
+        monkeypatch.delenv(f"DEILE_PIPELINE_MODEL_{stage.upper()}", raising=False)
     monkeypatch.delenv("DEILE_PREFERRED_MODEL", raising=False)
     reset_settings()
     yield
@@ -43,6 +45,7 @@ class TestPipelineStages:
         # The settings.py fields are `pipeline_model_<stage>`. PIPELINE_STAGES
         # must match exactly — a drift breaks the resolver silently.
         from deile.config.settings import Settings
+
         for stage in PIPELINE_STAGES:
             assert hasattr(Settings(), f"pipeline_model_{stage}"), (
                 f"PIPELINE_STAGES has {stage!r} but Settings lacks "
@@ -60,8 +63,9 @@ class TestResolveStageModel:
         assert resolve_stage_model("implement") is None
 
     def test_set_stage_returns_override(self, monkeypatch):
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT",
-                           "anthropic:claude-opus-4-8")
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_IMPLEMENT", "anthropic:claude-opus-4-8"
+        )
         reset_settings()
         assert resolve_stage_model("implement") == "anthropic:claude-opus-4-8"
         # Other stages stay None — override is per-stage, not global.
@@ -80,6 +84,7 @@ class TestResolveStageModel:
         """Defensive: a partial write that left "" in the JSON must collapse
         to None, not bleed through as a literal empty slug."""
         from deile.config.settings import get_settings
+
         reset_settings()
         # Patch the singleton directly to simulate a write that bypassed the
         # strict converter (the loose `_apply_nested_dict` + `_set_typed`
@@ -108,8 +113,7 @@ class TestResolveStageCliModel:
         )
         reset_settings()
         assert (
-            resolve_stage_cli_model("implement")
-            == "openrouter/deepseek/deepseek-chat"
+            resolve_stage_cli_model("implement") == "openrouter/deepseek/deepseek-chat"
         )
         # Per-stage: outras etapas continuam None.
         assert resolve_stage_cli_model("classify") is None

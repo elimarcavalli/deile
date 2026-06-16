@@ -8,10 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.storage.usage_repository import (BudgetExceeded, BudgetGuard,
-                                            UsageRecord, UsageRepository,
-                                            get_usage_repository,
-                                            reset_usage_repository)
+from deile.storage.usage_repository import (
+    BudgetExceeded,
+    BudgetGuard,
+    UsageRecord,
+    UsageRepository,
+    get_usage_repository,
+    reset_usage_repository,
+)
 
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
 
@@ -43,6 +47,7 @@ def _make_record(**overrides) -> UsageRecord:
 # ---------------------------------------------------------------------------
 # UsageRepository — basic CRUD
 # ---------------------------------------------------------------------------
+
 
 class TestUsageRepositoryRecord:
     def test_record_stores_and_retrieves(self, repo):
@@ -91,6 +96,7 @@ class TestUsageRepositoryRecord:
 # cost_for_session
 # ---------------------------------------------------------------------------
 
+
 class TestCostForSession:
     def test_returns_zero_for_empty(self, repo):
         assert repo.cost_for_session("no-session") == 0.0
@@ -112,6 +118,7 @@ class TestCostForSession:
 # cost_for_provider_since
 # ---------------------------------------------------------------------------
 
+
 class TestCostForProviderSince:
     def test_returns_zero_for_empty(self, repo):
         assert repo.cost_for_provider_since("anthropic", time.time()) == 0.0
@@ -128,8 +135,12 @@ class TestCostForProviderSince:
 
     def test_filters_by_provider(self, repo):
         now = time.time()
-        repo.record(_make_record(provider_id="anthropic", cost_usd=2.0, timestamp=now - 60))
-        repo.record(_make_record(provider_id="openai", cost_usd=3.0, timestamp=now - 60))
+        repo.record(
+            _make_record(provider_id="anthropic", cost_usd=2.0, timestamp=now - 60)
+        )
+        repo.record(
+            _make_record(provider_id="openai", cost_usd=3.0, timestamp=now - 60)
+        )
         result = repo.cost_for_provider_since("anthropic", now - 3600)
         assert abs(result - 2.0) < 1e-6
 
@@ -137,6 +148,7 @@ class TestCostForProviderSince:
 # ---------------------------------------------------------------------------
 # record_from_provider (async shim)
 # ---------------------------------------------------------------------------
+
 
 class TestRecordFromProvider:
     @pytest.mark.asyncio
@@ -176,6 +188,7 @@ class TestRecordFromProvider:
         sem aviso. O valor persistido NÃO muda (continua 0.0); apenas garantimos
         que o caso vire detectável via WARNING.
         """
+
         class FakeUsage:
             prompt_tokens = 500
             completion_tokens = 200
@@ -208,13 +221,16 @@ class TestRecordFromProvider:
         )
 
     @pytest.mark.asyncio
-    async def test_record_from_provider_no_warn_on_legitimate_zero_cost(self, repo, caplog):
+    async def test_record_from_provider_no_warn_on_legitimate_zero_cost(
+        self, repo, caplog
+    ):
         """Casos legítimos de cost=0 NÃO disparam o warning.
 
         - Falha (success=False): pode ter tokens parciais sem custo cobrado.
         - Sem tokens faturáveis (prompt+completion==0): nada para faturar
           (ex.: auth por assinatura/OAuth que não conta tokens de API).
         """
+
         class FailedUsage:
             prompt_tokens = 300
             completion_tokens = 0
@@ -295,6 +311,7 @@ class TestRecordFromProvider:
 # BudgetGuard — check_session
 # ---------------------------------------------------------------------------
 
+
 class TestBudgetGuardSession:
     def test_passes_within_limit(self, repo):
         guard = BudgetGuard(repository=repo, per_session_usd=5.0)
@@ -318,6 +335,7 @@ class TestBudgetGuardSession:
 # ---------------------------------------------------------------------------
 # BudgetGuard — check_provider_daily
 # ---------------------------------------------------------------------------
+
 
 class TestBudgetGuardProviderDaily:
     def test_passes_when_no_limit_configured(self, repo):
@@ -351,6 +369,7 @@ class TestBudgetGuardProviderDaily:
 # BudgetGuard — check_all
 # ---------------------------------------------------------------------------
 
+
 class TestBudgetGuardCheckAll:
     def test_check_all_passes_when_both_ok(self, repo):
         guard = BudgetGuard(
@@ -382,6 +401,7 @@ class TestBudgetGuardCheckAll:
 # BudgetGuard.from_yaml
 # ---------------------------------------------------------------------------
 
+
 class TestBudgetGuardFromYaml:
     def test_loads_from_yaml(self, repo):
         guard = BudgetGuard.from_yaml(_YAML_PATH, repo)
@@ -397,6 +417,7 @@ class TestBudgetGuardFromYaml:
 # ---------------------------------------------------------------------------
 # Singleton factory
 # ---------------------------------------------------------------------------
+
 
 class TestGetUsageRepository:
     def setup_method(self):

@@ -4,6 +4,7 @@ The module is stdlib-only and runs inside the claude-worker pod.  These
 tests verify the URL-parsing helpers and the HTTP handler logic without
 actually starting a subprocess or binding a socket.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -35,6 +36,7 @@ def srv():
 # ---------------------------------------------------------------------------
 # _extract_url_and_port
 # ---------------------------------------------------------------------------
+
 
 class TestExtractUrlAndPort:
     def test_url_with_redirect_uri_and_port(self, srv):
@@ -77,9 +79,11 @@ class TestExtractUrlAndPort:
 # _rewrite_redirect_uri
 # ---------------------------------------------------------------------------
 
+
 class TestRewriteRedirectUri:
     def test_rewrites_to_relay_port(self, srv):
         import urllib.parse  # noqa: PLC0415
+
         original = (
             "https://claude.ai/oauth/authorize"
             "?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A54321%2Fcallback"
@@ -101,6 +105,7 @@ class TestRewriteRedirectUri:
 # _auth_status
 # ---------------------------------------------------------------------------
 
+
 class TestAuthStatus:
     def test_no_credentials_file(self, srv, tmp_path):
         with patch.object(srv, "_CREDS_PATH", tmp_path / "nonexistent.json"):
@@ -109,9 +114,16 @@ class TestAuthStatus:
 
     def test_with_valid_credentials_file(self, srv, tmp_path):
         creds = tmp_path / "credentials.json"
-        creds.write_text(json.dumps({
-            "claudeAiOauth": {"accessToken": "tok", "email": "user@example.com"},
-        }))
+        creds.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "tok",
+                        "email": "user@example.com",
+                    },
+                }
+            )
+        )
         with patch.object(srv, "_CREDS_PATH", creds):
             status = srv._auth_status()
         assert status["authenticated"] is True
@@ -136,6 +148,7 @@ class TestAuthStatus:
 # ---------------------------------------------------------------------------
 # HTTP handler — _Handler
 # ---------------------------------------------------------------------------
+
 
 def _make_handler(srv, path: str, module_overrides: dict | None = None):
     """Instantiate _Handler with a fake request for the given path."""
@@ -217,7 +230,11 @@ class TestHandler:
                 code, body = self._call(srv, "/auth/start", {"proc": None})
         assert code == 200
         # Should show "reload" / waiting message
-        assert "reload" in body.lower() or "aguard" in body.lower() or "iniciand" in body.lower()
+        assert (
+            "reload" in body.lower()
+            or "aguard" in body.lower()
+            or "iniciand" in body.lower()
+        )
 
     def test_start_shows_oauth_url_when_available(self, srv, tmp_path):
         with patch.object(srv, "_CREDS_PATH", tmp_path / "nope.json"):

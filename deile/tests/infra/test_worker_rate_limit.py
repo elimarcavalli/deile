@@ -5,6 +5,7 @@ em <1s produz >=5 rejeições 429 com header ``Retry-After``; um canal diferente
 não é afetado (0 rejeições). Cobre também a unidade do
 :class:`TokenBucketRateLimiter` (refil, isolamento, reset de balde ocioso).
 """
+
 from __future__ import annotations
 
 import sys
@@ -69,13 +70,16 @@ def test_channels_are_isolated():
     for _ in range(10):
         rl.acquire("c1")
     assert rl.acquire("c1")[0] is False  # c1 esgotado
-    assert rl.acquire("c2")[0] is True   # c2 intacto
+    assert rl.acquire("c2")[0] is True  # c2 intacto
 
 
 def test_idle_bucket_resets_to_full():
     clock = _FakeClock()
     rl = TokenBucketRateLimiter(
-        capacity=10, rate=1, idle_reset_s=300.0, time_source=clock,
+        capacity=10,
+        rate=1,
+        idle_reset_s=300.0,
+        time_source=clock,
     )
     for _ in range(10):
         rl.acquire("c1")
@@ -118,26 +122,29 @@ async def client(_clean_state, monkeypatch):
     monkeypatch.setattr(worker_server, "_RATE_LIMITER", fresh)
 
     async def _fake(task_id, brief, channel_id, *a, **kw):
-        result = {"schema_version": worker_server.RESULT_SCHEMA_VERSION,
-                  "task_id": task_id, "ok": True, "elapsed_s": 0.01,
-                  "brief": brief, "summary": "ok", "files": []}
+        result = {
+            "schema_version": worker_server.RESULT_SCHEMA_VERSION,
+            "task_id": task_id,
+            "ok": True,
+            "elapsed_s": 0.01,
+            "brief": brief,
+            "summary": "ok",
+            "files": [],
+        }
         worker_server._TASKS[task_id] = result
         return result
 
     monkeypatch.setattr(worker_server, "_run_task", _fake)
 
     app = worker_server.build_app(_TOKEN)
-    async with aiohttp_test_utils.TestClient(
-        aiohttp_test_utils.TestServer(app)
-    ) as cli:
+    async with aiohttp_test_utils.TestClient(aiohttp_test_utils.TestServer(app)) as cli:
         yield cli
 
 
 async def _post(client, channel_id):
     return await client.post(
         "/v1/dispatch",
-        json={"brief": "do it", "channel_id": channel_id,
-              "wait_for_result": False},
+        json={"brief": "do it", "channel_id": channel_id, "wait_for_result": False},
         headers={"Authorization": f"Bearer {_TOKEN}"},
     )
 
@@ -154,7 +161,7 @@ async def test_burst_same_channel_yields_429s_with_retry_after(client):
     rejected = sum(1 for s in statuses if s == 429)
     accepted = sum(1 for s in statuses if s == 202)
     assert accepted == 10  # capacity
-    assert rejected >= 5    # AC7: >= 5 rejeições
+    assert rejected >= 5  # AC7: >= 5 rejeições
     # Todas as 429 trazem Retry-After.
     assert all(ra is not None for ra in retry_afters)
 

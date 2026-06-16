@@ -19,6 +19,7 @@ Cobre os 8 cenários listados na issue:
   - test_resolver_invalid_dispatcher_value_falls_through_with_warning
   - test_resolver_does_not_call_kubectl_or_settings_io_per_call
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,7 +28,9 @@ import pytest
 
 from deile.config.settings import get_settings, reset_settings
 from deile.orchestration.pipeline.dispatch_resolver import (
-    PIPELINE_STAGES, resolve_stage_dispatcher)
+    PIPELINE_STAGES,
+    resolve_stage_dispatcher,
+)
 
 
 def _clear_env(monkeypatch):
@@ -61,6 +64,7 @@ def _isolate(monkeypatch):
 # Precedência 1 vs 2: env per-stage bate settings per-stage
 # ---------------------------------------------------------------------------
 
+
 def test_resolver_env_per_stage_wins_over_settings_per_stage(monkeypatch):
     """Env var per-stage sempre vence sobre settings per-stage."""
     # settings says claude-worker
@@ -86,6 +90,7 @@ def test_resolver_settings_per_stage_wins_over_env_global(monkeypatch):
 # ---------------------------------------------------------------------------
 # Precedência 3 vs 4: env global bate settings global
 # ---------------------------------------------------------------------------
+
 
 def test_resolver_env_global_wins_over_settings_global(monkeypatch):
     """Env var global vence sobre settings.pipeline_dispatch_mode."""
@@ -114,6 +119,7 @@ def test_resolver_settings_global_wins_over_default(monkeypatch):
 # Precedência 5: nada setado → default
 # ---------------------------------------------------------------------------
 
+
 def test_resolver_default_when_nothing_set():
     """Sem env vars e sem settings explícito → deile-worker (default)."""
     # settings.pipeline_dispatch_mode is "deile_worker" by default, which
@@ -129,12 +135,13 @@ def test_resolver_default_when_nothing_set():
 # Todos os 5 stages se comportam consistentemente
 # ---------------------------------------------------------------------------
 
+
 def test_resolver_handles_all_5_stages_consistently():
     """Todos os 5 stages têm comportamento idêntico (sem env, sem settings)."""
     for stage in PIPELINE_STAGES:
-        assert resolve_stage_dispatcher(stage) == "deile-worker", (
-            f"stage {stage!r} broke default resolution"
-        )
+        assert (
+            resolve_stage_dispatcher(stage) == "deile-worker"
+        ), f"stage {stage!r} broke default resolution"
 
 
 def test_resolver_all_stages_via_settings_per_stage():
@@ -143,9 +150,9 @@ def test_resolver_all_stages_via_settings_per_stage():
     for stage in PIPELINE_STAGES:
         attr = f"pipeline_dispatcher_{stage}"
         setattr(settings, attr, "claude-worker")
-        assert resolve_stage_dispatcher(stage) == "claude-worker", (
-            f"stage {stage!r} failed settings per-stage override"
-        )
+        assert (
+            resolve_stage_dispatcher(stage) == "claude-worker"
+        ), f"stage {stage!r} failed settings per-stage override"
         # Reset for next stage
         setattr(settings, attr, None)
 
@@ -165,34 +172,41 @@ def test_resolver_stages_are_independent_per_settings():
 # Valor inválido em settings.json cai pro próximo nível (warn, não raise)
 # ---------------------------------------------------------------------------
 
+
 def test_resolver_invalid_settings_per_stage_falls_through_with_warning(caplog):
     """Valor inválido em settings per-stage → warning + fallback to global."""
-    with caplog.at_level(logging.WARNING, logger="deile.orchestration.pipeline.dispatch_resolver"):
+    with caplog.at_level(
+        logging.WARNING, logger="deile.orchestration.pipeline.dispatch_resolver"
+    ):
         get_settings().pipeline_dispatcher_implement = "bogus-engine"
         result = resolve_stage_dispatcher("implement")
 
     # Falls through to the global default ("deile-worker")
     assert result == "deile-worker"
-    assert any("bogus-engine" in r.message for r in caplog.records), (
-        "expected a warning log mentioning the invalid value"
-    )
+    assert any(
+        "bogus-engine" in r.message for r in caplog.records
+    ), "expected a warning log mentioning the invalid value"
 
 
 def test_resolver_invalid_settings_global_falls_through_with_warning(caplog):
     """Valor inválido em settings global → warning + hardcoded fallback."""
-    with caplog.at_level(logging.WARNING, logger="deile.orchestration.pipeline.dispatch_resolver"):
+    with caplog.at_level(
+        logging.WARNING, logger="deile.orchestration.pipeline.dispatch_resolver"
+    ):
         get_settings().pipeline_dispatch_mode = "totally-unknown"
         result = resolve_stage_dispatcher("implement")
 
     assert result == "deile-worker"
-    assert any("totally-unknown" in r.message for r in caplog.records), (
-        "expected a warning log mentioning the invalid global value"
-    )
+    assert any(
+        "totally-unknown" in r.message for r in caplog.records
+    ), "expected a warning log mentioning the invalid global value"
 
 
 def test_resolver_invalid_dispatcher_value_falls_through_with_warning(caplog):
     """Combined test: invalid per-stage → falls to global default."""
-    with caplog.at_level(logging.WARNING, logger="deile.orchestration.pipeline.dispatch_resolver"):
+    with caplog.at_level(
+        logging.WARNING, logger="deile.orchestration.pipeline.dispatch_resolver"
+    ):
         get_settings().pipeline_dispatcher_classify = "not-a-worker"
         result = resolve_stage_dispatcher("classify")
 
@@ -204,6 +218,7 @@ def test_resolver_invalid_dispatcher_value_falls_through_with_warning(caplog):
 # Env var inválido ainda levanta (fail-fast para configs de ops)
 # ---------------------------------------------------------------------------
 
+
 def test_resolver_invalid_env_per_stage_still_raises(monkeypatch):
     """Env var per-stage inválida ainda levanta ValueError (fail-fast)."""
     monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_CLASSIFY", "garbage")
@@ -214,6 +229,7 @@ def test_resolver_invalid_env_per_stage_still_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 # Perf: get_settings() é singleton — sem I/O por chamada
 # ---------------------------------------------------------------------------
+
 
 def test_resolver_does_not_call_kubectl_or_settings_io_per_call(monkeypatch):
     """resolve_stage_dispatcher usa o singleton de settings — sem I/O extra.
@@ -229,6 +245,7 @@ def test_resolver_does_not_call_kubectl_or_settings_io_per_call(monkeypatch):
     original_load = None
 
     import deile.config.settings as settings_mod
+
     original_load = settings_mod._load_layered_settings
 
     def counting_load():
@@ -252,14 +269,18 @@ def test_resolver_does_not_call_kubectl_or_settings_io_per_call(monkeypatch):
 # Legacy aliases from settings.json are canonicalized correctly
 # ---------------------------------------------------------------------------
 
+
 def test_resolver_settings_per_stage_canonicalizes_legacy_aliases():
     """Legacy alias stored in settings.json is canonicalized to canonical form."""
     settings = get_settings()
-    for alias, expected in [("deile_worker", "deile-worker"), ("claude_code", "claude-worker")]:
+    for alias, expected in [
+        ("deile_worker", "deile-worker"),
+        ("claude_code", "claude-worker"),
+    ]:
         settings.pipeline_dispatcher_refine = alias
-        assert resolve_stage_dispatcher("refine") == expected, (
-            f"alias {alias!r} should canonicalize to {expected!r}"
-        )
+        assert (
+            resolve_stage_dispatcher("refine") == expected
+        ), f"alias {alias!r} should canonicalize to {expected!r}"
     settings.pipeline_dispatcher_refine = None
 
 

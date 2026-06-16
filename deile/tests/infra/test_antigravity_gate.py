@@ -53,11 +53,7 @@ def test_draft_class_is_not_instantiated_at_module_level():
     # dela exposta no módulo — varredura do registro não acha CliAdapter.
     from cli_adapters import base
 
-    instances = [
-        getattr(ag_mod, n)
-        for n in dir(ag_mod)
-        if not n.startswith("_")
-    ]
+    instances = [getattr(ag_mod, n) for n in dir(ag_mod) if not n.startswith("_")]
     assert not any(isinstance(obj, base.CliAdapter) for obj in instances)
 
 

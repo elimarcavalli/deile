@@ -6,8 +6,13 @@ import os
 
 import pytest
 
-from deile.orchestration.pipeline.lockfile import (LockHeldError, _pid_alive,
-                                                   acquire, pid_lock, release)
+from deile.orchestration.pipeline.lockfile import (
+    LockHeldError,
+    _pid_alive,
+    acquire,
+    pid_lock,
+    release,
+)
 
 
 class TestPidAlive:

@@ -92,7 +92,8 @@ def render_markdown(result: "SubAgentResult") -> str:
     """
     lines: List[str] = []
     status_emoji = (
-        _HEADER_OK_EMOJI if result.ok_global
+        _HEADER_OK_EMOJI
+        if result.ok_global
         else (_HEADER_CANCELLED_EMOJI if result.cancelled else _HEADER_WARN_EMOJI)
     )
     header = (

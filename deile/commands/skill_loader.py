@@ -14,19 +14,22 @@ from typing import TYPE_CHECKING, List, Optional
 
 from ..skills.base import Skill as _Skill
 from ..skills.discovery import discover_skills_sync
-from ..skills.loader import \
-    _FRONTMATTER_RE  # noqa: F401 — re-exported for legacy callers
-from ..skills.loader import \
-    _VALID_NAME_RE  # noqa: F401 — re-exported for legacy callers
-from ..skills.loader import \
-    _list_md_files  # noqa: F401 — re-exported for legacy callers
-from ..skills.loader import \
-    normalize_name as \
-    _normalize_name  # noqa: F401 — re-exported for legacy callers
-from ..skills.loader import parse_skill_text
+from ..skills.loader import (  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers
+    _FRONTMATTER_RE,
+    _VALID_NAME_RE,
+    _list_md_files,
+)
+from ..skills.loader import (  # noqa: F401 — re-exported for legacy callers
+    normalize_name as _normalize_name,
+)
+from ..skills.loader import (  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers  # noqa: F401 — re-exported for legacy callers
+    parse_skill_text,
+)
 from ..skills.registry import get_skill_registry
-from ..skills.slash_command_bridge import (register_skills_as_commands,
-                                           unregister_skill_commands)
+from ..skills.slash_command_bridge import (
+    register_skills_as_commands,
+    unregister_skill_commands,
+)
 
 if TYPE_CHECKING:
     from .settings_manager import SettingsManager
@@ -63,12 +66,16 @@ def _parse_skill_file(
         except yaml.YAMLError as exc:
             logger.warning(
                 "Skill file %s has invalid YAML front-matter and will be skipped: %s",
-                path, exc,
+                path,
+                exc,
             )
             return None
     return parse_skill_text(
-        text, path,
-        source=source, kind=kind, force_uppercase_name=force_uppercase_name,
+        text,
+        path,
+        source=source,
+        kind=kind,
+        force_uppercase_name=force_uppercase_name,
     )
 
 
@@ -105,7 +112,9 @@ class SkillLoader:
         try:
             self.user_skills_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            logger.warning("Cannot create user skills dir %s: %s", self.user_skills_dir, exc)
+            logger.warning(
+                "Cannot create user skills dir %s: %s", self.user_skills_dir, exc
+            )
 
     def _extra_paths(self) -> List[Path]:
         if self._settings_manager is None:
@@ -140,7 +149,8 @@ class SkillLoader:
         if skills:
             logger.info(
                 "Loaded %d skill(s) from %s",
-                len(skills), ", ".join(sorted({s.source for s in skills})),
+                len(skills),
+                ", ".join(sorted({s.source for s in skills})),
             )
         return skills
 
@@ -162,7 +172,8 @@ class SkillLoader:
         if invocable:
             logger.info(
                 "Loaded %d skill(s) from %s",
-                len(invocable), ", ".join(sorted({s.source for s in invocable})),
+                len(invocable),
+                ", ".join(sorted({s.source for s in invocable})),
             )
 
         # Pre-filter collisions HERE so warnings land on THIS module's logger
@@ -171,13 +182,17 @@ class SkillLoader:
         collisions: List[str] = []
         for skill in invocable:
             existing = registry.get_command(skill.name)
-            if existing is not None and not getattr(existing, "_is_skill_command", False):
+            if existing is not None and not getattr(
+                existing, "_is_skill_command", False
+            ):
                 collisions.append(skill.name)
                 logger.warning(
                     "Skill %r (from %s) collides with existing command /%s "
                     "(category=%s) — skipping. Built-in commands cannot be "
                     "overridden by a skill file.",
-                    skill.name, skill.source_path, existing.name,
+                    skill.name,
+                    skill.source_path,
+                    existing.name,
                     getattr(existing, "category", "general"),
                 )
                 continue
@@ -185,7 +200,8 @@ class SkillLoader:
         if collisions:
             logger.warning(
                 "Skipped %d skill(s) due to name collision with existing commands: %s",
-                len(collisions), ", ".join(sorted(collisions)),
+                len(collisions),
+                ", ".join(sorted(collisions)),
             )
         return register_skills_as_commands(filtered, registry)
 

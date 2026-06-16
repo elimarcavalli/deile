@@ -18,15 +18,19 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import pytest
 
-from deile.core.loop_guard import (AbortKind, ToolLoopGuard, args_hash_for,
-                                   format_loop_break_message, make_guard,
-                                   make_loop_break_result,
-                                   tool_result_made_progress)
+from deile.core.loop_guard import (
+    AbortKind,
+    ToolLoopGuard,
+    args_hash_for,
+    format_loop_break_message,
+    make_guard,
+    make_loop_break_result,
+    tool_result_made_progress,
+)
 from deile.core.models.base import ModelMessage
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.core.tool_loop_executor import ToolLoopExecutor
-from deile.security.audit_logger import (AuditEventType, SeverityLevel,
-                                         get_audit_logger)
+from deile.security.audit_logger import AuditEventType, SeverityLevel, get_audit_logger
 from deile.tools.base import ToolResult, ToolStatus
 
 # ---------------------------------------------------------------------------
@@ -316,22 +320,29 @@ def test_user_message_no_bash_hint_for_non_path_tool_loops():
 
 
 def test_tool_result_made_progress_helper():
-    assert tool_result_made_progress(
-        ToolResult(status=ToolStatus.SUCCESS, data={"x": 1})
-    ) is True
-    assert tool_result_made_progress(
-        ToolResult(status=ToolStatus.SUCCESS, data=[])
-    ) is False
-    assert tool_result_made_progress(
-        ToolResult(status=ToolStatus.SUCCESS, data="")
-    ) is False
-    assert tool_result_made_progress(
-        ToolResult(status=ToolStatus.ERROR, message="boom")
-    ) is False
+    assert (
+        tool_result_made_progress(ToolResult(status=ToolStatus.SUCCESS, data={"x": 1}))
+        is True
+    )
+    assert (
+        tool_result_made_progress(ToolResult(status=ToolStatus.SUCCESS, data=[]))
+        is False
+    )
+    assert (
+        tool_result_made_progress(ToolResult(status=ToolStatus.SUCCESS, data=""))
+        is False
+    )
+    assert (
+        tool_result_made_progress(ToolResult(status=ToolStatus.ERROR, message="boom"))
+        is False
+    )
     # SUCCESS with non-empty message but empty data still counts as progress.
-    assert tool_result_made_progress(
-        ToolResult(status=ToolStatus.SUCCESS, data=None, message="ok")
-    ) is True
+    assert (
+        tool_result_made_progress(
+            ToolResult(status=ToolStatus.SUCCESS, data=None, message="ok")
+        )
+        is True
+    )
 
 
 def test_make_loop_break_result_builds_typed_error_and_payload():
@@ -382,7 +393,9 @@ async def test_executor_breaks_on_identical_repeat_under_six_iterations():
     provider = FakeProvider(iterations=[list(one_round) for _ in range(30)])
     executor = ToolLoopExecutor(
         tool_registry=FakeRegistry(
-            default=ToolResult(status=ToolStatus.SUCCESS, data=["a", "b"], message="ok"),
+            default=ToolResult(
+                status=ToolStatus.SUCCESS, data=["a", "b"], message="ok"
+            ),
         ),
         max_iterations=30,
     )
@@ -530,16 +543,17 @@ async def test_executor_bash_fail_then_listfiles_loop_user_screenshot_case():
     events = [
         e
         async for e in executor.run(
-            provider, [ModelMessage(role="user", content="kill all deile processes")],
+            provider,
+            [ModelMessage(role="user", content="kill all deile processes")],
             tools=[],
         )
     ]
     # Exactly: bash_execute (fail) + list_files x2 succeeded + 3rd list_files
     # tripped the guard before execution. Total registry runs = 3 (bash + 2 list).
     assert "bash_execute" in registry.seen
-    assert registry.seen.count("list_files") == 2, (
-        f"registry should have run list_files twice, got: {registry.seen}"
-    )
+    assert (
+        registry.seen.count("list_files") == 2
+    ), f"registry should have run list_files twice, got: {registry.seen}"
     loop_break_results = [
         e
         for e in events
@@ -566,9 +580,7 @@ async def test_executor_emits_audit_event_on_loop_break():
     provider = FakeProvider(iterations=[list(one_round) for _ in range(10)])
     executor = ToolLoopExecutor(
         tool_registry=FakeRegistry(
-            default=ToolResult(
-                status=ToolStatus.SUCCESS, data=["a"], message="ok"
-            )
+            default=ToolResult(status=ToolStatus.SUCCESS, data=["a"], message="ok")
         ),
         max_iterations=10,
     )
@@ -645,9 +657,7 @@ async def test_executor_max_calls_ceiling(monkeypatch):
     # The guard must override the executor's iteration cap (which counts
     # iterations, not individual calls). Use distinct args so identical-repeat
     # doesn't fire — only MAX_CALLS should.
-    iterations = [
-        _tool_use_round(f"t{i}", f"tool_{i}", {"i": i}) for i in range(20)
-    ]
+    iterations = [_tool_use_round(f"t{i}", f"tool_{i}", {"i": i}) for i in range(20)]
     provider = FakeProvider(iterations=iterations)
     executor = ToolLoopExecutor(
         tool_registry=FakeRegistry(
@@ -671,7 +681,10 @@ async def test_executor_max_calls_ceiling(monkeypatch):
         and e.tool_metadata.get("loop_break")
     ]
     assert loop_break_results, "MAX_CALLS ceiling did not trigger"
-    assert loop_break_results[0].tool_metadata["loop_break_kind"] == AbortKind.MAX_CALLS.value
+    assert (
+        loop_break_results[0].tool_metadata["loop_break_kind"]
+        == AbortKind.MAX_CALLS.value
+    )
 
 
 def test_make_guard_returns_independent_instances():
@@ -718,9 +731,9 @@ def test_guard_escalates_to_hard_stop_on_same_hash_after_abort():
 
     r4 = guard.check("list_files", args)
     assert r4 is not None
-    assert r4.kind is AbortKind.HARD_STOP, (
-        f"Expected HARD_STOP on 4th call with same hash, got {r4.kind}"
-    )
+    assert (
+        r4.kind is AbortKind.HARD_STOP
+    ), f"Expected HARD_STOP on 4th call with same hash, got {r4.kind}"
     assert "HARD STOP" in r4.user_message() or "hard" in r4.user_message().lower()
 
 
@@ -768,9 +781,9 @@ def test_guard_record_result_error_signature_fast_trips_no_progress():
 
     r3 = guard.check("list_files", {"path": "/c"})
     assert r3 is not None
-    assert r3.kind is AbortKind.NO_PROGRESS, (
-        f"Expected NO_PROGRESS fast-trip after 2 same-sig errors, got {r3.kind}"
-    )
+    assert (
+        r3.kind is AbortKind.NO_PROGRESS
+    ), f"Expected NO_PROGRESS fast-trip after 2 same-sig errors, got {r3.kind}"
 
 
 def test_guard_error_signature_resets_on_progress():

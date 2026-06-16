@@ -47,7 +47,9 @@ class TestStore:
         assert removed == 0
 
     async def test_secret_redaction_on_serialize(self, store):
-        await store.upsert("s1", "/tmp", {"token": "ghp_abc123XYZxxx_fake_token_pattern_long"})
+        await store.upsert(
+            "s1", "/tmp", {"token": "ghp_abc123XYZxxx_fake_token_pattern_long"}
+        )
         # Test only that the data still loads — exact redaction is best-effort
         row = await store.get("s1")
         assert row is not None
@@ -78,12 +80,14 @@ class TestGetStats:
 class TestCountSessionsBefore:
     async def test_empty_store_returns_zero(self, store):
         from datetime import datetime, timezone
+
         cutoff = datetime.now(timezone.utc)
         count = await store.count_sessions_before(cutoff)
         assert count == 0
 
     async def test_new_session_not_counted_as_before_now(self, store):
         from datetime import datetime, timedelta, timezone
+
         await store.upsert("s1", "/a", {})
         future = datetime.now(timezone.utc) + timedelta(hours=1)
         count = await store.count_sessions_before(future)
@@ -91,6 +95,7 @@ class TestCountSessionsBefore:
 
     async def test_far_future_cutoff_counts_all(self, store):
         from datetime import datetime, timedelta, timezone
+
         await store.upsert("s1", "/a", {})
         await store.upsert("s2", "/b", {})
         future = datetime.now(timezone.utc) + timedelta(days=9999)
@@ -99,6 +104,7 @@ class TestCountSessionsBefore:
 
     async def test_past_cutoff_counts_zero_for_new_sessions(self, store):
         from datetime import datetime, timedelta, timezone
+
         await store.upsert("s1", "/a", {})
         past = datetime.now(timezone.utc) - timedelta(days=365)
         count = await store.count_sessions_before(past)
@@ -108,12 +114,14 @@ class TestCountSessionsBefore:
 class TestDeleteSessionsBefore:
     async def test_empty_store_returns_zero(self, store):
         from datetime import datetime, timezone
+
         cutoff = datetime.now(timezone.utc)
         deleted = await store.delete_sessions_before(cutoff)
         assert deleted == 0
 
     async def test_deletes_sessions_before_cutoff(self, store):
         from datetime import datetime, timedelta, timezone
+
         await store.upsert("s1", "/a", {})
         await store.upsert("s2", "/b", {})
         future = datetime.now(timezone.utc) + timedelta(days=9999)
@@ -124,6 +132,7 @@ class TestDeleteSessionsBefore:
 
     async def test_does_not_delete_sessions_after_cutoff(self, store):
         from datetime import datetime, timedelta, timezone
+
         await store.upsert("s1", "/a", {})
         past = datetime.now(timezone.utc) - timedelta(days=365)
         deleted = await store.delete_sessions_before(past)
@@ -133,6 +142,7 @@ class TestDeleteSessionsBefore:
 
     async def test_partial_delete(self, store):
         from datetime import datetime, timedelta, timezone
+
         await store.upsert("recent", "/a", {})
         future = datetime.now(timezone.utc) + timedelta(days=9999)
         deleted = await store.delete_sessions_before(future)

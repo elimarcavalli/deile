@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 print("🧪 MINIMAL CONFIGURATION TEST")
 print("=" * 40)
 
+
 def test_imports_and_structure():
     """Test that all configuration components can be imported and have correct structure"""
     results = []
@@ -28,7 +29,13 @@ def test_imports_and_structure():
         # Check if files exist
         config_manager_file = Path("deile/config/manager.py")
         if not config_manager_file.exists():
-            results.append(("ConfigManager file exists", False, f"File not found: {config_manager_file}"))
+            results.append(
+                (
+                    "ConfigManager file exists",
+                    False,
+                    f"File not found: {config_manager_file}",
+                )
+            )
             return results
 
         # Check for required methods in ConfigManager
@@ -39,7 +46,7 @@ def test_imports_and_structure():
             "async def update_persona_config",
             "async def add_persona",
             "async def remove_persona",
-            "def add_persona_observer"
+            "def add_persona_observer",
         ]
 
         missing_methods = []
@@ -48,9 +55,21 @@ def test_imports_and_structure():
                 missing_methods.append(method)
 
         if missing_methods:
-            results.append(("ConfigManager has required methods", False, f"Missing: {missing_methods}"))
+            results.append(
+                (
+                    "ConfigManager has required methods",
+                    False,
+                    f"Missing: {missing_methods}",
+                )
+            )
         else:
-            results.append(("ConfigManager has required methods", True, "All persona methods found"))
+            results.append(
+                (
+                    "ConfigManager has required methods",
+                    True,
+                    "All persona methods found",
+                )
+            )
 
     except Exception as e:
         results.append(("ConfigManager structure test", False, str(e)))
@@ -61,7 +80,13 @@ def test_imports_and_structure():
 
         persona_config_file = Path("deile/personas/config.py")
         if not persona_config_file.exists():
-            results.append(("PersonaConfig file exists", False, f"File not found: {persona_config_file}"))
+            results.append(
+                (
+                    "PersonaConfig file exists",
+                    False,
+                    f"File not found: {persona_config_file}",
+                )
+            )
             return results
 
         # Check for required classes
@@ -72,7 +97,7 @@ def test_imports_and_structure():
             "class ModelPreferences",
             "class BehaviorSettings",
             "class ToolPreferences",
-            "class PersonaConfig"
+            "class PersonaConfig",
         ]
 
         missing_classes = []
@@ -81,9 +106,21 @@ def test_imports_and_structure():
                 missing_classes.append(cls)
 
         if missing_classes:
-            results.append(("PersonaConfig has required classes", False, f"Missing: {missing_classes}"))
+            results.append(
+                (
+                    "PersonaConfig has required classes",
+                    False,
+                    f"Missing: {missing_classes}",
+                )
+            )
         else:
-            results.append(("PersonaConfig has required classes", True, "All required classes found"))
+            results.append(
+                (
+                    "PersonaConfig has required classes",
+                    True,
+                    "All required classes found",
+                )
+            )
 
     except Exception as e:
         results.append(("PersonaConfig structure test", False, str(e)))
@@ -94,7 +131,13 @@ def test_imports_and_structure():
 
         persona_manager_file = Path("deile/personas/manager.py")
         if not persona_manager_file.exists():
-            results.append(("PersonaManager file exists", False, f"File not found: {persona_manager_file}"))
+            results.append(
+                (
+                    "PersonaManager file exists",
+                    False,
+                    f"File not found: {persona_manager_file}",
+                )
+            )
             return results
 
         content = persona_manager_file.read_text()
@@ -104,7 +147,7 @@ def test_imports_and_structure():
             "from .config import PersonaConfig",  # Uses unified config
             "self.config_manager =",  # Uses config manager
             "add_persona_observer",  # Registers as observer
-            "async def _on_persona_config_change"  # Handles config changes
+            "async def _on_persona_config_change",  # Handles config changes
         ]
 
         missing_integration = []
@@ -113,16 +156,28 @@ def test_imports_and_structure():
                 missing_integration.append(check)
 
         if missing_integration:
-            results.append(("PersonaManager unified integration", False, f"Missing: {missing_integration}"))
+            results.append(
+                (
+                    "PersonaManager unified integration",
+                    False,
+                    f"Missing: {missing_integration}",
+                )
+            )
         else:
-            results.append(("PersonaManager unified integration", True, "All integration points found"))
+            results.append(
+                (
+                    "PersonaManager unified integration",
+                    True,
+                    "All integration points found",
+                )
+            )
 
         # Check that old duplicate systems are removed
         deprecated_items = [
             "class PersonaConfigHandler",  # Old hot-reload
             "self.personas_dir",  # Old directory management
             "async def discover_and_load_personas",  # Old discovery
-            "async def load_persona_from_file"  # Old file loading
+            "async def load_persona_from_file",  # Old file loading
         ]
 
         found_deprecated = []
@@ -131,9 +186,21 @@ def test_imports_and_structure():
                 found_deprecated.append(item)
 
         if found_deprecated:
-            results.append(("Deprecated systems removed", False, f"Still found: {found_deprecated}"))
+            results.append(
+                (
+                    "Deprecated systems removed",
+                    False,
+                    f"Still found: {found_deprecated}",
+                )
+            )
         else:
-            results.append(("Deprecated systems removed", True, "All deprecated systems cleaned up"))
+            results.append(
+                (
+                    "Deprecated systems removed",
+                    True,
+                    "All deprecated systems cleaned up",
+                )
+            )
 
     except Exception as e:
         results.append(("PersonaManager integration test", False, str(e)))
@@ -144,7 +211,13 @@ def test_imports_and_structure():
 
         persona_loader_file = Path("deile/personas/loader.py")
         if not persona_loader_file.exists():
-            results.append(("PersonaLoader file exists", False, f"File not found: {persona_loader_file}"))
+            results.append(
+                (
+                    "PersonaLoader file exists",
+                    False,
+                    f"File not found: {persona_loader_file}",
+                )
+            )
             return results
 
         content = persona_loader_file.read_text()
@@ -153,7 +226,7 @@ def test_imports_and_structure():
         loader_fixes = [
             "from .config import PersonaConfig",  # Fixed import
             "def __init__(self, config_manager=None)",  # Accepts config_manager
-            "async def load_persona_instructions"  # Added method
+            "async def load_persona_instructions",  # Added method
         ]
 
         missing_fixes = []
@@ -162,7 +235,9 @@ def test_imports_and_structure():
                 missing_fixes.append(fix)
 
         if missing_fixes:
-            results.append(("PersonaLoader fixes applied", False, f"Missing: {missing_fixes}"))
+            results.append(
+                ("PersonaLoader fixes applied", False, f"Missing: {missing_fixes}")
+            )
         else:
             results.append(("PersonaLoader fixes applied", True, "All fixes applied"))
 
@@ -175,19 +250,38 @@ def test_imports_and_structure():
 
         default_config_file = Path("deile/config/persona_config.yaml")
         if not default_config_file.exists():
-            results.append(("Default config file exists", False, f"File not found: {default_config_file}"))
+            results.append(
+                (
+                    "Default config file exists",
+                    False,
+                    f"File not found: {default_config_file}",
+                )
+            )
         else:
             # Check file has content
             content = default_config_file.read_text()
             if len(content) > 100:  # Basic sanity check
-                results.append(("Default config file has content", True, f"File has {len(content)} characters"))
+                results.append(
+                    (
+                        "Default config file has content",
+                        True,
+                        f"File has {len(content)} characters",
+                    )
+                )
             else:
-                results.append(("Default config file has content", False, f"File too small: {len(content)} characters"))
+                results.append(
+                    (
+                        "Default config file has content",
+                        False,
+                        f"File too small: {len(content)} characters",
+                    )
+                )
 
     except Exception as e:
         results.append(("Default config file test", False, str(e)))
 
     return results
+
 
 def test_backward_compatibility():
     """Test that backward compatibility is maintained"""
@@ -206,7 +300,7 @@ def test_backward_compatibility():
             "def get_current_persona",
             "def has_active_persona",
             "async def switch_persona",
-            "def list_personas"
+            "def list_personas",
         ]
 
         missing_methods = []
@@ -215,14 +309,19 @@ def test_backward_compatibility():
                 missing_methods.append(method)
 
         if missing_methods:
-            results.append(("Backward compatibility methods", False, f"Missing: {missing_methods}"))
+            results.append(
+                ("Backward compatibility methods", False, f"Missing: {missing_methods}")
+            )
         else:
-            results.append(("Backward compatibility methods", True, "All public methods preserved"))
+            results.append(
+                ("Backward compatibility methods", True, "All public methods preserved")
+            )
 
     except Exception as e:
         results.append(("Backward compatibility test", False, str(e)))
 
     return results
+
 
 def test_architecture_compliance():
     """Test architectural compliance"""
@@ -246,9 +345,17 @@ def test_architecture_compliance():
                 missing_patterns.append(pattern)
 
         if missing_patterns:
-            results.append(("DEILE patterns in ConfigManager", False, f"Missing: {missing_patterns}"))
+            results.append(
+                (
+                    "DEILE patterns in ConfigManager",
+                    False,
+                    f"Missing: {missing_patterns}",
+                )
+            )
         else:
-            results.append(("DEILE patterns in ConfigManager", True, "All patterns found"))
+            results.append(
+                ("DEILE patterns in ConfigManager", True, "All patterns found")
+            )
 
         # Check PersonaConfig for proper patterns
         persona_config_content = Path("deile/personas/config.py").read_text()
@@ -257,7 +364,7 @@ def test_architecture_compliance():
             "from enum import Enum",
             "@dataclass",
             "ValidationError",
-            "async def"
+            "async def",
         ]
 
         missing_persona_patterns = []
@@ -266,14 +373,23 @@ def test_architecture_compliance():
                 missing_persona_patterns.append(pattern)
 
         if missing_persona_patterns:
-            results.append(("DEILE patterns in PersonaConfig", False, f"Missing: {missing_persona_patterns}"))
+            results.append(
+                (
+                    "DEILE patterns in PersonaConfig",
+                    False,
+                    f"Missing: {missing_persona_patterns}",
+                )
+            )
         else:
-            results.append(("DEILE patterns in PersonaConfig", True, "All patterns found"))
+            results.append(
+                ("DEILE patterns in PersonaConfig", True, "All patterns found")
+            )
 
     except Exception as e:
         results.append(("Architecture compliance test", False, str(e)))
 
     return results
+
 
 def print_results(results):
     """Print test results"""
@@ -299,6 +415,7 @@ def print_results(results):
 
     return failed_tests == 0
 
+
 def main():
     """Run minimal configuration tests"""
     print("Starting minimal configuration tests...\n")
@@ -322,6 +439,7 @@ def main():
         print("Issues found in configuration system structure!")
         return False
 
+
 if __name__ == "__main__":
     try:
         success = main()
@@ -332,5 +450,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n💥 Test suite crashed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

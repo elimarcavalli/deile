@@ -13,32 +13,39 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
-                                                        PrRef)
+from deile.orchestration.pipeline.github_client import CommentRef, IssueRef, PrRef
 from deile.orchestration.pipeline.implementer import WorkOutcome
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
 
-def _comment_pr_review(comment_id: int = 1, body: str = "@deile-one tweak X") -> CommentRef:
+def _comment_pr_review(
+    comment_id: int = 1, body: str = "@deile-one tweak X"
+) -> CommentRef:
     return CommentRef(
-        comment_id=comment_id, body=body,
+        comment_id=comment_id,
+        body=body,
         html_url=f"https://github.com/o/r/pull/9#discussion_r{comment_id}",
         issue_url="https://api.github.com/repos/o/r/pull/9",
-        author="elimarcavalli", kind="pr_review",
+        author="elimarcavalli",
+        kind="pr_review",
     )
 
 
 def _pr(number: int = 9) -> PrRef:
     return PrRef(
-        number=number, title="pr", url=f"https://github.com/o/r/pull/{number}",
-        labels=(), head_ref=f"auto/issue-{number}",
+        number=number,
+        title="pr",
+        url=f"https://github.com/o/r/pull/{number}",
+        labels=(),
+        head_ref=f"auto/issue-{number}",
     )
 
 
 def _issue(number: int = 42) -> IssueRef:
     return IssueRef(
-        number=number, title="t", url=f"https://github.com/o/r/issues/{number}",
+        number=number,
+        title="t",
+        url=f"https://github.com/o/r/issues/{number}",
         labels=(),
     )
 
@@ -70,7 +77,10 @@ def _make_monitor(
     github.remove_labels = AsyncMock()
     github.get_issue = AsyncMock(
         return_value=IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1", labels=(),
+            number=1,
+            title="t",
+            url="https://github.com/o/r/issues/1",
+            labels=(),
         )
     )
 
@@ -79,7 +89,10 @@ def _make_monitor(
         setattr(notifier, attr, AsyncMock())
 
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=MagicMock(), claude=MagicMock(),
+        cfg,
+        github=github,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
         notifier=notifier,
     )
     monitor.implementer = MagicMock()
@@ -131,10 +144,12 @@ class TestRouterPrAlwaysUsesPrUnifiedBrief:
         monitor.forge.list_pr_review_comments_since = AsyncMock(
             return_value=[
                 CommentRef(
-                    comment_id=1, body="@deile-one olha lá",
+                    comment_id=1,
+                    body="@deile-one olha lá",
                     html_url="https://github.com/o/r/pull/9#discussion_r1",
                     issue_url="https://api.github.com/repos/o/r/pull/9",
-                    author="elimarcavalli", kind="pr_review",
+                    author="elimarcavalli",
+                    kind="pr_review",
                 )
             ]
         )

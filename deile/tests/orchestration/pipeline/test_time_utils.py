@@ -6,8 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from deile.orchestration.pipeline._time_utils import (format_iso_utc, now_utc,
-                                                      parse_iso_utc)
+from deile.orchestration.pipeline._time_utils import (
+    format_iso_utc,
+    now_utc,
+    parse_iso_utc,
+)
 
 
 def test_now_utc_returns_utc_aware():

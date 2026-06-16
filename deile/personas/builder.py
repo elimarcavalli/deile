@@ -50,10 +50,10 @@ class PersonaBuilder:
             "auto_suggest_improvements": True,
             "tags": [],
             "author": None,
-            "version": "1.0.0"
+            "version": "1.0.0",
         }
 
-    def with_name(self, name: str) -> 'PersonaBuilder':
+    def with_name(self, name: str) -> "PersonaBuilder":
         """Define o nome da persona"""
         self._config_data["name"] = name
         if not self._config_data["persona_id"]:
@@ -61,203 +61,238 @@ class PersonaBuilder:
             self._config_data["persona_id"] = self._name_to_id(name)
         return self
 
-    def with_description(self, description: str) -> 'PersonaBuilder':
+    def with_description(self, description: str) -> "PersonaBuilder":
         """Define a descrição da persona"""
         self._config_data["description"] = description
         return self
 
-    def with_persona_id(self, persona_id: str) -> 'PersonaBuilder':
+    def with_persona_id(self, persona_id: str) -> "PersonaBuilder":
         """Define o ID da persona (sobrescreve o gerado automaticamente)"""
         self._config_data["persona_id"] = persona_id
         return self
 
-    def with_author(self, author: str) -> 'PersonaBuilder':
+    def with_author(self, author: str) -> "PersonaBuilder":
         """Define o autor da persona"""
         self._config_data["author"] = author
         return self
 
-    def with_version(self, version: str) -> 'PersonaBuilder':
+    def with_version(self, version: str) -> "PersonaBuilder":
         """Define a versão da persona"""
         self._config_data["version"] = version
         return self
 
-    def add_capability(self, capability: AgentCapability) -> 'PersonaBuilder':
+    def add_capability(self, capability: AgentCapability) -> "PersonaBuilder":
         """Adiciona uma capacidade à persona"""
         if capability not in self._config_data["capabilities"]:
             self._config_data["capabilities"].append(capability)
         return self
 
-    def add_capabilities(self, capabilities: List[AgentCapability]) -> 'PersonaBuilder':
+    def add_capabilities(self, capabilities: List[AgentCapability]) -> "PersonaBuilder":
         """Adiciona múltiplas capacidades à persona"""
         for capability in capabilities:
             self.add_capability(capability)
         return self
 
-    def remove_capability(self, capability: AgentCapability) -> 'PersonaBuilder':
+    def remove_capability(self, capability: AgentCapability) -> "PersonaBuilder":
         """Remove uma capacidade da persona"""
         if capability in self._config_data["capabilities"]:
             self._config_data["capabilities"].remove(capability)
         return self
 
-    def add_specialization(self, specialization: str) -> 'PersonaBuilder':
+    def add_specialization(self, specialization: str) -> "PersonaBuilder":
         """Adiciona uma especialização à persona"""
         if specialization not in self._config_data["specializations"]:
             self._config_data["specializations"].append(specialization)
         return self
 
-    def add_specializations(self, specializations: List[str]) -> 'PersonaBuilder':
+    def add_specializations(self, specializations: List[str]) -> "PersonaBuilder":
         """Adiciona múltiplas especializações à persona"""
         for spec in specializations:
             self.add_specialization(spec)
         return self
 
-    def with_expertise_level(self, level: int) -> 'PersonaBuilder':
+    def with_expertise_level(self, level: int) -> "PersonaBuilder":
         """Define o nível de expertise (1-10)"""
         if not 1 <= level <= 10:
             raise ValueError("Expertise level deve estar entre 1 e 10")
         self._config_data["expertise_level"] = level
         return self
 
-    def with_communication_style(self, style: CommunicationStyle) -> 'PersonaBuilder':
+    def with_communication_style(self, style: CommunicationStyle) -> "PersonaBuilder":
         """Define o estilo de comunicação"""
         self._config_data["communication_style"] = style
         return self
 
-    def with_formality_level(self, level: int) -> 'PersonaBuilder':
+    def with_formality_level(self, level: int) -> "PersonaBuilder":
         """Define o nível de formalidade (1-10)"""
         if not 1 <= level <= 10:
             raise ValueError("Formality level deve estar entre 1 e 10")
         self._config_data["formality_level"] = level
         return self
 
-    def with_verbosity_level(self, level: int) -> 'PersonaBuilder':
+    def with_verbosity_level(self, level: int) -> "PersonaBuilder":
         """Define o nível de verbosidade (1-10)"""
         if not 1 <= level <= 10:
             raise ValueError("Verbosity level deve estar entre 1 e 10")
         self._config_data["verbosity_level"] = level
         return self
 
-    def with_system_instruction(self, instruction: str) -> 'PersonaBuilder':
+    def with_system_instruction(self, instruction: str) -> "PersonaBuilder":
         """Define a instrução do sistema"""
         self._config_data["system_instruction"] = instruction
         return self
 
-    def with_greeting_template(self, template: str) -> 'PersonaBuilder':
+    def with_greeting_template(self, template: str) -> "PersonaBuilder":
         """Define template de saudação personalizada"""
         self._config_data["greeting_template"] = template
         return self
 
-    def with_task_approach_template(self, template: str) -> 'PersonaBuilder':
+    def with_task_approach_template(self, template: str) -> "PersonaBuilder":
         """Define template de abordagem de tarefas"""
         self._config_data["task_approach_template"] = template
         return self
 
-    def with_max_context_length(self, length: int) -> 'PersonaBuilder':
+    def with_max_context_length(self, length: int) -> "PersonaBuilder":
         """Define o comprimento máximo do contexto"""
         if length < 1000:
             raise ValueError("Max context length deve ser pelo menos 1000")
         self._config_data["max_context_length"] = length
         return self
 
-    def with_temperature(self, temperature: float) -> 'PersonaBuilder':
+    def with_temperature(self, temperature: float) -> "PersonaBuilder":
         """Define a temperatura para geração"""
         if not 0.0 <= temperature <= 2.0:
             raise ValueError("Temperature deve estar entre 0.0 e 2.0")
         self._config_data["temperature"] = temperature
         return self
 
-    def with_tools_enabled(self, enabled: bool = True) -> 'PersonaBuilder':
+    def with_tools_enabled(self, enabled: bool = True) -> "PersonaBuilder":
         """Define se a persona pode usar ferramentas"""
         self._config_data["use_tools"] = enabled
         return self
 
-    def with_auto_improvements(self, enabled: bool = True) -> 'PersonaBuilder':
+    def with_auto_improvements(self, enabled: bool = True) -> "PersonaBuilder":
         """Define se a persona sugere melhorias automaticamente"""
         self._config_data["auto_suggest_improvements"] = enabled
         return self
 
-    def add_tag(self, tag: str) -> 'PersonaBuilder':
+    def add_tag(self, tag: str) -> "PersonaBuilder":
         """Adiciona uma tag à persona"""
         if tag not in self._config_data["tags"]:
             self._config_data["tags"].append(tag)
         return self
 
-    def add_tags(self, tags: List[str]) -> 'PersonaBuilder':
+    def add_tags(self, tags: List[str]) -> "PersonaBuilder":
         """Adiciona múltiplas tags à persona"""
         for tag in tags:
             self.add_tag(tag)
         return self
 
-    def for_developer(self) -> 'PersonaBuilder':
+    def for_developer(self) -> "PersonaBuilder":
         """Configura como persona de desenvolvedor (preset)"""
-        return (self
-            .add_capabilities([
-                AgentCapability.CODE_GENERATION,
-                AgentCapability.DEBUGGING,
-                AgentCapability.CODE_REVIEW,
-                AgentCapability.TESTING
-            ])
-            .add_specializations(["Python", "JavaScript", "API Development", "Database Design"])
+        return (
+            self.add_capabilities(
+                [
+                    AgentCapability.CODE_GENERATION,
+                    AgentCapability.DEBUGGING,
+                    AgentCapability.CODE_REVIEW,
+                    AgentCapability.TESTING,
+                ]
+            )
+            .add_specializations(
+                ["Python", "JavaScript", "API Development", "Database Design"]
+            )
             .with_communication_style(CommunicationStyle.TECHNICAL)
             .with_expertise_level(8)
-            .add_tags(["developer", "programming", "technical"]))
+            .add_tags(["developer", "programming", "technical"])
+        )
 
-    def for_architect(self) -> 'PersonaBuilder':
+    def for_architect(self) -> "PersonaBuilder":
         """Configura como persona de arquiteto (preset)"""
-        return (self
-            .add_capabilities([
-                AgentCapability.ARCHITECTURE_DESIGN,
-                AgentCapability.CODE_REVIEW,
-                AgentCapability.OPTIMIZATION,
-                AgentCapability.DOCUMENTATION
-            ])
-            .add_specializations(["System Architecture", "Design Patterns", "Scalability", "Clean Code"])
+        return (
+            self.add_capabilities(
+                [
+                    AgentCapability.ARCHITECTURE_DESIGN,
+                    AgentCapability.CODE_REVIEW,
+                    AgentCapability.OPTIMIZATION,
+                    AgentCapability.DOCUMENTATION,
+                ]
+            )
+            .add_specializations(
+                ["System Architecture", "Design Patterns", "Scalability", "Clean Code"]
+            )
             .with_communication_style(CommunicationStyle.EXPERT)
             .with_expertise_level(9)
-            .add_tags(["architect", "design", "patterns"]))
+            .add_tags(["architect", "design", "patterns"])
+        )
 
-    def for_debugger(self) -> 'PersonaBuilder':
+    def for_debugger(self) -> "PersonaBuilder":
         """Configura como persona de debugger (preset)"""
-        return (self
-            .add_capabilities([
-                AgentCapability.DEBUGGING,
-                AgentCapability.PROBLEM_SOLVING,
-                AgentCapability.TESTING,
-                AgentCapability.CODE_REVIEW
-            ])
-            .add_specializations(["Error Analysis", "Performance Debugging", "Test Debugging", "Log Analysis"])
+        return (
+            self.add_capabilities(
+                [
+                    AgentCapability.DEBUGGING,
+                    AgentCapability.PROBLEM_SOLVING,
+                    AgentCapability.TESTING,
+                    AgentCapability.CODE_REVIEW,
+                ]
+            )
+            .add_specializations(
+                [
+                    "Error Analysis",
+                    "Performance Debugging",
+                    "Test Debugging",
+                    "Log Analysis",
+                ]
+            )
             .with_communication_style(CommunicationStyle.TECHNICAL)
             .with_expertise_level(8)
-            .add_tags(["debugging", "troubleshooting", "analysis"]))
+            .add_tags(["debugging", "troubleshooting", "analysis"])
+        )
 
-    def for_mentor(self) -> 'PersonaBuilder':
+    def for_mentor(self) -> "PersonaBuilder":
         """Configura como persona de mentor (preset)"""
-        return (self
-            .add_capabilities([
-                AgentCapability.MENTORING,
-                AgentCapability.DOCUMENTATION,
-                AgentCapability.CODE_REVIEW,
-                AgentCapability.PROBLEM_SOLVING
-            ])
-            .add_specializations(["Teaching", "Code Reviews", "Best Practices", "Career Guidance"])
+        return (
+            self.add_capabilities(
+                [
+                    AgentCapability.MENTORING,
+                    AgentCapability.DOCUMENTATION,
+                    AgentCapability.CODE_REVIEW,
+                    AgentCapability.PROBLEM_SOLVING,
+                ]
+            )
+            .add_specializations(
+                ["Teaching", "Code Reviews", "Best Practices", "Career Guidance"]
+            )
             .with_communication_style(CommunicationStyle.MENTOR)
             .with_expertise_level(9)
             .with_verbosity_level(7)
-            .add_tags(["mentor", "teaching", "guidance"]))
+            .add_tags(["mentor", "teaching", "guidance"])
+        )
 
-    def for_security_expert(self) -> 'PersonaBuilder':
+    def for_security_expert(self) -> "PersonaBuilder":
         """Configura como persona de especialista em segurança (preset)"""
-        return (self
-            .add_capabilities([
-                AgentCapability.SECURITY_ANALYSIS,
-                AgentCapability.CODE_REVIEW,
-                AgentCapability.TESTING,
-                AgentCapability.DOCUMENTATION
-            ])
-            .add_specializations(["Security Analysis", "Vulnerability Assessment", "Secure Coding", "Penetration Testing"])
+        return (
+            self.add_capabilities(
+                [
+                    AgentCapability.SECURITY_ANALYSIS,
+                    AgentCapability.CODE_REVIEW,
+                    AgentCapability.TESTING,
+                    AgentCapability.DOCUMENTATION,
+                ]
+            )
+            .add_specializations(
+                [
+                    "Security Analysis",
+                    "Vulnerability Assessment",
+                    "Secure Coding",
+                    "Penetration Testing",
+                ]
+            )
             .with_communication_style(CommunicationStyle.EXPERT)
             .with_expertise_level(9)
-            .add_tags(["security", "vulnerability", "analysis"]))
+            .add_tags(["security", "vulnerability", "analysis"])
+        )
 
     def build(self) -> PersonaConfig:
         """Constrói a configuração da persona
@@ -314,8 +349,10 @@ class PersonaBuilder:
 
         # Salva em arquivo YAML
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True, indent=2)
+        with open(file_path, "w", encoding="utf-8") as f:
+            yaml.dump(
+                config_dict, f, default_flow_style=False, allow_unicode=True, indent=2
+            )
 
         logger.info(f"Persona '{config.name}' salva em {file_path}")
         return config
@@ -324,8 +361,9 @@ class PersonaBuilder:
         """Converte nome para ID válido"""
         # Remove caracteres especiais e converte para lowercase
         import re
-        clean_name = re.sub(r'[^\w\s-]', '', name.strip())
-        persona_id = re.sub(r'[-\s]+', '_', clean_name).lower()
+
+        clean_name = re.sub(r"[^\w\s-]", "", name.strip())
+        persona_id = re.sub(r"[-\s]+", "_", clean_name).lower()
         return persona_id
 
     def _generate_default_system_instruction(self):
@@ -334,59 +372,76 @@ class PersonaBuilder:
         capabilities = self._config_data["capabilities"]
         specializations = self._config_data["specializations"]
 
-        instruction_parts = [
-            f"Você é {name}, um assistente de IA especializado."
-        ]
+        instruction_parts = [f"Você é {name}, um assistente de IA especializado."]
 
         if capabilities:
-            cap_names = [cap.value.replace('_', ' ').title() for cap in capabilities]
-            instruction_parts.append(f"Suas principais capacidades incluem: {', '.join(cap_names)}.")
+            cap_names = [cap.value.replace("_", " ").title() for cap in capabilities]
+            instruction_parts.append(
+                f"Suas principais capacidades incluem: {', '.join(cap_names)}."
+            )
 
         if specializations:
-            instruction_parts.append(f"Você tem expertise em: {', '.join(specializations)}.")
+            instruction_parts.append(
+                f"Você tem expertise em: {', '.join(specializations)}."
+            )
 
-        instruction_parts.extend([
-            "Seu objetivo é ajudar o usuário da melhor forma possível usando suas especializações.",
-            "Seja preciso, útil e mantenha-se dentro de suas áreas de competência."
-        ])
+        instruction_parts.extend(
+            [
+                "Seu objetivo é ajudar o usuário da melhor forma possível usando suas especializações.",
+                "Seja preciso, útil e mantenha-se dentro de suas áreas de competência.",
+            ]
+        )
 
         self._config_data["system_instruction"] = " ".join(instruction_parts)
 
 
 def create_developer_persona(name: str = "Developer") -> PersonaConfig:
     """Função helper para criar rapidamente uma persona de desenvolvedor"""
-    return (PersonaBuilder()
+    return (
+        PersonaBuilder()
         .with_name(name)
         .with_description("Especialista em desenvolvimento de software e programação")
         .for_developer()
-        .build())
+        .build()
+    )
 
 
 def create_architect_persona(name: str = "Architect") -> PersonaConfig:
     """Função helper para criar rapidamente uma persona de arquiteto"""
-    return (PersonaBuilder()
+    return (
+        PersonaBuilder()
         .with_name(name)
         .with_description("Arquiteto de software focado em design de sistemas")
         .for_architect()
-        .build())
+        .build()
+    )
 
 
 def create_debugger_persona(name: str = "Debugger") -> PersonaConfig:
     """Função helper para criar rapidamente uma persona de debugger"""
-    return (PersonaBuilder()
+    return (
+        PersonaBuilder()
         .with_name(name)
         .with_description("Especialista em debugging e resolução de problemas")
         .for_debugger()
-        .build())
+        .build()
+    )
 
 
-def create_custom_persona(name: str, description: str, capabilities: List[AgentCapability],
-                         specializations: List[str] = None, **kwargs) -> PersonaConfig:
+def create_custom_persona(
+    name: str,
+    description: str,
+    capabilities: List[AgentCapability],
+    specializations: List[str] = None,
+    **kwargs,
+) -> PersonaConfig:
     """Função helper para criar persona customizada rapidamente"""
-    builder = (PersonaBuilder()
+    builder = (
+        PersonaBuilder()
         .with_name(name)
         .with_description(description)
-        .add_capabilities(capabilities))
+        .add_capabilities(capabilities)
+    )
 
     if specializations:
         builder.add_specializations(specializations)

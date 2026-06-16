@@ -1,4 +1,5 @@
 """AC6 — schema constraints: line length, no control chars, truncation."""
+
 from __future__ import annotations
 
 import logging
@@ -20,13 +21,17 @@ def _lines(caplog):
 def _emit_all(caplog):
     with caplog.at_level(logging.DEBUG, logger="deile.pipeline.events"):
         pl.log_refinement_critique(issue=1, round=1, persona="P", verdict="V", gaps="g")
-        pl.log_refinement_refine(issue=1, round=1, persona="P", body_chars=100, verdict="V")
+        pl.log_refinement_refine(
+            issue=1, round=1, persona="P", body_chars=100, verdict="V"
+        )
         pl.log_decomposition_fanout(intent=1, derivadas=[2, 3], complexity=["S"])
         pl.log_batch_claim(sha="s", issues=[1], reason="r")
         pl.log_batch_release(sha="s", reason="r")
         pl.log_label_change(target_kind="issue", target=1, removed=["a"], added=["b"])
         pl.log_reaper_unblock(target_kind="issue", target=1, attempts=1, reason="r")
-        pl.log_reaper_block(target_kind="issue", target=1, attempts=3, cap=3, reason="r")
+        pl.log_reaper_block(
+            target_kind="issue", target=1, attempts=3, cap=3, reason="r"
+        )
         pl.log_auth_fail(target="t", attempts=1, threshold=3, reason="r")
         pl.log_auth_backoff(target="t", attempts=3, until_iso="2026T", backoff_s=60)
         pl.log_auth_skip(target="t", until_iso="2026T", remaining_s=10)
@@ -66,7 +71,9 @@ def test_reason_truncated_at_200(caplog):
 def test_gaps_truncated_at_200(caplog):
     long_gaps = "g" * 250
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_refinement_critique(issue=1, round=1, persona="P", verdict="V", gaps=long_gaps)
+        pl.log_refinement_critique(
+            issue=1, round=1, persona="P", verdict="V", gaps=long_gaps
+        )
     lines = _lines(caplog)
     assert lines
     line = lines[0]
@@ -75,7 +82,9 @@ def test_gaps_truncated_at_200(caplog):
 
 def test_control_chars_stripped_from_input(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_refinement_critique(issue=1, round=1, persona="P", verdict="V", gaps="a\nb\tc")
+        pl.log_refinement_critique(
+            issue=1, round=1, persona="P", verdict="V", gaps="a\nb\tc"
+        )
     lines = _lines(caplog)
     assert lines
     line = lines[0]

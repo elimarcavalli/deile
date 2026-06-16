@@ -52,12 +52,19 @@ class AgentStreamingMixin:
         ``ToolLoopExecutor`` forwards every text/tool event and emits
         TOOL_RESULT after each tool invocation.
         """
-        from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                                     StreamEventType,
-                                                     UnifiedStreamEvent)
+        from deile.core.models.stream_events import (
+            ModelUsageSnapshot,
+            StreamEventType,
+            UnifiedStreamEvent,
+        )
 
-        from .agent import (AgentStatus, _BudgetExceeded, _finalize_turn_span,
-                            _open_turn_span, _record_turn_error)
+        from .agent import (
+            AgentStatus,
+            _BudgetExceeded,
+            _finalize_turn_span,
+            _open_turn_span,
+            _record_turn_error,
+        )
 
         start_time = time.time()
         self._status = AgentStatus.PROCESSING
@@ -66,6 +73,7 @@ class AgentStreamingMixin:
         # Issue #303 — conta turno no runtime state (singleton, best-effort).
         try:
             from deile.runtime.instance_state import get_instance_state
+
             get_instance_state().update_stats(turns=1)
         except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
             pass
@@ -74,7 +82,11 @@ class AgentStreamingMixin:
         _turn_span_cm, _turn_span = _open_turn_span(
             session_id=session_id,
             turn_number=self._request_count,
-            persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            persona=(
+                str(self.current_persona)
+                if getattr(self, "current_persona", None)
+                else ""
+            ),
             input_length=len(user_input or ""),
         )
 
@@ -93,7 +105,11 @@ class AgentStreamingMixin:
             # Slash commands — non-streaming, emit aggregated text once.
             # Unknown /commands fall through to the LLM as natural language.
             _stripped_input = user_input.strip()
-            _slash_cmd_name = _stripped_input[1:].split()[0] if _stripped_input.startswith('/') and _stripped_input[1:] else ""
+            _slash_cmd_name = (
+                _stripped_input[1:].split()[0]
+                if _stripped_input.startswith("/") and _stripped_input[1:]
+                else ""
+            )
             if _slash_cmd_name and self.command_registry.has_command(_slash_cmd_name):
                 cmd_name = _slash_cmd_name
                 # Map command name to a specific scenario key when one exists.
@@ -183,7 +199,9 @@ class AgentStreamingMixin:
                     type=StreamEventType.STAGE,
                     stage=get_stage_message("autonomous_process", "initial"),
                 )
-                autonomous_result = await self.process_autonomous_request(user_input, session)
+                autonomous_result = await self.process_autonomous_request(
+                    user_input, session
+                )
             if autonomous_result:
                 session.add_to_history(
                     "assistant",
@@ -216,7 +234,9 @@ class AgentStreamingMixin:
             # args + result) instead of just a generic stage spinner. The stream
             # yields UnifiedStreamEvents AND a final ("results", list) sentinel.
             proactive_results: List[ToolResult] = []
-            async for _item in self._execute_proactive_tools_stream(user_input, session):
+            async for _item in self._execute_proactive_tools_stream(
+                user_input, session
+            ):
                 if isinstance(_item, tuple) and _item and _item[0] == "results":
                     proactive_results = _item[1]
                 elif isinstance(_item, UnifiedStreamEvent):
@@ -233,7 +253,9 @@ class AgentStreamingMixin:
             if skip_autonomous:
                 workflow_needed = False
             else:
-                workflow_needed = await self._should_create_workflow(user_input, parse_result)
+                workflow_needed = await self._should_create_workflow(
+                    user_input, parse_result
+                )
 
             if workflow_needed and self.workflow_executor:
                 yield UnifiedStreamEvent(
@@ -282,10 +304,15 @@ class AgentStreamingMixin:
                     # tem conteúdo (evita ``\n\n`` no início da resposta).
                     if text_segments[-1]:
                         text_segments.append([])
-                elif event.type is StreamEventType.USAGE_FINAL and event.reasoning_content:
+                elif (
+                    event.type is StreamEventType.USAGE_FINAL
+                    and event.reasoning_content
+                ):
                     # Non-tool final turn: capture reasoning_content so it is included
                     # in history metadata and echoed back on the next turn.
-                    session.context_data["_last_reasoning_content"] = event.reasoning_content
+                    session.context_data["_last_reasoning_content"] = (
+                        event.reasoning_content
+                    )
                 elif event.type is StreamEventType.TOOL_RESULT:
                     # Preserve original ToolResult.metadata that the executor copied into
                     # event.tool_metadata. Critical for the validation gate, which inspects
@@ -297,9 +324,11 @@ class AgentStreamingMixin:
                     _meta["tool_call_id"] = event.tool_call_id
                     _meta["iteration"] = event.iteration
                     tr = ToolResult(
-                        status=ToolStatus.SUCCESS
-                        if event.tool_status == "success"
-                        else ToolStatus.ERROR,
+                        status=(
+                            ToolStatus.SUCCESS
+                            if event.tool_status == "success"
+                            else ToolStatus.ERROR
+                        ),
                         message=event.tool_result_summary or "",
                         data=event.tool_result_data,
                         metadata=_meta,
@@ -311,7 +340,9 @@ class AgentStreamingMixin:
             # separados). Segmentos vazios filtrados; trim no fim de cada
             # segmento para não duplicar quebras de linha.
             content = "\n\n".join(
-                "".join(seg).rstrip() for seg in text_segments if any(s.strip() for s in seg)
+                "".join(seg).rstrip()
+                for seg in text_segments
+                if any(s.strip() for s in seg)
             )
 
             # Validation gate — runs once at end. Pass only `collected_tool_results`
@@ -333,8 +364,7 @@ class AgentStreamingMixin:
             # < 1 ms — emitting the spinner is noise and can interfere with the
             # terminal's last text chunk rendering.
             _gate_might_fire = bool(collected_tool_results) or (
-                len(content) <= 500
-                and self._contains_promise_pattern(content)
+                len(content) <= 500 and self._contains_promise_pattern(content)
             )
             if _gate_might_fire:
                 yield UnifiedStreamEvent(
@@ -401,9 +431,7 @@ class AgentStreamingMixin:
 
         except Exception as exc:
             self._status = AgentStatus.ERROR
-            self.logger.error(
-                f"Streaming turn failed: {exc}", exc_info=True
-            )
+            self.logger.error(f"Streaming turn failed: {exc}", exc_info=True)
             # Issue #303 fase 4 — registra erro no span/metrics.
             _record_turn_error(_turn_span, exc, component="process_input_stream")
             # Surface BudgetExceeded / FORCED_MODEL with structured metadata
@@ -413,7 +441,10 @@ class AgentStreamingMixin:
                 err_meta["budget_exceeded"] = True
                 err_meta["provider_id"] = getattr(exc, "provider_id", None)
                 err_meta["limit_type"] = getattr(exc, "limit_type", None)
-            if isinstance(exc, ModelError) and getattr(exc, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
+            if (
+                isinstance(exc, ModelError)
+                and getattr(exc, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED"
+            ):
                 err_meta["forced_model_not_registered"] = True
                 err_meta["error_code"] = "FORCED_MODEL_NOT_REGISTERED"
             err_meta["message"] = str(exc)
@@ -427,9 +458,12 @@ class AgentStreamingMixin:
             _finalize_turn_span(
                 _turn_span_cm,
                 duration_ms=int((time.time() - start_time) * 1000),
-                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+                persona=(
+                    str(self.current_persona)
+                    if getattr(self, "current_persona", None)
+                    else ""
+                ),
             )
-
 
     async def _stream_chat_with_tools(
         self,
@@ -451,13 +485,15 @@ class AgentStreamingMixin:
         re-issue the turn.
         """
         from deile.core.models.base import ModelMessage as _MM
-        from deile.core.models.stream_events import (StreamEventType,
-                                                     UnifiedStreamEvent)
+        from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
         from deile.core.tool_loop_executor import ToolLoopExecutor
         from deile.events.event_bus import Event, EventPriority, EventType
 
-        from .agent import (AgentStatus, _record_model_used,
-                            _select_configured_model_provider)
+        from .agent import (
+            AgentStatus,
+            _record_model_used,
+            _select_configured_model_provider,
+        )
 
         self._status = AgentStatus.GENERATING_RESPONSE
 
@@ -494,6 +530,7 @@ class AgentStreamingMixin:
         model_tier: Optional[Any] = None
         try:
             from deile.core.intent_tier_mapper import classify_tier
+
             intent_result = await self.intent_analyzer.analyze(
                 user_input=user_input,
                 parse_result=parse_result,
@@ -514,7 +551,9 @@ class AgentStreamingMixin:
         )
         if model_provider is None:
             model_provider = await self.model_router.select_provider(
-                context=context, session=session, tier=model_tier,
+                context=context,
+                session=session,
+                tier=model_tier,
             )
 
         # Budget guard
@@ -523,12 +562,19 @@ class AgentStreamingMixin:
             stage=get_stage_message("budget_guard", "initial"),
         )
         try:
-            from deile.storage.usage_repository import (BudgetExceeded,
-                                                        BudgetGuard,
-                                                        get_usage_repository)
+            from deile.storage.usage_repository import (
+                BudgetExceeded,
+                BudgetGuard,
+                get_usage_repository,
+            )
+
             _guard: Any = getattr(self, "_budget_guard_singleton", None)
             if _guard is None:
-                _yaml = Path(__file__).resolve().parents[1] / "config" / "model_providers.yaml"
+                _yaml = (
+                    Path(__file__).resolve().parents[1]
+                    / "config"
+                    / "model_providers.yaml"
+                )
                 try:
                     self._budget_guard_singleton = BudgetGuard.from_yaml(
                         _yaml, get_usage_repository()
@@ -568,15 +614,16 @@ class AgentStreamingMixin:
             messages_for_provider = [_MM(role="user", content=user_input)]
 
         tools = [
-            t.schema for t in self.tool_registry.list_enabled()
+            t.schema
+            for t in self.tool_registry.list_enabled()
             if getattr(t, "schema", None) is not None
         ]
 
         # EventBus publisher — best-effort, non-blocking.
         async def _publish_tool_event(kind: str, name: str, **kw: Any) -> None:
             try:
-                from deile.events.event_bus import \
-                    get_event_bus  # type: ignore
+                from deile.events.event_bus import get_event_bus  # type: ignore
+
                 bus = get_event_bus()
                 kind_to_event = {
                     "invoked": EventType.TOOL_INVOKED,
@@ -619,6 +666,7 @@ class AgentStreamingMixin:
         # tool e restaura o estado anterior. Best-effort: nunca quebra o turno.
         try:
             from deile.runtime.instance_state import get_instance_state
+
             _istate_stream = get_instance_state()
             _istate_stream.update_action(
                 "llm_call",
@@ -646,7 +694,6 @@ class AgentStreamingMixin:
                     _istate_stream.clear_action()
                 except Exception:  # noqa: BLE001
                     pass
-
 
     async def process_input_structured(
         self,
@@ -694,7 +741,6 @@ class AgentStreamingMixin:
             status=getattr(response.status, "value", "idle"),
         )
 
-
     async def process_input_stream_chunks(
         self,
         user_input: str,
@@ -717,8 +763,9 @@ class AgentStreamingMixin:
             session = self._get_or_create_session(session_id, **session_kwargs)
             if extra_system_prompt is not None:
                 from deile.core.bot_hooks import sanitize_extra_system_prompt
-                session.context_data["extra_system_prompt"] = sanitize_extra_system_prompt(
-                    str(extra_system_prompt)
+
+                session.context_data["extra_system_prompt"] = (
+                    sanitize_extra_system_prompt(str(extra_system_prompt))
                 )
             if bot_context is not None:
                 session.context_data["bot_context"] = dict(bot_context)
@@ -734,14 +781,14 @@ class AgentStreamingMixin:
                 etype = getattr(evt, "type", None)
                 if etype is None:
                     continue
-                name = getattr(etype, "name", None) or getattr(etype, "value", str(etype))
+                name = getattr(etype, "name", None) or getattr(
+                    etype, "value", str(etype)
+                )
                 if name in ("TEXT_DELTA", "text_delta"):
                     text = getattr(evt, "text", "") or ""
                     if text:
                         accumulated_text += text
-                        yield StreamChunk(
-                            "text", {"text": text, "incremental": True}
-                        )
+                        yield StreamChunk("text", {"text": text, "incremental": True})
                 elif name in ("TOOL_INVOKED", "tool_invoked"):
                     yield StreamChunk(
                         "tool_call_started",
@@ -782,4 +829,3 @@ class AgentStreamingMixin:
                 "model_used": last_model,
             },
         )
-

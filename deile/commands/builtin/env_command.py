@@ -32,13 +32,16 @@ class EnvCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
-        super().__init__(CommandConfig(
-            name="env",
-            description=(
-                "Manage environment variables stored securely in ~/.deile/settings.json "
-                "(replaces .env files)."
-            ),
-        ))
+
+        super().__init__(
+            CommandConfig(
+                name="env",
+                description=(
+                    "Manage environment variables stored securely in ~/.deile/settings.json "
+                    "(replaces .env files)."
+                ),
+            )
+        )
 
     async def execute(self, context: CommandContext) -> CommandResult:
         args = (getattr(context, "args", "") or "").strip()
@@ -103,7 +106,9 @@ class EnvCommand(DirectCommand):
         except (ValueError, TypeError) as exc:
             return CommandResult.error_result("Cannot store variable: {}".format(exc))
         except Exception as exc:
-            return CommandResult.error_result("Failed to store variable: {}".format(exc))
+            return CommandResult.error_result(
+                "Failed to store variable: {}".format(exc)
+            )
 
         if ok:
             display = "<masked>" if is_sensitive(key) else repr(value)
@@ -125,7 +130,9 @@ class EnvCommand(DirectCommand):
         except ValueError as exc:
             return CommandResult.error_result("Cannot unset variable: {}".format(exc))
         except Exception as exc:
-            return CommandResult.error_result("Failed to unset variable: {}".format(exc))
+            return CommandResult.error_result(
+                "Failed to unset variable: {}".format(exc)
+            )
 
         if existed:
             return CommandResult.success_result(

@@ -144,7 +144,7 @@ class ProbeResult:
 def _extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
     """Pull tool_name + data out of each ToolResult in *response.tool_results*."""
     out: List[Dict[str, Any]] = []
-    for tr in (getattr(response, "tool_results", None) or []):
+    for tr in getattr(response, "tool_results", None) or []:
         meta = getattr(tr, "metadata", None) or {}
         name = (
             getattr(tr, "tool_name", None)
@@ -227,10 +227,13 @@ async def main() -> int:
     await agent.initialize()
 
     from deile.skills.registry import get_skill_registry
+
     names = get_skill_registry().list_names()
     print(f"skills loaded: {names}")
-    print(f"tools registered (filter skill_*): "
-          f"{[t.name for t in agent.tool_registry.list_all() if 'skill' in t.name]}")
+    print(
+        f"tools registered (filter skill_*): "
+        f"{[t.name for t in agent.tool_registry.list_all() if 'skill' in t.name]}"
+    )
     print("=" * 80)
 
     results: List[ProbeResult] = []
@@ -242,8 +245,12 @@ async def main() -> int:
         verdict = "PASS" if r.passed else ("ERR " if r.error else "FAIL")
         print(f"  {verdict} [{r.duration_s:5.1f}s]")
         print(f"       tool_calls: {r.tool_calls}")
-        print(f"       invoke_skill_called={r.invoke_skill_called} arg={r.invoke_skill_arg!r}")
-        print(f"       body_marker '{probe.body_marker}' present? {r.body_marker_present}")
+        print(
+            f"       invoke_skill_called={r.invoke_skill_called} arg={r.invoke_skill_arg!r}"
+        )
+        print(
+            f"       body_marker '{probe.body_marker}' present? {r.body_marker_present}"
+        )
         if r.error:
             print(f"       err: {r.error}")
         if r.response_preview:

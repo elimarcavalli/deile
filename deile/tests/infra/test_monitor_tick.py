@@ -4,6 +4,7 @@ Covers the tick lifecycle: kill-switch + auto-resume, steer-command processing,
 the tick summary emit, and the Phase-B escalation decision (judgment file written
 only when V8 follow-up candidates survive). Vigias run against a fake runner.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,6 +23,7 @@ if _INFRA not in sys.path:
 @pytest.fixture
 def tick():
     import monitor_tick
+
     return monitor_tick
 
 
@@ -36,6 +38,7 @@ class FakeRunner:
 
     def __call__(self, args, **kwargs):
         from monitor_core import CmdResult
+
         joined = " ".join(args)
         self.calls.append(joined)
         for needle, (rc, out) in self.table.items():
@@ -46,7 +49,10 @@ class FakeRunner:
 
 async def _renew_ok():
     from types import SimpleNamespace
-    return SimpleNamespace(ok=True, error=None, message="ok", seconds_until_new_expiry=3600)
+
+    return SimpleNamespace(
+        ok=True, error=None, message="ok", seconds_until_new_expiry=3600
+    )
 
 
 def _state_dir(tmp_path):
@@ -58,10 +64,17 @@ def _state_dir(tmp_path):
 async def _run(tick, state_dir, *, now, runner=None, **kw):
     runner = runner or FakeRunner()
     return await tick.run_tick(
-        str(state_dir), now=now, run=runner, renew=_renew_ok,
-        repo="elimarcavalli/deile", namespace="deile",
-        bot_endpoint="http://deilebot:8765", bot_token="t", user_id="",
-        kube_probe=lambda ep: 0, **kw,
+        str(state_dir),
+        now=now,
+        run=runner,
+        renew=_renew_ok,
+        repo="elimarcavalli/deile",
+        namespace="deile",
+        bot_endpoint="http://deilebot:8765",
+        bot_token="t",
+        user_id="",
+        kube_probe=lambda ep: 0,
+        **kw,
     )
 
 
@@ -69,10 +82,13 @@ async def _run(tick, state_dir, *, now, runner=None, **kw):
 # Kill-switch / auto-resume
 # ---------------------------------------------------------------------------
 
+
 async def test_kill_switch_active_exits_early(tick, tmp_path):
     sd = _state_dir(tmp_path)
     (sd / "monitor-pause").write_text("")
-    json.dump({"paused_until": "2026-06-02T23:00:00Z"}, open(sd / "monitor-state.json", "w"))
+    json.dump(
+        {"paused_until": "2026-06-02T23:00:00Z"}, open(sd / "monitor-state.json", "w")
+    )
     runner = FakeRunner()
     res = await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0), runner=runner)
     assert res["paused"] is True
@@ -83,7 +99,9 @@ async def test_kill_switch_active_exits_early(tick, tmp_path):
 async def test_auto_resume_when_pause_expired(tick, tmp_path, capsys):
     sd = _state_dir(tmp_path)
     (sd / "monitor-pause").write_text("")
-    json.dump({"paused_until": "2026-06-02T10:00:00Z"}, open(sd / "monitor-state.json", "w"))
+    json.dump(
+        {"paused_until": "2026-06-02T10:00:00Z"}, open(sd / "monitor-state.json", "w")
+    )
     res = await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0))
     assert res["paused"] is False
     assert not (sd / "monitor-pause").exists()
@@ -95,6 +113,7 @@ async def test_auto_resume_when_pause_expired(tick, tmp_path, capsys):
 # Steer commands
 # ---------------------------------------------------------------------------
 
+
 async def test_steer_resume_lifts_active_pause(tick, tmp_path, capsys):
     """Queued 'resume' command must lift a timed pause that has not yet expired.
 
@@ -104,7 +123,9 @@ async def test_steer_resume_lifts_active_pause(tick, tmp_path, capsys):
     """
     sd = _state_dir(tmp_path)
     (sd / "monitor-pause").write_text("")
-    json.dump({"paused_until": "2026-06-02T23:00:00Z"}, open(sd / "monitor-state.json", "w"))
+    json.dump(
+        {"paused_until": "2026-06-02T23:00:00Z"}, open(sd / "monitor-state.json", "w")
+    )
     (sd / "monitor-commands" / "cmd1").write_text("resume")
     res = await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0))
     assert res["paused"] is False
@@ -127,12 +148,16 @@ async def test_steer_pause_creates_flag_and_consumes_file(tick, tmp_path, capsys
 
 async def test_steer_ack_sets_acked_until(tick, tmp_path):
     sd = _state_dir(tmp_path)
-    json.dump({"known_anomalies": {"orphan_437": {"count": 3}}},
-              open(sd / "monitor-state.json", "w"))
+    json.dump(
+        {"known_anomalies": {"orphan_437": {"count": 3}}},
+        open(sd / "monitor-state.json", "w"),
+    )
     (sd / "monitor-commands" / "c").write_text("ack orphan_437")
     await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0))
     state = json.load(open(sd / "monitor-state.json"))
-    assert state["known_anomalies"]["orphan_437"]["acked_until"] == "2026-06-03T11:00:00Z"
+    assert (
+        state["known_anomalies"]["orphan_437"]["acked_until"] == "2026-06-03T11:00:00Z"
+    )
 
 
 async def test_steer_unknown_command_emits_unknown(tick, tmp_path, capsys):
@@ -145,6 +170,7 @@ async def test_steer_unknown_command_emits_unknown(tick, tmp_path, capsys):
 # ---------------------------------------------------------------------------
 # Tick summary + counter
 # ---------------------------------------------------------------------------
+
 
 async def test_tick_emits_summary_and_increments_counter(tick, tmp_path, capsys):
     sd = _state_dir(tmp_path)
@@ -159,6 +185,7 @@ async def test_tick_emits_summary_and_increments_counter(tick, tmp_path, capsys)
 # Phase B escalation
 # ---------------------------------------------------------------------------
 
+
 async def test_no_phase_b_when_quiet(tick, tmp_path):
     sd = _state_dir(tmp_path)
     res = await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0))
@@ -168,13 +195,22 @@ async def test_no_phase_b_when_quiet(tick, tmp_path):
 
 async def test_phase_b_written_when_fu_candidate(tick, tmp_path):
     sd = _state_dir(tmp_path)
-    closed = [{"number": 445, "title": "X", "body": "vou abrir uma issue para o resto",
-               "closed_at": "2026-06-02T09:00:00Z", "user": {"login": "human"}}]
-    runner = FakeRunner({
-        "issues -f state=closed": (0, json.dumps(closed)),
-        "issues/445/comments": (0, "[]"),
-        "pulls -f state=closed": (0, "[]"),
-    })
+    closed = [
+        {
+            "number": 445,
+            "title": "X",
+            "body": "vou abrir uma issue para o resto",
+            "closed_at": "2026-06-02T09:00:00Z",
+            "user": {"login": "human"},
+        }
+    ]
+    runner = FakeRunner(
+        {
+            "issues -f state=closed": (0, json.dumps(closed)),
+            "issues/445/comments": (0, "[]"),
+            "pulls -f state=closed": (0, "[]"),
+        }
+    )
     res = await _run(tick, sd, now=_utc(2026, 6, 2, 11, 0, 0), runner=runner)
     assert res["needs_phase_b"] is True
     payload = json.load(open(sd / "monitor-judgment.json"))
@@ -185,12 +221,19 @@ async def test_phase_b_written_when_fu_candidate(tick, tmp_path):
 # parse_duration_s
 # ---------------------------------------------------------------------------
 
+
 async def test_kube_unreachable_skips_with_v_token(tick, tmp_path, capsys):
     sd = _state_dir(tmp_path)
     await tick.run_tick(
-        str(sd), now=_utc(2026, 6, 2, 11, 0, 0), run=FakeRunner(), renew=_renew_ok,
-        repo="elimarcavalli/deile", namespace="deile",
-        bot_endpoint="http://deilebot:8765", bot_token="t", user_id="",
+        str(sd),
+        now=_utc(2026, 6, 2, 11, 0, 0),
+        run=FakeRunner(),
+        renew=_renew_ok,
+        repo="elimarcavalli/deile",
+        namespace="deile",
+        bot_endpoint="http://deilebot:8765",
+        bot_token="t",
+        user_id="",
         kube_probe=lambda ep: 1,  # all endpoints unreachable
     )
     out = capsys.readouterr().out
@@ -210,15 +253,22 @@ def test_parse_duration_s(tick, s, expected):
 # default. Exercises run_tick → MonitorContext → vigias (the real path).
 # ---------------------------------------------------------------------------
 
+
 async def test_injected_repo_reaches_gh_call_site(tick, tmp_path):
     """A tick run with a neutral repo must issue gh calls against THAT repo —
     never the hardcoded ``elimarcavalli/deile``."""
     sd = _state_dir(tmp_path)
     runner = FakeRunner()
     await tick.run_tick(
-        str(sd), now=_utc(2026, 6, 2, 11, 0, 0), run=runner, renew=_renew_ok,
-        repo="acme/neutral-project", namespace="deile",
-        bot_endpoint="http://deilebot:8765", bot_token="t", user_id="",
+        str(sd),
+        now=_utc(2026, 6, 2, 11, 0, 0),
+        run=runner,
+        renew=_renew_ok,
+        repo="acme/neutral-project",
+        namespace="deile",
+        bot_endpoint="http://deilebot:8765",
+        bot_token="t",
+        user_id="",
         kube_probe=lambda ep: 0,  # kube reachable → kube-dependent vigias run
     )
     gh_calls = [c for c in runner.calls if "repos/" in c]
@@ -233,17 +283,32 @@ async def test_judgment_file_carries_injected_repo(tick, tmp_path, monkeypatch):
     independent env re-read."""
     monkeypatch.setenv("DEILE_PIPELINE_REPO", "acme/neutral-project")
     sd = _state_dir(tmp_path)
-    closed = [{"number": 50, "title": "X", "body": "vou abrir uma issue para o resto",
-               "closed_at": "2026-06-02T09:00:00Z", "user": {"login": "human"}}]
-    runner = FakeRunner({
-        "issues -f state=closed": (0, json.dumps(closed)),
-        "issues/50/comments": (0, "[]"),
-        "pulls -f state=closed": (0, "[]"),
-    })
+    closed = [
+        {
+            "number": 50,
+            "title": "X",
+            "body": "vou abrir uma issue para o resto",
+            "closed_at": "2026-06-02T09:00:00Z",
+            "user": {"login": "human"},
+        }
+    ]
+    runner = FakeRunner(
+        {
+            "issues -f state=closed": (0, json.dumps(closed)),
+            "issues/50/comments": (0, "[]"),
+            "pulls -f state=closed": (0, "[]"),
+        }
+    )
     await tick.run_tick(
-        str(sd), now=_utc(2026, 6, 2, 11, 0, 0), run=runner, renew=_renew_ok,
-        repo="acme/neutral-project", namespace="deile",
-        bot_endpoint="http://deilebot:8765", bot_token="t", user_id="",
+        str(sd),
+        now=_utc(2026, 6, 2, 11, 0, 0),
+        run=runner,
+        renew=_renew_ok,
+        repo="acme/neutral-project",
+        namespace="deile",
+        bot_endpoint="http://deilebot:8765",
+        bot_token="t",
+        user_id="",
         kube_probe=lambda ep: 0,
     )
     payload = json.load(open(sd / "monitor-judgment.json"))
@@ -259,9 +324,11 @@ async def test_judgment_file_carries_injected_repo(tick, tmp_path, monkeypatch):
 # never-crash contract of _resolve_repo().
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def _isolate_settings(monkeypatch, tmp_path):
     from deile.config.settings import reset_settings
+
     monkeypatch.setenv("DEILE_SETTINGS_FILE", str(tmp_path / "absent.json"))
     monkeypatch.delenv("DEILE_FORGE_REPO", raising=False)
     monkeypatch.delenv("DEILE_PIPELINE_REPO", raising=False)
@@ -274,6 +341,7 @@ def test_resolve_repo_prefers_canonical_settings(tick, _isolate_settings, monkey
     """forge.repo (canonical) wins even when the legacy env points elsewhere —
     the monitor no longer diverges from the rest of the harness."""
     from deile.config.settings import get_settings
+
     get_settings().forge_repo = "acme/canonical"
     monkeypatch.setenv("DEILE_PIPELINE_REPO", "stale/legacy")
     assert tick._resolve_repo() == "acme/canonical"

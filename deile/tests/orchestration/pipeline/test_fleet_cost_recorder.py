@@ -23,7 +23,9 @@ from __future__ import annotations
 import pytest
 
 from deile.orchestration.pipeline.fleet_cost_recorder import (
-    record_fleet_usage, record_fleet_usage_from_resume_info)
+    record_fleet_usage,
+    record_fleet_usage_from_resume_info,
+)
 from deile.storage.usage_repository import UsageRepository
 
 
@@ -50,14 +52,20 @@ def test_wait_path_writes_one_record_with_correct_schema(repo):
             "model": "deepseek/deepseek-v4-pro",
             "tokens_by_model": {
                 "deepseek/deepseek-v4-pro": {
-                    "in": 1500, "out": 300, "cache_read": 21415, "cache_write": 100,
+                    "in": 1500,
+                    "out": 300,
+                    "cache_read": 21415,
+                    "cache_write": 100,
                 },
             },
         },
     }
     n = record_fleet_usage(
-        response, worker_kind="opencode", stage="implement",
-        channel_id="pipeline-issue-242", cli_model="deepseek/deepseek-v4-pro",
+        response,
+        worker_kind="opencode",
+        stage="implement",
+        channel_id="pipeline-issue-242",
+        cli_model="deepseek/deepseek-v4-pro",
         repo=repo,
     )
     assert n == 1
@@ -84,13 +92,18 @@ def test_cost_uses_single_price_source(repo):
     response = {
         "ok": True,
         "usage": {
-            "worker": "qwen", "model": "deepseek-v4-pro",
+            "worker": "qwen",
+            "model": "deepseek-v4-pro",
             "tokens_by_model": {"deepseek-v4-pro": {"in": 1_000_000, "out": 0}},
         },
     }
     record_fleet_usage(
-        response, worker_kind="qwen", stage="pr_review",
-        channel_id="pipeline-pr-9", cli_model="deepseek-v4-pro", repo=repo,
+        response,
+        worker_kind="qwen",
+        stage="pr_review",
+        channel_id="pipeline-pr-9",
+        cli_model="deepseek-v4-pro",
+        repo=repo,
     )
     r = _all_records(repo)[0]
     assert abs(r["cost_usd"] - 0.435) < 1e-6
@@ -101,7 +114,8 @@ def test_multi_model_dispatch_writes_n_records(repo):
     response = {
         "ok": True,
         "usage": {
-            "worker": "codex", "model": "gpt-5.1-codex",
+            "worker": "codex",
+            "model": "gpt-5.1-codex",
             "tokens_by_model": {
                 "gpt-5.1-codex": {"in": 1000, "out": 200},
                 "gpt-5.1-codex-mini": {"in": 500, "out": 50},
@@ -109,8 +123,12 @@ def test_multi_model_dispatch_writes_n_records(repo):
         },
     }
     n = record_fleet_usage(
-        response, worker_kind="codex", stage="implement",
-        channel_id="pipeline-issue-1", cli_model="gpt-5.1-codex", repo=repo,
+        response,
+        worker_kind="codex",
+        stage="implement",
+        channel_id="pipeline-issue-1",
+        cli_model="gpt-5.1-codex",
+        repo=repo,
     )
     assert n == 2
     models = {r["model_id"] for r in _all_records(repo)}
@@ -124,13 +142,17 @@ def test_model_unknown_falls_back_to_cli_model(repo):
     response = {
         "ok": True,
         "usage": {
-            "worker": "goose", "model": "",
+            "worker": "goose",
+            "model": "",
             "tokens_by_model": {"unknown": {"in": 2000, "out": 6000}},
         },
     }
     record_fleet_usage(
-        response, worker_kind="goose", stage="implement",
-        channel_id="pipeline-issue-7", cli_model="deepseek/deepseek-v4-flash",
+        response,
+        worker_kind="goose",
+        stage="implement",
+        channel_id="pipeline-issue-7",
+        cli_model="deepseek/deepseek-v4-flash",
         repo=repo,
     )
     r = _all_records(repo)[0]
@@ -142,14 +164,22 @@ def test_zero_token_models_are_skipped(repo):
     response = {
         "ok": True,
         "usage": {
-            "worker": "qwen", "model": "qwen3-coder-plus",
+            "worker": "qwen",
+            "model": "qwen3-coder-plus",
             "tokens_by_model": {"qwen3-coder-plus": {"in": 0, "out": 0}},
         },
     }
-    assert record_fleet_usage(
-        response, worker_kind="qwen", stage="classify",
-        channel_id="pipeline-issue-3", cli_model="qwen3-coder-plus", repo=repo,
-    ) == 0
+    assert (
+        record_fleet_usage(
+            response,
+            worker_kind="qwen",
+            stage="classify",
+            channel_id="pipeline-issue-3",
+            cli_model="qwen3-coder-plus",
+            repo=repo,
+        )
+        == 0
+    )
     assert _all_records(repo) == []
 
 
@@ -159,13 +189,18 @@ def test_worker_from_usage_block_prevails_over_kwarg(repo):
     response = {
         "ok": True,
         "usage": {
-            "worker": "opencode", "model": "x/y",
+            "worker": "opencode",
+            "model": "x/y",
             "tokens_by_model": {"x/y": {"in": 10, "out": 5}},
         },
     }
     record_fleet_usage(
-        response, worker_kind="WRONG", stage="implement",
-        channel_id="c", cli_model=None, repo=repo,
+        response,
+        worker_kind="WRONG",
+        stage="implement",
+        channel_id="c",
+        cli_model=None,
+        repo=repo,
     )
     assert _all_records(repo)[0]["provider_id"] == "opencode"
 
@@ -175,14 +210,28 @@ def test_worker_from_usage_block_prevails_over_kwarg(repo):
 # --------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_no_usage_block_is_noop(repo):
-    assert record_fleet_usage(
-        {"ok": True}, worker_kind="opencode", stage="implement",
-        channel_id="c", cli_model=None, repo=repo,
-    ) == 0
-    assert record_fleet_usage(
-        "not a dict", worker_kind="opencode", stage="implement",
-        channel_id="c", cli_model=None, repo=repo,
-    ) == 0
+    assert (
+        record_fleet_usage(
+            {"ok": True},
+            worker_kind="opencode",
+            stage="implement",
+            channel_id="c",
+            cli_model=None,
+            repo=repo,
+        )
+        == 0
+    )
+    assert (
+        record_fleet_usage(
+            "not a dict",
+            worker_kind="opencode",
+            stage="implement",
+            channel_id="c",
+            cli_model=None,
+            repo=repo,
+        )
+        == 0
+    )
 
 
 @pytest.mark.unit
@@ -193,14 +242,24 @@ def test_repo_failure_is_swallowed(repo):
 
     response = {
         "ok": True,
-        "usage": {"worker": "opencode", "model": "x/y",
-                  "tokens_by_model": {"x/y": {"in": 1, "out": 1}}},
+        "usage": {
+            "worker": "opencode",
+            "model": "x/y",
+            "tokens_by_model": {"x/y": {"in": 1, "out": 1}},
+        },
     }
     # NÃO deve propagar — retorna 0.
-    assert record_fleet_usage(
-        response, worker_kind="opencode", stage="implement",
-        channel_id="c", cli_model=None, repo=_BoomRepo(),
-    ) == 0
+    assert (
+        record_fleet_usage(
+            response,
+            worker_kind="opencode",
+            stage="implement",
+            channel_id="c",
+            cli_model=None,
+            repo=_BoomRepo(),
+        )
+        == 0
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -217,8 +276,12 @@ def test_resume_info_path_writes_and_dedups(repo):
         },
     }
     n1 = record_fleet_usage_from_resume_info(
-        info, worker_kind="qwen", stage="implement",
-        channel_id="pipeline-issue-50", task_id="abc123", repo=repo,
+        info,
+        worker_kind="qwen",
+        stage="implement",
+        channel_id="pipeline-issue-50",
+        task_id="abc123",
+        repo=repo,
     )
     assert n1 == 1
     r = _all_records(repo)[0]
@@ -227,8 +290,12 @@ def test_resume_info_path_writes_and_dedups(repo):
     assert r["provider_id"] == "qwen" and r["tier"] == "implement"
     # Segunda chamada (próximo tick) → no-op idempotente.
     n2 = record_fleet_usage_from_resume_info(
-        info, worker_kind="qwen", stage="implement",
-        channel_id="pipeline-issue-50", task_id="abc123", repo=repo,
+        info,
+        worker_kind="qwen",
+        stage="implement",
+        channel_id="pipeline-issue-50",
+        task_id="abc123",
+        repo=repo,
     )
     assert n2 == 0
     assert len(_all_records(repo)) == 1
@@ -237,7 +304,14 @@ def test_resume_info_path_writes_and_dedups(repo):
 @pytest.mark.unit
 def test_resume_info_without_usage_is_noop(repo):
     # claude/deile resume-info não trazem bloco usage → 0.
-    assert record_fleet_usage_from_resume_info(
-        {"last_is_error": False}, worker_kind="claude", stage="implement",
-        channel_id="pipeline-issue-9", task_id="t", repo=repo,
-    ) == 0
+    assert (
+        record_fleet_usage_from_resume_info(
+            {"last_is_error": False},
+            worker_kind="claude",
+            stage="implement",
+            channel_id="pipeline-issue-9",
+            task_id="t",
+            repo=repo,
+        )
+        == 0
+    )

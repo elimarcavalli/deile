@@ -10,6 +10,7 @@ Usage:
 
 Requires at least one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, GOOGLE_API_KEY
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -43,9 +44,11 @@ def _report(label: str, ok: bool, detail: str = "") -> None:
 
 # ─── bootstrap ──────────────────────────────────────────────────────────────
 
+
 async def _bootstrap_agent():
     try:
         from dotenv import load_dotenv
+
         load_dotenv()
     except ImportError:
         pass
@@ -58,7 +61,9 @@ async def _bootstrap_agent():
     ConfigManager().load_config()
     registered = bootstrap_providers(router=get_model_router())
     if not registered:
-        raise RuntimeError(f"No providers registered — check API keys. registered={registered}")
+        raise RuntimeError(
+            f"No providers registered — check API keys. registered={registered}"
+        )
     print(f"  Providers registered: {registered}")
     agent = DeileAgent()
     await agent.initialize()
@@ -67,11 +72,15 @@ async def _bootstrap_agent():
 
 # ─── pipeline factory ───────────────────────────────────────────────────────
 
+
 async def _make_pipeline(store, agent, *, settings=None):
 
     from deilebot._testing import FakeAgentMetaProvider, FakeProviderAdapter
-    from deilebot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
-                                                  AgentResponse)
+    from deilebot.foundation.agent_bridge import (
+        AgentBridge,
+        AgentInvocation,
+        AgentResponse,
+    )
     from deilebot.foundation.audit import BotAuditLogger
     from deilebot.foundation.capabilities import CapabilityCatalog
     from deilebot.foundation.dlq import DeadLetterQueue
@@ -112,11 +121,15 @@ async def _make_pipeline(store, agent, *, settings=None):
                 text=text,
                 markup=MarkupAST.from_plain(text),
                 elapsed_ms=elapsed_ms,
-                model_used=getattr(response, "metadata", {}).get("model", "")
-                    if hasattr(response, "metadata") else "",
+                model_used=(
+                    getattr(response, "metadata", {}).get("model", "")
+                    if hasattr(response, "metadata")
+                    else ""
+                ),
             )
 
     from deilebot.foundation.settings import get_bot_settings
+
     s = settings or get_bot_settings()
     identity = IdentityResolver(store)
     perms = PermissionGate(s, identity)
@@ -157,12 +170,17 @@ async def _make_pipeline(store, agent, *, settings=None):
 
 # ─── envelope factories ─────────────────────────────────────────────────────
 
+
 def _dm_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope":
     from datetime import datetime, timezone
     from types import MappingProxyType
 
-    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
-                                              MessageEnvelope)
+    from deilebot.foundation.envelope import (
+        BotUser,
+        Channel,
+        ChannelScope,
+        MessageEnvelope,
+    )
 
     from deile.common.markup_ast import MarkupAST
 
@@ -187,20 +205,33 @@ def _dm_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope"
     )
 
 
-def _group_envelope(text: str, *, mention_bot_id: str = "", user_id: str = "test-user-001") -> "MessageEnvelope":
+def _group_envelope(
+    text: str, *, mention_bot_id: str = "", user_id: str = "test-user-001"
+) -> "MessageEnvelope":
     from datetime import datetime, timezone
     from types import MappingProxyType
 
-    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
-                                              MessageEnvelope)
+    from deilebot.foundation.envelope import (
+        BotUser,
+        Channel,
+        ChannelScope,
+        MessageEnvelope,
+    )
 
     from deile.common.markup_ast import MarkupAST
 
     mentions = ()
     if mention_bot_id:
         from deilebot.foundation.envelope import BotUser as _BU
-        mentions = (_BU(bot_user_id=mention_bot_id, provider="fake",
-                        provider_user_id=mention_bot_id, display_name="DEILE"),)
+
+        mentions = (
+            _BU(
+                bot_user_id=mention_bot_id,
+                provider="fake",
+                provider_user_id=mention_bot_id,
+                display_name="DEILE",
+            ),
+        )
 
     return MessageEnvelope(
         message_id=f"msg-{int(time.time()*1000)}",
@@ -228,8 +259,12 @@ def _slash_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelo
     from datetime import datetime, timezone
     from types import MappingProxyType
 
-    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
-                                              MessageEnvelope)
+    from deilebot.foundation.envelope import (
+        BotUser,
+        Channel,
+        ChannelScope,
+        MessageEnvelope,
+    )
 
     from deile.common.markup_ast import MarkupAST
 
@@ -256,14 +291,18 @@ def _slash_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelo
 
 # ─── runners (not test_* — standalone runner called from _run_all, not pytest) ─
 
+
 async def run_01_dm_basic_response(pipeline, adapter):
     """DM → agent must reply with non-empty text."""
     env = _dm_envelope("olá! diga uma frase curta de apresentação")
     await pipeline.handle(env, adapter)
     sent = adapter.inbox
     ok = len(sent) > 0 and any(len(m.get("text", "")) > 5 for m in sent)
-    _report("T01 DM basic response", ok,
-            f"msgs_sent={len(sent)} first={sent[0]['text'][:80] if sent else '(none)'!r}")
+    _report(
+        "T01 DM basic response",
+        ok,
+        f"msgs_sent={len(sent)} first={sent[0]['text'][:80] if sent else '(none)'!r}",
+    )
     return ok
 
 
@@ -273,8 +312,11 @@ async def run_02_group_no_mention_ignored(pipeline, adapter):
     env = _group_envelope("que horas são agora?", user_id="user-002")
     await pipeline.handle(env, adapter)
     ok = len(adapter.inbox) == 0
-    _report("T02 GROUP no-mention ignored", ok,
-            f"msgs_sent={len(adapter.inbox)} (expected 0)")
+    _report(
+        "T02 GROUP no-mention ignored",
+        ok,
+        f"msgs_sent={len(adapter.inbox)} (expected 0)",
+    )
     return ok
 
 
@@ -282,13 +324,19 @@ async def run_03_group_with_mention_responds(pipeline, adapter):
     """Group message with bot mention → agent responds."""
     adapter.inbox.clear()
     # FakeProviderAdapter.self_user_id == "fake-bot-self"
-    env = _group_envelope("@DEILE responda: qual o capital da França?",
-                          mention_bot_id="fake-bot-self", user_id="user-003")
+    env = _group_envelope(
+        "@DEILE responda: qual o capital da França?",
+        mention_bot_id="fake-bot-self",
+        user_id="user-003",
+    )
     await pipeline.handle(env, adapter)
     sent = adapter.inbox
     ok = len(sent) > 0 and any(len(m.get("text", "")) > 5 for m in sent)
-    _report("T03 GROUP with mention responds", ok,
-            f"msgs_sent={len(sent)} first={sent[0]['text'][:80] if sent else '(none)'!r}")
+    _report(
+        "T03 GROUP with mention responds",
+        ok,
+        f"msgs_sent={len(sent)} first={sent[0]['text'][:80] if sent else '(none)'!r}",
+    )
     return ok
 
 
@@ -299,8 +347,11 @@ async def run_04_slash_force_respond(pipeline, adapter):
     await pipeline.handle(env, adapter)
     sent = adapter.inbox
     ok = len(sent) > 0 and any(len(m.get("text", "")) > 1 for m in sent)
-    _report("T04 slash force_respond", ok,
-            f"msgs_sent={len(sent)} first={sent[0]['text'][:80] if sent else '(none)'!r}")
+    _report(
+        "T04 slash force_respond",
+        ok,
+        f"msgs_sent={len(sent)} first={sent[0]['text'][:80] if sent else '(none)'!r}",
+    )
     return ok
 
 
@@ -317,8 +368,11 @@ async def run_05_dm_session_continuity(pipeline, adapter, bridge):
     sent = adapter.inbox
     text = " ".join(m.get("text", "") for m in sent).lower()
     ok = "marcos" in text or len(sent) > 0  # at minimum bot must respond
-    _report("T05 DM session continuity", ok,
-            f"reply contains 'marcos'={'marcos' in text} text={text[:100]!r}")
+    _report(
+        "T05 DM session continuity",
+        ok,
+        f"reply contains 'marcos'={'marcos' in text} text={text[:100]!r}",
+    )
     return ok
 
 
@@ -334,8 +388,12 @@ async def run_06_persona_dm_is_discord_developer(pipeline, adapter, bridge):
     from datetime import datetime, timezone
     from types import MappingProxyType
 
-    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
-                                              MessageEnvelope)
+    from deilebot.foundation.envelope import (
+        BotUser,
+        Channel,
+        ChannelScope,
+        MessageEnvelope,
+    )
 
     from deile.common.markup_ast import MarkupAST
 
@@ -364,8 +422,11 @@ async def run_06_persona_dm_is_discord_developer(pipeline, adapter, bridge):
     if ok:
         inv = bridge.invocations[-1]
         persona_ok = inv.persona == "discord_developer"
-        _report("T06 DM persona=discord_developer", persona_ok,
-                f"persona={inv.persona!r} (expected discord_developer)")
+        _report(
+            "T06 DM persona=discord_developer",
+            persona_ok,
+            f"persona={inv.persona!r} (expected discord_developer)",
+        )
         return persona_ok
     _report("T06 DM persona=discord_developer", False, "no invocation")
     return False
@@ -386,21 +447,29 @@ async def run_07_rate_limit_burst(pipeline, adapter):
     burst = 5  # matches foundation.rate_limit_user_burst in config/deilebot.yaml
     # Allow slightly above burst (global semaphore, timing jitter) but not 20.
     ok = responses <= burst + 3
-    _report("T07 rate limit burst (concurrent)", ok,
-            f"responses_with_20_concurrent={responses} (burst_quota={burst}, expected ≤{burst+3})")
+    _report(
+        "T07 rate limit burst (concurrent)",
+        ok,
+        f"responses_with_20_concurrent={responses} (burst_quota={burst}, expected ≤{burst+3})",
+    )
     return ok
 
 
 async def run_08_empty_message_ignored(pipeline, adapter):
     """Empty/whitespace DM → pipeline skips (too_short heuristic)."""
     adapter.inbox.clear()
-    _dm_envelope("hi", user_id="user-short-008")  # < 4 chars → too_short in GROUP, but DM returns True always
+    _dm_envelope(
+        "hi", user_id="user-short-008"
+    )  # < 4 chars → too_short in GROUP, but DM returns True always
     # DMs always return True regardless of length — so this tests GROUP instead
     env_grp = _group_envelope("ok", user_id="user-short-008")
     await pipeline.handle(env_grp, adapter)
     ok = len(adapter.inbox) == 0
-    _report("T08 short GROUP message ignored", ok,
-            f"msgs_sent={len(adapter.inbox)} (expected 0)")
+    _report(
+        "T08 short GROUP message ignored",
+        ok,
+        f"msgs_sent={len(adapter.inbox)} (expected 0)",
+    )
     return ok
 
 
@@ -439,12 +508,12 @@ async def run_10_multi_user_no_leak(pipeline, adapter, bridge):
     # Best-effort: check that bridge was invoked for 2 different sessions
     sessions = {inv.bot_user_id for inv in bridge.invocations}
     ok = len(sessions) >= 2
-    _report("T10 multi-user no session leak", ok,
-            f"distinct_sessions={sessions}")
+    _report("T10 multi-user no session leak", ok, f"distinct_sessions={sessions}")
     return ok
 
 
 # ─── main ────────────────────────────────────────────────────────────────────
+
 
 async def _run_all():
     import tempfile
@@ -466,22 +535,23 @@ async def _run_all():
     with tempfile.TemporaryDirectory() as tmpdir:
         store_path = Path(tmpdir) / "test.sqlite"
         from deilebot.foundation.conversation_store import ConversationStore
+
         store = ConversationStore(store_path)
         await store.init()
 
         pipeline, adapter, bridge = await _make_pipeline(store, agent)
 
         tests = [
-            (run_01_dm_basic_response,          [pipeline, adapter]),
-            (run_02_group_no_mention_ignored,   [pipeline, adapter]),
-            (run_03_group_with_mention_responds,[pipeline, adapter]),
-            (run_04_slash_force_respond,        [pipeline, adapter]),
-            (run_05_dm_session_continuity,      [pipeline, adapter, bridge]),
+            (run_01_dm_basic_response, [pipeline, adapter]),
+            (run_02_group_no_mention_ignored, [pipeline, adapter]),
+            (run_03_group_with_mention_responds, [pipeline, adapter]),
+            (run_04_slash_force_respond, [pipeline, adapter]),
+            (run_05_dm_session_continuity, [pipeline, adapter, bridge]),
             (run_06_persona_dm_is_discord_developer, [pipeline, adapter, bridge]),
-            (run_07_rate_limit_burst,           [pipeline, adapter]),
-            (run_08_empty_message_ignored,      [pipeline, adapter]),
-            (run_09_permission_blocklist,       [pipeline, adapter]),
-            (run_10_multi_user_no_leak,         [pipeline, adapter, bridge]),
+            (run_07_rate_limit_burst, [pipeline, adapter]),
+            (run_08_empty_message_ignored, [pipeline, adapter]),
+            (run_09_permission_blocklist, [pipeline, adapter]),
+            (run_10_multi_user_no_leak, [pipeline, adapter, bridge]),
         ]
 
         for fn, args in tests:
@@ -499,7 +569,10 @@ async def _run_all():
     failed = sum(1 for _, s, _ in _results if s == _FAIL)
     total = len(_results)
     print("════════════════════════════════════════════")
-    print(f"  Results: {passed}/{total} passed", f"  {_FAIL} {failed} failed" if failed else "")
+    print(
+        f"  Results: {passed}/{total} passed",
+        f"  {_FAIL} {failed} failed" if failed else "",
+    )
     print("════════════════════════════════════════════\n")
     sys.exit(0 if failed == 0 else 1)
 

@@ -32,6 +32,7 @@ logging.basicConfig(level=logging.WARNING)  # Reduce noise during tests
 
 class MockAgent:
     """Mock DeileAgent for testing"""
+
     def __init__(self, config_manager=None, memory_manager=None):
         self.config_manager = config_manager
         self.memory_manager = memory_manager
@@ -44,6 +45,7 @@ class MockMemoryManager:
     Memory subcomponents are accessed via ``await`` in production code, so they
     need to be ``AsyncMock`` to be awaitable.
     """
+
     def __init__(self):
         self.semantic_memory = AsyncMock()
         self.episodic_memory = AsyncMock()
@@ -79,6 +81,7 @@ class ComprehensiveIntegrationTestSuite:
         try:
             from deile.config.manager import ConfigManager
             from deile.personas.manager import PersonaManager
+
             print("   ✅ All modules imported successfully")
         except Exception as e:
             print(f"   ❌ Module import failed: {e}")
@@ -108,22 +111,22 @@ class ComprehensiveIntegrationTestSuite:
         try:
             # 1. Initialize ConfigManager and load default configuration
             personas_config = await self.config_manager.load_persona_configuration()
-            has_personas = len(personas_config.get('persona_configs', {})) > 0
+            has_personas = len(personas_config.get("persona_configs", {})) > 0
 
             self.log_result(
                 "Default configuration loading",
                 has_personas,
-                f"Loaded {len(personas_config.get('persona_configs', {}))} personas"
+                f"Loaded {len(personas_config.get('persona_configs', {}))} personas",
             )
 
             # 2. Test persona configuration access
-            dev_config = await self.config_manager.get_persona_config('developer')
-            has_dev_config = 'capabilities' in dev_config
+            dev_config = await self.config_manager.get_persona_config("developer")
+            has_dev_config = "capabilities" in dev_config
 
             self.log_result(
                 "Persona config access",
                 has_dev_config,
-                f"Developer config has {len(dev_config)} fields"
+                f"Developer config has {len(dev_config)} fields",
             )
 
             # 3. Test PersonaManager initialization with unified config
@@ -133,33 +136,36 @@ class ComprehensiveIntegrationTestSuite:
             self.log_result(
                 "PersonaManager initialization",
                 personas_loaded,
-                f"Loaded {len(self.persona_manager._personas)} personas"
+                f"Loaded {len(self.persona_manager._personas)} personas",
             )
 
             # 4. Test persona configuration updates
-            test_updates = {'test_capability': 'integration_test'}
-            await self.config_manager.update_persona_config('developer', test_updates)
+            test_updates = {"test_capability": "integration_test"}
+            await self.config_manager.update_persona_config("developer", test_updates)
 
-            updated_config = await self.config_manager.get_persona_config('developer')
-            update_persisted = updated_config.get('test_capability') == 'integration_test'
+            updated_config = await self.config_manager.get_persona_config("developer")
+            update_persisted = (
+                updated_config.get("test_capability") == "integration_test"
+            )
 
             self.log_result(
                 "Configuration updates",
                 update_persisted,
-                f"Update persisted: {updated_config.get('test_capability')}"
+                f"Update persisted: {updated_config.get('test_capability')}",
             )
 
             # 5. Test PersonaConfig model integration
             from deile.personas.config import PersonaConfig
+
             persona_config = await PersonaConfig.load_from_config_manager(
-                'developer', self.config_manager
+                "developer", self.config_manager
             )
-            model_loaded = persona_config.persona_id == 'developer'
+            model_loaded = persona_config.persona_id == "developer"
 
             self.log_result(
                 "PersonaConfig model integration",
                 model_loaded,
-                f"Loaded PersonaConfig for {persona_config.persona_id}"
+                f"Loaded PersonaConfig for {persona_config.persona_id}",
             )
 
         except Exception as e:
@@ -173,59 +179,63 @@ class ComprehensiveIntegrationTestSuite:
             # Set up observer tracking
             observer_calls = []
 
-            async def test_observer(persona_id: str, config: Dict[str, Any], event_type: str):
+            async def test_observer(
+                persona_id: str, config: Dict[str, Any], event_type: str
+            ):
                 observer_calls.append((persona_id, event_type, config))
 
             # Add observer
             self.config_manager.add_persona_observer(test_observer)
 
             # Test update notification
-            await self.config_manager.update_persona_config('developer', {'observer_test': 'value'})
+            await self.config_manager.update_persona_config(
+                "developer", {"observer_test": "value"}
+            )
             await asyncio.sleep(0.1)  # Give observer time to be called
 
             update_notified = any(
-                call[0] == 'developer' and call[1] == 'updated'
+                call[0] == "developer" and call[1] == "updated"
                 for call in observer_calls
             )
 
             self.log_result(
                 "Observer update notification",
                 update_notified,
-                f"Observer calls: {len(observer_calls)}"
+                f"Observer calls: {len(observer_calls)}",
             )
 
             # Test add persona notification
             new_persona_config = {
-                'capabilities': ['test'],
-                'communication_style': 'technical'
+                "capabilities": ["test"],
+                "communication_style": "technical",
             }
-            await self.config_manager.add_persona('test_observer_persona', new_persona_config)
+            await self.config_manager.add_persona(
+                "test_observer_persona", new_persona_config
+            )
             await asyncio.sleep(0.1)
 
             add_notified = any(
-                call[0] == 'test_observer_persona' and call[1] == 'added'
+                call[0] == "test_observer_persona" and call[1] == "added"
                 for call in observer_calls
             )
 
             self.log_result(
-                "Observer add notification",
-                add_notified,
-                "Add notification received"
+                "Observer add notification", add_notified, "Add notification received"
             )
 
             # Test remove persona notification
-            await self.config_manager.remove_persona('test_observer_persona')
+            await self.config_manager.remove_persona("test_observer_persona")
             await asyncio.sleep(0.1)
 
             remove_notified = any(
-                call[0] == 'test_observer_persona' and call[1] == 'removed'
+                call[0] == "test_observer_persona" and call[1] == "removed"
                 for call in observer_calls
             )
 
             self.log_result(
                 "Observer remove notification",
                 remove_notified,
-                "Remove notification received"
+                "Remove notification received",
             )
 
         except Exception as e:
@@ -241,50 +251,58 @@ class ComprehensiveIntegrationTestSuite:
 
             # Add a new persona via ConfigManager
             new_persona_config = {
-                'capabilities': ['test_capability'],
-                'communication_style': 'technical',
-                'model_preferences': {'temperature': 0.5}
+                "capabilities": ["test_capability"],
+                "communication_style": "technical",
+                "model_preferences": {"temperature": 0.5},
             }
 
-            await self.config_manager.add_persona('integration_test_persona', new_persona_config)
+            await self.config_manager.add_persona(
+                "integration_test_persona", new_persona_config
+            )
             await asyncio.sleep(0.2)  # Give handler time to process
 
             # Check if PersonaManager handled the addition
-            persona_added = 'integration_test_persona' in self.persona_manager._personas
+            persona_added = "integration_test_persona" in self.persona_manager._personas
             final_count = len(self.persona_manager._personas)
 
             self.log_result(
                 "PersonaManager persona addition handling",
                 persona_added,
-                f"Personas: {initial_count} → {final_count}"
+                f"Personas: {initial_count} → {final_count}",
             )
 
             # Update the persona configuration
-            update_config = {'test_update': 'success'}
-            await self.config_manager.update_persona_config('integration_test_persona', update_config)
+            update_config = {"test_update": "success"}
+            await self.config_manager.update_persona_config(
+                "integration_test_persona", update_config
+            )
             await asyncio.sleep(0.2)
 
             # Verify the persona still exists and can be accessed
-            updated_persona_exists = 'integration_test_persona' in self.persona_manager._personas
+            updated_persona_exists = (
+                "integration_test_persona" in self.persona_manager._personas
+            )
 
             self.log_result(
                 "PersonaManager persona update handling",
                 updated_persona_exists,
-                "Persona survived configuration update"
+                "Persona survived configuration update",
             )
 
             # Remove the persona
-            await self.config_manager.remove_persona('integration_test_persona')
+            await self.config_manager.remove_persona("integration_test_persona")
             await asyncio.sleep(0.2)
 
             # Check if PersonaManager handled the removal
-            persona_removed = 'integration_test_persona' not in self.persona_manager._personas
+            persona_removed = (
+                "integration_test_persona" not in self.persona_manager._personas
+            )
             final_count_after_removal = len(self.persona_manager._personas)
 
             self.log_result(
                 "PersonaManager persona removal handling",
                 persona_removed,
-                f"Final count: {final_count_after_removal}"
+                f"Final count: {final_count_after_removal}",
             )
 
         except Exception as e:
@@ -301,7 +319,7 @@ class ComprehensiveIntegrationTestSuite:
             # malformed. Use a malformed personas section to trigger validation.
             try:
                 await self.config_manager._validate_persona_config(
-                    {'personas': 'not-a-dict'}
+                    {"personas": "not-a-dict"}
                 )
                 validation_failed = False
             except Exception:
@@ -310,23 +328,26 @@ class ComprehensiveIntegrationTestSuite:
             self.log_result(
                 "Invalid configuration validation",
                 validation_failed,
-                "Validation correctly rejected invalid config"
+                "Validation correctly rejected invalid config",
             )
 
             # Test 2: Non-existent persona access
-            nonexistent_config = await self.config_manager.get_persona_config('nonexistent_persona')
+            nonexistent_config = await self.config_manager.get_persona_config(
+                "nonexistent_persona"
+            )
             empty_config_returned = len(nonexistent_config) == 0
 
             self.log_result(
                 "Non-existent persona handling",
                 empty_config_returned,
-                "Empty config returned for non-existent persona"
+                "Empty config returned for non-existent persona",
             )
 
             # Test 3: PersonaConfig creation with invalid data
             from deile.personas.config import PersonaConfig, ValidationError
+
             try:
-                PersonaConfig.from_dict('test', {'capabilities': 'not_a_list'})
+                PersonaConfig.from_dict("test", {"capabilities": "not_a_list"})
                 validation_passed = False
             except (ValidationError, ValueError):
                 validation_passed = True  # Expected
@@ -334,7 +355,7 @@ class ComprehensiveIntegrationTestSuite:
             self.log_result(
                 "PersonaConfig validation",
                 validation_passed,
-                "PersonaConfig correctly rejected invalid data"
+                "PersonaConfig correctly rejected invalid data",
             )
 
             # Test 4: Observer error resilience
@@ -345,14 +366,14 @@ class ComprehensiveIntegrationTestSuite:
             self.config_manager.add_persona_observer(working_observer)
 
             # This should not raise an exception
-            await self.config_manager._notify_persona_observers('test', {}, 'updated')
+            await self.config_manager._notify_persona_observers("test", {}, "updated")
 
             observer_resilience = working_observer.called
 
             self.log_result(
                 "Observer error resilience",
                 observer_resilience,
-                "Working observer called despite failing observer"
+                "Working observer called despite failing observer",
             )
 
         except Exception as e:
@@ -364,20 +385,23 @@ class ComprehensiveIntegrationTestSuite:
 
         try:
             # Make a configuration change
-            test_config = {'persistence_test': 'success', 'timestamp': str(asyncio.get_event_loop().time())}
-            await self.config_manager.update_persona_config('developer', test_config)
+            test_config = {
+                "persistence_test": "success",
+                "timestamp": str(asyncio.get_event_loop().time()),
+            }
+            await self.config_manager.update_persona_config("developer", test_config)
 
             # Create a new ConfigManager instance
             new_config_manager = ConfigManager(config_dir=self.temp_dir)
-            persisted_config = await new_config_manager.get_persona_config('developer')
+            persisted_config = await new_config_manager.get_persona_config("developer")
 
             # Check if the change persisted
-            persistence_worked = persisted_config.get('persistence_test') == 'success'
+            persistence_worked = persisted_config.get("persistence_test") == "success"
 
             self.log_result(
                 "Configuration persistence",
                 persistence_worked,
-                f"Persisted value: {persisted_config.get('persistence_test')}"
+                f"Persisted value: {persisted_config.get('persistence_test')}",
             )
 
             # Test file structure integrity
@@ -387,7 +411,7 @@ class ComprehensiveIntegrationTestSuite:
             self.log_result(
                 "Configuration file creation",
                 file_exists,
-                f"Config file: {config_file}"
+                f"Config file: {config_file}",
             )
 
         except Exception as e:
@@ -407,27 +431,29 @@ class ComprehensiveIntegrationTestSuite:
             self.log_result(
                 "PersonaLoader config_manager integration",
                 loader_created,
-                "PersonaLoader properly accepts config_manager"
+                "PersonaLoader properly accepts config_manager",
             )
 
             # Test instruction loading
-            instructions = await loader.load_persona_instructions('developer')
+            instructions = await loader.load_persona_instructions("developer")
             instructions_loaded = len(instructions) > 0
 
             self.log_result(
                 "PersonaLoader instruction loading",
                 instructions_loaded,
-                f"Instructions length: {len(instructions)}"
+                f"Instructions length: {len(instructions)}",
             )
 
             # Test fallback instruction generation
-            fallback_instructions = await loader.load_persona_instructions('unknown_persona')
-            fallback_worked = 'unknown_persona' in fallback_instructions
+            fallback_instructions = await loader.load_persona_instructions(
+                "unknown_persona"
+            )
+            fallback_worked = "unknown_persona" in fallback_instructions
 
             self.log_result(
                 "PersonaLoader fallback instructions",
                 fallback_worked,
-                "Fallback instructions generated for unknown persona"
+                "Fallback instructions generated for unknown persona",
             )
 
         except Exception as e:
@@ -446,38 +472,43 @@ class ComprehensiveIntegrationTestSuite:
             _current_persona = self.persona_manager.get_current_persona()
             available_personas = self.persona_manager.list_personas()
 
-            methods_work = isinstance(has_active, bool) and isinstance(available_personas, list)
+            methods_work = isinstance(has_active, bool) and isinstance(
+                available_personas, list
+            )
 
             self.log_result(
                 "Original PersonaManager methods",
                 methods_work,
-                f"Methods working, {len(available_personas)} personas available"
+                f"Methods working, {len(available_personas)} personas available",
             )
 
             # Test persona switching if personas are loaded.
             # list_personas() returns a list of dicts; pull the persona_id field.
             if len(available_personas) > 0:
-                first_persona_id = available_personas[0]['persona_id']
-                switch_result = await self.persona_manager.switch_persona(first_persona_id)
+                first_persona_id = available_personas[0]["persona_id"]
+                switch_result = await self.persona_manager.switch_persona(
+                    first_persona_id
+                )
 
                 switch_worked = isinstance(switch_result, bool)
 
                 self.log_result(
                     "Persona switching compatibility",
                     switch_worked,
-                    f"Switch to {first_persona_id}: {switch_result}"
+                    f"Switch to {first_persona_id}: {switch_result}",
                 )
 
             # Test configuration management methods
             try:
                 from deile.personas.config import PersonaConfig
+
                 test_config = PersonaConfig(
-                    persona_id='backward_test',
-                    capabilities=['test'],
-                    config_manager=self.config_manager
+                    persona_id="backward_test",
+                    capabilities=["test"],
+                    config_manager=self.config_manager,
                 )
 
-                await self.persona_manager.add_persona('backward_test', test_config)
+                await self.persona_manager.add_persona("backward_test", test_config)
                 config_mgmt_works = True
             except Exception:
                 config_mgmt_works = False
@@ -485,7 +516,7 @@ class ComprehensiveIntegrationTestSuite:
             self.log_result(
                 "Configuration management methods",
                 config_mgmt_works,
-                "PersonaManager config methods work with unified system"
+                "PersonaManager config methods work with unified system",
             )
 
         except Exception as e:
@@ -536,10 +567,14 @@ async def run_comprehensive_integration_tests():
         all_tests_passed = test_suite.print_summary()
 
         if all_tests_passed:
-            print("🎉 ALL INTEGRATION TESTS PASSED - Unified configuration system working perfectly!")
+            print(
+                "🎉 ALL INTEGRATION TESTS PASSED - Unified configuration system working perfectly!"
+            )
             return True
         else:
-            print("🚨 SOME INTEGRATION TESTS FAILED - Issues found in unified configuration system")
+            print(
+                "🚨 SOME INTEGRATION TESTS FAILED - Issues found in unified configuration system"
+            )
             return False
 
     finally:
@@ -558,5 +593,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n💥 Integration test suite crashed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

@@ -19,7 +19,9 @@ def slug(text: str) -> str:
     return hyphenated.strip("-")
 
 
-def truncate(text, limit: int, *, flatten_newlines: bool = False, ellipsis: str = "…") -> str:
+def truncate(
+    text, limit: int, *, flatten_newlines: bool = False, ellipsis: str = "…"
+) -> str:
     """Trunca ``text`` para no máximo ``limit`` caracteres com elipse.
 
     Args:

@@ -5,11 +5,17 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from deile.log_mgmt.log_analyzer import (Anomaly, _detect_auth_expiry,
-                                         _detect_error_spike, _detect_flooding,
-                                         _detect_silent_pipeline, _get_config,
-                                         _scan_files, scan_crash_loops,
-                                         scan_logs)
+from deile.log_mgmt.log_analyzer import (
+    Anomaly,
+    _detect_auth_expiry,
+    _detect_error_spike,
+    _detect_flooding,
+    _detect_silent_pipeline,
+    _get_config,
+    _scan_files,
+    scan_crash_loops,
+    scan_logs,
+)
 from deile.log_mgmt.log_patterns import Severity
 
 
@@ -17,10 +23,16 @@ class TestConfig:
     """Tests for _get_config and env parsing."""
 
     def test_defaults(self, monkeypatch):
-        for key in ("DEILE_LOG_ANALYZER_ENABLED", "DEILE_LOG_ANALYZER_INTERVAL_S",
-                     "DEILE_LOG_ERROR_RATE_THRESHOLD", "DEILE_LOG_FLOOD_THRESHOLD",
-                     "DEILE_LOG_PIPELINE_SILENT_TICK_THRESHOLD",
-                     "DEILE_LOG_AUTO_DISPATCH", "DEILE_LOG_DIR", "DEILE_NAMESPACE"):
+        for key in (
+            "DEILE_LOG_ANALYZER_ENABLED",
+            "DEILE_LOG_ANALYZER_INTERVAL_S",
+            "DEILE_LOG_ERROR_RATE_THRESHOLD",
+            "DEILE_LOG_FLOOD_THRESHOLD",
+            "DEILE_LOG_PIPELINE_SILENT_TICK_THRESHOLD",
+            "DEILE_LOG_AUTO_DISPATCH",
+            "DEILE_LOG_DIR",
+            "DEILE_NAMESPACE",
+        ):
             monkeypatch.delenv(key, raising=False)
         cfg = _get_config()
         assert cfg["enabled"] is True
@@ -203,10 +215,12 @@ class TestDetectFlooding:
         assert len(result) >= 1
 
     def test_limits_to_3_types(self):
-        lines = (["2026-05-28T14:00:00 ERROR type1"] * 200 +
-                 ["2026-05-28T14:00:00 ERROR type2"] * 200 +
-                 ["2026-05-28T14:00:00 ERROR type3"] * 200 +
-                 ["2026-05-28T14:00:00 ERROR type4"] * 200)
+        lines = (
+            ["2026-05-28T14:00:00 ERROR type1"] * 200
+            + ["2026-05-28T14:00:00 ERROR type2"] * 200
+            + ["2026-05-28T14:00:00 ERROR type3"] * 200
+            + ["2026-05-28T14:00:00 ERROR type4"] * 200
+        )
         result = _detect_flooding("pod1", lines, threshold=200)
         assert 1 <= len(result) <= 3
 
@@ -231,8 +245,7 @@ class TestDetectSilentPipeline:
         assert result == []
 
     def test_silence_detected(self):
-        lines = (["INFO active tick"] * 3 +
-                 ["tick completed activity=0"] * 30)
+        lines = ["INFO active tick"] * 3 + ["tick completed activity=0"] * 30
         result = _detect_silent_pipeline("pod1", lines, threshold=20)
         assert len(result) == 1
         a = result[0]
@@ -247,9 +260,11 @@ class TestDetectSilentPipeline:
 
     def test_silence_broken_by_active_tick(self):
         """Active tick in the middle resets the count."""
-        lines = (["tick completed activity=0"] * 10 +
-                 ["INFO tick completed active issues=3"] +
-                 ["tick completed activity=0"] * 10)
+        lines = (
+            ["tick completed activity=0"] * 10
+            + ["INFO tick completed active issues=3"]
+            + ["tick completed activity=0"] * 10
+        )
         result = _detect_silent_pipeline("pod1", lines, threshold=15)
         assert result == []  # max consecutive silent = 10 < 15
 
@@ -272,10 +287,14 @@ class TestScanLogs:
             pod_dir = Path(d) / "deile-pipeline"
             pod_dir.mkdir()
             (pod_dir / "deile-pipeline.log").write_text(
-                "INFO starting\nINFO processing\nINFO done\n")
-            result = scan_logs(log_dir=d, error_rate_threshold=100,
-                               flood_threshold=1000,
-                               silent_tick_threshold=100)
+                "INFO starting\nINFO processing\nINFO done\n"
+            )
+            result = scan_logs(
+                log_dir=d,
+                error_rate_threshold=100,
+                flood_threshold=1000,
+                silent_tick_threshold=100,
+            )
             assert result == []
 
     def test_detects_multiple_anomaly_types(self):
@@ -283,9 +302,10 @@ class TestScanLogs:
             pod_dir = Path(d) / "deile-pipeline"
             pod_dir.mkdir()
             log_content = (
-                "\n".join(["ERROR failure"] * 60) + "\n" +
-                "not logged in — please run /login\n" +
-                "invalid authentication credentials\n"
+                "\n".join(["ERROR failure"] * 60)
+                + "\n"
+                + "not logged in — please run /login\n"
+                + "invalid authentication credentials\n"
             )
             (pod_dir / "deile-pipeline.log").write_text(log_content)
             result = scan_logs(
@@ -306,8 +326,9 @@ class TestScanLogs:
                 (pd / f"{pod}.log").write_text("tick completed activity=0\n" * 30)
             result = scan_logs(log_dir=d, silent_tick_threshold=20)
             # Only pipeline pod should have silent detection
-            silent_pods = {a.pod_name for a in result
-                           if a.pattern_name == "pipeline_silent"}
+            silent_pods = {
+                a.pod_name for a in result if a.pattern_name == "pipeline_silent"
+            }
             assert "deile-pipeline" in silent_pods
             assert "deile-bot" not in silent_pods
 

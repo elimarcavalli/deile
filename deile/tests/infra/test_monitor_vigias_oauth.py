@@ -8,6 +8,7 @@ notifies P0 ONCE (cooldown-gated) instead of retrying forever. Since issue #603
 reports ``ok=False`` — there is no headless refresh — so V1 always degrades to
 the notify path when the token actually expires.
 """
+
 from __future__ import annotations
 
 import sys
@@ -26,12 +27,14 @@ if _INFRA not in sys.path:
 @pytest.fixture
 def core():
     import monitor_core
+
     return monitor_core
 
 
 @pytest.fixture
 def vig():
     import monitor_vigias
+
     return monitor_vigias
 
 
@@ -46,6 +49,7 @@ class FakeRunner:
 
     def __call__(self, args, **kwargs):
         from monitor_core import CmdResult
+
         joined = " ".join(args)
         self.calls.append(joined)
         for needle, (rc, out) in self.table.items():
@@ -65,8 +69,14 @@ def _ctx(core, vig, runner, now):
         notify=lambda fp, sev, title, body: (sent.append((fp, sev, title)) or True),
     )
     ctx = vig.MonitorContext(
-        run=runner, emitter=emitter, notifier=notifier, state=state,
-        flags=flags, now=now, repo="elimarcavalli/deile", namespace="deile",
+        run=runner,
+        emitter=emitter,
+        notifier=notifier,
+        state=state,
+        flags=flags,
+        now=now,
+        repo="elimarcavalli/deile",
+        namespace="deile",
         kube_api="https://kubernetes.default.svc:443",
     )
     return ctx, sent, state
@@ -78,21 +88,29 @@ def _creds(now, *, plus_seconds):
 
 
 async def _ok_renew():
-    return SimpleNamespace(ok=True, message="renewed", error=None, seconds_until_new_expiry=3600)
+    return SimpleNamespace(
+        ok=True, message="renewed", error=None, seconds_until_new_expiry=3600
+    )
 
 
 async def _fatal_renew():
-    return SimpleNamespace(ok=False, message="fail", error="refresh_token also expired",
-                           seconds_until_new_expiry=None)
+    return SimpleNamespace(
+        ok=False,
+        message="fail",
+        error="refresh_token also expired",
+        seconds_until_new_expiry=None,
+    )
 
 
 async def test_v1_healthy_no_renew_no_notify(core, vig):
     now = _utc(2026, 6, 2, 11, 0, 0)
-    runner = FakeRunner({
-        "-l app=claude-worker": (0, "claude-worker-1"),
-        "exec": (0, _creds(now, plus_seconds=7200)),  # 2h left
-        "logs": (0, ""),
-    })
+    runner = FakeRunner(
+        {
+            "-l app=claude-worker": (0, "claude-worker-1"),
+            "exec": (0, _creds(now, plus_seconds=7200)),  # 2h left
+            "logs": (0, ""),
+        }
+    )
     ctx, sent, state = _ctx(core, vig, runner, now)
     called = {"renew": 0}
 
@@ -107,11 +125,13 @@ async def test_v1_healthy_no_renew_no_notify(core, vig):
 
 async def test_v1_expired_triggers_renew_ok(core, vig):
     now = _utc(2026, 6, 2, 11, 0, 0)
-    runner = FakeRunner({
-        "-l app=claude-worker": (0, "claude-worker-1"),
-        "exec": (0, _creds(now, plus_seconds=600)),  # 10 min left (< 30 min)
-        "logs": (0, ""),
-    })
+    runner = FakeRunner(
+        {
+            "-l app=claude-worker": (0, "claude-worker-1"),
+            "exec": (0, _creds(now, plus_seconds=600)),  # 10 min left (< 30 min)
+            "logs": (0, ""),
+        }
+    )
     ctx, sent, state = _ctx(core, vig, runner, now)
     await vig.vigia_oauth(ctx, _ok_renew)
     assert sent == []  # successful renew is silent
@@ -119,11 +139,13 @@ async def test_v1_expired_triggers_renew_ok(core, vig):
 
 async def test_v1_fatal_renew_notifies_p0_once(core, vig):
     now = _utc(2026, 6, 2, 11, 0, 0)
-    runner = FakeRunner({
-        "-l app=claude-worker": (0, "claude-worker-1"),
-        "exec": (1, ""),  # no credential file
-        "logs": (0, ""),
-    })
+    runner = FakeRunner(
+        {
+            "-l app=claude-worker": (0, "claude-worker-1"),
+            "exec": (1, ""),  # no credential file
+            "logs": (0, ""),
+        }
+    )
     ctx, sent, state = _ctx(core, vig, runner, now)
     await vig.vigia_oauth(ctx, _fatal_renew)
     assert any(sev == "P0" and fp.startswith("oauth_expired") for fp, sev, _ in sent)
@@ -131,11 +153,16 @@ async def test_v1_fatal_renew_notifies_p0_once(core, vig):
 
 async def test_v1b_reactive_log_detection_triggers_renew(core, vig):
     now = _utc(2026, 6, 2, 11, 0, 0)
-    runner = FakeRunner({
-        "-l app=claude-worker": (0, "claude-worker-1"),
-        "exec": (0, _creds(now, plus_seconds=7200)),  # creds look fine
-        "logs": (0, "WORKER_AUTH_EXPIRED\nWORKER_AUTH_EXPIRED"),  # but pipeline is failing
-    })
+    runner = FakeRunner(
+        {
+            "-l app=claude-worker": (0, "claude-worker-1"),
+            "exec": (0, _creds(now, plus_seconds=7200)),  # creds look fine
+            "logs": (
+                0,
+                "WORKER_AUTH_EXPIRED\nWORKER_AUTH_EXPIRED",
+            ),  # but pipeline is failing
+        }
+    )
     ctx, sent, state = _ctx(core, vig, runner, now)
     called = {"renew": 0}
 
@@ -150,11 +177,13 @@ async def test_v1b_reactive_log_detection_triggers_renew(core, vig):
 async def test_v1_never_passes_claude_auth_login(core, vig):
     """Regression guard: V1 must NOT shell out to the interactive login."""
     now = _utc(2026, 6, 2, 11, 0, 0)
-    runner = FakeRunner({
-        "-l app=claude-worker": (0, "claude-worker-1"),
-        "exec": (1, ""),
-        "logs": (0, ""),
-    })
+    runner = FakeRunner(
+        {
+            "-l app=claude-worker": (0, "claude-worker-1"),
+            "exec": (1, ""),
+            "logs": (0, ""),
+        }
+    )
     ctx, sent, state = _ctx(core, vig, runner, now)
     await vig.vigia_oauth(ctx, _fatal_renew)
     assert not any("auth login" in c for c in runner.calls)

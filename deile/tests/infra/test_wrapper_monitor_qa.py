@@ -6,6 +6,7 @@ these tests pin (1) ``_qa_command_allowed`` against every bypass vector the
 review surfaced, (2) that the executor is genuinely shell-free (chaining /
 redirection are inert), (3) CLI role routing, and (4) the no-LLM-key hard-fail.
 """
+
 from __future__ import annotations
 
 import sys
@@ -22,6 +23,7 @@ if _INFRA not in sys.path:
 @pytest.fixture
 def wrapper():
     import wrapper as _w
+
     return _w
 
 
@@ -34,7 +36,7 @@ def wrapper():
 REJECTED = [
     # unlisted binaries — the apiserver/curl + interpreter bypasses
     'curl -sk -X DELETE -H "Authorization: Bearer x" https://10.43.0.1/api/v1/namespaces/deile/pods/p',
-    'curl -s http://x/v1/status',
+    "curl -s http://x/v1/status",
     'python3 -c "import os; os.remove(1)"',
     "python -c 'x'",
     "perl -e '1'",

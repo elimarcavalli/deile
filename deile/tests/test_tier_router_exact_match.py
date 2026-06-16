@@ -7,8 +7,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from deile.core.models.tier import ModelTier
-from deile.core.models.tier_router import (CircuitBreaker, NoProviderAvailable,
-                                           RoutingPolicy, TierRouter)
+from deile.core.models.tier_router import (
+    CircuitBreaker,
+    NoProviderAvailable,
+    RoutingPolicy,
+    TierRouter,
+)
 
 
 def _make_provider(provider_id: str, model_name: str) -> MagicMock:
@@ -22,10 +26,14 @@ def _make_provider(provider_id: str, model_name: str) -> MagicMock:
 class TestTierRouterExactCascadeMatch:
     def test_tier3_picks_haiku_not_opus_when_both_registered(self):
         """If a cascade entry asks for `anthropic:claude-haiku-4-5` AND that exact
-        instance is registered, it must be picked over a different anthropic instance."""
-        policy = RoutingPolicy("test", {
-            ModelTier.TIER_3: ["anthropic:claude-haiku-4-5"],
-        })
+        instance is registered, it must be picked over a different anthropic instance.
+        """
+        policy = RoutingPolicy(
+            "test",
+            {
+                ModelTier.TIER_3: ["anthropic:claude-haiku-4-5"],
+            },
+        )
         cb = CircuitBreaker()
         catalog = MagicMock()
         router = TierRouter(catalog, policy, cb)
@@ -41,9 +49,12 @@ class TestTierRouterExactCascadeMatch:
 
     def test_tier1_picks_opus_when_both_registered(self):
         """Symmetric: the opus instance must be picked for tier_1 cascade."""
-        policy = RoutingPolicy("test", {
-            ModelTier.TIER_1: ["anthropic:claude-opus-4-8"],
-        })
+        policy = RoutingPolicy(
+            "test",
+            {
+                ModelTier.TIER_1: ["anthropic:claude-opus-4-8"],
+            },
+        )
         cb = CircuitBreaker()
         router = TierRouter(MagicMock(), policy, cb)
 
@@ -59,9 +70,12 @@ class TestTierRouterExactCascadeMatch:
     def test_falls_back_to_provider_id_when_model_not_registered(self):
         """If cascade asks for `anthropic:nonexistent` but provider has another model,
         we should still get the registered anthropic instance (resilience)."""
-        policy = RoutingPolicy("test", {
-            ModelTier.TIER_3: ["anthropic:nonexistent-model"],
-        })
+        policy = RoutingPolicy(
+            "test",
+            {
+                ModelTier.TIER_3: ["anthropic:nonexistent-model"],
+            },
+        )
         cb = CircuitBreaker()
         router = TierRouter(MagicMock(), policy, cb)
 
@@ -73,9 +87,12 @@ class TestTierRouterExactCascadeMatch:
 
     def test_circuit_breaker_keys_by_provider_id_not_model_id(self):
         """Failures on opus should also block haiku since both are 'anthropic'."""
-        policy = RoutingPolicy("test", {
-            ModelTier.TIER_3: ["anthropic:claude-haiku-4-5", "openai:gpt-4o"],
-        })
+        policy = RoutingPolicy(
+            "test",
+            {
+                ModelTier.TIER_3: ["anthropic:claude-haiku-4-5", "openai:gpt-4o"],
+            },
+        )
         cb = CircuitBreaker(failure_threshold=1)
         router = TierRouter(MagicMock(), policy, cb)
 
@@ -90,7 +107,9 @@ class TestTierRouterExactCascadeMatch:
         assert selected is oai, "anthropic's CB should be open → fall to openai"
 
     def test_unregister_drops_all_anthropic_instances(self):
-        policy = RoutingPolicy("test", {ModelTier.TIER_3: ["anthropic:claude-haiku-4-5"]})
+        policy = RoutingPolicy(
+            "test", {ModelTier.TIER_3: ["anthropic:claude-haiku-4-5"]}
+        )
         router = TierRouter(MagicMock(), policy, CircuitBreaker())
         router.register_provider(_make_provider("anthropic", "claude-opus-4-8"))
         router.register_provider(_make_provider("anthropic", "claude-haiku-4-5"))

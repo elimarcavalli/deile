@@ -101,7 +101,7 @@ def _github_cmds(
         "clone_cmd": f"gh repo clone {project_path} repo",
         "view_issue_cmd": f"gh issue view {number} --repo {project_path} --comments",
         "create_pr_cmd": (
-            f'gh pr create --repo {project_path} --base {main} --head {branch} '
+            f"gh pr create --repo {project_path} --base {main} --head {branch} "
             f'--title "<título coerente>" --body "<resumo>. {close_keyword} #{number}."'
         ),
         # Keyed by ``branch`` (not ``number``): in the implement flow the PR is
@@ -119,7 +119,7 @@ def _github_cmds(
         "merge_fallback_cmd": f"gh pr merge {number} --repo {project_path} --merge",
         "check_merged_cmd": f"gh pr view {number} --repo {project_path} --json merged -q .merged",
         "review_post_cmd": (
-            f'gh api -X POST repos/{project_path}/pulls/{number}/reviews '
+            f"gh api -X POST repos/{project_path}/pulls/{number}/reviews "
             f'-f event=<EVENT> -f body="<resumo>"'
         ),
         "comment_pr_cmd": f'gh pr comment {number} --repo {project_path} --body "<...>"',
@@ -143,7 +143,7 @@ def _github_cmds(
             f"gh pr view {number} --repo {project_path} --json author -q .author.login"
         ),
         "assign_user_cmd": (
-            f'gh api -X POST repos/{project_path}/issues/{number}/assignees '
+            f"gh api -X POST repos/{project_path}/issues/{number}/assignees "
             f"-f 'assignees[]=<login>'"
         ),
         "create_issue_cmd": (
@@ -183,7 +183,7 @@ def _gitlab_cmds(
         "clone_cmd": f"glab repo clone {project_path} repo",
         "view_issue_cmd": f"glab issue view {number} -R {project_path} --comments",
         "create_pr_cmd": (
-            f'glab mr create -R {project_path} --target-branch {main} '
+            f"glab mr create -R {project_path} --target-branch {main} "
             f'--source-branch {branch} -t "<título coerente>" '
             f'-d "<resumo>. {close_keyword} #{number}."'
         ),
@@ -207,7 +207,7 @@ def _gitlab_cmds(
         "review_post_cmd": (
             f"# APPROVE: glab mr approve {number} -R {project_path}\n"
             f"# REQUEST_CHANGES: glab mr revoke {number} -R {project_path}\n"
-            f'# Em ambos, segue: glab mr note {number} -R {project_path} '
+            f"# Em ambos, segue: glab mr note {number} -R {project_path} "
             f'--message "<resumo>"'
         ),
         "comment_pr_cmd": (

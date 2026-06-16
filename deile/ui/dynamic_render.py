@@ -40,6 +40,7 @@ tempo de vida.
 - Conteúdo que deve ficar permanente sem ser "tocado de novo" (logs de
   auditoria, exports `.txt`).
 """
+
 from __future__ import annotations
 
 import os

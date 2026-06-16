@@ -7,6 +7,7 @@ Implementação delgada: instancia ``ClusterObservabilityClient`` apontando
 para o ``pipeline_status_server`` + ``claude_worker_server``, e roda o loop
 de tela do subpacote ``deile.ui.panel.observability``.
 """
+
 from __future__ import annotations
 
 import os
@@ -24,6 +25,7 @@ class PanelCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="panel",
             description=(
@@ -36,6 +38,7 @@ class PanelCommand(DirectCommand):
     @wrap_command_errors("panel", message_template="Falha ao executar /panel: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
         from ...security.audit_logger import AuditEventType, SeverityLevel
+
         emit_audit_event(
             event_type=AuditEventType.COMMAND_EXECUTED,
             severity=SeverityLevel.INFO,
@@ -59,12 +62,20 @@ class PanelCommand(DirectCommand):
             "DEILE_CLAUDE_WORKER_ENDPOINT",
             "http://claude-worker:8767",
         )
-        pipeline_token = os.environ.get(
-            "DEILE_PIPELINE_STATUS_AUTH_TOKEN", "",
-        ).strip() or None
-        claude_worker_token = os.environ.get(
-            "DEILE_CLAUDE_WORKER_AUTH_TOKEN", "",
-        ).strip() or None
+        pipeline_token = (
+            os.environ.get(
+                "DEILE_PIPELINE_STATUS_AUTH_TOKEN",
+                "",
+            ).strip()
+            or None
+        )
+        claude_worker_token = (
+            os.environ.get(
+                "DEILE_CLAUDE_WORKER_AUTH_TOKEN",
+                "",
+            ).strip()
+            or None
+        )
 
         try:
             cli = obs_client.ClusterObservabilityClient.from_endpoints(
@@ -92,5 +103,6 @@ class PanelCommand(DirectCommand):
             return CommandResult.error_result(f"painel crashou: {exc}")
 
         return CommandResult.success_result(
-            content="painel encerrado", content_type="text",
+            content="painel encerrado",
+            content_type="text",
         )

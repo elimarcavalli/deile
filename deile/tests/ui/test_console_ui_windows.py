@@ -57,9 +57,12 @@ class TestConsoleUIManagerLegacyWindows:
     def test_legacy_windows_true_when_no_modern_hint(self) -> None:
         saved = _purge_legacy_hints()
         try:
-            with patch("os.name", "nt"), \
-                 patch("deile.ui.console_ui.Console") as mock_console:
+            with (
+                patch("os.name", "nt"),
+                patch("deile.ui.console_ui.Console") as mock_console,
+            ):
                 from deile.ui.console_ui import ConsoleUIManager
+
                 ConsoleUIManager()
 
             mock_console.assert_called_once()
@@ -75,9 +78,12 @@ class TestConsoleUIManagerLegacyWindows:
         saved = _purge_legacy_hints()
         try:
             os.environ["WT_SESSION"] = "any-value"
-            with patch("os.name", "nt"), \
-                 patch("deile.ui.console_ui.Console") as mock_console:
+            with (
+                patch("os.name", "nt"),
+                patch("deile.ui.console_ui.Console") as mock_console,
+            ):
                 from deile.ui.console_ui import ConsoleUIManager
+
                 ConsoleUIManager()
 
             kwargs = mock_console.call_args.kwargs
@@ -92,9 +98,12 @@ class TestConsoleUIManagerLegacyWindows:
         saved = _purge_legacy_hints()
         try:
             os.environ["ANSICON"] = "1"
-            with patch("os.name", "nt"), \
-                 patch("deile.ui.console_ui.Console") as mock_console:
+            with (
+                patch("os.name", "nt"),
+                patch("deile.ui.console_ui.Console") as mock_console,
+            ):
                 from deile.ui.console_ui import ConsoleUIManager
+
                 ConsoleUIManager()
 
             kwargs = mock_console.call_args.kwargs
@@ -107,9 +116,12 @@ class TestConsoleUIManagerLegacyWindows:
         saved = _purge_legacy_hints()
         try:
             os.environ["ConEmuPID"] = "1234"
-            with patch("os.name", "nt"), \
-                 patch("deile.ui.console_ui.Console") as mock_console:
+            with (
+                patch("os.name", "nt"),
+                patch("deile.ui.console_ui.Console") as mock_console,
+            ):
                 from deile.ui.console_ui import ConsoleUIManager
+
                 ConsoleUIManager()
 
             kwargs = mock_console.call_args.kwargs
@@ -122,9 +134,12 @@ class TestConsoleUIManagerLegacyWindows:
         saved = _purge_legacy_hints()
         try:
             os.environ["TERM"] = "xterm-256color"
-            with patch("os.name", "nt"), \
-                 patch("deile.ui.console_ui.Console") as mock_console:
+            with (
+                patch("os.name", "nt"),
+                patch("deile.ui.console_ui.Console") as mock_console,
+            ):
                 from deile.ui.console_ui import ConsoleUIManager
+
                 ConsoleUIManager()
 
             kwargs = mock_console.call_args.kwargs
@@ -137,9 +152,12 @@ class TestConsoleUIManagerLegacyWindows:
         saved = _purge_legacy_hints()
         try:
             os.environ["TERM"] = "cygwin"
-            with patch("os.name", "nt"), \
-                 patch("deile.ui.console_ui.Console") as mock_console:
+            with (
+                patch("os.name", "nt"),
+                patch("deile.ui.console_ui.Console") as mock_console,
+            ):
                 from deile.ui.console_ui import ConsoleUIManager
+
                 ConsoleUIManager()
 
             kwargs = mock_console.call_args.kwargs
@@ -151,9 +169,12 @@ class TestConsoleUIManagerLegacyWindows:
         """Negative control — POSIX never takes the legacy branch."""
         saved = _purge_legacy_hints()
         try:
-            with patch("os.name", "posix"), \
-                 patch("deile.ui.console_ui.Console") as mock_console:
+            with (
+                patch("os.name", "posix"),
+                patch("deile.ui.console_ui.Console") as mock_console,
+            ):
                 from deile.ui.console_ui import ConsoleUIManager
+
                 ConsoleUIManager()
 
             kwargs = mock_console.call_args.kwargs

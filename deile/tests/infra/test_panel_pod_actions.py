@@ -33,6 +33,7 @@ import _panel_data as pd  # noqa: E402
 # delete_pod
 # ---------------------------------------------------------------------------
 
+
 class TestDeletePod:
     def test_invalid_name_denied(self):
         ok, msg = pd.delete_pod("not valid pod!")
@@ -52,8 +53,10 @@ class TestDeletePod:
 
     def test_subprocess_success(self):
         fake = MagicMock(returncode=0, stdout='pod "x" deleted\n', stderr="")
-        with patch.object(pd, "kubectl_bin", return_value="/kubectl"), \
-             patch.object(pd.subprocess, "run", return_value=fake) as run:
+        with (
+            patch.object(pd, "kubectl_bin", return_value="/kubectl"),
+            patch.object(pd.subprocess, "run", return_value=fake) as run,
+        ):
             ok, msg = pd.delete_pod("deile-worker-abc-xyz")
         assert ok is True
         assert "deleted" in msg
@@ -63,8 +66,10 @@ class TestDeletePod:
 
     def test_subprocess_nonzero_failed(self):
         fake = MagicMock(returncode=1, stdout="", stderr="not found\n")
-        with patch.object(pd, "kubectl_bin", return_value="/kubectl"), \
-             patch.object(pd.subprocess, "run", return_value=fake):
+        with (
+            patch.object(pd, "kubectl_bin", return_value="/kubectl"),
+            patch.object(pd.subprocess, "run", return_value=fake),
+        ):
             ok, msg = pd.delete_pod("deile-worker-abc-xyz")
         assert ok is False
         assert "not found" in msg
@@ -73,6 +78,7 @@ class TestDeletePod:
 # ---------------------------------------------------------------------------
 # rollout_restart_deployment / _all
 # ---------------------------------------------------------------------------
+
 
 class TestRolloutRestart:
     def test_unknown_deployment_denied(self):
@@ -87,17 +93,25 @@ class TestRolloutRestart:
         assert "kubectl não encontrado" in msg
 
     def test_success(self):
-        fake = MagicMock(returncode=0,
-                         stdout='deployment.apps/deile-worker restarted\n',
-                         stderr="")
-        with patch.object(pd, "kubectl_bin", return_value="/kubectl"), \
-             patch.object(pd.subprocess, "run", return_value=fake) as run:
+        fake = MagicMock(
+            returncode=0, stdout="deployment.apps/deile-worker restarted\n", stderr=""
+        )
+        with (
+            patch.object(pd, "kubectl_bin", return_value="/kubectl"),
+            patch.object(pd.subprocess, "run", return_value=fake) as run,
+        ):
             ok, msg = pd.rollout_restart_deployment("deile-worker")
         assert ok is True
         assert "restarted" in msg
         argv = run.call_args[0][0]
-        assert argv == ["/kubectl", "-n", "deile", "rollout", "restart",
-                        "deployment/deile-worker"]
+        assert argv == [
+            "/kubectl",
+            "-n",
+            "deile",
+            "rollout",
+            "restart",
+            "deployment/deile-worker",
+        ]
 
     def test_rollout_all_covers_full_whitelist(self):
         seen = []
@@ -106,8 +120,7 @@ class TestRolloutRestart:
             seen.append(dep)
             return True, f"{dep} OK"
 
-        with patch.object(pd, "rollout_restart_deployment",
-                          side_effect=_fake_one):
+        with patch.object(pd, "rollout_restart_deployment", side_effect=_fake_one):
             results = pd.rollout_restart_all()
         assert {dep for dep, _, _ in results} == pd._ALLOWED_DEPLOYMENTS_FULL
         # ``seen`` veio em ordem determinística (sorted) — fix dependence-free.
@@ -118,8 +131,7 @@ class TestRolloutRestart:
         def _fake_one(dep, **kw):
             return (dep != "deile-worker"), f"{dep} done"
 
-        with patch.object(pd, "rollout_restart_deployment",
-                          side_effect=_fake_one):
+        with patch.object(pd, "rollout_restart_deployment", side_effect=_fake_one):
             results = pd.rollout_restart_all()
         # Uma falha não para o loop — todos os deployments do whitelist
         # aparecem no resultado (issue tmpfs resize adicionou claude-worker
@@ -134,6 +146,7 @@ class TestRolloutRestart:
 # kill_local_pid
 # ---------------------------------------------------------------------------
 
+
 class TestKillLocalPid:
     def test_invalid_pid_denied(self):
         ok, msg = pd.kill_local_pid(0)
@@ -147,10 +160,13 @@ class TestKillLocalPid:
 
     def test_pid_owned_by_other_user_denied(self):
         import psutil
+
         fake_proc = MagicMock()
         fake_proc.uids.return_value = MagicMock(real=99999)
-        with patch.object(psutil, "Process", return_value=fake_proc), \
-             patch.object(os, "getuid", return_value=os.getuid()):
+        with (
+            patch.object(psutil, "Process", return_value=fake_proc),
+            patch.object(os, "getuid", return_value=os.getuid()),
+        ):
             ok, msg = pd.kill_local_pid(12345)
         assert ok is False
         assert "outro usuário" in msg
@@ -168,11 +184,14 @@ class TestKillLocalPid:
 
     def test_success_sigterm(self):
         import psutil
+
         fake_proc = MagicMock()
         fake_proc.uids.return_value = MagicMock(real=os.getuid())
         fake_proc.wait.return_value = None
-        with patch.object(psutil, "Process", return_value=fake_proc), \
-             patch.object(os, "kill") as kill_mock:
+        with (
+            patch.object(psutil, "Process", return_value=fake_proc),
+            patch.object(os, "kill") as kill_mock,
+        ):
             ok, msg = pd.kill_local_pid(12345)
         assert ok is True
         assert "SIGTERM" in msg
@@ -180,11 +199,14 @@ class TestKillLocalPid:
 
     def test_sigterm_escalates_to_sigkill_on_timeout(self):
         import psutil
+
         fake_proc = MagicMock()
         fake_proc.uids.return_value = MagicMock(real=os.getuid())
         fake_proc.wait.side_effect = psutil.TimeoutExpired(seconds=5)
-        with patch.object(psutil, "Process", return_value=fake_proc), \
-             patch.object(os, "kill") as kill_mock:
+        with (
+            patch.object(psutil, "Process", return_value=fake_proc),
+            patch.object(os, "kill") as kill_mock,
+        ):
             ok, msg = pd.kill_local_pid(12345)
         assert ok is True
         assert "SIGKILL" in msg
@@ -198,10 +220,12 @@ class TestKillLocalPid:
 # PodPickerView interactions
 # ---------------------------------------------------------------------------
 
+
 def _row(name: str, role: str, **extra) -> panel.PodRow:
     return panel.PodRow(
         icon=extra.get("icon", "●"),
-        name=name, role=role,
+        name=name,
+        role=role,
         status=extra.get("status", "Running"),
         age=extra.get("age", "5m"),
         restarts=extra.get("restarts", "0"),
@@ -215,7 +239,7 @@ class TestPodPickerHotkeys:
     def _view_with_rows(self, rows):
         v = panel.PodPickerView()
         v._rows = lambda: rows  # type: ignore[assignment]
-        v.data = MagicMock()    # truthy para passar do "modo demo"
+        v.data = MagicMock()  # truthy para passar do "modo demo"
         # PR #297: ações destrutivas leem o NS do RuntimeContext em vez de
         # cair no default. Configura o mock para devolver "deile" (default).
         v.data.context.namespace = "deile"
@@ -285,8 +309,9 @@ class TestPodPickerHotkeys:
     def test_apply_x_k8s_calls_delete_pod(self):
         v = self._view_with_rows([_row("deile-worker-abc", "worker")])
         v.confirm_action = "x"
-        with patch.object(pd, "delete_pod",
-                          return_value=(True, 'pod "deile-worker-abc" deleted')) as dp:
+        with patch.object(
+            pd, "delete_pod", return_value=(True, 'pod "deile-worker-abc" deleted')
+        ) as dp:
             v.handle_key("y", app=MagicMock())
         # PR #297: NS é propagado do RuntimeContext via kwarg.
         dp.assert_called_once_with("deile-worker-abc", namespace="deile")
@@ -296,8 +321,9 @@ class TestPodPickerHotkeys:
     def test_apply_x_local_calls_kill(self):
         v = self._view_with_rows([_row("local-deile#42", "local-deile")])
         v.confirm_action = "x"
-        with patch.object(pd, "kill_local_pid",
-                          return_value=(True, "pid 42 encerrado via SIGTERM")) as k:
+        with patch.object(
+            pd, "kill_local_pid", return_value=(True, "pid 42 encerrado via SIGTERM")
+        ) as k:
             v.handle_key("y", app=MagicMock())
         k.assert_called_once_with(42)
         assert v.last_ok is True
@@ -305,8 +331,11 @@ class TestPodPickerHotkeys:
     def test_apply_r_calls_rollout_restart_with_correct_deployment(self):
         v = self._view_with_rows([_row("deilebot-xyz-abc", "bot")])
         v.confirm_action = "r"
-        with patch.object(pd, "rollout_restart_deployment",
-                          return_value=(True, "deployment.apps/deilebot restarted")) as rr:
+        with patch.object(
+            pd,
+            "rollout_restart_deployment",
+            return_value=(True, "deployment.apps/deilebot restarted"),
+        ) as rr:
             v.handle_key("y", app=MagicMock())
         # PR #297: NS é propagado do RuntimeContext via kwarg.
         rr.assert_called_once_with("deilebot", namespace="deile")
@@ -321,13 +350,11 @@ class TestPodPickerHotkeys:
             ("deile-shell", True, "ok"),
             ("deile-worker", True, "ok"),
         ]
-        with patch.object(pd, "rollout_restart_all",
-                          return_value=fake_results) as ra:
+        with patch.object(pd, "rollout_restart_all", return_value=fake_results) as ra:
             v.handle_key("y", app=MagicMock())
         ra.assert_called_once_with(namespace="deile")
         assert v.last_ok is True
-        assert all(dep in v.last_msg
-                   for dep, _, _ in fake_results)
+        assert all(dep in v.last_msg for dep, _, _ in fake_results)
 
     def test_apply_R_partial_failure_marks_last_ok_false(self):
         v = self._view_with_rows([])
@@ -358,10 +385,9 @@ class TestPodPickerHotkeys:
     def test_x_double_tap_applies(self):
         """Apertar `x` duas vezes confirma a ação (sem precisar do `y`)."""
         v = self._view_with_rows([_row("deile-worker-abc", "worker")])
-        v.handle_key("x", app=MagicMock())   # abre confirmação
+        v.handle_key("x", app=MagicMock())  # abre confirmação
         assert v.confirm_action == "x"
-        with patch.object(pd, "delete_pod",
-                          return_value=(True, "deleted")) as dp:
+        with patch.object(pd, "delete_pod", return_value=(True, "deleted")) as dp:
             v.handle_key("x", app=MagicMock())  # confirma via double-tap
         # PR #297: NS é propagado do RuntimeContext via kwarg.
         dp.assert_called_once_with("deile-worker-abc", namespace="deile")
@@ -372,8 +398,9 @@ class TestPodPickerHotkeys:
         v = self._view_with_rows([_row("deile-worker-abc", "worker")])
         v.handle_key("r", app=MagicMock())
         assert v.confirm_action == "r"
-        with patch.object(pd, "rollout_restart_deployment",
-                          return_value=(True, "restarted")) as rr:
+        with patch.object(
+            pd, "rollout_restart_deployment", return_value=(True, "restarted")
+        ) as rr:
             v.handle_key("r", app=MagicMock())
         rr.assert_called_once_with("deile-worker", namespace="deile")
         assert v.last_ok is True
@@ -382,10 +409,13 @@ class TestPodPickerHotkeys:
         v = self._view_with_rows([_row("deile-worker-abc", "worker")])
         v.handle_key("R", app=MagicMock())
         assert v.confirm_action == "R"
-        fake = [("deilebot", True, "ok"), ("deile-pipeline", True, "ok"),
-                ("deile-shell", True, "ok"), ("deile-worker", True, "ok")]
-        with patch.object(pd, "rollout_restart_all",
-                          return_value=fake) as ra:
+        fake = [
+            ("deilebot", True, "ok"),
+            ("deile-pipeline", True, "ok"),
+            ("deile-shell", True, "ok"),
+            ("deile-worker", True, "ok"),
+        ]
+        with patch.object(pd, "rollout_restart_all", return_value=fake) as ra:
             v.handle_key("R", app=MagicMock())
         ra.assert_called_once_with(namespace="deile")
         assert v.last_ok is True
@@ -394,8 +424,7 @@ class TestPodPickerHotkeys:
         """`y` continua funcionando — não quebra muscle-memory antigo."""
         v = self._view_with_rows([_row("deile-worker-abc", "worker")])
         v.confirm_action = "x"
-        with patch.object(pd, "delete_pod",
-                          return_value=(True, "deleted")):
+        with patch.object(pd, "delete_pod", return_value=(True, "deleted")):
             v.handle_key("y", app=MagicMock())
         assert v.confirm_action is None
         assert v.last_ok is True
@@ -403,7 +432,7 @@ class TestPodPickerHotkeys:
     def test_double_tap_does_not_cross_actions(self):
         """`x` na confirmação de `r` NÃO confirma — cancela como antes."""
         v = self._view_with_rows([_row("deile-worker-abc", "worker")])
-        v.confirm_action = "r"   # pendente: restart
+        v.confirm_action = "r"  # pendente: restart
         with patch.object(pd, "rollout_restart_deployment") as rr:
             v.handle_key("x", app=MagicMock())  # tecla ERRADA → cancela
         rr.assert_not_called()

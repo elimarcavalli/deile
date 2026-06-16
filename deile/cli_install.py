@@ -87,7 +87,9 @@ async def _pip_run(*args: str, step: str, sanitized_path: Optional[str] = None) 
         )
 
 
-async def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: str) -> Path:
+async def _create_venv_with_deile(
+    venv_dir: Path, repo_root: Path, mode_label: str
+) -> Path:
     """Ensure an isolated venv at ``venv_dir`` has DEILE + deps installed.
 
     Steps (idempotent):
@@ -114,7 +116,9 @@ async def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: s
 
     # Safety: ensure venv_dir is within a reasonable location
     home = Path.home().resolve()
-    if not (str(venv_dir).startswith(str(repo_root)) or str(venv_dir).startswith(str(home))):
+    if not (
+        str(venv_dir).startswith(str(repo_root)) or str(venv_dir).startswith(str(home))
+    ):
         raise DEILEInstallError(
             "venv_dir is outside allowed locations (must be under repo or home)",
             step="validate_venv_path",
@@ -134,30 +138,52 @@ async def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: s
 
         print(f"[{mode_label}] Upgrading pip…")
         await _pip_run(
-            str(venv_py), "-m", "pip", "install",
-            "--disable-pip-version-check", "-q", "--upgrade", "pip",
-            step="upgrade_pip", sanitized_path=venv_dir.name,
+            str(venv_py),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-q",
+            "--upgrade",
+            "pip",
+            step="upgrade_pip",
+            sanitized_path=venv_dir.name,
         )
 
         requirements = repo_root / "requirements.txt"
         if requirements.exists():
             print(f"[{mode_label}] Installing dependencies from {requirements.name}…")
             await _pip_run(
-                str(venv_py), "-m", "pip", "install",
-                "--disable-pip-version-check", "-r", str(requirements),
-                step="install_deps", sanitized_path=requirements.name,
+                str(venv_py),
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "-r",
+                str(requirements),
+                step="install_deps",
+                sanitized_path=requirements.name,
             )
         else:
             print(f"[{mode_label}] WARNING: no requirements.txt — skipping dep install")
 
         print(f"[{mode_label}] Registering DEILE entry script (editable, no-deps)…")
         await _pip_run(
-            str(venv_py), "-m", "pip", "install",
-            "--disable-pip-version-check", "-q", "--no-deps", "-e", str(repo_root),
+            str(venv_py),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-q",
+            "--no-deps",
+            "-e",
+            str(repo_root),
             step="install_editable",
         )
 
-        deile_script = venv_dir / ("Scripts/deile.exe" if os.name == "nt" else "bin/deile")
+        deile_script = venv_dir / (
+            "Scripts/deile.exe" if os.name == "nt" else "bin/deile"
+        )
         if not deile_script.exists():
             raise DEILEInstallError(
                 "console script not created",
@@ -176,7 +202,9 @@ async def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: s
         ) from exc
 
 
-def _link_global_command(target_dir: Path, source_script: Path, *, force: bool = False) -> Path:
+def _link_global_command(
+    target_dir: Path, source_script: Path, *, force: bool = False
+) -> Path:
     """Create the user-facing `deile` shim that points at ``source_script``.
 
     On POSIX: a symlink at ``target_dir/deile``.
@@ -194,7 +222,13 @@ def _link_global_command(target_dir: Path, source_script: Path, *, force: bool =
         existing = "symlink" if target.is_symlink() else "regular file"
         if not force:
             try:
-                ans = input(f"  {target.name} already exists ({existing}). Replace? [Y/n]: ").strip().lower()
+                ans = (
+                    input(
+                        f"  {target.name} already exists ({existing}). Replace? [Y/n]: "
+                    )
+                    .strip()
+                    .lower()
+                )
             except (KeyboardInterrupt, EOFError):
                 ans = "n"
             if ans not in ("", "y", "yes"):
@@ -248,9 +282,10 @@ def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path]
     scripts_dir_str = str(scripts_dir)
     if '"' in scripts_dir_str or "\n" in scripts_dir_str:
         return (
-            False, None,
+            False,
+            None,
             f"Path contains unsupported characters for auto-configuration.\n"
-            f"Add manually:\n    export PATH=\"{scripts_dir_str}:$PATH\""
+            f'Add manually:\n    export PATH="{scripts_dir_str}:$PATH"',
         )
 
     export_line_posix = f'export PATH="{scripts_dir}:$PATH"'
@@ -264,7 +299,7 @@ def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path]
 
     shell = os.path.basename(os.environ.get("SHELL", ""))
     if shell not in _KNOWN_SHELLS:
-        return (False, None, f'Add to your shell rc:\n    {export_line_posix}')
+        return (False, None, f"Add to your shell rc:\n    {export_line_posix}")
 
     home = Path.home().resolve()  # canonical home
 
@@ -272,7 +307,9 @@ def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path]
         rc = (home / ".zshrc").resolve()
         export_line = export_line_posix
     elif shell == "bash":
-        rc = (home / (".bash_profile" if sys.platform == "darwin" else ".bashrc")).resolve()
+        rc = (
+            home / (".bash_profile" if sys.platform == "darwin" else ".bashrc")
+        ).resolve()
         export_line = export_line_posix
     else:  # fish
         rc = (home / ".config" / "fish" / "config.fish").resolve()
@@ -289,7 +326,11 @@ def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path]
     try:
         existing = rc.read_text(encoding="utf-8") if rc.exists() else ""
     except OSError as exc:
-        return (False, rc, f"Could not read {rc.name}: {exc}.\nAdd manually:\n    {export_line}")
+        return (
+            False,
+            rc,
+            f"Could not read {rc.name}: {exc}.\nAdd manually:\n    {export_line}",
+        )
 
     # ── Idempotency: line-by-line check (not substring) ──
     for line in existing.splitlines():
@@ -300,12 +341,19 @@ def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path]
             return (False, rc, "")  # already configured
 
     marker = "# Added by `deile --install` — places the `deile` command on PATH\n"
-    new_content = (existing.rstrip("\n") + "\n\n" if existing else "") + marker + export_line + "\n"
+    new_content = (
+        (existing.rstrip("\n") + "\n\n" if existing else "")
+        + marker
+        + export_line
+        + "\n"
+    )
 
     # ── Atomic write: tempfile in same directory, then os.replace ──
     try:
         rc.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(dir=str(rc.parent), prefix=".deile_rc_", suffix=".tmp")
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(rc.parent), prefix=".deile_rc_", suffix=".tmp"
+        )
         try:
             os.write(fd, new_content.encode("utf-8"))
         finally:
@@ -327,7 +375,9 @@ def _prompt_install_mode() -> Optional[str]:
     print("Install mode:")
     print()
     print("  [g] Global  — isolated venv at ~/.deile/venv/")
-    print("                Recommended. DEILE deps don't touch your system or user-site Python.")
+    print(
+        "                Recommended. DEILE deps don't touch your system or user-site Python."
+    )
     print("                Works no matter where you cd to.")
     print()
     print("  [l] Local   — uses this repo's .venv/")
@@ -381,7 +431,10 @@ async def _run_self_install_async(mode: Optional[str] = None) -> int:
     elif mode == "local":
         venv_dir = repo_root / ".venv"
     else:
-        print(f"ERROR: unknown install mode {mode!r} (expected 'global' or 'local').", file=sys.stderr)
+        print(
+            f"ERROR: unknown install mode {mode!r} (expected 'global' or 'local').",
+            file=sys.stderr,
+        )
         return 2
 
     print()
@@ -419,7 +472,9 @@ async def _run_self_install_async(mode: Optional[str] = None) -> int:
         which = await asyncio.to_thread(
             subprocess.run,
             ["/usr/bin/env", "which", "deile"],
-            text=True, capture_output=True, check=False,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         if which.returncode == 0:
             found_path = Path(which.stdout.strip())
@@ -455,7 +510,9 @@ async def _run_self_install_async(mode: Optional[str] = None) -> int:
         print(f"Run:  source {rc_path}   (or open a new terminal)")
         print("Then: deile --help")
     elif rc_path is not None and not hint:
-        print(f"PATH already configured in {rc_path.name}, but not in current shell session.")
+        print(
+            f"PATH already configured in {rc_path.name}, but not in current shell session."
+        )
         print(f"Run:  source {rc_path}   (or open a new terminal)")
         print("Then: deile --help")
     else:

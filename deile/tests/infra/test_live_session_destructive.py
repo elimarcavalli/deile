@@ -14,16 +14,13 @@ Cobertura:
 
 20 testes.
 """
+
 from __future__ import annotations
 
 import asyncio
 import sys
-import types
 from pathlib import Path
-from typing import Optional
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
@@ -31,12 +28,13 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
         sys.path.insert(0, str(_p))
 
 import _panel as panel  # noqa: E402
-from deile.ui.panel.observability.client import ApiError  # noqa: E402
 
+from deile.ui.panel.observability.client import ApiError  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Stubs / helpers
 # ---------------------------------------------------------------------------
+
 
 class _FakeApp:
     def __init__(self):
@@ -54,6 +52,7 @@ def _make_view(task_id: str = "task-aabbccdd-1234") -> panel.LiveSessionView:
 
 def _fake_client(kill_reply=None, cleanup_reply=None):
     """Retorna um objeto com coroutines kill/cleanup controladas."""
+
     class _Client:
         def __init__(self):
             self.kill_calls = 0
@@ -82,6 +81,7 @@ def _patch_client(view, client_obj):
 # ---------------------------------------------------------------------------
 # CA9 — roteamento de teclas (confirm_action resolvido PRIMEIRO)
 # ---------------------------------------------------------------------------
+
 
 def test_confirm_action_resolved_before_export_mode():
     """CA9: quando confirm_action está set, export_mode é ignorado.
@@ -141,6 +141,7 @@ def test_destructive_hotkey_inert_during_filter_or_export():
 # CA1 — exatamente uma chamada de rede por ação
 # ---------------------------------------------------------------------------
 
+
 def test_kill_exactly_one_network_call():
     """CA1: [k][y] faz exatamente uma chamada kill."""
     view = _make_view()
@@ -174,6 +175,7 @@ def test_cleanup_exactly_one_network_call():
 # CA2 — kill 200 → refresh; kill 409 ApiError → toast + refresh
 # ---------------------------------------------------------------------------
 
+
 def test_kill_200_returns_refresh():
     """CA2: kill bem-sucedido (200) → view permanece (refresh, não back)."""
     view = _make_view()
@@ -197,6 +199,7 @@ def test_kill_409_toasts_and_stays():
     audit_log = []
 
     import _panel_data as _pd
+
     original = _pd._audit_pod_action
     try:
         _pd._audit_pod_action = lambda *a, **kw: audit_log.append(kw)
@@ -213,11 +216,14 @@ def test_kill_409_toasts_and_stays():
 # CA3 — kill ApiError (não-409) → toast + refresh
 # ---------------------------------------------------------------------------
 
+
 def test_kill_api_error_shows_toast():
     """CA3: kill com ApiError (500) → toast com HTTP status."""
     view = _make_view()
     app = _FakeApp()
-    client = _fake_client(kill_reply=ApiError(status=500, message="internal server error"))
+    client = _fake_client(
+        kill_reply=ApiError(status=500, message="internal server error")
+    )
     _patch_client(view, client)
 
     view.confirm_action = "k"
@@ -228,6 +234,7 @@ def test_kill_api_error_shows_toast():
 # ---------------------------------------------------------------------------
 # CA4 — cleanup 200 → back(); cleanup 409 → toast + refresh
 # ---------------------------------------------------------------------------
+
 
 def test_cleanup_200_returns_back():
     """CA4: cleanup bem-sucedido (200) → ActionResult.back()."""
@@ -258,6 +265,7 @@ def test_cleanup_409_toasts_and_stays():
 # CA5 — timeout → confirm_action=None, toast, refresh
 # ---------------------------------------------------------------------------
 
+
 def test_kill_timeout_resets_confirm_and_toasts():
     """CA5: asyncio.TimeoutError durante kill → confirm_action limpo + toast."""
     view = _make_view()
@@ -268,8 +276,10 @@ def test_kill_timeout_resets_confirm_and_toasts():
     view.confirm_action = "k"
     view._apply_kill(app)
     # toast de erro
-    assert any("falhou" in str(t) or "timeout" in str(t) or "TimeoutError" in str(t)
-               for t in app.toasts)
+    assert any(
+        "falhou" in str(t) or "timeout" in str(t) or "TimeoutError" in str(t)
+        for t in app.toasts
+    )
 
 
 def test_cleanup_timeout_toasts():
@@ -287,6 +297,7 @@ def test_cleanup_timeout_toasts():
 # CA7 — audit com result=allowed/failed/cancelled
 # ---------------------------------------------------------------------------
 
+
 def test_audit_cancelled_on_other_key():
     """CA7: cancelar com tecla arbitrária → audit result=cancelled."""
     view = _make_view()
@@ -294,6 +305,7 @@ def test_audit_cancelled_on_other_key():
     audit_log = []
 
     import _panel_data as _pd
+
     original = _pd._audit_pod_action
     try:
         _pd._audit_pod_action = lambda *a, **kw: audit_log.append(kw)
@@ -314,6 +326,7 @@ def test_audit_allowed_on_kill_success():
     audit_log = []
 
     import _panel_data as _pd
+
     original = _pd._audit_pod_action
     try:
         _pd._audit_pod_action = lambda *a, **kw: audit_log.append(kw)
@@ -328,6 +341,7 @@ def test_audit_allowed_on_kill_success():
 # ---------------------------------------------------------------------------
 # CA8 — ESC cancela confirmação + intercepts_key=True
 # ---------------------------------------------------------------------------
+
 
 def test_esc_intercepted_when_confirm_action_set():
     """CA8: intercepts_key retorna True para ESC quando confirm_action está set."""
@@ -348,6 +362,7 @@ def test_esc_cancels_confirm_via_handle_key():
 # ---------------------------------------------------------------------------
 # Testes de armar confirmação
 # ---------------------------------------------------------------------------
+
 
 def test_k_arms_confirm_action():
     """[k] no estado normal seta confirm_action='k'."""

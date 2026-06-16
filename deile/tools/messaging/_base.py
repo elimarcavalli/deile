@@ -27,13 +27,17 @@ import abc
 import logging
 from typing import Any, Dict, List, Optional
 
-from ...integrations.bot import (BOT_CLIENT_AVAILABLE, BotClientFacade,
-                                 get_bot_client)
-from ...security.audit_logger import (AuditEventType, SeverityLevel,
-                                      get_audit_logger)
+from ...integrations.bot import BOT_CLIENT_AVAILABLE, BotClientFacade, get_bot_client
+from ...security.audit_logger import AuditEventType, SeverityLevel, get_audit_logger
 from .._hash_utils import sha8 as _sha8
-from ..base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
-                    ToolSchema)
+from ..base import (
+    SecurityLevel,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +129,9 @@ class MessagingTool(Tool, abc.ABC):
     # ---- Subclass hook ------------------------------------------------------
 
     @abc.abstractmethod
-    async def _perform(self, facade: BotClientFacade, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _perform(
+        self, facade: BotClientFacade, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Run the actual control-plane call and return a JSON-serializable dict."""
 
     def _build_audit_payload(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -147,7 +153,13 @@ class MessagingTool(Tool, abc.ABC):
             emoji = args.get("emoji")
             if emoji:
                 payload["emoji_hash"] = _sha8(str(emoji))
-            for key in ("channel_id", "user_id", "bot_user_id", "role_id", "message_id"):
+            for key in (
+                "channel_id",
+                "user_id",
+                "bot_user_id",
+                "role_id",
+                "message_id",
+            ):
                 if args.get(key) is not None:
                     payload[key] = args[key]
         return payload
@@ -167,8 +179,12 @@ class MessagingTool(Tool, abc.ABC):
                 if not BOT_CLIENT_AVAILABLE
                 else "DEILE_BOT_ENDPOINT/AUTH_TOKEN not configured"
             )
-            self._emit_audit(audit, "denied", {**audit_payload, "reason": reason},
-                             severity=SeverityLevel.WARNING)
+            self._emit_audit(
+                audit,
+                "denied",
+                {**audit_payload, "reason": reason},
+                severity=SeverityLevel.WARNING,
+            )
             return ToolResult.error_result(
                 f"messaging integration disabled: {reason}",
                 error_code="BOT_INTEGRATION_DISABLED",
@@ -194,7 +210,9 @@ class MessagingTool(Tool, abc.ABC):
         # 2. approval gate (HIGH-risk only) -----------------------------------
         if self.require_approval:
             if not _trusted_operator_mode():
-                approval_outcome = await self._maybe_request_approval(context, args, audit, audit_payload)
+                approval_outcome = await self._maybe_request_approval(
+                    context, args, audit, audit_payload
+                )
                 if approval_outcome is not None:
                     return approval_outcome
             else:
@@ -217,7 +235,10 @@ class MessagingTool(Tool, abc.ABC):
             self._emit_audit(
                 audit,
                 "failed",
-                {**audit_payload, "error_code": err.metadata.get("error_code", "UNKNOWN")},
+                {
+                    **audit_payload,
+                    "error_code": err.metadata.get("error_code", "UNKNOWN"),
+                },
                 severity=SeverityLevel.ERROR,
             )
             return err
@@ -316,15 +337,18 @@ class MessagingTool(Tool, abc.ABC):
     def _map_exception(
         self, exc: Exception, args: Optional[Dict[str, Any]] = None
     ) -> ToolResult:
-        from ...integrations.bot.client import (BotClientAuthError,
-                                                BotClientNotReady,
-                                                BotClientRateLimited,
-                                                BotClientTimeoutError,
-                                                BotClientUpstreamError)
+        from ...integrations.bot.client import (
+            BotClientAuthError,
+            BotClientNotReady,
+            BotClientRateLimited,
+            BotClientTimeoutError,
+            BotClientUpstreamError,
+        )
 
         # Log full traceback at ERROR level for diagnostics.
-        logger.error("%s: erro mapeado — %s", self.tool_name, type(exc).__name__,
-                     exc_info=exc)
+        logger.error(
+            "%s: erro mapeado — %s", self.tool_name, type(exc).__name__, exc_info=exc
+        )
 
         tool = self.tool_name
         args = args or {}
@@ -476,7 +500,10 @@ class MessagingTool(Tool, abc.ABC):
                 event_type=event_type,
                 severity=severity,
                 actor=self.tool_name,
-                resource=payload.get("channel_id") or payload.get("user_id") or payload.get("role_id") or "*",
+                resource=payload.get("channel_id")
+                or payload.get("user_id")
+                or payload.get("role_id")
+                or "*",
                 action="execute",
                 result=outcome,
                 details=dict(payload),

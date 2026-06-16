@@ -145,9 +145,7 @@ def create_log_handler(
     )
 
     # Formatter padrão (compatível com o formato atual dos pods)
-    formatter = logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     handler.setFormatter(formatter)
 
     # Dual-write: stdout handler com mesmo formatter

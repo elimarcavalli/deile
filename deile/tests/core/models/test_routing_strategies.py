@@ -9,12 +9,20 @@ from __future__ import annotations
 
 from typing import AsyncIterator, List, Optional
 
-from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
-                                    ModelSize, ModelType)
-from deile.core.models.routing_strategies import (ModelMetrics, RoutingContext,
-                                                  RoutingStrategy,
-                                                  RoutingStrategySelector,
-                                                  _provider_key)
+from deile.core.models.base import (
+    ModelMessage,
+    ModelProvider,
+    ModelResponse,
+    ModelSize,
+    ModelType,
+)
+from deile.core.models.routing_strategies import (
+    ModelMetrics,
+    RoutingContext,
+    RoutingStrategy,
+    RoutingStrategySelector,
+    _provider_key,
+)
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 
 # ---------------------------------------------------------------------------
@@ -25,8 +33,12 @@ from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 class _FakeProvider(ModelProvider):
     """Minimal concrete ModelProvider for routing tests."""
 
-    def __init__(self, provider_name: str, model_name: str,
-                 model_size: ModelSize = ModelSize.MEDIUM):
+    def __init__(
+        self,
+        provider_name: str,
+        model_name: str,
+        model_size: ModelSize = ModelSize.MEDIUM,
+    ):
         super().__init__(model_name=model_name)
         self._provider_name = provider_name
         self._model_size = model_size
@@ -102,9 +114,7 @@ class TestRoundRobin:
 
     def test_empty_providers_returns_none(self):
         selector = RoutingStrategySelector()
-        result = selector.select(
-            RoutingStrategy.ROUND_ROBIN, _ctx(), [], {}
-        )
+        result = selector.select(RoutingStrategy.ROUND_ROBIN, _ctx(), [], {})
         assert result is None
 
 
@@ -126,9 +136,7 @@ class TestLeastBusy:
         metrics[_provider_key(busy)].total_requests = 5
         metrics[_provider_key(idle)].total_requests = 1
 
-        result = selector.select(
-            RoutingStrategy.LEAST_BUSY, _ctx(), providers, metrics
-        )
+        result = selector.select(RoutingStrategy.LEAST_BUSY, _ctx(), providers, metrics)
         assert result is idle
 
     def test_empty_providers_returns_none(self):
@@ -241,9 +249,7 @@ class TestPerformanceOptimized:
 
     def test_empty_providers_returns_none(self):
         selector = RoutingStrategySelector()
-        result = selector.select(
-            RoutingStrategy.PERFORMANCE_OPTIMIZED, _ctx(), [], {}
-        )
+        result = selector.select(RoutingStrategy.PERFORMANCE_OPTIMIZED, _ctx(), [], {})
         assert result is None
 
 
@@ -294,9 +300,7 @@ class TestUnknownStrategy:
         metrics = _metrics_for(providers)
 
         # An object that is not a recognized RoutingStrategy member.
-        result = selector.select(
-            "not_a_strategy", _ctx(), providers, metrics
-        )
+        result = selector.select("not_a_strategy", _ctx(), providers, metrics)
         assert result is providers[0]
 
     def test_unknown_strategy_empty_providers_returns_none(self):

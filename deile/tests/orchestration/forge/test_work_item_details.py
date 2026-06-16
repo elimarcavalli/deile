@@ -16,8 +16,7 @@ from typing import Tuple
 
 import pytest
 
-from deile.orchestration.forge.base import (ForgeConfig, ForgeKind,
-                                            WorkItemDetails)
+from deile.orchestration.forge.base import ForgeConfig, ForgeKind, WorkItemDetails
 from deile.orchestration.forge.github_forge import GitHubForge
 from deile.orchestration.forge.gitlab_forge import GitLabForge
 
@@ -43,10 +42,13 @@ def _parse_linked_items(body: str):
         raw = m.group("mr") or m.group("issue") or ""
         try:
             from types import SimpleNamespace
-            results.append(SimpleNamespace(
-                kind="closes" if closing else "refs",
-                number=int(raw.lstrip("!")),
-            ))
+
+            results.append(
+                SimpleNamespace(
+                    kind="closes" if closing else "refs",
+                    number=int(raw.lstrip("!")),
+                )
+            )
         except ValueError:
             pass
     return results
@@ -178,12 +180,20 @@ def fake_gh(monkeypatch):
 
 async def test_gh_get_work_item_details_issue(fake_gh):
     forge, responses, calls = fake_gh
-    responses.append((0, json.dumps({
-        "number": 10,
-        "user": {"login": "alice"},
-        "comments": 2,
-        "body": "Closes #3",
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "number": 10,
+                    "user": {"login": "alice"},
+                    "comments": 2,
+                    "body": "Closes #3",
+                }
+            ),
+            "",
+        )
+    )
     wd = await forge.get_work_item_details("issue", 10)
 
     assert wd.number == 10
@@ -198,12 +208,20 @@ async def test_gh_get_work_item_details_issue(fake_gh):
 async def test_gh_links_refs_not_classified_as_closes(fake_gh):
     """refs/references must produce kind='refs', not 'closes' (r is in 'cfr' — old bug)."""
     forge, responses, _ = fake_gh
-    responses.append((0, json.dumps({
-        "number": 11,
-        "user": {"login": "alice"},
-        "comments": 0,
-        "body": "Refs #7\nReferences #8",
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "number": 11,
+                    "user": {"login": "alice"},
+                    "comments": 0,
+                    "body": "Refs #7\nReferences #8",
+                }
+            ),
+            "",
+        )
+    )
     wd = await forge.get_work_item_details("issue", 11)
 
     assert len(wd.linked_items) == 2
@@ -214,24 +232,48 @@ async def test_gh_links_refs_not_classified_as_closes(fake_gh):
 async def test_gh_get_work_item_details_pr_clean(fake_gh):
     forge, responses, calls = fake_gh
     # Issue detail
-    responses.append((0, json.dumps({
-        "number": 20,
-        "user": {"login": "bob"},
-        "comments": 0,
-        "body": "",
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "number": 20,
+                    "user": {"login": "bob"},
+                    "comments": 0,
+                    "body": "",
+                }
+            ),
+            "",
+        )
+    )
     # PR detail
-    responses.append((0, json.dumps({
-        "number": 20,
-        "draft": False,
-        "mergeable_state": "clean",
-        "requested_reviewers": [{"login": "carol"}],
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "number": 20,
+                    "draft": False,
+                    "mergeable_state": "clean",
+                    "requested_reviewers": [{"login": "carol"}],
+                }
+            ),
+            "",
+        )
+    )
     # PR checks
-    responses.append((0, json.dumps([
-        {"bucket": "pass", "state": "completed", "conclusion": "success"},
-        {"bucket": "pass", "state": "completed", "conclusion": "success"},
-    ]), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                [
+                    {"bucket": "pass", "state": "completed", "conclusion": "success"},
+                    {"bucket": "pass", "state": "completed", "conclusion": "success"},
+                ]
+            ),
+            "",
+        )
+    )
 
     wd = await forge.get_work_item_details("pr", 20)
 
@@ -245,8 +287,18 @@ async def test_gh_get_work_item_details_pr_clean(fake_gh):
 
 async def test_gh_get_work_item_details_pr_draft(fake_gh):
     forge, responses, _ = fake_gh
-    responses.append((0, json.dumps({"number": 5, "user": {"login": "x"}, "comments": 0, "body": ""}), ""))
-    responses.append((0, json.dumps({"number": 5, "draft": True, "mergeable_state": "clean"}), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {"number": 5, "user": {"login": "x"}, "comments": 0, "body": ""}
+            ),
+            "",
+        )
+    )
+    responses.append(
+        (0, json.dumps({"number": 5, "draft": True, "mergeable_state": "clean"}), "")
+    )
     responses.append((0, "[]", ""))
 
     wd = await forge.get_work_item_details("pr", 5)
@@ -255,8 +307,18 @@ async def test_gh_get_work_item_details_pr_draft(fake_gh):
 
 async def test_gh_get_work_item_details_pr_conflict(fake_gh):
     forge, responses, _ = fake_gh
-    responses.append((0, json.dumps({"number": 6, "user": {"login": "x"}, "comments": 0, "body": ""}), ""))
-    responses.append((0, json.dumps({"number": 6, "draft": False, "mergeable_state": "dirty"}), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {"number": 6, "user": {"login": "x"}, "comments": 0, "body": ""}
+            ),
+            "",
+        )
+    )
+    responses.append(
+        (0, json.dumps({"number": 6, "draft": False, "mergeable_state": "dirty"}), "")
+    )
     responses.append((0, "[]", ""))
 
     wd = await forge.get_work_item_details("pr", 6)
@@ -306,12 +368,20 @@ def fake_gl(monkeypatch):
 
 async def test_gl_get_work_item_details_issue(fake_gl):
     forge, responses, _ = fake_gl
-    responses.append((0, json.dumps({
-        "iid": 8,
-        "author": {"username": "alice"},
-        "user_notes_count": 4,
-        "description": "Refs #2",
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 8,
+                    "author": {"username": "alice"},
+                    "user_notes_count": 4,
+                    "description": "Refs #2",
+                }
+            ),
+            "",
+        )
+    )
 
     wd = await forge.get_work_item_details("issue", 8)
     assert wd.number == 8
@@ -322,17 +392,25 @@ async def test_gl_get_work_item_details_issue(fake_gl):
 
 async def test_gl_get_work_item_details_mr_clean(fake_gl):
     forge, responses, _ = fake_gl
-    responses.append((0, json.dumps({
-        "iid": 15,
-        "author": {"username": "bob"},
-        "user_notes_count": 1,
-        "description": "",
-        "work_in_progress": False,
-        "has_conflicts": False,
-        "merge_status": "can_be_merged",
-        "reviewers": [{"username": "carol"}],
-        "head_pipeline": {"status": "success", "id": 100},
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 15,
+                    "author": {"username": "bob"},
+                    "user_notes_count": 1,
+                    "description": "",
+                    "work_in_progress": False,
+                    "has_conflicts": False,
+                    "merge_status": "can_be_merged",
+                    "reviewers": [{"username": "carol"}],
+                    "head_pipeline": {"status": "success", "id": 100},
+                }
+            ),
+            "",
+        )
+    )
 
     wd = await forge.get_work_item_details("pr", 15)
     assert wd.mergeability == "clean"
@@ -342,16 +420,24 @@ async def test_gl_get_work_item_details_mr_clean(fake_gl):
 
 async def test_gl_get_work_item_details_mr_conflict(fake_gl):
     forge, responses, _ = fake_gl
-    responses.append((0, json.dumps({
-        "iid": 16,
-        "author": {"username": "x"},
-        "user_notes_count": 0,
-        "description": "",
-        "work_in_progress": False,
-        "has_conflicts": True,
-        "merge_status": "cannot_be_merged",
-        "head_pipeline": None,
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 16,
+                    "author": {"username": "x"},
+                    "user_notes_count": 0,
+                    "description": "",
+                    "work_in_progress": False,
+                    "has_conflicts": True,
+                    "merge_status": "cannot_be_merged",
+                    "head_pipeline": None,
+                }
+            ),
+            "",
+        )
+    )
 
     wd = await forge.get_work_item_details("pr", 16)
     assert wd.mergeability == "conflict"
@@ -360,16 +446,24 @@ async def test_gl_get_work_item_details_mr_conflict(fake_gl):
 
 async def test_gl_get_work_item_details_mr_draft(fake_gl):
     forge, responses, _ = fake_gl
-    responses.append((0, json.dumps({
-        "iid": 17,
-        "author": {"username": "y"},
-        "user_notes_count": 0,
-        "description": "",
-        "work_in_progress": True,
-        "has_conflicts": False,
-        "merge_status": "can_be_merged",
-        "head_pipeline": None,
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 17,
+                    "author": {"username": "y"},
+                    "user_notes_count": 0,
+                    "description": "",
+                    "work_in_progress": True,
+                    "has_conflicts": False,
+                    "merge_status": "can_be_merged",
+                    "head_pipeline": None,
+                }
+            ),
+            "",
+        )
+    )
 
     wd = await forge.get_work_item_details("pr", 17)
     assert wd.mergeability == "draft"

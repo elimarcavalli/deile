@@ -6,8 +6,10 @@ import json
 
 from deile.config.settings import get_settings, reset_settings
 from deile.orchestration.pipeline.constants import (
-    PIPELINE_STOP_TIMEOUT_SECONDS, claude_timeout_seconds,
-    pipeline_poll_interval_seconds)
+    PIPELINE_STOP_TIMEOUT_SECONDS,
+    claude_timeout_seconds,
+    pipeline_poll_interval_seconds,
+)
 
 
 class TestClaudeTimeoutSeconds:
@@ -26,16 +28,12 @@ class TestClaudeTimeoutSeconds:
         monkeypatch.setenv("DEILE_SETTINGS_FILE", str(settings_file))
 
         # Write initial value
-        settings_file.write_text(json.dumps({
-            "pipeline": {"claude_timeout": 999}
-        }))
+        settings_file.write_text(json.dumps({"pipeline": {"claude_timeout": 999}}))
         reset_settings()
         assert claude_timeout_seconds() == 999
 
         # Write new value — simulates SettingsManager.set_setting() + reset_settings()
-        settings_file.write_text(json.dumps({
-            "pipeline": {"claude_timeout": 1998}
-        }))
+        settings_file.write_text(json.dumps({"pipeline": {"claude_timeout": 1998}}))
         reset_settings()
         assert claude_timeout_seconds() == 1998
 
@@ -67,15 +65,11 @@ class TestPipelinePollIntervalSeconds:
         settings_file = tmp_path / "settings.json"
         monkeypatch.setenv("DEILE_SETTINGS_FILE", str(settings_file))
 
-        settings_file.write_text(json.dumps({
-            "pipeline": {"poll_interval": 45}
-        }))
+        settings_file.write_text(json.dumps({"pipeline": {"poll_interval": 45}}))
         reset_settings()
         assert pipeline_poll_interval_seconds() == 45
 
-        settings_file.write_text(json.dumps({
-            "pipeline": {"poll_interval": 345}
-        }))
+        settings_file.write_text(json.dumps({"pipeline": {"poll_interval": 345}}))
         reset_settings()
         assert pipeline_poll_interval_seconds() == 345
 
@@ -110,9 +104,7 @@ class TestResetSettingsClearsAndRebuilds:
         settings_file = tmp_path / "settings.json"
         monkeypatch.setenv("DEILE_SETTINGS_FILE", str(settings_file))
 
-        settings_file.write_text(json.dumps({
-            "pipeline": {"claude_timeout": 777}
-        }))
+        settings_file.write_text(json.dumps({"pipeline": {"claude_timeout": 777}}))
         reset_settings()
         s1 = get_settings()
         assert s1.pipeline_claude_timeout == 777

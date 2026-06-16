@@ -12,8 +12,13 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (ArgSpec, parse_flag_args, promote_positional_format,
-                      split_args, truncate)
+from ._shared import (
+    ArgSpec,
+    parse_flag_args,
+    promote_positional_format,
+    split_args,
+    truncate,
+)
 
 
 class ToolsCommand(DirectCommand):
@@ -25,10 +30,13 @@ class ToolsCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
-        super().__init__(CommandConfig(
-            name="tools",
-            description="Display available tools, their schemas and usage statistics.",
-        ))
+
+        super().__init__(
+            CommandConfig(
+                name="tools",
+                description="Display available tools, their schemas and usage statistics.",
+            )
+        )
 
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute the tools command.
@@ -55,7 +63,10 @@ class ToolsCommand(DirectCommand):
             # Positional: first {list,detailed,json} promotes to format (if still default);
             # any other positional is treated as tool name (last wins, matching prior behaviour).
             format_type, leftover_positionals = promote_positional_format(
-                positionals, format_type, "list", ("list", "detailed", "json"),
+                positionals,
+                format_type,
+                "list",
+                ("list", "detailed", "json"),
             )
             for token in leftover_positionals:
                 tool_name = token
@@ -87,7 +98,9 @@ class ToolsCommand(DirectCommand):
                 )
             else:  # detailed
                 return CommandResult.success_result(
-                    self._create_detailed_display(tools_data, show_schema, show_examples),
+                    self._create_detailed_display(
+                        tools_data, show_schema, show_examples
+                    ),
                     "rich",
                 )
 
@@ -95,8 +108,10 @@ class ToolsCommand(DirectCommand):
             return CommandResult.error_result(
                 f"Failed to display tools information: {str(e)}", error=e
             )
-    
-    def _get_tools_data(self, context: CommandContext | None, tool_name: str | None) -> dict[str, Any]:
+
+    def _get_tools_data(
+        self, context: CommandContext | None, tool_name: str | None
+    ) -> dict[str, Any]:
         """Read tools data from the live :class:`ToolRegistry`.
 
         Walks every registered tool, extracts schema (parameters, security
@@ -150,8 +165,14 @@ class ToolsCommand(DirectCommand):
                     params[pname] = entry
                 else:
                     params[pname] = {"type": "any", "required": pname in required}
-        risk = getattr(getattr(schema, "security_level", None), "value", "unknown") if schema else "unknown"
-        category = getattr(getattr(schema, "category", None), "value", None) or getattr(tool, "category", "unknown")
+        risk = (
+            getattr(getattr(schema, "security_level", None), "value", "unknown")
+            if schema
+            else "unknown"
+        )
+        category = getattr(getattr(schema, "category", None), "value", None) or getattr(
+            tool, "category", "unknown"
+        )
         return {
             "name": tool.name,
             "description": getattr(tool, "description", "") or "",
@@ -166,11 +187,12 @@ class ToolsCommand(DirectCommand):
                 "avg_duration": 0.0,
             },
         }
-    
-    def _create_single_tool_display(self, tool_data: dict[str, Any], 
-                                  show_schema: bool, show_examples: bool) -> Panel:
+
+    def _create_single_tool_display(
+        self, tool_data: dict[str, Any], show_schema: bool, show_examples: bool
+    ) -> Panel:
         """Create display for a single tool"""
-        
+
         content_lines = [
             f"**{tool_data.get('name', 'Unknown')}**",
             "",
@@ -178,38 +200,42 @@ class ToolsCommand(DirectCommand):
             f"📂 **Category**: {tool_data.get('category', 'unknown')}",
             f"⚠️  **Risk Level**: {tool_data.get('risk_level', 'unknown')}",
             f"📺 **Display Policy**: {tool_data.get('display_policy', 'unknown')}",
-            ""
+            "",
         ]
-        
+
         # Usage stats
         stats = tool_data.get("usage_stats", {})
         if stats:
-            content_lines.extend([
-                "📊 **Usage Statistics**:",
-                f"  • Total Calls: {stats.get('total_calls', 0)}",
-                f"  • Success Rate: {stats.get('success_rate', 0):.1f}%",
-                f"  • Avg Duration: {stats.get('avg_duration', 0):.1f}s",
-                ""
-            ])
-        
+            content_lines.extend(
+                [
+                    "📊 **Usage Statistics**:",
+                    f"  • Total Calls: {stats.get('total_calls', 0)}",
+                    f"  • Success Rate: {stats.get('success_rate', 0):.1f}%",
+                    f"  • Avg Duration: {stats.get('avg_duration', 0):.1f}s",
+                    "",
+                ]
+            )
+
         # Parameters
         params = tool_data.get("parameters", {})
         if params:
-            content_lines.extend([
-                "⚙️  **Parameters**:"
-            ])
+            content_lines.extend(["⚙️  **Parameters**:"])
             for param_name, param_info in params.items():
                 required = " (required)" if param_info.get("required") else ""
-                default = f" [default: {param_info.get('default')}]" if "default" in param_info else ""
-                content_lines.append(f"  • **{param_name}**: {param_info.get('type', 'unknown')}{required}{default}")
+                default = (
+                    f" [default: {param_info.get('default')}]"
+                    if "default" in param_info
+                    else ""
+                )
+                content_lines.append(
+                    f"  • **{param_name}**: {param_info.get('type', 'unknown')}{required}{default}"
+                )
             content_lines.append("")
-        
+
         # Examples
         examples = tool_data.get("examples", [])
         if examples and show_examples:
-            content_lines.extend([
-                "💡 **Examples**:"
-            ])
+            content_lines.extend(["💡 **Examples**:"])
             for i, example in enumerate(examples[:3], 1):  # Show max 3 examples
                 desc = example.get("description", f"Example {i}")
                 content_lines.append(f"  {i}. {desc}")
@@ -218,41 +244,38 @@ class ToolsCommand(DirectCommand):
                 if first_param:
                     content_lines.append(f"     {first_param}: {example[first_param]}")
             content_lines.append("")
-        
+
         # Schema
         if show_schema and params:
             schema_json = json.dumps(params, indent=2)
-            content_lines.extend([
-                "🔧 **JSON Schema**:",
-                "```json",
-                schema_json,
-                "```"
-            ])
-        
+            content_lines.extend(["🔧 **JSON Schema**:", "```json", schema_json, "```"])
+
         content = "\n".join(content_lines)
-        
+
         return Panel(
             Text(content, style="white"),
             title=f"🔧 {tool_data.get('name', 'Tool')}",
             border_style="cyan",
-            padding=(1, 2)
+            padding=(1, 2),
         )
-    
+
     def _create_list_display(self, data: dict[str, Any]) -> Table:
         """Create list display for all tools"""
-        
-        table = Table(title="🔧 Available Tools", show_header=True, header_style="bold magenta")
+
+        table = Table(
+            title="🔧 Available Tools", show_header=True, header_style="bold magenta"
+        )
         table.add_column("Tool Name", style="cyan")
-        table.add_column("Category", style="green") 
+        table.add_column("Category", style="green")
         table.add_column("Risk", style="yellow")
         table.add_column("Calls", justify="right", style="blue")
         table.add_column("Success%", justify="right", style="green")
         table.add_column("Description", style="white")
-        
+
         tools = data.get("tools", {})
         for tool_name, tool_data in sorted(tools.items()):
             stats = tool_data.get("usage_stats", {})
-            
+
             table.add_row(
                 tool_name,
                 tool_data.get("category", "unknown"),
@@ -261,51 +284,49 @@ class ToolsCommand(DirectCommand):
                 f"{stats.get('success_rate', 0):.1f}",
                 truncate(tool_data.get("description", "No description"), 40),
             )
-        
+
         return table
-    
-    def _create_detailed_display(self, data: dict[str, Any], 
-                               show_schema: bool, show_examples: bool) -> Columns:
+
+    def _create_detailed_display(
+        self, data: dict[str, Any], show_schema: bool, show_examples: bool
+    ) -> Columns:
         """Create detailed display with multiple panels"""
-        
+
         panels = []
         summary = data.get("summary", {})
-        
+
         # Summary Panel
         summary_content = [
             f"**Total Tools**: {summary.get('total_tools', 0)}",
             "",
-            "**By Category**:"
+            "**By Category**:",
         ]
-        
+
         by_category = summary.get("by_category", {})
         for category, count in sorted(by_category.items()):
             summary_content.append(f"  • {category}: {count}")
-        
-        summary_content.extend([
-            "",
-            "**By Risk Level**:"
-        ])
-        
+
+        summary_content.extend(["", "**By Risk Level**:"])
+
         by_risk = summary.get("by_risk", {})
         for risk, count in sorted(by_risk.items()):
             summary_content.append(f"  • {risk}: {count}")
-        
-        panels.append(Panel(
-            "\n".join(summary_content),
-            title="📊 Summary",
-            border_style="blue"
-        ))
-        
+
+        panels.append(
+            Panel("\n".join(summary_content), title="📊 Summary", border_style="blue")
+        )
+
         # Tool details - show top 3 most used tools
         tools = data.get("tools", {})
-        sorted_tools = sorted(tools.items(), 
-                            key=lambda x: x[1].get("usage_stats", {}).get("total_calls", 0), 
-                            reverse=True)
-        
+        sorted_tools = sorted(
+            tools.items(),
+            key=lambda x: x[1].get("usage_stats", {}).get("total_calls", 0),
+            reverse=True,
+        )
+
         for i, (tool_name, tool_data) in enumerate(sorted_tools[:3]):
             stats = tool_data.get("usage_stats", {})
-            
+
             tool_content = [
                 f"**{tool_name}**",
                 "",
@@ -317,18 +338,20 @@ class ToolsCommand(DirectCommand):
                 "",
                 f"📊 Calls: {stats.get('total_calls', 0)}",
                 f"✅ Success: {stats.get('success_rate', 0):.1f}%",
-                f"⏱️  Avg: {stats.get('avg_duration', 0):.1f}s"
+                f"⏱️  Avg: {stats.get('avg_duration', 0):.1f}s",
             ]
-            
+
             border_colors = ["green", "yellow", "cyan"]
-            panels.append(Panel(
-                "\n".join(tool_content),
-                title=f"🔧 {tool_name}",
-                border_style=border_colors[i]
-            ))
-        
+            panels.append(
+                Panel(
+                    "\n".join(tool_content),
+                    title=f"🔧 {tool_name}",
+                    border_style=border_colors[i],
+                )
+            )
+
         return Columns(panels, equal=True, expand=True)
-    
+
     def get_help(self) -> str:
         """Get command help"""
         return """Display available tools, their schemas and usage statistics

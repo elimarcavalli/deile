@@ -53,17 +53,23 @@ def _make_logline(body: str, age_s: float = 0.0) -> pd.LogLine:
     return pd.LogLine(ts=ts, body=body)
 
 
-def _make_event(age_s: float = 0.0, actor: str = "pipeline",
-                action: str = "dispatch", target: str = "#1",
-                detail: str = "") -> pd.ActivityEvent:
+def _make_event(
+    age_s: float = 0.0,
+    actor: str = "pipeline",
+    action: str = "dispatch",
+    target: str = "#1",
+    detail: str = "",
+) -> pd.ActivityEvent:
     ts = _utc_now() - timedelta(seconds=age_s)
-    return pd.ActivityEvent(ts=ts, actor=actor, action=action,
-                            target=target, detail=detail)
+    return pd.ActivityEvent(
+        ts=ts, actor=actor, action=action, target=target, detail=detail
+    )
 
 
 # ---------------------------------------------------------------------------
 # 1–6: _classify_canonical
 # ---------------------------------------------------------------------------
+
 
 class TestClassifyCanonical:
     def test_returns_none_for_non_canonical(self):
@@ -145,6 +151,7 @@ class TestClassifyCanonical:
 # 7–10: _classify_source_line dual-mode
 # ---------------------------------------------------------------------------
 
+
 class TestClassifySourceLine:
     def test_canonical_path_taken_when_matches(self):
         ll = _make_logline("dispatch.started task=x channel=pipeline-issue-1")
@@ -185,12 +192,13 @@ class TestClassifySourceLine:
 # 11–12: MultiSourceActivityState.top()
 # ---------------------------------------------------------------------------
 
+
 class TestMultiSourceActivityState:
     def test_top_returns_sorted_desc_and_capped(self):
         state = pd.MultiSourceActivityState()
         state.events = [
             _make_event(age_s=10, actor="pipeline"),
-            _make_event(age_s=5,  actor="bot"),
+            _make_event(age_s=5, actor="bot"),
             _make_event(age_s=20, actor="monitor"),
         ]
         top = state.top(2)
@@ -213,10 +221,10 @@ class TestMultiSourceActivityState:
 # 13–15: MultiSourceActivityProvider
 # ---------------------------------------------------------------------------
 
+
 class TestMultiSourceActivityProvider:
     def _make_provider(self) -> pd.MultiSourceActivityProvider:
-        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
-                                           enabled=False)
+        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test", enabled=False)
         return p
 
     def _ok(self, stdout: str = "") -> CompletedProcess:
@@ -270,8 +278,7 @@ class TestMultiSourceActivityProvider:
         assert result == []
 
     def test_fetch_builds_rolling_buffer_capped_at_200(self):
-        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
-                                           enabled=True)
+        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test", enabled=True)
         p._kubectl = "/usr/bin/kubectl"
         # 60 events per source; 5 sources × 60 = 300 → capped at 200.
         # Patch _BURST_THRESHOLD high so rolling-window cap is tested in isolation.
@@ -281,17 +288,16 @@ class TestMultiSourceActivityProvider:
             for i in range(60)
         )
         with patch.object(pd, "_BURST_THRESHOLD", 10_000):
-            with patch("subprocess.run",
-                       return_value=CompletedProcess([], 0, lines, "")):
+            with patch(
+                "subprocess.run", return_value=CompletedProcess([], 0, lines, "")
+            ):
                 state = p._fetch()
         assert len(state.events) == pd._MULTI_BUFFER_CAP
 
     def test_get_returns_multi_source_state(self):
-        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
-                                           enabled=True)
+        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test", enabled=True)
         p._kubectl = "/usr/bin/kubectl"
-        with patch("subprocess.run",
-                   return_value=CompletedProcess([], 1, "", "err")):
+        with patch("subprocess.run", return_value=CompletedProcess([], 1, "", "err")):
             state = p.get(force=True)
         assert isinstance(state, pd.MultiSourceActivityState)
         assert state.events == []
@@ -300,6 +306,7 @@ class TestMultiSourceActivityProvider:
 # ---------------------------------------------------------------------------
 # 16–17: _activity_from_data
 # ---------------------------------------------------------------------------
+
 
 class TestActivityFromData:
     def _make_data_with_activity(self, events: List[pd.ActivityEvent]):
@@ -310,8 +317,7 @@ class TestActivityFromData:
         data.activity.get.return_value = state
         return data
 
-    def _make_data_without_activity(self, pipeline_events=None,
-                                    local_events=None):
+    def _make_data_without_activity(self, pipeline_events=None, local_events=None):
         data = MagicMock()
         data.activity = None
         ps = pd.PipelineState()
@@ -368,22 +374,24 @@ class TestActivityFromData:
 # 18: _activity_panel adaptive widths
 # ---------------------------------------------------------------------------
 
+
 class TestActivityPanelAdaptiveWidths:
     def test_no_literal_width_in_activity_panel(self):
         """All columns in the activity table must NOT use literal width=<int>."""
         import inspect
+
         src = inspect.getsource(panel.DashboardView._activity_panel)
         # The pattern `width=<integer>` is forbidden per principle 15.
         import re
+
         matches = re.findall(r"\bwidth\s*=\s*\d+\b", src)
-        assert matches == [], (
-            f"Literal width=N found in _activity_panel: {matches}"
-        )
+        assert matches == [], f"Literal width=N found in _activity_panel: {matches}"
 
 
 # ---------------------------------------------------------------------------
 # 19–20: _last_activity_caption
 # ---------------------------------------------------------------------------
+
 
 class TestLastActivityCaptionMultiSource:
     def _make_data_with_activity(self, events):
@@ -404,8 +412,7 @@ class TestLastActivityCaptionMultiSource:
         return data
 
     def test_uses_activity_provider_for_caption(self):
-        ev = _make_event(age_s=10, actor="bot", target="#420",
-                         detail="inbound.mention")
+        ev = _make_event(age_s=10, actor="bot", target="#420", detail="inbound.mention")
         data = self._make_data_with_activity([ev])
         caption = panel._last_activity_caption(data)
         assert caption is not None
@@ -416,8 +423,9 @@ class TestLastActivityCaptionMultiSource:
         assert panel._last_activity_caption(data) is None
 
     def test_fallback_to_pipeline(self):
-        ev = _make_event(age_s=5, actor="pipeline", target="#99",
-                         detail="dispatch done")
+        ev = _make_event(
+            age_s=5, actor="pipeline", target="#99", detail="dispatch done"
+        )
         data = self._make_data_without_activity(pipeline_events=[ev])
         caption = panel._last_activity_caption(data)
         assert caption is not None
@@ -436,22 +444,23 @@ class TestLastActivityCaptionMultiSource:
 # AC18: each source can be in intermediate state — provider stays functional
 # ---------------------------------------------------------------------------
 
+
 class TestAC18IntermediateState:
     """Smoke-test: provider survives when individual sources fail or return no
     events.  The overall MultiSourceActivityState is returned with events from
     the working sources; no exception is raised."""
 
     def test_provider_functional_when_some_sources_have_no_events(self):
-        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
-                                           enabled=True)
+        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test", enabled=True)
         p._kubectl = "/usr/bin/kubectl"
         ts = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+
         # Only deile-pipeline returns events; other sources fail.
         def _fake_run(cmd, **kw):
             if "deploy/deile-pipeline" in cmd:
-                return CompletedProcess(cmd, 0,
-                                        f"{ts} worker dispatch starting\n", "")
+                return CompletedProcess(cmd, 0, f"{ts} worker dispatch starting\n", "")
             return CompletedProcess(cmd, 1, "", "err")
+
         with patch("subprocess.run", side_effect=_fake_run):
             state = p._fetch()
         assert isinstance(state, pd.MultiSourceActivityState)
@@ -460,53 +469,54 @@ class TestAC18IntermediateState:
         # No crash even though 4 other sources failed.
 
     def test_provider_functional_when_all_sources_fail(self):
-        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
-                                           enabled=True)
+        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test", enabled=True)
         p._kubectl = "/usr/bin/kubectl"
-        with patch("subprocess.run",
-                   return_value=CompletedProcess([], 1, "", "err")):
+        with patch("subprocess.run", return_value=CompletedProcess([], 1, "", "err")):
             state = p._fetch()
         assert isinstance(state, pd.MultiSourceActivityState)
         assert state.events == []
 
     def test_provider_functional_with_mixed_canonical_and_legacy(self):
-        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
-                                           enabled=True)
+        p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test", enabled=True)
         p._kubectl = "/usr/bin/kubectl"
         ts = _utc_now().strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+
         def _fake_run(cmd, **kw):
             if "deploy/deile-pipeline" in cmd:
-                return CompletedProcess(cmd, 0,
-                                        f"{ts} worker dispatch starting\n", "")
+                return CompletedProcess(cmd, 0, f"{ts} worker dispatch starting\n", "")
             if "deploy/deile-worker" in cmd:
                 return CompletedProcess(
-                    cmd, 0,
+                    cmd,
+                    0,
                     f"{ts} dispatch.started task=x channel=pipeline-issue-5\n",
-                    "")
+                    "",
+                )
             if "deploy/deilebot" in cmd:
-                return CompletedProcess(cmd, 0,
-                                        f"{ts} inbound.mention target=issue:99\n",
-                                        "")
+                return CompletedProcess(
+                    cmd, 0, f"{ts} inbound.mention target=issue:99\n", ""
+                )
             return CompletedProcess(cmd, 1, "", "err")
+
         with patch("subprocess.run", side_effect=_fake_run):
             state = p._fetch()
         actors = {ev.actor for ev in state.events}
-        assert "pipeline" in actors      # legacy
+        assert "pipeline" in actors  # legacy
         assert "deile-worker" in actors  # canonical
-        assert "bot" in actors           # canonical
+        assert "bot" in actors  # canonical
 
     def test_each_source_color_is_defined(self):
         """All 5 canonical sources have a color in _SOURCE_COLOR_MAP."""
         for deploy, role, _ in pd._MULTI_SOURCE_DEFS:
-            assert deploy in pd._SOURCE_COLOR_MAP, (
-                f"{deploy} missing from _SOURCE_COLOR_MAP"
-            )
+            assert (
+                deploy in pd._SOURCE_COLOR_MAP
+            ), f"{deploy} missing from _SOURCE_COLOR_MAP"
 
 
 # ---------------------------------------------------------------------------
 # AC1–AC5: _action_row_style predicate + _activity_panel action cell styles
 # (issue #488)
 # ---------------------------------------------------------------------------
+
 
 class TestActivityPanelActionStyle:
     """Tests for the _action_row_style predicate and its application in the
@@ -597,30 +607,31 @@ class TestActivityPanelActionStyle:
     def test_ac4_error_detail_and_dim_action_coexist(self):
         # Build a detail that triggers _ACTIVITY_ERROR_RE
         error_detail = "ERROR: something went wrong"
-        assert pd._ERROR_DETAIL_RE.search(error_detail), (
-            "detail must match _ACTIVITY_ERROR_RE for this test to be valid"
+        assert pd._ERROR_DETAIL_RE.search(
+            error_detail
+        ), "detail must match _ACTIVITY_ERROR_RE for this test to be valid"
+        ev = _make_event(
+            actor="pipeline", action="routing.dropped", detail=error_detail
         )
-        ev = _make_event(actor="pipeline", action="routing.dropped",
-                         detail=error_detail)
         view = panel.DashboardView.__new__(panel.DashboardView)
         view.data = self._make_data_with_events([ev])
         tbl = view._activity_panel().renderable
         action_cell = tbl.columns[2]._cells[0]
         detail_cell = tbl.columns[4]._cells[0]
-        assert str(action_cell.style) == "dim", (
-            "action cell must be dim for routing.dropped"
-        )
-        assert str(detail_cell.style) == "bold red", (
-            "detail cell must be bold red when detail matches error pattern"
-        )
+        assert (
+            str(action_cell.style) == "dim"
+        ), "action cell must be dim for routing.dropped"
+        assert (
+            str(detail_cell.style) == "bold red"
+        ), "detail cell must be bold red when detail matches error pattern"
 
     # AC5 — remover o predicado quebra a suite
     def test_ac5_nonactionable_set_is_nonempty(self):
-        assert len(panel._NONACTIONABLE_ACTIONS) > 0, (
-            "Removing _NONACTIONABLE_ACTIONS would break AC1/AC2/AC4"
-        )
+        assert (
+            len(panel._NONACTIONABLE_ACTIONS) > 0
+        ), "Removing _NONACTIONABLE_ACTIONS would break AC1/AC2/AC4"
 
     def test_ac5_action_row_style_exists_and_is_callable(self):
-        assert callable(panel._action_row_style), (
-            "Removing _action_row_style would break AC1 and the render"
-        )
+        assert callable(
+            panel._action_row_style
+        ), "Removing _action_row_style would break AC1 and the render"

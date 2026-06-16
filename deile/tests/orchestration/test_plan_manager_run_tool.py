@@ -22,8 +22,15 @@ import time
 import pytest
 
 from deile.orchestration.plan_manager import PlanManager
-from deile.tools.base import (SecurityLevel, SyncTool, Tool, ToolCategory,
-                              ToolContext, ToolResult, ToolSchema)
+from deile.tools.base import (
+    SecurityLevel,
+    SyncTool,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 
 
 class _SlowAsyncTool(Tool):
@@ -42,14 +49,16 @@ class _SlowAsyncTool(Tool):
         return ToolCategory.OTHER.value
 
     def __init__(self) -> None:
-        super().__init__(schema=ToolSchema(
-            name="slow_async",
-            description="slow async tool",
-            parameters={},
-            required=[],
-            security_level=SecurityLevel.SAFE,
-            category=ToolCategory.OTHER,
-        ))
+        super().__init__(
+            schema=ToolSchema(
+                name="slow_async",
+                description="slow async tool",
+                parameters={},
+                required=[],
+                security_level=SecurityLevel.SAFE,
+                category=ToolCategory.OTHER,
+            )
+        )
 
     async def execute(self, context: ToolContext) -> ToolResult:
         await asyncio.sleep(5)
@@ -72,14 +81,16 @@ class _FastSyncTool(SyncTool):
         return ToolCategory.OTHER.value
 
     def __init__(self) -> None:
-        super().__init__(schema=ToolSchema(
-            name="fast_sync",
-            description="fast sync tool",
-            parameters={"x": {"type": "integer", "description": "input"}},
-            required=["x"],
-            security_level=SecurityLevel.SAFE,
-            category=ToolCategory.OTHER,
-        ))
+        super().__init__(
+            schema=ToolSchema(
+                name="fast_sync",
+                description="fast sync tool",
+                parameters={"x": {"type": "integer", "description": "input"}},
+                required=["x"],
+                security_level=SecurityLevel.SAFE,
+                category=ToolCategory.OTHER,
+            )
+        )
 
     def execute_sync(self, context: ToolContext) -> ToolResult:
         x = context.parsed_args.get("x", 0)
@@ -126,14 +137,16 @@ async def test_tool_exception_is_wrapped(tmp_path) -> None:
             return ToolCategory.OTHER.value
 
         def __init__(self) -> None:
-            super().__init__(schema=ToolSchema(
-                name="broken",
-                description="broken",
-                parameters={},
-                required=[],
-                security_level=SecurityLevel.SAFE,
-                category=ToolCategory.OTHER,
-            ))
+            super().__init__(
+                schema=ToolSchema(
+                    name="broken",
+                    description="broken",
+                    parameters={},
+                    required=[],
+                    security_level=SecurityLevel.SAFE,
+                    category=ToolCategory.OTHER,
+                )
+            )
 
         async def execute(self, context: ToolContext) -> ToolResult:
             raise RuntimeError("kaboom")
@@ -161,14 +174,16 @@ async def test_loop_remains_responsive_while_sync_tool_runs(tmp_path) -> None:
             return ToolCategory.OTHER.value
 
         def __init__(self) -> None:
-            super().__init__(schema=ToolSchema(
-                name="blocking",
-                description="blocking sync",
-                parameters={},
-                required=[],
-                security_level=SecurityLevel.SAFE,
-                category=ToolCategory.OTHER,
-            ))
+            super().__init__(
+                schema=ToolSchema(
+                    name="blocking",
+                    description="blocking sync",
+                    parameters={},
+                    required=[],
+                    security_level=SecurityLevel.SAFE,
+                    category=ToolCategory.OTHER,
+                )
+            )
 
         def execute_sync(self, context: ToolContext) -> ToolResult:
             time.sleep(0.3)

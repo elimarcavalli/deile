@@ -72,8 +72,7 @@ def _make_issue(
 class _FakeGitHubProvider:
     """Stand-in para ``GitHubProvider`` que devolve um snapshot fixo."""
 
-    def __init__(self, issues: List[pd.GitHubIssue],
-                 prs: List[pd.GitHubIssue]) -> None:
+    def __init__(self, issues: List[pd.GitHubIssue], prs: List[pd.GitHubIssue]) -> None:
         self._snap = pd.GitHubSnapshot(issues=issues, prs=prs)
 
     def get(self, force: bool = False) -> pd.GitHubSnapshot:
@@ -83,8 +82,7 @@ class _FakeGitHubProvider:
 class _FakePanelData:
     """Mínimo que ``IssuesPRsView`` consome — só ``.github``."""
 
-    def __init__(self, issues: List[pd.GitHubIssue],
-                 prs: List[pd.GitHubIssue]) -> None:
+    def __init__(self, issues: List[pd.GitHubIssue], prs: List[pd.GitHubIssue]) -> None:
         self.github = _FakeGitHubProvider(issues, prs)
 
 
@@ -107,7 +105,8 @@ class TestColumnWorkflow:
         # Pipeline respeita ``~workflow:bloqueada`` mesmo quando outra
         # label de fase ainda está presente — a UI tem que refletir isso.
         issue = _make_issue(
-            2, labels=["~workflow:em_implementacao", "~workflow:bloqueada"],
+            2,
+            labels=["~workflow:em_implementacao", "~workflow:bloqueada"],
         )
         assert issue.workflow == "bloqueada"
         assert issue.blocked is True
@@ -241,29 +240,36 @@ class TestEnterOpensUrl:
             url="https://github.com/elimarcavalli/deile/issues/309",
         )
         view = self._view_with([issue], [])
-        with patch.object(panel, "webbrowser") as mock_webbrowser, \
-             patch.object(panel, "_copy_to_clipboard", return_value=True):
+        with (
+            patch.object(panel, "webbrowser") as mock_webbrowser,
+            patch.object(panel, "_copy_to_clipboard", return_value=True),
+        ):
             mock_webbrowser.open.return_value = True
             view.handle_key("\r", app=None)
         mock_webbrowser.open.assert_called_once_with(
             "https://github.com/elimarcavalli/deile/issues/309",
-            new=2, autoraise=True,
+            new=2,
+            autoraise=True,
         )
 
     def test_enter_opens_gitlab_mr_url_in_browser(self):
         # Forge-agnóstico: a URL já vem do API (``web_url`` no GitLab).
         pr = _make_issue(
-            1, is_pr=True,
+            1,
+            is_pr=True,
             url="https://gitlab.com/grp/sub/proj/-/merge_requests/1",
         )
         view = self._view_with([], [pr])
-        with patch.object(panel, "webbrowser") as mock_webbrowser, \
-             patch.object(panel, "_copy_to_clipboard", return_value=True):
+        with (
+            patch.object(panel, "webbrowser") as mock_webbrowser,
+            patch.object(panel, "_copy_to_clipboard", return_value=True),
+        ):
             mock_webbrowser.open.return_value = True
             view.handle_key("\n", app=None)
         mock_webbrowser.open.assert_called_once_with(
             "https://gitlab.com/grp/sub/proj/-/merge_requests/1",
-            new=2, autoraise=True,
+            new=2,
+            autoraise=True,
         )
 
     def test_enter_also_copies_url_to_clipboard(self):
@@ -275,9 +281,10 @@ class TestEnterOpensUrl:
             url="https://github.com/x/y/issues/7",
         )
         view = self._view_with([issue], [])
-        with patch.object(panel, "webbrowser") as mock_webbrowser, \
-             patch.object(panel, "_copy_to_clipboard",
-                          return_value=True) as mock_copy:
+        with (
+            patch.object(panel, "webbrowser") as mock_webbrowser,
+            patch.object(panel, "_copy_to_clipboard", return_value=True) as mock_copy,
+        ):
             mock_webbrowser.open.return_value = True
             view.handle_key("\r", app=None)
         mock_copy.assert_called_once_with("https://github.com/x/y/issues/7")
@@ -288,8 +295,10 @@ class TestEnterOpensUrl:
         # com string vazia (alguns OS abrem a home page do browser).
         issue = _make_issue(8, url="")
         view = self._view_with([issue], [])
-        with patch.object(panel, "webbrowser") as mock_webbrowser, \
-             patch.object(panel, "_copy_to_clipboard") as mock_copy:
+        with (
+            patch.object(panel, "webbrowser") as mock_webbrowser,
+            patch.object(panel, "_copy_to_clipboard") as mock_copy,
+        ):
             view.handle_key("\r", app=None)
         mock_webbrowser.open.assert_not_called()
         mock_copy.assert_not_called()
@@ -316,7 +325,9 @@ class TestOpenInBrowserHelper:
             mock_wb.open.return_value = True
             assert panel._open_in_browser("https://example.com") is True
         mock_wb.open.assert_called_once_with(
-            "https://example.com", new=2, autoraise=True,
+            "https://example.com",
+            new=2,
+            autoraise=True,
         )
 
     def test_empty_url_returns_false_without_calling_webbrowser(self):

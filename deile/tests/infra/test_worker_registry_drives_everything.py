@@ -53,8 +53,7 @@ def synthetic_adapter(monkeypatch):
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / f"{_SYNTH_KIND}.py"
     mod_path.write_text(
-        textwrap.dedent(
-            f'''\
+        textwrap.dedent(f"""\
             from cli_adapters.base import BaseCliAdapter, ModelInfo, WorkResult
 
 
@@ -70,8 +69,7 @@ def synthetic_adapter(monkeypatch):
 
 
             ADAPTER = SynthAdapter(kind="{_SYNTH_KIND}", default_port={_SYNTH_PORT})
-            '''
-        ),
+            """),
         encoding="utf-8",
     )
     cli_adapters.reload_adapters()
@@ -127,9 +125,7 @@ def test_endpoint_derived_from_adapter_port(synthetic_adapter, monkeypatch):
     Nenhum literal de URL/porta para CLI workers no resolver — a porta vem do
     metadado do adapter.
     """
-    monkeypatch.delenv(
-        f"DEILE_{_SYNTH_KIND.upper()}_WORKER_ENDPOINT", raising=False
-    )
+    monkeypatch.delenv(f"DEILE_{_SYNTH_KIND.upper()}_WORKER_ENDPOINT", raising=False)
     assert (
         dr.get_endpoint_for(_SYNTH_DISPATCHER)
         == f"http://{_SYNTH_DISPATCHER}:{_SYNTH_PORT}"
@@ -158,8 +154,7 @@ def test_adapter_without_port_is_skipped(monkeypatch):
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / "zzz_noport.py"
     mod_path.write_text(
-        textwrap.dedent(
-            '''\
+        textwrap.dedent("""\
             from cli_adapters.base import BaseCliAdapter, WorkResult
 
 
@@ -172,8 +167,7 @@ def test_adapter_without_port_is_skipped(monkeypatch):
 
 
             ADAPTER = NoPortAdapter(kind="zzz_noport")  # default_port = 0
-            '''
-        ),
+            """),
         encoding="utf-8",
     )
     cli_adapters.reload_adapters()

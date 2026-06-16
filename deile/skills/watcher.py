@@ -25,8 +25,7 @@ from typing import Any, Callable, Iterable, List, Optional
 
 from .discovery import default_scan_order, discover_skills_sync
 from .registry import get_skill_registry
-from .slash_command_bridge import (register_skills_as_commands,
-                                   unregister_skill_commands)
+from .slash_command_bridge import register_skills_as_commands, unregister_skill_commands
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +201,9 @@ class SkillsWatcher:
             user_home=self._user_home,
             extra_paths=self._extra_paths,
         )
-        observable_dirs = [entry.directory for entry in scan_entries if entry.directory.is_dir()]
+        observable_dirs = [
+            entry.directory for entry in scan_entries if entry.directory.is_dir()
+        ]
         if not observable_dirs:
             missing = [entry.directory for entry in scan_entries]
             logger.warning(
@@ -240,11 +241,14 @@ class SkillsWatcher:
                 logger.warning(
                     "skills: cannot watch %s for hot-reload (%s); changes there "
                     "will be ignored until restart",
-                    directory, exc,
+                    directory,
+                    exc,
                 )
 
         if scheduled_count == 0:
-            logger.warning("skills: hot-reload not started — every observer.schedule() call failed")
+            logger.warning(
+                "skills: hot-reload not started — every observer.schedule() call failed"
+            )
             worker.stop()
             self._debounce_worker = None
             return False
@@ -289,7 +293,8 @@ class SkillsWatcher:
         except Exception as exc:
             logger.warning(
                 "skills: hot-reload failed (%s: %s) — registry kept the prior state",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
             if self._on_error is not None:
                 try:

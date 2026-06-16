@@ -5,8 +5,11 @@ Mirrors test_pipeline_dispatchers_schema.py and test_settings_pipeline_models.py
 
 import pytest
 
-from deile.config.settings import (Settings, _to_optional_nonneg_int,
-                                   _to_optional_pos_int)
+from deile.config.settings import (
+    Settings,
+    _to_optional_nonneg_int,
+    _to_optional_pos_int,
+)
 
 # ---------------------------------------------------------------------------
 # Converter unit tests
@@ -94,14 +97,16 @@ class TestSettingsDefaults:
 class TestApplyOverrides:
     def test_timeout_per_stage_json(self):
         s = Settings()
-        s.apply_overrides({
-            "pipeline": {
-                "timeouts_s": {
-                    "implement": 600,
-                    "pr_review": 1800,
+        s.apply_overrides(
+            {
+                "pipeline": {
+                    "timeouts_s": {
+                        "implement": 600,
+                        "pr_review": 1800,
+                    }
                 }
             }
-        })
+        )
         assert s.pipeline_timeout_s_implement == 600
         assert s.pipeline_timeout_s_pr_review == 1800
         # Untouched stages remain None
@@ -109,14 +114,16 @@ class TestApplyOverrides:
 
     def test_retries_per_stage_json(self):
         s = Settings()
-        s.apply_overrides({
-            "pipeline": {
-                "retries": {
-                    "implement": 2,
-                    "classify": 5,
+        s.apply_overrides(
+            {
+                "pipeline": {
+                    "retries": {
+                        "implement": 2,
+                        "classify": 5,
+                    }
                 }
             }
-        })
+        )
         assert s.pipeline_retries_implement == 2
         assert s.pipeline_retries_classify == 5
         assert s.pipeline_retries_refine is None
@@ -161,6 +168,7 @@ class TestApplyOverrides:
 class TestEnvOverrides:
     def test_timeout_env_vars(self, monkeypatch):
         from deile.config.settings import _apply_env_overrides
+
         monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT", "900")
         monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_CLASSIFY", "300")
         s = Settings()
@@ -171,6 +179,7 @@ class TestEnvOverrides:
 
     def test_retries_env_vars(self, monkeypatch):
         from deile.config.settings import _apply_env_overrides
+
         monkeypatch.setenv("DEILE_PIPELINE_RETRIES_IMPLEMENT", "2")
         monkeypatch.setenv("DEILE_PIPELINE_RETRIES_PR_REVIEW", "0")
         s = Settings()
@@ -182,6 +191,7 @@ class TestEnvOverrides:
     def test_timeout_zero_rejected_by_env(self, monkeypatch):
         """Zero timeout env var is silently ignored (stays None)."""
         from deile.config.settings import _apply_env_overrides
+
         monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT", "0")
         s = Settings()
         _apply_env_overrides(s)
@@ -189,6 +199,7 @@ class TestEnvOverrides:
 
     def test_global_deile_timeout_env(self, monkeypatch):
         from deile.config.settings import _apply_env_overrides
+
         monkeypatch.setenv("DEILE_PIPELINE_DEILE_TIMEOUT", "600")
         s = Settings()
         _apply_env_overrides(s)
@@ -196,6 +207,7 @@ class TestEnvOverrides:
 
     def test_global_max_retries_env(self, monkeypatch):
         from deile.config.settings import _apply_env_overrides
+
         monkeypatch.setenv("DEILE_PIPELINE_DEFAULT_MAX_RETRIES", "7")
         s = Settings()
         _apply_env_overrides(s)

@@ -158,7 +158,9 @@ def find_first_pr_url(
     for match in _URL_SCAN_RE.finditer(text):
         candidate = match.group(0).rstrip(".,);:!?")
         forge_url = parse_forge_url(
-            candidate, github_hosts=github_hosts, gitlab_hosts=gitlab_hosts,
+            candidate,
+            github_hosts=github_hosts,
+            gitlab_hosts=gitlab_hosts,
         )
         if forge_url is not None and forge_url.target_kind == "pr":
             return candidate
@@ -185,7 +187,9 @@ def find_last_pr_url(
     for match in _URL_SCAN_RE.finditer(text):
         candidate = match.group(0).rstrip(".,);:!?")
         forge_url = parse_forge_url(
-            candidate, github_hosts=github_hosts, gitlab_hosts=gitlab_hosts,
+            candidate,
+            github_hosts=github_hosts,
+            gitlab_hosts=gitlab_hosts,
         )
         if forge_url is not None and forge_url.target_kind == "pr":
             last = candidate

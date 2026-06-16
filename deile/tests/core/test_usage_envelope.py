@@ -21,6 +21,7 @@ from deile.core.usage_envelope import build_usage_envelope, write_usage_sidecar
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_record(cost_usd=0.0, prompt_tokens=0, completion_tokens=0):
     """Return a minimal usage record dict understood by build_usage_envelope."""
     return {
@@ -198,9 +199,9 @@ def test_write_sidecar_json_has_all_five_fields(tmp_path, monkeypatch):
 
     parsed = json.loads(sidecar_path.read_text())
     required_fields = {"schema_version", "cost_usd", "tokens_in", "tokens_out", "turns"}
-    assert required_fields.issubset(parsed.keys()), (
-        f"Missing fields: {required_fields - set(parsed.keys())}"
-    )
+    assert required_fields.issubset(
+        parsed.keys()
+    ), f"Missing fields: {required_fields - set(parsed.keys())}"
 
 
 @pytest.mark.unit

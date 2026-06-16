@@ -36,31 +36,48 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from deile.orchestration.pipeline.briefs import (
-    _render_claude_mention_prompt, _render_worker_critique_brief,
-    _render_worker_decompose_brief, _render_worker_implement_brief,
-    _render_worker_implement_resume_brief, _render_worker_mention_brief,
-    _render_worker_pr_address_brief, _render_worker_pr_unified_brief,
-    _render_worker_refine_brief)
+    _render_claude_mention_prompt,
+    _render_worker_critique_brief,
+    _render_worker_decompose_brief,
+    _render_worker_implement_brief,
+    _render_worker_implement_resume_brief,
+    _render_worker_mention_brief,
+    _render_worker_pr_address_brief,
+    _render_worker_pr_unified_brief,
+    _render_worker_refine_brief,
+)
 from deile.orchestration.pipeline.claude_dispatcher import (
-    render_implement_prompt, render_review_prompt)
+    render_implement_prompt,
+    render_review_prompt,
+)
 from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.dispatch_resolver import (
-    BUILTIN_DISPATCHERS, CLAUDE_ALIASES, WORKER_ALIASES, get_endpoint_for,
-    resolve_stage_dispatcher, resolve_stage_max_retries,
-    resolve_stage_timeout_s)
-from deile.orchestration.pipeline.labels import (issue_type_from_labels,
-                                                 persona_for_type,
-                                                 template_for_type)
+    BUILTIN_DISPATCHERS,
+    CLAUDE_ALIASES,
+    WORKER_ALIASES,
+    get_endpoint_for,
+    resolve_stage_dispatcher,
+    resolve_stage_max_retries,
+    resolve_stage_timeout_s,
+)
+from deile.orchestration.pipeline.labels import (
+    issue_type_from_labels,
+    persona_for_type,
+    template_for_type,
+)
 from deile.orchestration.pipeline.model_resolver import (
-    resolve_stage_cli_model, resolve_stage_model)
-from deile.orchestration.pipeline.reasoning_resolver import \
-    resolve_stage_reasoning
+    resolve_stage_cli_model,
+    resolve_stage_model,
+)
+from deile.orchestration.pipeline.reasoning_resolver import resolve_stage_reasoning
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
-    from deile.orchestration.pipeline.github_client import (IssueRef,
-                                                            MentionTrigger,
-                                                            PrRef)
+    from deile.orchestration.pipeline.github_client import (
+        IssueRef,
+        MentionTrigger,
+        PrRef,
+    )
     from deile.orchestration.pipeline.monitor import PipelineMonitor
 
 logger = logging.getLogger(__name__)
@@ -184,7 +201,9 @@ def parse_refine_verdict(text: str) -> str:
     """
     matches = list(_REFINE_RE.finditer(text or ""))
     if matches:
-        return "waiting" if matches[-1].group(1).upper() == "AGUARDA_STAKEHOLDER" else "ok"
+        return (
+            "waiting" if matches[-1].group(1).upper() == "AGUARDA_STAKEHOLDER" else "ok"
+        )
     tail = _tail_text(text)
     has_waiting = re.search(r"\bAGUARDA_STAKEHOLDER\b", tail, re.IGNORECASE) is not None
     has_ok = re.search(r"\bREFINO[:\s*_]+OK\b", tail, re.IGNORECASE) is not None
@@ -221,17 +240,23 @@ class PipelineImplementer(ABC):
     async def critique(
         self, monitor: "PipelineMonitor", issue: "IssueRef"
     ) -> WorkOutcome:
-        return WorkOutcome(ok=False, text="", error="critique não suportado nesta estratégia")
+        return WorkOutcome(
+            ok=False, text="", error="critique não suportado nesta estratégia"
+        )
 
     async def refine(
         self, monitor: "PipelineMonitor", issue: "IssueRef"
     ) -> WorkOutcome:
-        return WorkOutcome(ok=False, text="", error="refine não suportado nesta estratégia")
+        return WorkOutcome(
+            ok=False, text="", error="refine não suportado nesta estratégia"
+        )
 
     async def decompose(
         self, monitor: "PipelineMonitor", issue: "IssueRef"
     ) -> WorkOutcome:
-        return WorkOutcome(ok=False, text="", error="decompose não suportado nesta estratégia")
+        return WorkOutcome(
+            ok=False, text="", error="decompose não suportado nesta estratégia"
+        )
 
     async def address_review(
         self, monitor: "PipelineMonitor", pr: "PrRef"
@@ -247,14 +272,12 @@ class PipelineImplementer(ABC):
     @abstractmethod
     async def implement(
         self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
-    ) -> WorkOutcome:
-        ...
+    ) -> WorkOutcome: ...
 
     @abstractmethod
     async def review(
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
-    ) -> WorkOutcome:
-        ...
+    ) -> WorkOutcome: ...
 
     @abstractmethod
     async def mention(
@@ -266,8 +289,7 @@ class PipelineImplementer(ABC):
         all_triggers: list["MentionTrigger"] | None = None,
         mode: str = "comment",
         resume: bool = False,
-    ) -> WorkOutcome:
-        ...
+    ) -> WorkOutcome: ...
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +339,9 @@ class ClaudeImplementer(PipelineImplementer):
                 )
             cwd = worktree.path
         result = await monitor.claude.run(prompt, cwd=cwd)
-        return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
+        return WorkOutcome(
+            ok=result.ok, text=result.stdout, error=result.stderr.strip()
+        )
 
     async def implement(
         self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
@@ -329,7 +353,10 @@ class ClaudeImplementer(PipelineImplementer):
         # flag does not change behaviour here beyond the existing reuse.
         branch = monitor.branch_for_issue(issue.number)
         prompt = render_implement_prompt(
-            monitor.config.repo, issue.number, issue.title, issue.body,
+            monitor.config.repo,
+            issue.number,
+            issue.title,
+            issue.body,
             forge=monitor.forge.config,
         )
         return await self._run_in_worktree(
@@ -341,7 +368,10 @@ class ClaudeImplementer(PipelineImplementer):
     ) -> WorkOutcome:
         worktree_branch = pr.head_ref or f"pr/{pr.number}"
         prompt = render_review_prompt(
-            monitor.config.repo, pr.number, pr.title, forge=monitor.forge.config,
+            monitor.config.repo,
+            pr.number,
+            pr.title,
+            forge=monitor.forge.config,
         )
         return await self._run_in_worktree(
             monitor, worktree_branch, prompt, label=f"PR #{pr.number}"
@@ -360,7 +390,10 @@ class ClaudeImplementer(PipelineImplementer):
         # ``mode``/``resume`` are accepted for interface parity with the worker
         # path; the legacy Claude path keeps its single context-aware prompt.
         prompt = _render_claude_mention_prompt(
-            monitor.config.repo, ref, trigger_types or [], all_triggers or [],
+            monitor.config.repo,
+            ref,
+            trigger_types or [],
+            all_triggers or [],
             forge=monitor.forge.config,
         )
         # mention runs at base_repo_path; no per-issue branch worktree.
@@ -469,8 +502,12 @@ def _estimate_session_tokens_from_jsonl(jsonl_text: str) -> int:
             usage = d.get("usage") if isinstance(d, dict) else None
         if not isinstance(usage, dict):
             continue
-        for k in ("input_tokens", "output_tokens",
-                  "cache_read_input_tokens", "cache_creation_input_tokens"):
+        for k in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ):
             v = usage.get(k)
             if isinstance(v, (int, float)):
                 total += int(v)
@@ -508,8 +545,12 @@ def _outcome_from_worker_response(data: object) -> WorkOutcome:
     session_id = str(data.get("session_id") or "")
     if ok:
         return WorkOutcome(
-            ok=True, text=text, error="",
-            task_id=task_id, session_id=session_id, **fields,
+            ok=True,
+            text=text,
+            error="",
+            task_id=task_id,
+            session_id=session_id,
+            **fields,
         )
     err = str(data.get("error") or data.get("summary") or "worker reported failure")
     # Issue #309 fase 3 — resiliência auth: o claude-worker server detecta
@@ -522,8 +563,12 @@ def _outcome_from_worker_response(data: object) -> WorkOutcome:
     if error_code:
         err = f"[{error_code}] {err}"
     return WorkOutcome(
-        ok=False, text=text, error=err[:500],
-        task_id=task_id, session_id=session_id, **fields,
+        ok=False,
+        text=text,
+        error=err[:500],
+        task_id=task_id,
+        session_id=session_id,
+        **fields,
     )
 
 
@@ -574,14 +619,14 @@ class WorkerImplementer(PipelineImplementer):
                 Em testes, injetado com path em tmp_path.
         """
         if client is None:
-            from deile.infrastructure.deile_worker_client import \
-                DeileWorkerClient
+            from deile.infrastructure.deile_worker_client import DeileWorkerClient
+
             client = DeileWorkerClient()
         self._client = client
         self._endpoint_override = endpoint_override
         if ledger is None:
-            from deile.orchestration.pipeline.dispatch_ledger import \
-                DispatchLedger
+            from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
             ledger = DispatchLedger()
         self._ledger = ledger
 
@@ -641,7 +686,9 @@ class WorkerImplementer(PipelineImplementer):
             return await coro
 
         from deile.infrastructure.deile_worker_client import (
-            MAX_DISPATCH_BUDGET_S, WorkerDispatchError)
+            MAX_DISPATCH_BUDGET_S,
+            WorkerDispatchError,
+        )
 
         watchdog_s = MAX_DISPATCH_BUDGET_S + self._TICK_WATCHDOG_BUFFER_S
         try:
@@ -652,7 +699,8 @@ class WorkerImplementer(PipelineImplementer):
             logger.error(
                 "worker dispatch watchdog fired after %.0fs — converting hang "
                 "to recoverable failure so the tick proceeds (url=%s)",
-                watchdog_s, url,
+                watchdog_s,
+                url,
             )
             raise WorkerDispatchError(
                 f"worker dispatch exceeded tick watchdog ({watchdog_s:.0f}s) "
@@ -689,24 +737,28 @@ class WorkerImplementer(PipelineImplementer):
         # Consulta o worker pelo estado da sessão.
         try:
             info = await self._client.get_resume_info(
-                prev_task_id, endpoint_url=url,
+                prev_task_id,
+                endpoint_url=url,
             )
         except Exception as exc:  # noqa: BLE001
             # Erro de transporte ou worker — log e fallback pra fresh.
             # Limpa ledger entry pra não consultar resume-info repetidamente.
-            from deile.infrastructure.deile_worker_client import \
-                WorkerDispatchError
+            from deile.infrastructure.deile_worker_client import WorkerDispatchError
+
             if isinstance(exc, WorkerDispatchError) and exc.error_code == "NOT_FOUND":
                 logger.info(
                     "ledger entry %s aponta task_id=%s sem metadata no worker "
                     "(404) — limpando e fallback fresh",
-                    ledger_key, prev_task_id,
+                    ledger_key,
+                    prev_task_id,
                 )
                 self._ledger.clear(ledger_key)
                 return None
             logger.warning(
                 "resume-info lookup falhou pra %s task_id=%s: %s — fallback fresh",
-                ledger_key, prev_task_id, exc,
+                ledger_key,
+                prev_task_id,
+                exc,
             )
             return None
         if not isinstance(info, dict):
@@ -715,7 +767,8 @@ class WorkerImplementer(PipelineImplementer):
         if not info.get("workdir_exists", False):
             logger.info(
                 "ledger entry %s task_id=%s tem workdir perdido — fallback fresh",
-                ledger_key, prev_task_id,
+                ledger_key,
+                prev_task_id,
             )
             self._ledger.clear(ledger_key)
             return None
@@ -726,7 +779,9 @@ class WorkerImplementer(PipelineImplementer):
             logger.info(
                 "ledger entry %s task_id=%s session=%s ainda alive — "
                 "skip dispatch nesse tick",
-                ledger_key, prev_task_id, info.get("session_id"),
+                ledger_key,
+                prev_task_id,
+                info.get("session_id"),
             )
             return {"_still_alive": True}
         session_id = info.get("session_id") or record.get("session_id")
@@ -756,7 +811,9 @@ class WorkerImplementer(PipelineImplementer):
         nowait: bool = False,
     ) -> WorkOutcome:
         from deile.infrastructure.deile_worker_client import (
-            WorkerDispatchError, build_dispatch_payload)
+            WorkerDispatchError,
+            build_dispatch_payload,
+        )
 
         # Defensive clamp under the 8000-char dispatch cap (issue #257): every
         # body-embedding brief puts the issue/PR body LAST (after the VEREDITO
@@ -807,7 +864,9 @@ class WorkerImplementer(PipelineImplementer):
             if truncated:
                 logger.warning(
                     "resume_block truncado por cap de tamanho — "
-                    "channel_id=%s stage=%s", channel_id, stage,
+                    "channel_id=%s stage=%s",
+                    channel_id,
+                    stage,
                 )
         # Roteamento do campo de modelo pelo dispatcher do stage. ``stage`` é o
         # nome canônico (ver :data:`PIPELINE_STAGES`); sem override configurado,
@@ -819,7 +878,9 @@ class WorkerImplementer(PipelineImplementer):
         # Esta é a ÚNICA ramificação nova no cliente HTTP: escolher qual campo de
         # modelo preencher conforme o destino, sem relaxar o validator
         # ``provider:model`` do deile-worker.
-        is_cli_worker = bool(stage) and resolve_stage_dispatcher(stage) not in BUILTIN_DISPATCHERS
+        is_cli_worker = (
+            bool(stage) and resolve_stage_dispatcher(stage) not in BUILTIN_DISPATCHERS
+        )
         if is_cli_worker:
             preferred_model = None
             cli_model = resolve_stage_cli_model(stage)
@@ -852,9 +913,10 @@ class WorkerImplementer(PipelineImplementer):
                 # Devolve outcome "em curso" pra stage handler decidir
                 # (mantém em_andamento, próximo tick re-checa).
                 return WorkOutcome(
-                    ok=False, text="",
+                    ok=False,
+                    text="",
                     error="DISPATCH_SKIPPED_STILL_RUNNING: claude-worker "
-                          "ainda rodando o task anterior; skip nesse tick",
+                    "ainda rodando o task anterior; skip nesse tick",
                 )
 
         # Brief contextual quando estamos retomando uma review (não-implementa-
@@ -862,7 +924,9 @@ class WorkerImplementer(PipelineImplementer):
         # de achados anteriores — economiza ~80% dos tokens vs fresh refazendo.
         if resume_meta and stage == "pr_review":
             brief = await self._wrap_review_brief_for_resume(
-                brief=brief, ledger_key=ledger_key, resume_meta=resume_meta,
+                brief=brief,
+                ledger_key=ledger_key,
+                resume_meta=resume_meta,
                 url=url,
             )
 
@@ -874,9 +938,14 @@ class WorkerImplementer(PipelineImplementer):
         # ``timeout_s`` / ``max_retries`` são resolvidos per-stage (issue #391)
         # para dar ao operator controle granular sem editar manifests.
         payload_kwargs: Dict[str, Any] = dict(
-            brief=brief, channel_id=channel_id, persona=persona, wait=not nowait,
-            preferred_model=preferred_model, cli_model=cli_model,
-            stage=stage, branch=branch,
+            brief=brief,
+            channel_id=channel_id,
+            persona=persona,
+            wait=not nowait,
+            preferred_model=preferred_model,
+            cli_model=cli_model,
+            stage=stage,
+            branch=branch,
             preferred_reasoning=preferred_reasoning,
             timeout_s=resolve_stage_timeout_s(stage) if stage else None,
             max_retries=resolve_stage_max_retries(stage) if stage else None,
@@ -896,11 +965,15 @@ class WorkerImplementer(PipelineImplementer):
         # raise StageCostCapExceeded when over the cap. None cap = pass-through.
         if stage:
             try:
-                from deile.orchestration.pipeline.cost_estimator import \
-                    StageCostEstimator  # noqa: PLC0415
+                from deile.orchestration.pipeline.cost_estimator import (  # noqa: PLC0415
+                    StageCostEstimator,
+                )
                 from deile.storage.usage_repository import (  # noqa: PLC0415
-                    StageBudgetGuard, StageCostCapExceeded,
-                    get_usage_repository)
+                    StageBudgetGuard,
+                    StageCostCapExceeded,
+                    get_usage_repository,
+                )
+
                 _estimator = StageCostEstimator(
                     usage_repo=get_usage_repository(),
                 )
@@ -921,8 +994,10 @@ class WorkerImplementer(PipelineImplementer):
                 logger.warning(
                     "cost-cap-exceeded: stage=%s model=%s "
                     "estimated=$%s > cap=$%s — blocking dispatch",
-                    _exc.stage, preferred_model,
-                    _exc.estimated_usd, _exc.cap_usd,
+                    _exc.stage,
+                    preferred_model,
+                    _exc.estimated_usd,
+                    _exc.cap_usd,
                 )
                 return WorkOutcome(
                     ok=False,
@@ -939,7 +1014,8 @@ class WorkerImplementer(PipelineImplementer):
             except Exception as _cap_exc:  # noqa: BLE001 — guard never crashes dispatch
                 logger.debug(
                     "cost cap check for stage=%s failed (non-fatal): %s",
-                    stage, _cap_exc,
+                    stage,
+                    _cap_exc,
                 )
 
         # Scale-to-zero on-demand (plano B5): os CLI workers da frota nascem
@@ -949,17 +1025,21 @@ class WorkerImplementer(PipelineImplementer):
         # Falha de scale (sem kubectl/RBAC) vira erro tipado WORKER_SCALED_TO_ZERO
         # instruindo o scale manual — em vez do connection-refused genérico.
         if is_cli_worker:
-            from deile.orchestration.pipeline.cli_worker_scaler import \
-                ensure_replica  # noqa: PLC0415
+            from deile.orchestration.pipeline.cli_worker_scaler import (  # noqa: PLC0415
+                ensure_replica,
+            )
+
             dispatcher = resolve_stage_dispatcher(stage)
             scale_outcome = await ensure_replica(dispatcher)
             if not scale_outcome.ok_to_dispatch:
                 logger.warning(
                     "dispatch bloqueado — %s sem réplica e scale falhou: %s",
-                    dispatcher, scale_outcome.detail,
+                    dispatcher,
+                    scale_outcome.detail,
                 )
                 return WorkOutcome(
-                    ok=False, text="",
+                    ok=False,
+                    text="",
                     error=f"WORKER_SCALED_TO_ZERO: {scale_outcome.detail}"[:500],
                 )
             if scale_outcome.result.value in ("scaled", "cooldown"):
@@ -967,10 +1047,12 @@ class WorkerImplementer(PipelineImplementer):
                 # próximo tick redispatcha quando o readinessProbe liberar.
                 logger.info(
                     "dispatch adiado — %s subindo on-demand: %s",
-                    dispatcher, scale_outcome.detail,
+                    dispatcher,
+                    scale_outcome.detail,
                 )
                 return WorkOutcome(
-                    ok=False, text="",
+                    ok=False,
+                    text="",
                     error=f"DISPATCH_DEFERRED_WORKER_STARTING: {scale_outcome.detail}",
                 )
 
@@ -991,8 +1073,9 @@ class WorkerImplementer(PipelineImplementer):
         _dispatch_span = None
         _dispatch_ctx_token = None
         try:
-            from opentelemetry import (  # noqa: PLC0415
-                context as _otel_context, trace as _otel_trace)
+            from opentelemetry import context as _otel_context  # noqa: PLC0415
+            from opentelemetry import trace as _otel_trace
+
             _dispatch_span = _otel_trace.get_tracer("deile.pipeline").start_span(
                 "pipeline.dispatch_request"
             )
@@ -1017,12 +1100,14 @@ class WorkerImplementer(PipelineImplementer):
                     logger.info(
                         "dispatch skipped — worker reportou claude vivo na sessão "
                         "anterior (CONCURRENT_DISPATCH_BLOCKED); aguarda próximo "
-                        "tick. ledger_key=%s", ledger_key,
+                        "tick. ledger_key=%s",
+                        ledger_key,
                     )
                     return WorkOutcome(
-                        ok=False, text="",
+                        ok=False,
+                        text="",
                         error="DISPATCH_SKIPPED_CONCURRENT: claude-worker já tem "
-                              "sessão ativa pro mesmo task; skip nesse tick",
+                        "sessão ativa pro mesmo task; skip nesse tick",
                     )
                 # Mecanismo 2 (lease): worker recusa com 409 + TASK_ALREADY_RUNNING
                 # quando outra réplica detém o lease do workspace desta task.
@@ -1033,17 +1118,23 @@ class WorkerImplementer(PipelineImplementer):
                     logger.info(
                         "dispatch skipped — workspace com lease ativo em outra "
                         "réplica (TASK_ALREADY_RUNNING); aguarda próximo tick. "
-                        "ledger_key=%s", ledger_key,
+                        "ledger_key=%s",
+                        ledger_key,
                     )
                     return WorkOutcome(
-                        ok=False, text="",
+                        ok=False,
+                        text="",
                         error="DISPATCH_SKIPPED_LEASE: workspace desta task está "
-                              "com lease ativo em outro pod; skip nesse tick",
+                        "com lease ativo em outro pod; skip nesse tick",
                     )
-                return WorkOutcome(ok=False, text="", error=f"{exc.error_code}: {exc}"[:500])
+                return WorkOutcome(
+                    ok=False, text="", error=f"{exc.error_code}: {exc}"[:500]
+                )
             except Exception as exc:  # noqa: BLE001 — never crash the tick
                 logger.exception("worker dispatch raised")
-                return WorkOutcome(ok=False, text="", error=f"{type(exc).__name__}: {exc}"[:500])
+                return WorkOutcome(
+                    ok=False, text="", error=f"{type(exc).__name__}: {exc}"[:500]
+                )
             # Issue #373: fire-and-forget path — worker returned 202 + task_id.
             # The task is running in the background; the pipeline reconciles
             # ground truth on the next tick via ``reconcile_implementing_issues``.
@@ -1051,7 +1142,8 @@ class WorkerImplementer(PipelineImplementer):
                 task_id = data.get("task_id", "") if isinstance(data, dict) else ""
                 logger.info(
                     "worker fire-and-forget accepted: task_id=%s stage=%s",
-                    task_id, stage,
+                    task_id,
+                    stage,
                 )
                 # Grava no ledger também no caminho nowait — critique/refine/review
                 # fresh passam ledger_key e precisam de rastreabilidade igual ao
@@ -1063,11 +1155,14 @@ class WorkerImplementer(PipelineImplementer):
                         ledger_key,
                         task_id=task_id,
                         session_id="",  # Desconhecido até o worker terminar
-                        stage=stage, branch=branch,
+                        stage=stage,
+                        branch=branch,
                         worker_kind=worker_kind,
                     )
                 return WorkOutcome(
-                    ok=True, text="", task_id=task_id,
+                    ok=True,
+                    text="",
+                    task_id=task_id,
                     ended="",  # Not yet known — reconcile via ground truth
                 )
             outcome = _outcome_from_worker_response(data)
@@ -1079,8 +1174,10 @@ class WorkerImplementer(PipelineImplementer):
             # claude via JSONL). A escrita é best-effort isolada (record_fleet_usage
             # nunca propaga exceção): falha de SQLite/preço NÃO derruba o dispatch.
             if is_cli_worker:
-                from deile.orchestration.pipeline.fleet_cost_recorder import \
-                    record_fleet_usage  # noqa: PLC0415
+                from deile.orchestration.pipeline.fleet_cost_recorder import (  # noqa: PLC0415
+                    record_fleet_usage,
+                )
+
                 record_fleet_usage(
                     data,
                     worker_kind=_worker_kind_from_url(url),
@@ -1112,7 +1209,8 @@ class WorkerImplementer(PipelineImplementer):
             if ledger_key and outcome.task_id:
                 worker_kind = _worker_kind_from_url(url)
                 blocked_by_verdict = (
-                    stage == "pr_review" and outcome.ok
+                    stage == "pr_review"
+                    and outcome.ok
                     and _review_was_blocked(outcome.text)
                 )
                 if outcome.ok and not blocked_by_verdict:
@@ -1122,7 +1220,8 @@ class WorkerImplementer(PipelineImplementer):
                         ledger_key,
                         task_id=outcome.task_id,
                         session_id=outcome.session_id,
-                        stage=stage, branch=branch,
+                        stage=stage,
+                        branch=branch,
                         worker_kind=worker_kind,
                     )
                     if blocked_by_verdict:
@@ -1141,6 +1240,7 @@ class WorkerImplementer(PipelineImplementer):
             if _dispatch_ctx_token is not None:
                 try:
                     from opentelemetry import context as _otel_context  # noqa: PLC0415
+
                     _otel_context.detach(_dispatch_ctx_token)
                 except ImportError:
                     pass
@@ -1198,42 +1298,47 @@ class WorkerImplementer(PipelineImplementer):
             "",
             "## VEREDICT ANTERIOR (resumo persistido pelo worker)",
             "",
-            prev_summary or "(sumário anterior indisponível; reconstrua pelo histórico da sessão)",
+            prev_summary
+            or "(sumário anterior indisponível; reconstrua pelo histórico da sessão)",
             "",
         ]
         if delta_block:
             nudge_lines.append(delta_block)
-        nudge_lines.extend([
-            "## INSTRUÇÕES — siga EXATAMENTE",
-            "",
-            "1. **NÃO releia o repositório inteiro.** Você já leu na sessão anterior.",
-            "   `cat`/`Read` APENAS arquivos tocados pelo delta abaixo.",
-            "2. **NÃO rode a suite completa de testes** (gasta 10+ min). Identifique",
-            "   o subset afetado pelo delta e rode SÓ ele (ex: `pytest deile/tests/<X>/`).",
-            "   Suite full só se o delta toca código central com fan-in alto.",
-            "3. **Para cada item da sua review anterior, marque o status novo:**",
-            "   - ✓ resolvido (correção aplicada e validada)",
-            "   - ✗ ainda aberto (correção não aplicada ou regrediu)",
-            "   - ⚠ parcial (resolveu parte mas introduziu outro problema)",
-            "4. **Avalie comentários novos** (se houver acima) — operador pode ter",
-            "   esclarecido escopo ou pedido ajuste adicional.",
-            "5. **Re-emita seu veredict NOVO** depois de POSTAR comment no PR via",
-            "   `gh pr review` ou `gh issue comment`:",
-            "   - STATUS: APPROVE — todos achados resolvidos + delta limpo → vai mergear",
-            "   - STATUS: REQUEST_CHANGES — ainda há achados abertos OU delta",
-            "     introduziu problema novo (liste explicitamente)",
-            "   - STATUS: BLOCKED_<motivo> — impedimento estrutural que operador não",
-            "     pode corrigir só com push (ex: regressão de teste pré-existente)",
-            "6. **Se for APPROVE**: faça merge via `gh pr merge --squash` (ou --merge",
-            "   se a PR exigir merge-commit). Confirme o merge antes de imprimir",
-            "   STATUS final.",
-            "",
-            "Sem refazer trabalho redundante. O delta é tudo que mudou.",
-        ])
+        nudge_lines.extend(
+            [
+                "## INSTRUÇÕES — siga EXATAMENTE",
+                "",
+                "1. **NÃO releia o repositório inteiro.** Você já leu na sessão anterior.",
+                "   `cat`/`Read` APENAS arquivos tocados pelo delta abaixo.",
+                "2. **NÃO rode a suite completa de testes** (gasta 10+ min). Identifique",
+                "   o subset afetado pelo delta e rode SÓ ele (ex: `pytest deile/tests/<X>/`).",
+                "   Suite full só se o delta toca código central com fan-in alto.",
+                "3. **Para cada item da sua review anterior, marque o status novo:**",
+                "   - ✓ resolvido (correção aplicada e validada)",
+                "   - ✗ ainda aberto (correção não aplicada ou regrediu)",
+                "   - ⚠ parcial (resolveu parte mas introduziu outro problema)",
+                "4. **Avalie comentários novos** (se houver acima) — operador pode ter",
+                "   esclarecido escopo ou pedido ajuste adicional.",
+                "5. **Re-emita seu veredict NOVO** depois de POSTAR comment no PR via",
+                "   `gh pr review` ou `gh issue comment`:",
+                "   - STATUS: APPROVE — todos achados resolvidos + delta limpo → vai mergear",
+                "   - STATUS: REQUEST_CHANGES — ainda há achados abertos OU delta",
+                "     introduziu problema novo (liste explicitamente)",
+                "   - STATUS: BLOCKED_<motivo> — impedimento estrutural que operador não",
+                "     pode corrigir só com push (ex: regressão de teste pré-existente)",
+                "6. **Se for APPROVE**: faça merge via `gh pr merge --squash` (ou --merge",
+                "   se a PR exigir merge-commit). Confirme o merge antes de imprimir",
+                "   STATUS final.",
+                "",
+                "Sem refazer trabalho redundante. O delta é tudo que mudou.",
+            ]
+        )
         return "\n".join(nudge_lines)
 
     async def _collect_review_delta(
-        self, pr_number: int, prev_completed_at: int,
+        self,
+        pr_number: int,
+        prev_completed_at: int,
     ) -> str:
         """Constrói o bloco de delta (git log + diff + comments) pro nudge
         de resume. Best-effort; erros viram bloco vazio.
@@ -1244,19 +1349,22 @@ class WorkerImplementer(PipelineImplementer):
         import asyncio as _aio
         from datetime import datetime as _dt
         from datetime import timezone as _tz
+
         lines: List[str] = []
         # gh comments since prev_completed_at.
         if prev_completed_at:
             since_iso = _dt.fromtimestamp(prev_completed_at, _tz.utc).isoformat()
             try:
                 proc = await _aio.create_subprocess_exec(
-                    "gh", "api",
+                    "gh",
+                    "api",
                     f"repos/{resolve_forge_repo()}/issues/{pr_number}/comments",
                     "--paginate",
                     "-q",
                     f'.[] | select(.created_at > "{since_iso}") | '
                     '"[\\(.created_at[11:19])Z \\(.user.login)] \\(.body[:300])"',
-                    stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL,
+                    stdout=_aio.subprocess.PIPE,
+                    stderr=_aio.subprocess.DEVNULL,
                 )
                 out, _ = await _aio.wait_for(proc.communicate(), timeout=10)
                 comments_text = (out or b"").decode("utf-8", "replace").strip()
@@ -1270,10 +1378,17 @@ class WorkerImplementer(PipelineImplementer):
         # Push delta via gh — listar últimos N commits da PR como contexto.
         try:
             proc = await _aio.create_subprocess_exec(
-                "gh", "pr", "view", str(pr_number), "--json", "commits",
-                "-q", '.commits | sort_by(.committedDate) | reverse | .[0:5] | '
+                "gh",
+                "pr",
+                "view",
+                str(pr_number),
+                "--json",
+                "commits",
+                "-q",
+                ".commits | sort_by(.committedDate) | reverse | .[0:5] | "
                 '.[] | "  \\(.oid[0:8]) \\(.messageHeadline)"',
-                stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL,
+                stdout=_aio.subprocess.PIPE,
+                stderr=_aio.subprocess.DEVNULL,
             )
             out, _ = await _aio.wait_for(proc.communicate(), timeout=10)
             log_text = (out or b"").decode("utf-8", "replace").strip()
@@ -1283,8 +1398,12 @@ class WorkerImplementer(PipelineImplementer):
                 lines.append(log_text[:1500])
                 lines.append("```")
                 lines.append("")
-                lines.append("Use `git log --oneline -10 origin/<branch>` no workdir reaproveitado")
-                lines.append("e `git diff <commit_anterior>..HEAD` pra ver o delta REAL.")
+                lines.append(
+                    "Use `git log --oneline -10 origin/<branch>` no workdir reaproveitado"
+                )
+                lines.append(
+                    "e `git diff <commit_anterior>..HEAD` pra ver o delta REAL."
+                )
                 lines.append("")
         except Exception:  # noqa: BLE001
             pass
@@ -1296,16 +1415,25 @@ class WorkerImplementer(PipelineImplementer):
         branch = monitor.branch_for_issue(issue.number)
         forge_cfg = monitor.forge.config
         render = (
-            _render_worker_implement_resume_brief if resume
+            _render_worker_implement_resume_brief
+            if resume
             else _render_worker_implement_brief
         )
         brief = render(
-            monitor.config.repo, monitor.config.main_branch, branch,
-            issue.number, issue.title, issue.body, forge=forge_cfg,
+            monitor.config.repo,
+            monitor.config.main_branch,
+            branch,
+            issue.number,
+            issue.title,
+            issue.body,
+            forge=forge_cfg,
         )
         resume_block = _build_resume_block(
-            monitor.config.repo, monitor.config.main_branch, branch,
-            resume=resume, expect_merge=False,
+            monitor.config.repo,
+            monitor.config.main_branch,
+            branch,
+            resume=resume,
+            expect_merge=False,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
 
@@ -1314,9 +1442,13 @@ class WorkerImplementer(PipelineImplementer):
         # still block because the stage handler needs the structured result
         # (ended, fingerprint, tentativa) to decide concluido/incompleto/bloqueado.
         return await self._dispatch(
-            brief, channel_id=f"pipeline-issue-{issue.number}",
-            resume_block=resume_block, stage="implement", branch=branch,
-            ledger_key=DispatchLedger.key_for_issue(issue.number), resume=resume,
+            brief,
+            channel_id=f"pipeline-issue-{issue.number}",
+            resume_block=resume_block,
+            stage="implement",
+            branch=branch,
+            ledger_key=DispatchLedger.key_for_issue(issue.number),
+            resume=resume,
             nowait=not resume,
         )
 
@@ -1331,8 +1463,12 @@ class WorkerImplementer(PipelineImplementer):
     ) -> WorkOutcome:
         issue_type = issue_type_from_labels(issue.labels)
         brief = _render_worker_critique_brief(
-            monitor.config.repo, issue.number, issue.title, issue.body,
-            issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
+            monitor.config.repo,
+            issue.number,
+            issue.title,
+            issue.body,
+            issue_type=issue_type or "",
+            template=template_for_type(issue_type) or "intent.md",
             forge=monitor.forge.config,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
@@ -1344,9 +1480,12 @@ class WorkerImplementer(PipelineImplementer):
         # refine→reescrita com modelo melhor. O ``classify_new_issues`` em
         # ``stages.py`` é só a admissão Python (label ~workflow:nova), não LLM.
         return await self._dispatch(
-            brief, channel_id=f"pipeline-issue-{issue.number}",
-            persona=persona_for_type(issue_type), stage="classify",
-            ledger_key=DispatchLedger.key_for_issue(issue.number), nowait=True,
+            brief,
+            channel_id=f"pipeline-issue-{issue.number}",
+            persona=persona_for_type(issue_type),
+            stage="classify",
+            ledger_key=DispatchLedger.key_for_issue(issue.number),
+            nowait=True,
         )
 
     async def refine(
@@ -1354,27 +1493,40 @@ class WorkerImplementer(PipelineImplementer):
     ) -> WorkOutcome:
         issue_type = issue_type_from_labels(issue.labels)
         brief = _render_worker_refine_brief(
-            monitor.config.repo, issue.number, issue.title, issue.body,
-            issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
+            monitor.config.repo,
+            issue.number,
+            issue.title,
+            issue.body,
+            issue_type=issue_type or "",
+            template=template_for_type(issue_type) or "intent.md",
             forge=monitor.forge.config,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         return await self._dispatch(
-            brief, channel_id=f"pipeline-issue-{issue.number}",
-            persona=persona_for_type(issue_type), stage="refine",
-            ledger_key=DispatchLedger.key_for_issue(issue.number), nowait=True,
+            brief,
+            channel_id=f"pipeline-issue-{issue.number}",
+            persona=persona_for_type(issue_type),
+            stage="refine",
+            ledger_key=DispatchLedger.key_for_issue(issue.number),
+            nowait=True,
         )
 
     async def decompose(
         self, monitor: "PipelineMonitor", issue: "IssueRef"
     ) -> WorkOutcome:
         brief = _render_worker_decompose_brief(
-            monitor.config.repo, issue.number, issue.title, issue.body,
+            monitor.config.repo,
+            issue.number,
+            issue.title,
+            issue.body,
             forge=monitor.forge.config,
         )
         return await self._dispatch(
-            brief, channel_id=f"pipeline-issue-{issue.number}",
-            persona="architect", stage="refine",
+            brief,
+            channel_id=f"pipeline-issue-{issue.number}",
+            persona="architect",
+            stage="refine",
         )
 
     async def review(
@@ -1387,12 +1539,18 @@ class WorkerImplementer(PipelineImplementer):
         # ``.deile-progress.md`` no passo 0 do brief.
         gh_login = monitor.config.mention_handle.lstrip("@")
         brief = _render_worker_pr_unified_brief(
-            monitor.config.repo, monitor.config.main_branch, pr.number,
-            gh_login=gh_login, forge=forge_cfg,
+            monitor.config.repo,
+            monitor.config.main_branch,
+            pr.number,
+            gh_login=gh_login,
+            forge=forge_cfg,
         )
         resume_block = _build_resume_block(
-            monitor.config.repo, monitor.config.main_branch,
-            pr.head_ref or f"pr/{pr.number}", resume=resume, expect_merge=True,
+            monitor.config.repo,
+            monitor.config.main_branch,
+            pr.head_ref or f"pr/{pr.number}",
+            resume=resume,
+            expect_merge=True,
             pr_url_hint=pr.url,
         )
         # The review/merge stage is the final quality gate: dispatch under the
@@ -1406,10 +1564,14 @@ class WorkerImplementer(PipelineImplementer):
         # pr_review precisa do resultado estruturado (ended, fingerprint,
         # tentativa) para decidir concluido/incompleto/bloqueado.
         return await self._dispatch(
-            brief, channel_id=f"pipeline-pr-{pr.number}",
-            persona="reviewer", resume_block=resume_block, stage="pr_review",
+            brief,
+            channel_id=f"pipeline-pr-{pr.number}",
+            persona="reviewer",
+            resume_block=resume_block,
+            stage="pr_review",
             branch=pr.head_ref or f"pr/{pr.number}",
-            ledger_key=DispatchLedger.key_for_pr(pr.number), resume=resume,
+            ledger_key=DispatchLedger.key_for_pr(pr.number),
+            resume=resume,
             nowait=not resume,
         )
 
@@ -1432,18 +1594,31 @@ class WorkerImplementer(PipelineImplementer):
         forge_cfg = monitor.forge.config
         branch = pr.head_ref or f"pr/{pr.number}"
         brief = _render_worker_pr_address_brief(
-            monitor.config.repo, monitor.config.main_branch, branch, pr.number,
+            monitor.config.repo,
+            monitor.config.main_branch,
+            branch,
+            pr.number,
             forge=forge_cfg,
         )
         resume_block = _build_resume_block(
-            monitor.config.repo, monitor.config.main_branch, branch,
-            resume=False, expect_merge=False, pr_url_hint=pr.url,
+            monitor.config.repo,
+            monitor.config.main_branch,
+            branch,
+            resume=False,
+            expect_merge=False,
+            pr_url_hint=pr.url,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         return await self._dispatch(
-            brief, channel_id=f"pipeline-pr-{pr.number}", persona="developer",
-            resume_block=resume_block, stage="implement", branch=branch,
-            ledger_key=DispatchLedger.key_for_pr(pr.number), nowait=True,
+            brief,
+            channel_id=f"pipeline-pr-{pr.number}",
+            persona="developer",
+            resume_block=resume_block,
+            stage="implement",
+            branch=branch,
+            ledger_key=DispatchLedger.key_for_pr(pr.number),
+            nowait=True,
         )
 
     async def mention(
@@ -1472,9 +1647,7 @@ class WorkerImplementer(PipelineImplementer):
         main = monitor.config.main_branch
         number = ref.target_number
         channel_id = f"pipeline-mention-{ref.target_kind}-{number}"
-        pr_ref = next(
-            (t.pr for t in (all_triggers or [ref]) if t.pr is not None), None
-        )
+        pr_ref = next((t.pr for t in (all_triggers or [ref]) if t.pr is not None), None)
         head = (pr_ref.head_ref if pr_ref else "") or f"pr/{number}"
         pr_url_hint = pr_ref.url if pr_ref else ""
 
@@ -1489,17 +1662,28 @@ class WorkerImplementer(PipelineImplementer):
         if ref.target_kind == "pr":
             gh_login = monitor.config.mention_handle.lstrip("@")
             unified_brief = _render_worker_pr_unified_brief(
-                repo, main, number, gh_login=gh_login, forge=forge_cfg,
+                repo,
+                main,
+                number,
+                gh_login=gh_login,
+                forge=forge_cfg,
             )
-            from deile.orchestration.pipeline.dispatch_ledger import \
-                DispatchLedger
+            from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
             return await self._dispatch(
-                unified_brief, channel_id=channel_id, persona="reviewer",
+                unified_brief,
+                channel_id=channel_id,
+                persona="reviewer",
                 resume_block=_build_resume_block(
-                    repo, main, head, resume=resume, expect_merge=True,
+                    repo,
+                    main,
+                    head,
+                    resume=resume,
+                    expect_merge=True,
                     pr_url_hint=pr_url_hint,
                 ),
-                stage="pr_review", branch=head,
+                stage="pr_review",
+                branch=head,
                 # mentions PR-scoped usam mesma chave que pr_review pra que o
                 # pipeline reaproveite session se houver resume.
                 ledger_key=DispatchLedger.key_for_pr(number),
@@ -1513,10 +1697,16 @@ class WorkerImplementer(PipelineImplementer):
             )
         # Default: comment mention on an issue → do what the comment says.
         brief = _render_worker_mention_brief(
-            repo, ref, trigger_types or [], all_triggers or [], forge=forge_cfg,
+            repo,
+            ref,
+            trigger_types or [],
+            all_triggers or [],
+            forge=forge_cfg,
         )
         return await self._dispatch(
-            brief, channel_id=channel_id, persona="developer",
+            brief,
+            channel_id=channel_id,
+            persona="developer",
             stage="follow_ups",
         )
 
@@ -1621,8 +1811,10 @@ def build_implementer(
             :func:`dispatch_resolver.is_valid_dispatcher`).
     """
     if dispatch_mode and dispatch_mode.strip():
-        from deile.orchestration.pipeline.dispatch_resolver import \
-            is_valid_dispatcher  # noqa: PLC0415
+        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+            is_valid_dispatcher,
+        )
+
         if not is_valid_dispatcher(dispatch_mode):
             raise ValueError(
                 f"unknown pipeline dispatch_mode {dispatch_mode!r}; "

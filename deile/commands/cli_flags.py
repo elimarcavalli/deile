@@ -99,20 +99,27 @@ def build_cli_flag_specs(registry: "CommandRegistry") -> List[CLIFlagSpec]:
                 )
             else:
                 seen_flags.add(primary)
-                specs.append(CLIFlagSpec(
-                    flag=primary,
-                    command_name=command.name,
-                    aliases=list(getattr(command, "cli_flag_aliases", None) or []) or None,
-                    takes_arg=bool(getattr(command, "cli_takes_arg", False)),
-                    metavar=getattr(command, "cli_arg_metavar", None),
-                    help=getattr(command, "cli_help", None) or command.description,
-                    subcommand=getattr(command, "cli_subcommand", None),
-                    requires_provider=bool(getattr(command, "cli_requires_provider", False)),
-                    dispatch=bool(getattr(command, "cli_dispatch", True)),
-                ))
+                specs.append(
+                    CLIFlagSpec(
+                        flag=primary,
+                        command_name=command.name,
+                        aliases=list(getattr(command, "cli_flag_aliases", None) or [])
+                        or None,
+                        takes_arg=bool(getattr(command, "cli_takes_arg", False)),
+                        metavar=getattr(command, "cli_arg_metavar", None),
+                        help=getattr(command, "cli_help", None) or command.description,
+                        subcommand=getattr(command, "cli_subcommand", None),
+                        requires_provider=bool(
+                            getattr(command, "cli_requires_provider", False)
+                        ),
+                        dispatch=bool(getattr(command, "cli_dispatch", True)),
+                    )
+                )
 
         # 2) cli_extra_flags: multiple sub-flags fanning out to one slash command
-        extra: Dict[str, Dict[str, Any]] = getattr(command, "cli_extra_flags", None) or {}
+        extra: Dict[str, Dict[str, Any]] = (
+            getattr(command, "cli_extra_flags", None) or {}
+        )
         for sub_flag, meta in extra.items():
             if sub_flag in seen_flags:
                 logger.warning(
@@ -122,16 +129,18 @@ def build_cli_flag_specs(registry: "CommandRegistry") -> List[CLIFlagSpec]:
                 )
                 continue
             seen_flags.add(sub_flag)
-            specs.append(CLIFlagSpec(
-                flag=sub_flag,
-                command_name=command.name,
-                subcommand=meta.get("subcommand"),
-                takes_arg=bool(meta.get("takes_arg", False)),
-                metavar=meta.get("metavar"),
-                help=meta.get("help"),
-                requires_provider=bool(meta.get("requires_provider", False)),
-                dispatch=bool(meta.get("dispatch", True)),
-            ))
+            specs.append(
+                CLIFlagSpec(
+                    flag=sub_flag,
+                    command_name=command.name,
+                    subcommand=meta.get("subcommand"),
+                    takes_arg=bool(meta.get("takes_arg", False)),
+                    metavar=meta.get("metavar"),
+                    help=meta.get("help"),
+                    requires_provider=bool(meta.get("requires_provider", False)),
+                    dispatch=bool(meta.get("dispatch", True)),
+                )
+            )
 
     # Stable order — alphabetical by flag for deterministic --help.
     specs.sort(key=lambda s: s.flag)

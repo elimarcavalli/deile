@@ -52,10 +52,13 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from deile.observability.config import get_observability_config
-from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
-                                                 ATTR_SCHEMA_VERSION,
-                                                 SCHEMA_VERSION,
-                                                 get_pod_metadata)
+from deile.observability.dispatch_schema import (
+    ATTR_POD,
+    ATTR_ROLE,
+    ATTR_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    get_pod_metadata,
+)
 
 __all__ = [
     "get_log_provider",
@@ -163,7 +166,10 @@ def _record_log_drop(reason: str) -> None:
     global _log_drop_counter, _log_last_drop_log_ts
     with _log_drop_lock:
         now = _log_time_fn()
-        if now - _log_last_drop_log_ts >= _LOG_DROP_THROTTLE_S and _log_drop_counter > 0:
+        if (
+            now - _log_last_drop_log_ts >= _LOG_DROP_THROTTLE_S
+            and _log_drop_counter > 0
+        ):
             _logger.info(
                 "dispatch.otlp_log_drop count=%d reason=%s",
                 _log_drop_counter,
@@ -182,6 +188,7 @@ def otel_logs_available() -> bool:
     try:
         import opentelemetry._logs  # noqa: F401  pylint: disable=unused-import,import-outside-toplevel
         import opentelemetry.sdk._logs  # noqa: F401  pylint: disable=unused-import,import-outside-toplevel
+
         return True
     except ImportError:
         return False
@@ -197,9 +204,7 @@ def _warn_sdk_unavailable() -> None:
     global _sdk_warned
     with _sdk_warned_lock:
         if not _sdk_warned:
-            _logger.info(
-                "dispatch_log_export: otel_sdk_available=false sink=disabled"
-            )
+            _logger.info("dispatch_log_export: otel_sdk_available=false sink=disabled")
             _sdk_warned = True
 
 
@@ -278,20 +283,26 @@ def get_log_provider() -> Optional[Any]:
 
 def _build_log_provider(config: Any) -> Any:
     """Constrói o LoggerProvider apontando para o collector OTLP (D1)."""
-    from opentelemetry.sdk._logs import \
-        LoggerProvider  # pylint: disable=import-outside-toplevel
-    from opentelemetry.sdk._logs.export import \
-        BatchLogRecordProcessor  # pylint: disable=import-outside-toplevel
+    from opentelemetry.sdk._logs import (  # pylint: disable=import-outside-toplevel
+        LoggerProvider,
+    )
+    from opentelemetry.sdk._logs.export import (  # pylint: disable=import-outside-toplevel
+        BatchLogRecordProcessor,
+    )
     from opentelemetry.sdk.resources import (  # pylint: disable=import-outside-toplevel
-        SERVICE_NAME, Resource)
+        SERVICE_NAME,
+        Resource,
+    )
 
     pod = get_pod_metadata()
-    resource = Resource.create({
-        SERVICE_NAME: config.service_name,
-        ATTR_ROLE: pod["role"],
-        ATTR_POD: pod["pod"],
-        ATTR_SCHEMA_VERSION: SCHEMA_VERSION,
-    })
+    resource = Resource.create(
+        {
+            SERVICE_NAME: config.service_name,
+            ATTR_ROLE: pod["role"],
+            ATTR_POD: pod["pod"],
+            ATTR_SCHEMA_VERSION: SCHEMA_VERSION,
+        }
+    )
     provider = LoggerProvider(resource=resource)
     exporter = _make_log_exporter(config)
     if exporter is not None:
@@ -302,8 +313,9 @@ def _build_log_provider(config: Any) -> Any:
 def _make_log_exporter(config: Any) -> Optional[Any]:
     """Constrói o OTLPLogExporter (gRPC). Falha silenciosa → None."""
     try:
-        from opentelemetry.exporter.otlp.proto.grpc._log_exporter import \
-            OTLPLogExporter  # pylint: disable=import-outside-toplevel
+        from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (  # pylint: disable=import-outside-toplevel
+            OTLPLogExporter,
+        )
     except ImportError as exc:
         _logger.warning(
             "dispatch_log_export: OTLPLogExporter não disponível (%s); "
@@ -400,7 +412,9 @@ def emit_log_record(
             return
 
         from opentelemetry._logs import (  # pylint: disable=import-outside-toplevel
-            LogRecord, SeverityNumber)
+            LogRecord,
+            SeverityNumber,
+        )
 
         severity_text, severity_number = _severity_for(event_name, attributes)
         safe = _safe_attrs(attributes)

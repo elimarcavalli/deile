@@ -11,6 +11,7 @@ Usamos ``httpx.MockTransport`` para capturar o ``request.url`` real — a única
 verificação autoritativa, já que tudo entre o ``dispatch`` e o wire é
 implementação interna do ``httpx.AsyncClient``.
 """
+
 from __future__ import annotations
 
 import httpx
@@ -24,7 +25,10 @@ def _good_payload() -> dict:
 
 
 def _install_capture_transport(
-    monkeypatch, captured: list[str], status: int = 200, body: dict | None = None,
+    monkeypatch,
+    captured: list[str],
+    status: int = 200,
+    body: dict | None = None,
 ) -> DeileWorkerClient:
     """Instala MockTransport que captura a URL e devolve 200 OK por default.
 
@@ -63,19 +67,20 @@ async def test_dispatch_uses_endpoint_url_when_provided(monkeypatch):
     captured: list[str] = []
     cli = _install_capture_transport(monkeypatch, captured)
     await cli.dispatch(
-        _good_payload(), wait=False,
+        _good_payload(),
+        wait=False,
         endpoint_url="http://claude-worker:8767",
     )
 
     assert captured, "no request captured by mock transport"
-    assert any("claude-worker:8767" in url for url in captured), (
-        f"endpoint_url ignored; URLs called: {captured}"
-    )
+    assert any(
+        "claude-worker:8767" in url for url in captured
+    ), f"endpoint_url ignored; URLs called: {captured}"
     # Negative assertion: a env var NÃO deve ter sido usada quando o
     # ``endpoint_url`` foi explicitamente passado — esse é o bug a evitar.
-    assert not any("default-worker:8766" in url for url in captured), (
-        f"env var leaked through endpoint_url override: {captured}"
-    )
+    assert not any(
+        "default-worker:8766" in url for url in captured
+    ), f"env var leaked through endpoint_url override: {captured}"
 
 
 async def test_dispatch_falls_back_to_env_when_no_endpoint_url(monkeypatch):
@@ -87,9 +92,9 @@ async def test_dispatch_falls_back_to_env_when_no_endpoint_url(monkeypatch):
     await cli.dispatch(_good_payload(), wait=False)  # NO endpoint_url
 
     assert captured, "no request captured by mock transport"
-    assert any("envvar-worker:8766" in url for url in captured), (
-        f"env fallback broken; URLs: {captured}"
-    )
+    assert any(
+        "envvar-worker:8766" in url for url in captured
+    ), f"env fallback broken; URLs: {captured}"
 
 
 async def test_dispatch_endpoint_url_strips_trailing_slash(monkeypatch):
@@ -104,15 +109,16 @@ async def test_dispatch_endpoint_url_strips_trailing_slash(monkeypatch):
     captured: list[str] = []
     cli = _install_capture_transport(monkeypatch, captured)
     await cli.dispatch(
-        _good_payload(), wait=False,
+        _good_payload(),
+        wait=False,
         endpoint_url="http://claude-worker:8767/",  # trailing slash
     )
 
     assert captured
     url = captured[0]
-    assert "//v1/dispatch" not in url, (
-        f"double slash in path indicates trailing-slash not normalized: {url}"
-    )
+    assert (
+        "//v1/dispatch" not in url
+    ), f"double slash in path indicates trailing-slash not normalized: {url}"
     assert "/v1/dispatch" in url
     assert "claude-worker:8767" in url
 
@@ -131,6 +137,6 @@ async def test_dispatch_endpoint_url_empty_string_falls_back_to_env(monkeypatch)
     await cli.dispatch(_good_payload(), wait=False, endpoint_url="")
 
     assert captured
-    assert any("envvar-worker:8766" in url for url in captured), (
-        f"empty endpoint_url should fall back to env: {captured}"
-    )
+    assert any(
+        "envvar-worker:8766" in url for url in captured
+    ), f"empty endpoint_url should fall back to env: {captured}"

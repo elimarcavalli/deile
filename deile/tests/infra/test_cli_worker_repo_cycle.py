@@ -39,8 +39,11 @@ _AUTH = {"Authorization": "Bearer test-token"}
 
 def _git(*args, cwd):
     subprocess.run(
-        ["git", *args], cwd=str(cwd), check=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -86,20 +89,27 @@ def patched_clone(monkeypatch, local_remote):
 
 
 async def test_ensure_repo_and_branch_clones_and_creates_branch(
-    tmp_path, patched_clone,
+    tmp_path,
+    patched_clone,
 ):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     ok, detail = await core.ensure_repo_and_branch(
-        workspace, repo="owner/repo", branch="auto/issue-7", base_branch="main",
+        workspace,
+        repo="owner/repo",
+        branch="auto/issue-7",
+        base_branch="main",
     )
     assert ok, detail
     repo = workspace / "repo"
     assert (repo / ".git").exists()
     # Está no branch novo, criado a partir de main.
     head = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(repo),
-        capture_output=True, text=True, check=True,
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     assert head == "auto/issue-7"
 
@@ -113,7 +123,8 @@ def repo_adapter(tmp_path, monkeypatch, patched_clone):
     """
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / "zzz_repo_mock.py"
-    mod_path.write_text(textwrap.dedent('''\
+    mod_path.write_text(
+        textwrap.dedent("""\
         import os
         from cli_adapters.base import BaseCliAdapter, WorkResult, ModelInfo
 
@@ -139,7 +150,9 @@ def repo_adapter(tmp_path, monkeypatch, patched_clone):
 
 
         ADAPTER = RepoMock(kind="zzz_repo_mock", default_port=8797)
-    '''), encoding="utf-8")
+    """),
+        encoding="utf-8",
+    )
 
     cli_adapters.reload_adapters()
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "zzz_repo_mock")
@@ -149,7 +162,8 @@ def repo_adapter(tmp_path, monkeypatch, patched_clone):
     # então a allowlist precisa admiti-lo, senão o handler bloqueia com 403.
     allow = tmp_path / "allowed_repos.regex"
     allow.write_text(
-        r"^https://github\.com/owner/repo(\.git)?$" + "\n", encoding="utf-8",
+        r"^https://github\.com/owner/repo(\.git)?$" + "\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("DEILE_CLAUDE_ALLOWED_REPOS_FILE", str(allow))
     # A identidade git global existe no ambiente de teste; o push vai para o
@@ -172,7 +186,9 @@ def _set_adapter_strategy(strategy: str):
 
 
 async def test_dispatch_brief_driven_agent_commits_then_pushes(
-    repo_adapter, monkeypatch, tmp_path,
+    repo_adapter,
+    monkeypatch,
+    tmp_path,
 ):
     """brief_driven + agente commitou → wrapper pusha → gate vê push real → ok."""
     _set_adapter_strategy("brief_driven")
@@ -199,7 +215,8 @@ async def test_dispatch_brief_driven_agent_commits_then_pushes(
 
 
 async def test_dispatch_brief_driven_no_commit_triggers_wrapper_fallback(
-    repo_adapter, monkeypatch,
+    repo_adapter,
+    monkeypatch,
 ):
     """brief_driven SEM commit do agente → fallback commit (WRAPPER_COMMITTED)."""
     _set_adapter_strategy("brief_driven")
@@ -251,9 +268,11 @@ async def test_dispatch_cli_autocommit_only_pushes(repo_adapter, monkeypatch):
 
 
 async def test_dispatch_repo_setup_failure_returns_typed_error(
-    repo_adapter, monkeypatch,
+    repo_adapter,
+    monkeypatch,
 ):
     """Clone falha → REPO_SETUP_FAILED (não roda o CLI contra dir sem repo)."""
+
     async def _fail(*_a, **_k):
         return (False, "clone falhou: remote inacessível")
 

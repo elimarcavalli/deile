@@ -6,15 +6,22 @@ from typing import AsyncIterator, List, Optional
 
 import pytest
 
-from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
-                                    ModelSize, ModelTier, ModelType,
-                                    ModelUsage)
+from deile.core.models.base import (
+    ModelMessage,
+    ModelProvider,
+    ModelResponse,
+    ModelSize,
+    ModelTier,
+    ModelType,
+    ModelUsage,
+)
 from deile.core.models.catalog import ModelPricing
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 
 # ---------------------------------------------------------------------------
 # Minimal concrete provider used across all tests
 # ---------------------------------------------------------------------------
+
 
 class _MockProvider(ModelProvider):
     provider_name = "mock"
@@ -69,6 +76,7 @@ class _PricedProvider(_MockProvider):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def provider():

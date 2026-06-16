@@ -31,13 +31,13 @@ def _make_ctx(working_dir: Path, **parsed_args) -> ToolContext:
 def project_tree(tmp_path: Path) -> Path:
     """Build a small tree:
 
-        root/
-          a.py
-          sub/
-            b.py
-            inner/
-              c.py
-          notes.md
+    root/
+      a.py
+      sub/
+        b.py
+        inner/
+          c.py
+      notes.md
     """
     (tmp_path / "a.py").write_text("# a")
     (tmp_path / "notes.md").write_text("md")
@@ -70,9 +70,9 @@ def test_recursive_string_True_is_coerced(project_tree: Path):
     )
     assert res.is_success
     paths = {e["path"] for e in (res.data or [])}
-    assert any(p.endswith("c.py") for p in paths), (
-        "string 'True' was not coerced to bool — nested c.py is missing"
-    )
+    assert any(
+        p.endswith("c.py") for p in paths
+    ), "string 'True' was not coerced to bool — nested c.py is missing"
 
 
 def test_pattern_filters_results(project_tree: Path):
@@ -85,9 +85,7 @@ def test_pattern_filters_results(project_tree: Path):
     assert "a.py" in names
     assert "b.py" in names
     assert "c.py" in names
-    assert "notes.md" not in names, (
-        f"pattern='*.py' did not filter notes.md: {names}"
-    )
+    assert "notes.md" not in names, f"pattern='*.py' did not filter notes.md: {names}"
 
 
 def test_non_recursive_returns_only_direct_children(project_tree: Path):

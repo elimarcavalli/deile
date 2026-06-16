@@ -47,19 +47,23 @@ def load_skills_config(path: Optional[Path] = None) -> SkillsConfig:
     try:
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     except OSError as exc:
-        logger.warning("skills: cannot read %s (%s); using defaults instead", config_path, exc)
+        logger.warning(
+            "skills: cannot read %s (%s); using defaults instead", config_path, exc
+        )
         return SkillsConfig()
     except yaml.YAMLError as exc:
         logger.warning(
             "skills: %s is malformed YAML (%s); subsystem disabled — fix the file to re-enable",
-            config_path, exc,
+            config_path,
+            exc,
         )
         return SkillsConfig(enabled=False)
 
     if not isinstance(raw, dict):
         logger.warning(
             "skills: %s root is %s, expected a YAML mapping; subsystem disabled",
-            config_path, type(raw).__name__,
+            config_path,
+            type(raw).__name__,
         )
         return SkillsConfig(enabled=False)
 
@@ -68,7 +72,9 @@ def load_skills_config(path: Optional[Path] = None) -> SkillsConfig:
     try:
         max_per_turn = max(1, int(raw.get("max_per_turn", 4)))
     except (TypeError, ValueError):
-        logger.warning("skills: invalid max_per_turn in %s; defaulting to 4", config_path)
+        logger.warning(
+            "skills: invalid max_per_turn in %s; defaulting to 4", config_path
+        )
         max_per_turn = 4
 
     return SkillsConfig(

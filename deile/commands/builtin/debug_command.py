@@ -25,6 +25,7 @@ class DebugCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="debug",
             description="Toggle do modo debug (logs detalhados + request/response files)",

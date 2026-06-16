@@ -108,7 +108,9 @@ async def _run() -> dict:
             log_lines.append(f"    text: {event.text!r}")
         elif event.type is StreamEventType.TOOL_USE_START:
             tool_starts += 1
-            log_lines.append(f"    tool_call_id={event.tool_call_id} name={event.tool_name}")
+            log_lines.append(
+                f"    tool_call_id={event.tool_call_id} name={event.tool_name}"
+            )
         elif event.type is StreamEventType.TOOL_USE_END:
             tool_ends += 1
             log_lines.append(f"    args={event.arguments}")
@@ -124,7 +126,9 @@ async def _run() -> dict:
     duration = time.time() - t0
     log_lines.append("-" * 100)
     log_lines.append(f"duration: {duration:.2f}s")
-    log_lines.append(f"tool_starts={tool_starts} tool_ends={tool_ends} tool_results={tool_results}")
+    log_lines.append(
+        f"tool_starts={tool_starts} tool_ends={tool_ends} tool_results={tool_results}"
+    )
     log_lines.append("FULL TEXT:")
     log_lines.append("".join(text_chunks))
     log_path.write_text("\n".join(log_lines), encoding="utf-8")
@@ -132,7 +136,9 @@ async def _run() -> dict:
     # Streaming contract assertions
     contract = {
         "had_text_before_first_tool": False,
-        "tool_round_trip_complete": tool_starts > 0 and tool_ends > 0 and tool_results > 0,
+        "tool_round_trip_complete": tool_starts > 0
+        and tool_ends > 0
+        and tool_results > 0,
         "duration_ok": duration > 0.0,
         "no_error": error_envelope is None,
     }
@@ -191,6 +197,7 @@ def _looks_like_billing_error(result: dict) -> bool:
 
 def test_streaming_ui_empirical():
     import pytest
+
     skip = _check_preconditions()
     if skip:
         pytest.skip(skip)

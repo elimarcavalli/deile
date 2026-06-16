@@ -8,8 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.preferences.store import (PreferenceStore, _validate_key,
-                                     _validate_value)
+from deile.preferences.store import PreferenceStore, _validate_key, _validate_value
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -18,10 +17,9 @@ from deile.preferences.store import (PreferenceStore, _validate_key,
 def store(tmp_path: Path) -> PreferenceStore:
     """Return a PreferenceStore whose backing file lives inside *tmp_path*."""
     prefs_file = tmp_path / "preferences.json"
-    with patch(
-        "deile.preferences.store._PREFS_FILE", prefs_file
-    ), patch(
-        "deile.preferences.store._PREFS_DIR", tmp_path
+    with (
+        patch("deile.preferences.store._PREFS_FILE", prefs_file),
+        patch("deile.preferences.store._PREFS_DIR", tmp_path),
     ):
         yield PreferenceStore()
 
@@ -178,10 +176,9 @@ class TestGetAll:
 
 def test_persistence_across_instances(tmp_path: Path):
     prefs_file = tmp_path / "preferences.json"
-    with patch(
-        "deile.preferences.store._PREFS_FILE", prefs_file
-    ), patch(
-        "deile.preferences.store._PREFS_DIR", tmp_path
+    with (
+        patch("deile.preferences.store._PREFS_FILE", prefs_file),
+        patch("deile.preferences.store._PREFS_DIR", tmp_path),
     ):
         s1 = PreferenceStore()
         s1.store("u1", "theme", "dark")
@@ -198,10 +195,9 @@ def test_corrupted_json_recovery(tmp_path: Path):
     tmp_path.mkdir(parents=True, exist_ok=True)
     prefs_file.write_text("this is not json {{{")
 
-    with patch(
-        "deile.preferences.store._PREFS_FILE", prefs_file
-    ), patch(
-        "deile.preferences.store._PREFS_DIR", tmp_path
+    with (
+        patch("deile.preferences.store._PREFS_FILE", prefs_file),
+        patch("deile.preferences.store._PREFS_DIR", tmp_path),
     ):
         store = PreferenceStore()
         # get should not crash — returns None
@@ -216,10 +212,9 @@ def test_not_a_dict_recovers(tmp_path: Path):
     tmp_path.mkdir(parents=True, exist_ok=True)
     prefs_file.write_text("[]")
 
-    with patch(
-        "deile.preferences.store._PREFS_FILE", prefs_file
-    ), patch(
-        "deile.preferences.store._PREFS_DIR", tmp_path
+    with (
+        patch("deile.preferences.store._PREFS_FILE", prefs_file),
+        patch("deile.preferences.store._PREFS_DIR", tmp_path),
     ):
         store = PreferenceStore()
         assert store.get("u1", "x") is None
@@ -240,10 +235,9 @@ def test_concurrent_writes_no_corruption(tmp_path: Path):
     # is not thread-safe (each context-manager exit restores whatever it
     # saved as "original", so two concurrent patches can leave the
     # module attr pointing back to ``~/.deile``).
-    with patch(
-        "deile.preferences.store._PREFS_FILE", prefs_file
-    ), patch(
-        "deile.preferences.store._PREFS_DIR", tmp_path
+    with (
+        patch("deile.preferences.store._PREFS_FILE", prefs_file),
+        patch("deile.preferences.store._PREFS_DIR", tmp_path),
     ):
 
         def writer(uid: str, start: int):
@@ -267,9 +261,9 @@ def test_concurrent_writes_no_corruption(tmp_path: Path):
         s = PreferenceStore()
         all_prefs = s.get_all("u1")
         # 20 keys from t1 (0..19) + 20 keys from t2 (500..519) = 40.
-        assert len(all_prefs) == 40, (
-            f"Lost updates: expected 40 keys, got {len(all_prefs)}"
-        )
+        assert (
+            len(all_prefs) == 40
+        ), f"Lost updates: expected 40 keys, got {len(all_prefs)}"
         for k, v in all_prefs.items():
             assert isinstance(k, str)
             assert isinstance(v, (str, int, float, bool, type(None)))

@@ -28,6 +28,7 @@ def _ctx(**args) -> ToolContext:
 # Schema sanity (catches the "type: null" regression we shipped on PipelineTool)
 # ---------------------------------------------------------------------------
 
+
 class TestToolSchemas:
     @pytest.mark.parametrize("cls", [CronCreateTool, CronListTool, CronDeleteTool])
     def test_parameters_are_object_schema(self, cls):
@@ -42,6 +43,7 @@ class TestToolSchemas:
 # ---------------------------------------------------------------------------
 # CronCreateTool
 # ---------------------------------------------------------------------------
+
 
 class TestCronCreate:
     async def test_create_recurring(self, cron_db):
@@ -67,8 +69,9 @@ class TestCronCreate:
 
     async def test_both_cron_and_run_at_rejected(self, cron_db):
         tool = CronCreateTool()
-        r = await tool.execute(_ctx(prompt="x", cron="* * * * *",
-                                    run_at="2030-01-01T00:00:00Z"))
+        r = await tool.execute(
+            _ctx(prompt="x", cron="* * * * *", run_at="2030-01-01T00:00:00Z")
+        )
         assert r.status == ToolStatus.ERROR
         assert r.metadata["error_code"] == "AMBIGUOUS_SCHEDULE"
 
@@ -106,6 +109,7 @@ class TestCronCreate:
 # CronListTool
 # ---------------------------------------------------------------------------
 
+
 class TestCronList:
     async def test_empty(self, cron_db):
         r = await CronListTool().execute(_ctx())
@@ -119,24 +123,32 @@ class TestCronList:
         assert r.data["count"] == 2
 
     async def test_filter_by_creator(self, cron_db):
-        await CronCreateTool().execute(_ctx(
-            prompt="a", cron="*/5 * * * *", created_by="discord:1"
-        ))
-        await CronCreateTool().execute(_ctx(
-            prompt="b", cron="*/10 * * * *", created_by="discord:2"
-        ))
+        await CronCreateTool().execute(
+            _ctx(prompt="a", cron="*/5 * * * *", created_by="discord:1")
+        )
+        await CronCreateTool().execute(
+            _ctx(prompt="b", cron="*/10 * * * *", created_by="discord:2")
+        )
         r = await CronListTool().execute(_ctx(created_by="discord:2"))
         assert r.data["count"] == 1
         assert r.data["entries"][0]["prompt"] == "b"
 
     async def test_only_enabled(self, cron_db):
         # Add two, disable one, request only_enabled.
-        _c1 = await CronCreateTool().execute(_ctx(
-            prompt="a", cron="*/5 * * * *", id="r1",
-        ))
-        await CronCreateTool().execute(_ctx(
-            prompt="b", cron="*/10 * * * *", id="r2",
-        ))
+        _c1 = await CronCreateTool().execute(
+            _ctx(
+                prompt="a",
+                cron="*/5 * * * *",
+                id="r1",
+            )
+        )
+        await CronCreateTool().execute(
+            _ctx(
+                prompt="b",
+                cron="*/10 * * * *",
+                id="r2",
+            )
+        )
         await CronDeleteTool().execute(_ctx(id="r2", disable_only=True))
         r = await CronListTool().execute(_ctx(only_enabled=True))
         assert r.data["count"] == 1
@@ -146,6 +158,7 @@ class TestCronList:
 # ---------------------------------------------------------------------------
 # CronDeleteTool
 # ---------------------------------------------------------------------------
+
 
 class TestCronDelete:
     async def test_delete_existing(self, cron_db):
@@ -180,9 +193,11 @@ class TestCronDelete:
 # Auto-discover registration
 # ---------------------------------------------------------------------------
 
+
 class TestAutoDiscover:
     def test_three_tools_registered(self):
         from deile.tools.registry import ToolRegistry
+
         r = ToolRegistry()
         r.auto_discover()
         for name in ("cron_create", "cron_list", "cron_delete"):

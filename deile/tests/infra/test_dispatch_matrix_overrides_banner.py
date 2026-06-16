@@ -16,9 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
-_INFRA_K8S = os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "infra", "k8s"
-)
+_INFRA_K8S = os.path.join(os.path.dirname(__file__), "..", "..", "..", "infra", "k8s")
 if _INFRA_K8S not in sys.path:
     sys.path.insert(0, _INFRA_K8S)
 
@@ -67,6 +65,7 @@ def _stub_panel_data(monkeypatch):
 def _render(entries):
     """Render the banner and return text + rendered ANSI for assertions."""
     import _panel as panel_mod
+
     view = panel_mod.DispatchMatrixView(data=None)
     out = view._render_overrides_banner(entries)
     if out is None:
@@ -140,11 +139,13 @@ def test_banner_visible_when_worker_overridden_per_stage():
 
 def test_banner_lists_multiple_overrides_per_stage():
     entries = [
-        _Entry("implement",
-               model="openai:gpt-4-turbo",
-               timeout_s=900,
-               max_retries=5,
-               cost_cap_usd="10.00"),
+        _Entry(
+            "implement",
+            model="openai:gpt-4-turbo",
+            timeout_s=900,
+            max_retries=5,
+            cost_cap_usd="10.00",
+        ),
     ]
     out, text = _render(entries)
     assert out is not None

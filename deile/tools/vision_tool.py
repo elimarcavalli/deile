@@ -41,8 +41,7 @@ from deile.core.exceptions import DEILEError, PathContainmentError
 from deile.tools._hash_utils import sha8 as _sha8
 from deile.tools._pipeline_paths import _assert_safe_root
 
-from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
-                   ToolSchema)
+from .base import SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +52,15 @@ _DNS_TIMEOUT_S = 5.0
 _GEMINI_TIMEOUT_S = 60.0
 _MAX_PROMPT_BYTES = 8192
 _ALLOWED_MIME_PREFIXES = ("image/",)
-_ALLOWED_VISION_MODELS: frozenset[str] = frozenset({
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash-8b",
-    "gemini-1.5-flash",
-})
+_ALLOWED_VISION_MODELS: frozenset[str] = frozenset(
+    {
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash-8b",
+        "gemini-1.5-flash",
+    }
+)
 _MAGIC_BYTES: dict[str, bytes] = {
     "image/png": b"\x89PNG",
     "image/jpeg": b"\xff\xd8\xff",
@@ -80,6 +81,7 @@ _GEMINI_SUPPORTED_MIMES = frozenset(_EXT_TO_MIME.values())
 _SSRF_BLOCKED_IPV6_NETS: tuple[ipaddress.IPv6Network, ...] = (
     ipaddress.IPv6Network("fec0::/10"),
 )
+
 
 def _sanitise_url_for_audit(url: str) -> str:
     """Strip userinfo, query, and fragment from URL before writing to audit log."""
@@ -164,7 +166,6 @@ class VisionDescribeImageTool(Tool):
             )
         )
 
-
     async def execute(self, context: ToolContext) -> ToolResult:
         args = dict(context.parsed_args or {})
         url = (args.get("image_url") or "").strip() or None
@@ -218,7 +219,9 @@ class VisionDescribeImageTool(Tool):
                     image_bytes = base64.b64decode(b64, validate=True)
                 except Exception as e:
                     return ToolResult.error_result(
-                        f"invalid base64: {type(e).__name__}", error_code="VISION_BAD_INPUT", error=e
+                        f"invalid base64: {type(e).__name__}",
+                        error_code="VISION_BAD_INPUT",
+                        error=e,
                     )
                 if not mime.startswith(_ALLOWED_MIME_PREFIXES):
                     return ToolResult.error_result(
@@ -264,7 +267,9 @@ class VisionDescribeImageTool(Tool):
 
         # Pre-compute audit resource here so both the magic-byte block and the
         # success audit path use the same sanitised value.
-        _audit_resource = _sanitise_url_for_audit(url) if url else (path or f"base64:{mime}")
+        _audit_resource = (
+            _sanitise_url_for_audit(url) if url else (path or f"base64:{mime}")
+        )
         try:
             _validate_magic_bytes(image_bytes, mime)
         except VisionToolError as e:
@@ -307,9 +312,12 @@ class VisionDescribeImageTool(Tool):
             message=f"vision_describe_image ok ({model}, {len(image_bytes)} B, sha8={sha8})",
         )
         try:
-            from deile.security.audit_logger import (AuditEventType,
-                                                     SeverityLevel,
-                                                     get_audit_logger)
+            from deile.security.audit_logger import (
+                AuditEventType,
+                SeverityLevel,
+                get_audit_logger,
+            )
+
             _source = "url" if url else ("path" if path else "base64")
             get_audit_logger().log_event(
                 event_type=AuditEventType.TOOL_EXECUTION,
@@ -318,7 +326,13 @@ class VisionDescribeImageTool(Tool):
                 resource=_audit_resource,
                 action="describe",
                 result="success",
-                details={"sha8": sha8, "mime_type": mime, "size_bytes": len(image_bytes), "model": model, "source": _source},
+                details={
+                    "sha8": sha8,
+                    "mime_type": mime,
+                    "size_bytes": len(image_bytes),
+                    "model": model,
+                    "source": _source,
+                },
                 tool_name="vision_describe_image",
             )
         except Exception:  # audit must never crash the tool
@@ -344,7 +358,10 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
             _try_audit_blocked(
                 resource=_sanitise_url_for_audit(path),
                 action="describe",
-                details={"reason": "file_uri_remote_authority", "authority": _parsed.hostname or ""},
+                details={
+                    "reason": "file_uri_remote_authority",
+                    "authority": _parsed.hostname or "",
+                },
                 suspicious=True,
             )
             raise VisionToolError(
@@ -398,7 +415,9 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
     except VisionToolError:
         raise
     except OSError as e:
-        raise VisionToolError("VISION_READ_FAILED", f"could not read {path!r}: {type(e).__name__}")
+        raise VisionToolError(
+            "VISION_READ_FAILED", f"could not read {path!r}: {type(e).__name__}"
+        )
     return bytes(buf), mime_hint
 
 
@@ -411,10 +430,15 @@ def _try_audit_blocked(
     ``suspicious=False`` (default) uses ``PERMISSION_DENIED`` (path containment).
     """
     try:
-        from deile.security.audit_logger import (AuditEventType, SeverityLevel,
-                                                 get_audit_logger)
+        from deile.security.audit_logger import (
+            AuditEventType,
+            SeverityLevel,
+            get_audit_logger,
+        )
+
         event_type = (
-            AuditEventType.SUSPICIOUS_ACTIVITY if suspicious
+            AuditEventType.SUSPICIOUS_ACTIVITY
+            if suspicious
             else AuditEventType.PERMISSION_DENIED
         )
         get_audit_logger().log_event(
@@ -491,11 +515,14 @@ async def _check_ssrf(url: str) -> None:
         ip = ipaddress.ip_address(host)
         if _is_ssrf_blocked(ip):
             _try_audit_blocked(
-                resource=_audit_url, action="ssrf_check",
+                resource=_audit_url,
+                action="ssrf_check",
                 details={"reason": "private_ip_literal", "ip": str(ip)},
                 suspicious=True,
             )
-            raise VisionToolError("VISION_BAD_INPUT", f"image_url targets non-public IP: {ip}")
+            raise VisionToolError(
+                "VISION_BAD_INPUT", f"image_url targets non-public IP: {ip}"
+            )
         return
     except ValueError:
         pass
@@ -506,9 +533,14 @@ async def _check_ssrf(url: str) -> None:
             timeout=_DNS_TIMEOUT_S,
         )
     except asyncio.TimeoutError:
-        raise VisionToolError("VISION_DOWNLOAD_FAILED", f"DNS resolution timed out for {host!r}")
+        raise VisionToolError(
+            "VISION_DOWNLOAD_FAILED", f"DNS resolution timed out for {host!r}"
+        )
     except OSError as exc:
-        raise VisionToolError("VISION_DOWNLOAD_FAILED", f"DNS resolution failed for {host!r}: {type(exc).__name__}")
+        raise VisionToolError(
+            "VISION_DOWNLOAD_FAILED",
+            f"DNS resolution failed for {host!r}: {type(exc).__name__}",
+        )
     for *_, sockaddr in infos:
         # Strip IPv6 zone ID (e.g. "fe80::1%eth0") before parsing; ipaddress
         # does not accept zone IDs and would raise ValueError, silently skipping
@@ -523,7 +555,8 @@ async def _check_ssrf(url: str) -> None:
             )
         if _is_ssrf_blocked(ip):
             _try_audit_blocked(
-                resource=_audit_url, action="ssrf_check",
+                resource=_audit_url,
+                action="ssrf_check",
                 details={"reason": "private_ip_resolved", "host": host, "ip": str(ip)},
                 suspicious=True,
             )
@@ -550,11 +583,15 @@ def _validate_magic_bytes(image_bytes: bytes, mime: str) -> None:
     else:
         magic = _MAGIC_BYTES.get(mime)
         if not magic:
-            logger.warning("no magic-byte entry for supported MIME %r; update _MAGIC_BYTES", mime)
+            logger.warning(
+                "no magic-byte entry for supported MIME %r; update _MAGIC_BYTES", mime
+            )
             return
-        ok = image_bytes[:len(magic)] == magic
+        ok = image_bytes[: len(magic)] == magic
     if not ok:
-        raise VisionToolError("VISION_BAD_INPUT", f"image bytes do not match declared MIME {mime!r}")
+        raise VisionToolError(
+            "VISION_BAD_INPUT", f"image bytes do not match declared MIME {mime!r}"
+        )
 
 
 async def _download_image(url: str) -> tuple[bytes, str]:
@@ -567,7 +604,9 @@ async def _download_image(url: str) -> tuple[bytes, str]:
     if not url.startswith(("http://", "https://")):
         raise VisionToolError("VISION_BAD_INPUT", "image_url must be http(s)")
     await _check_ssrf(url)
-    async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT_S, follow_redirects=False) as client:
+    async with httpx.AsyncClient(
+        timeout=_DOWNLOAD_TIMEOUT_S, follow_redirects=False
+    ) as client:
         async with client.stream("GET", url) as resp:
             if 300 <= resp.status_code < 400:
                 _try_audit_blocked(
@@ -585,7 +624,11 @@ async def _download_image(url: str) -> tuple[bytes, str]:
                     "VISION_DOWNLOAD_FAILED",
                     f"upstream returned {resp.status_code}",
                 )
-            mime = (resp.headers.get("content-type") or "application/octet-stream").split(";")[0].strip()
+            mime = (
+                (resp.headers.get("content-type") or "application/octet-stream")
+                .split(";")[0]
+                .strip()
+            )
             if not mime.startswith(_ALLOWED_MIME_PREFIXES):
                 raise VisionToolError(
                     "VISION_BAD_INPUT",
@@ -644,7 +687,9 @@ async def _gemini_describe(
             )
 
     try:
-        response = await asyncio.wait_for(asyncio.to_thread(_call), timeout=_GEMINI_TIMEOUT_S)
+        response = await asyncio.wait_for(
+            asyncio.to_thread(_call), timeout=_GEMINI_TIMEOUT_S
+        )
     except asyncio.TimeoutError:
         raise VisionToolError("VISION_LLM_FAILED", "Gemini call timed out")
     text = getattr(response, "text", None)

@@ -24,7 +24,8 @@ def status_module():
     repo_root = Path(__file__).resolve().parents[4]
     server_path = repo_root / "infra" / "k8s" / "pipeline_status_server.py"
     spec = importlib.util.spec_from_file_location(
-        "pipeline_status_server_under_test", str(server_path),
+        "pipeline_status_server_under_test",
+        str(server_path),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -66,10 +67,12 @@ async def test_status_returns_tick_metrics(status_module):
 async def test_status_includes_pod_visibility(status_module):
     """``pods_seen`` is surfaced verbatim — used by the cluster status screen."""
     state = status_module.PipelineStatusState()
-    state.set_pods_seen({
-        "deile-worker": {"ready_replicas": 2, "phase": "Running"},
-        "claude-worker": {"ready_replicas": 1, "phase": "Running"},
-    })
+    state.set_pods_seen(
+        {
+            "deile-worker": {"ready_replicas": 2, "phase": "Running"},
+            "claude-worker": {"ready_replicas": 1, "phase": "Running"},
+        }
+    )
     state.set_schedule_summary({"poll_interval_seconds": 60})
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
@@ -82,16 +85,31 @@ async def test_status_includes_pod_visibility(status_module):
 async def test_backlog_lists_eligible_items(status_module):
     """``/backlog`` returns whatever the monitor published, in order."""
     state = status_module.PipelineStatusState()
-    state.set_backlog([
-        {"kind": "issue", "number": 12, "title": "feat: x",
-         "labels": ["~workflow:nova"], "age_seconds": 300, "why_eligible": "new"},
-        {"kind": "pr", "number": 99, "title": "review me",
-         "labels": ["~review:pendente"], "age_seconds": 60, "why_eligible": "review"},
-    ])
+    state.set_backlog(
+        [
+            {
+                "kind": "issue",
+                "number": 12,
+                "title": "feat: x",
+                "labels": ["~workflow:nova"],
+                "age_seconds": 300,
+                "why_eligible": "new",
+            },
+            {
+                "kind": "pr",
+                "number": 99,
+                "title": "review me",
+                "labels": ["~review:pendente"],
+                "age_seconds": 60,
+                "why_eligible": "review",
+            },
+        ]
+    )
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/pipeline-status/backlog", headers=_AUTH_HEADERS,
+            "/v1/pipeline-status/backlog",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert resp.status == 200
@@ -102,14 +120,20 @@ async def test_backlog_lists_eligible_items(status_module):
 async def test_backlog_explains_why_eligible(status_module):
     """Every backlog row carries ``why_eligible`` (motivation, not just label)."""
     state = status_module.PipelineStatusState()
-    state.set_backlog([
-        {"kind": "issue", "number": 7,
-         "why_eligible": "labeled ~workflow:nova in last 5m"},
-    ])
+    state.set_backlog(
+        [
+            {
+                "kind": "issue",
+                "number": 7,
+                "why_eligible": "labeled ~workflow:nova in last 5m",
+            },
+        ]
+    )
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/pipeline-status/backlog", headers=_AUTH_HEADERS,
+            "/v1/pipeline-status/backlog",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert "why_eligible" in body["backlog"][0]
@@ -119,16 +143,16 @@ async def test_backlog_explains_why_eligible(status_module):
 async def test_recent_returns_chronological_events(status_module):
     """``/recent`` is sorted newest-first."""
     state = status_module.PipelineStatusState()
-    state.record_event(event_type="merged", summary="PR #346 merged",
-                       ts=1716830000.0)
-    state.record_event(event_type="started", summary="PR #346 review started",
-                       ts=1716829000.0)
-    state.record_event(event_type="merged", summary="PR #343 merged",
-                       ts=1716828000.0)
+    state.record_event(event_type="merged", summary="PR #346 merged", ts=1716830000.0)
+    state.record_event(
+        event_type="started", summary="PR #346 review started", ts=1716829000.0
+    )
+    state.record_event(event_type="merged", summary="PR #343 merged", ts=1716828000.0)
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/pipeline-status/recent", headers=_AUTH_HEADERS,
+            "/v1/pipeline-status/recent",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     events = body["events"]
@@ -143,7 +167,8 @@ async def test_recent_truncates_old_events(status_module):
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/pipeline-status/recent", headers=_AUTH_HEADERS,
+            "/v1/pipeline-status/recent",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     # Only the latest 3 survive — sorted newest-first.
@@ -158,7 +183,8 @@ async def test_recent_respects_limit_query(status_module):
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/pipeline-status/recent?limit=2", headers=_AUTH_HEADERS,
+            "/v1/pipeline-status/recent?limit=2",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert len(body["events"]) == 2
@@ -167,14 +193,17 @@ async def test_recent_respects_limit_query(status_module):
 async def test_ledger_returns_snapshot(status_module):
     """``/ledger`` mirrors the structure the monitor published."""
     state = status_module.PipelineStatusState()
-    state.set_ledger_snapshot({
-        "issue:345": {"stage": "implement", "task_id": "abc", "attempt": 2},
-        "pr:346": {"stage": "pr_review", "task_id": "xyz", "attempt": 1},
-    })
+    state.set_ledger_snapshot(
+        {
+            "issue:345": {"stage": "implement", "task_id": "abc", "attempt": 2},
+            "pr:346": {"stage": "pr_review", "task_id": "xyz", "attempt": 1},
+        }
+    )
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/pipeline-status/ledger", headers=_AUTH_HEADERS,
+            "/v1/pipeline-status/ledger",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert resp.status == 200
@@ -185,14 +214,21 @@ async def test_ledger_returns_snapshot(status_module):
 async def test_reaper_preview_lists_planned_actions(status_module):
     """``/reaper-preview`` returns the next-tick planned reaper work."""
     state = status_module.PipelineStatusState()
-    state.set_reaper_preview([
-        {"kind": "issue", "number": 999, "age": 7200,
-         "action_planned": "clear stale ~by:default lock"},
-    ])
+    state.set_reaper_preview(
+        [
+            {
+                "kind": "issue",
+                "number": 999,
+                "age": 7200,
+                "action_planned": "clear stale ~by:default lock",
+            },
+        ]
+    )
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/pipeline-status/reaper-preview", headers=_AUTH_HEADERS,
+            "/v1/pipeline-status/reaper-preview",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert len(body["actions"]) == 1
@@ -207,7 +243,8 @@ async def test_force_tick_triggers_immediate_run(status_module):
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/pipeline/force-tick", headers=_AUTH_HEADERS,
+            "/v1/pipeline/force-tick",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert resp.status == 200
@@ -222,7 +259,8 @@ async def test_force_tick_returns_409_without_callback(status_module):
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/pipeline/force-tick", headers=_AUTH_HEADERS,
+            "/v1/pipeline/force-tick",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert resp.status == 409
@@ -269,7 +307,8 @@ async def test_force_tick_swallows_callback_exception(status_module):
     app = status_module.build_app(auth_token="test-token", state=state)
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/pipeline/force-tick", headers=_AUTH_HEADERS,
+            "/v1/pipeline/force-tick",
+            headers=_AUTH_HEADERS,
         )
     assert resp.status == 409
 

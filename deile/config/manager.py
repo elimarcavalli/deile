@@ -16,14 +16,17 @@ except ImportError:
     # Fallback if exceptions module doesn't exist
     class ValidationError(Exception):
         pass
+
     class DEILEError(Exception):
         pass
+
 
 logger = logging.getLogger(__name__)
 
 
 class FunctionCallingMode(Enum):
     """Modos de function calling"""
+
     AUTO = "AUTO"
     ANY = "ANY"
     NONE = "NONE"
@@ -32,76 +35,80 @@ class FunctionCallingMode(Enum):
 @dataclass
 class GeminiConfig:
     """Configurações específicas do modelo Gemini"""
+
     model_name: str = "gemini-2.5-flash-lite"
-    
+
     # Tool configuration
-    tool_config: Dict[str, Any] = field(default_factory=lambda: {
-        "function_calling_config": {
-            "mode": "AUTO"
-        }
-    })
-    
+    tool_config: Dict[str, Any] = field(
+        default_factory=lambda: {"function_calling_config": {"mode": "AUTO"}}
+    )
+
     # Generation configuration
-    generation_config: Dict[str, Any] = field(default_factory=lambda: {
-        "temperature": 0.1,
-        "top_k": 32,
-        "top_p": 0.9,
-        "max_output_tokens": 16384,
-        "candidate_count": 1,
-        "stop_sequences": []
-    })
-    
-    # Safety settings
-    safety_settings: List[Dict[str, Any]] = field(default_factory=lambda: [
-        {
-            "category": "HARM_CATEGORY_HARASSMENT",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-            "category": "HARM_CATEGORY_HATE_SPEECH", 
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+    generation_config: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "temperature": 0.1,
+            "top_k": 32,
+            "top_p": 0.9,
+            "max_output_tokens": 16384,
+            "candidate_count": 1,
+            "stop_sequences": [],
         }
-    ])
-    
+    )
+
+    # Safety settings
+    safety_settings: List[Dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+            },
+        ]
+    )
+
     def validate(self) -> List[str]:
         """Valida configurações do Gemini"""
         errors = []
-        
+
         # Valida temperature
         temp = self.generation_config.get("temperature", 0)
         if not (0 <= temp <= 2):
             errors.append("Temperature deve estar entre 0 e 2")
-        
+
         # Valida max_output_tokens
         max_tokens = self.generation_config.get("max_output_tokens", 0)
         if max_tokens > 65536 or max_tokens <= 0:
             errors.append("max_output_tokens deve estar entre 1 e 65536")
-        
+
         # Valida top_k
         top_k = self.generation_config.get("top_k", 1)
         if top_k <= 0 or top_k > 100:
             errors.append("top_k deve estar entre 1 e 100")
-        
+
         # Valida function calling mode
         mode = self.tool_config.get("function_calling_config", {}).get("mode", "AUTO")
         valid_modes = [m.value for m in FunctionCallingMode]
         if mode not in valid_modes:
             errors.append(f"Function calling mode deve ser um de: {valid_modes}")
-        
+
         return errors
 
 
 @dataclass
 class SystemConfig:
     """Configurações do sistema"""
+
     debug_mode: bool = False
     log_level: str = "INFO"
     log_requests: bool = False
@@ -113,6 +120,7 @@ class SystemConfig:
 @dataclass
 class UIConfig:
     """Configurações da interface do usuário"""
+
     theme: str = "default"
     show_timestamps: bool = True
     auto_complete: bool = True
@@ -123,6 +131,7 @@ class UIConfig:
 @dataclass
 class AgentConfig:
     """Configurações do agente"""
+
     max_context_tokens: int = 8000
     context_optimization: bool = True
     auto_discover_tools: bool = True
@@ -133,6 +142,7 @@ class AgentConfig:
 @dataclass
 class CommandConfig:
     """Configuração de um comando slash"""
+
     name: str
     description: str
     prompt_template: Optional[str] = None
@@ -144,34 +154,37 @@ class CommandConfig:
 @dataclass
 class DeileConfig:
     """Configuração completa do DEILE"""
-    default_model: Optional[str] = None  # e.g. "deepseek:deepseek-v4-pro"; None = routing automático
+
+    default_model: Optional[str] = (
+        None  # e.g. "deepseek:deepseek-v4-pro"; None = routing automático
+    )
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     commands: Dict[str, CommandConfig] = field(default_factory=dict)
-    
+
     def validate(self) -> List[str]:
         """Valida toda a configuração"""
         errors = []
-        
+
         # Valida configuração do Gemini
         errors.extend(self.gemini.validate())
-        
+
         # Valida configurações do sistema
         if self.system.session_timeout <= 0:
             errors.append("session_timeout deve ser positivo")
-        
+
         # Valida configurações do agente
         if self.agent.max_context_tokens <= 0:
             errors.append("max_context_tokens deve ser positivo")
-        
+
         return errors
 
 
 class ConfigManager:
     """Gerenciador central de configurações"""
-    
+
     def __init__(self, config_dir: Union[str, Path] = None):
         if config_dir is None:
             # Package-relative: yamls bundled with the source tree.
@@ -187,7 +200,7 @@ class ConfigManager:
             "api_config": self.config_dir / "api_config.yaml",
             "system_config": self.config_dir / "system_config.yaml",
             "commands": self.config_dir / "commands.yaml",
-            "persona_config": self.config_dir / "persona_config.yaml"
+            "persona_config": self.config_dir / "persona_config.yaml",
         }
 
         # Persona configuration support
@@ -197,34 +210,34 @@ class ConfigManager:
         # Hot-reload observer for unified configuration
         self._observer: Optional[object] = None  # Will be watchdog Observer
         self.logger = logger
-    
+
     def get_config(self) -> DeileConfig:
         """Obtém configuração atual (carrega se necessário)"""
         if self._config is None:
             self._config = self.load_config()
         return self._config
-    
+
     def load_config(self) -> DeileConfig:
         """Carrega configurações de arquivos YAML"""
         try:
             # Carrega configuração da API
             api_config = self._load_yaml("api_config")
-            
+
             # Carrega configuração do sistema
             system_config = self._load_yaml("system_config")
-            
+
             # Carrega comandos
             commands_config = self._load_yaml("commands")
-            
+
             # Constrói configuração completa
             config = DeileConfig()
-            
+
             # Aplica configurações da API
             if api_config:
                 config.default_model = api_config.get("default_model")
                 if "gemini" in api_config:
                     config.gemini = GeminiConfig(**api_config["gemini"])
-            
+
             # Aplica configurações do sistema
             if system_config:
                 if "system" in system_config:
@@ -233,33 +246,30 @@ class ConfigManager:
                     config.ui = UIConfig(**system_config["ui"])
                 if "agent" in system_config:
                     config.agent = AgentConfig(**system_config["agent"])
-            
+
             # Aplica comandos
             if commands_config and "commands" in commands_config:
                 for cmd_name, cmd_data in commands_config["commands"].items():
-                    config.commands[cmd_name] = CommandConfig(
-                        name=cmd_name,
-                        **cmd_data
-                    )
-            
+                    config.commands[cmd_name] = CommandConfig(name=cmd_name, **cmd_data)
+
             # Valida configuração
             errors = config.validate()
             if errors:
                 logger.warning(f"Configuration validation errors: {errors}")
-            
+
             logger.info("Configuration loaded successfully")
             return config
-            
+
         except Exception as e:
             logger.error(f"Error loading configuration: {e}")
             logger.info("Using default configuration")
             return self._create_default_config()
-    
+
     def save_config(self, config: Optional[DeileConfig] = None) -> bool:
         """Salva configurações em arquivos YAML"""
         if config is None:
             config = self.get_config()
-        
+
         try:
             # Salva configuração da API
             api_data = {
@@ -268,11 +278,11 @@ class ConfigManager:
                     "model_name": config.gemini.model_name,
                     "tool_config": config.gemini.tool_config,
                     "generation_config": config.gemini.generation_config,
-                    "safety_settings": config.gemini.safety_settings
-                }
+                    "safety_settings": config.gemini.safety_settings,
+                },
             }
             self._save_yaml("api_config", api_data)
-            
+
             # Salva configuração do sistema
             system_data = {
                 "system": {
@@ -281,46 +291,44 @@ class ConfigManager:
                     "log_requests": config.system.log_requests,
                     "log_responses": config.system.log_responses,
                     "session_timeout": config.system.session_timeout,
-                    "auto_save_sessions": config.system.auto_save_sessions
+                    "auto_save_sessions": config.system.auto_save_sessions,
                 },
                 "ui": {
                     "theme": config.ui.theme,
                     "show_timestamps": config.ui.show_timestamps,
                     "auto_complete": config.ui.auto_complete,
                     "emoji_support": config.ui.emoji_support,
-                    "rich_formatting": config.ui.rich_formatting
+                    "rich_formatting": config.ui.rich_formatting,
                 },
                 "agent": {
                     "max_context_tokens": config.agent.max_context_tokens,
                     "context_optimization": config.agent.context_optimization,
                     "auto_discover_tools": config.agent.auto_discover_tools,
                     "auto_discover_parsers": config.agent.auto_discover_parsers,
-                    "rag_enabled": config.agent.rag_enabled
-                }
+                    "rag_enabled": config.agent.rag_enabled,
+                },
             }
             self._save_yaml("system_config", system_data)
-            
+
             # Salva comandos
-            commands_data = {
-                "commands": {}
-            }
+            commands_data = {"commands": {}}
             for cmd_name, cmd_config in config.commands.items():
                 commands_data["commands"][cmd_name] = {
                     "description": cmd_config.description,
                     "prompt_template": cmd_config.prompt_template,
                     "action": cmd_config.action,
                     "aliases": cmd_config.aliases,
-                    "enabled": cmd_config.enabled
+                    "enabled": cmd_config.enabled,
                 }
             self._save_yaml("commands", commands_data)
-            
+
             logger.info("Configuration saved successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error saving configuration: {e}")
             return False
-    
+
     def update_debug_mode(self, enabled: bool) -> None:
         """Atualiza modo debug e salva configuração"""
         config = self.get_config()
@@ -328,134 +336,134 @@ class ConfigManager:
         config.system.log_requests = enabled
         config.system.log_responses = enabled
         config.system.log_level = "DEBUG" if enabled else "INFO"
-        
+
         self.save_config(config)
         self._config = config  # Atualiza cache
-        
+
         logger.info(f"Debug mode {'enabled' if enabled else 'disabled'}")
-    
+
     def update_gemini_config(self, **kwargs) -> None:
         """Atualiza configuração do Gemini"""
         config = self.get_config()
-        
+
         # Atualiza generation_config
         if "generation_config" in kwargs:
             config.gemini.generation_config.update(kwargs["generation_config"])
-        
+
         # Atualiza tool_config
         if "tool_config" in kwargs:
             config.gemini.tool_config.update(kwargs["tool_config"])
-        
+
         # Atualiza outras configurações
         for key, value in kwargs.items():
             if hasattr(config.gemini, key):
                 setattr(config.gemini, key, value)
-        
+
         self.save_config(config)
         self._config = config
-    
+
     def reload_config(self) -> None:
         """Recarrega configuração dos arquivos"""
         self._config = None
         self.get_config()
-    
+
     def create_default_configs(self) -> None:
         """Cria arquivos de configuração padrão apenas se não existem."""
         if self._config_files["api_config"].exists():
             return
         logger.info("Creating default config files (first run)")
         self.save_config(self._create_default_config())
-    
+
     def _load_yaml(self, config_name: str) -> Optional[Dict[str, Any]]:
         """Carrega arquivo YAML específico"""
         file_path = self._config_files.get(config_name)
         if not file_path or not file_path.exists():
             return None
-        
+
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f)
         except Exception as e:
             logger.error(f"Error loading {config_name}: {e}")
             return None
-    
+
     def _save_yaml(self, config_name: str, data: Dict[str, Any]) -> None:
         """Salva dados em arquivo YAML"""
         file_path = self._config_files.get(config_name)
         if not file_path:
             return
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
+
+        with open(file_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, allow_unicode=True, indent=2)
-    
+
     def _create_default_config(self) -> DeileConfig:
         """Cria configuração padrão"""
         config = DeileConfig()
-        
+
         # Comandos padrão
         default_commands = {
             "help": CommandConfig(
                 name="help",
                 description="Lista comandos disponíveis e exemplos de uso",
-                action="show_help"
+                action="show_help",
             ),
             "exit": CommandConfig(
                 name="exit",
                 description="Sair do DEILE Agent",
                 action="exit_application",
-                aliases=["quit", "bye"]
+                aliases=["quit", "bye"],
             ),
             "status": CommandConfig(
-                name="status", 
+                name="status",
                 description="Mostra versão, modelo ativo, conectividade e diagnóstico",
                 action="show_system_status",
-                aliases=["info"]
+                aliases=["info"],
             ),
             "clear": CommandConfig(
                 name="clear",
                 description="Limpar histórico da conversa e tela",
                 action="clear_session",
-                aliases=["cls", "clean"]
+                aliases=["cls", "clean"],
             ),
             "bash": CommandConfig(
                 name="bash",
                 description="Executar comando bash no sistema",
                 prompt_template="Execute o seguinte comando bash de forma segura: {args}. Mostre o resultado da execução incluindo stdout, stderr e código de saída. Se houver erro, explique o que pode ter causado.",
                 action="execute_bash",
-                aliases=["sh", "cmd", "run", "$"]
+                aliases=["sh", "cmd", "run", "$"],
             ),
             "debug": CommandConfig(
                 name="debug",
                 description="Toggle do modo debug (logs detalhados + request/response files)",
                 action="toggle_debug_mode",
-                aliases=["dbg", "verbose"]
+                aliases=["dbg", "verbose"],
             ),
             "config": CommandConfig(
                 name="config",
                 description="Mostrar configurações atuais do sistema",
                 action="show_config",
-                aliases=["settings", "cfg"]
-            )
+                aliases=["settings", "cfg"],
+            ),
         }
-        
+
         config.commands = default_commands
         return config
-    
+
     def get_command_config(self, command_name: str) -> Optional[CommandConfig]:
         """Obtém configuração de um comando específico"""
         config = self.get_config()
-        
+
         # Busca por nome direto
         if command_name in config.commands:
             return config.commands[command_name]
-        
+
         # Busca por alias
         for cmd_config in config.commands.values():
             if command_name in cmd_config.aliases:
                 return cmd_config
-        
+
         return None
-    
+
     def get_enabled_commands(self) -> List[CommandConfig]:
         """Retorna lista de comandos habilitados"""
         config = self.get_config()
@@ -472,15 +480,17 @@ class ConfigManager:
             await self._create_default_persona_config(persona_config_file)
 
         try:
-            with open(persona_config_file, 'r', encoding='utf-8') as f:
+            with open(persona_config_file, "r", encoding="utf-8") as f:
                 persona_config = yaml.safe_load(f) or {}
 
             # Validate persona configuration
             await self._validate_persona_config(persona_config)
 
             self._persona_config_cache = persona_config
-            self.logger.debug(f"Loaded persona configuration from {persona_config_file}")
-            return persona_config.get('personas', {})
+            self.logger.debug(
+                f"Loaded persona configuration from {persona_config_file}"
+            )
+            return persona_config.get("personas", {})
 
         except Exception as e:
             self.logger.error(f"Failed to load persona configuration: {e}")
@@ -489,79 +499,96 @@ class ConfigManager:
     async def _create_default_persona_config(self, config_file: Path) -> None:
         """Create default persona configuration file"""
         default_config = {
-            'personas': {
-                'enabled': True,
-                'default_persona': 'developer',
-                'hot_reload': True,
-                'personas_directory': 'deile/personas/instructions',
-                'persona_configs': {
-                    'developer': {
-                        'capabilities': [
-                            'code_generation', 'debugging', 'code_analysis',
-                            'file_operations', 'git_operations'
+            "personas": {
+                "enabled": True,
+                "default_persona": "developer",
+                "hot_reload": True,
+                "personas_directory": "deile/personas/instructions",
+                "persona_configs": {
+                    "developer": {
+                        "capabilities": [
+                            "code_generation",
+                            "debugging",
+                            "code_analysis",
+                            "file_operations",
+                            "git_operations",
                         ],
-                        'communication_style': 'technical',
-                        'model_preferences': {
-                            'temperature': 0.3,
-                            'max_tokens': 6000,
-                            'top_p': 0.9
+                        "communication_style": "technical",
+                        "model_preferences": {
+                            "temperature": 0.3,
+                            "max_tokens": 6000,
+                            "top_p": 0.9,
                         },
-                        'behavior_settings': {
-                            'verbosity_level': 'detailed',
-                            'code_explanation': True,
-                            'suggest_improvements': True
+                        "behavior_settings": {
+                            "verbosity_level": "detailed",
+                            "code_explanation": True,
+                            "suggest_improvements": True,
                         },
-                        'tool_preferences': {
-                            'preferred_tools': ['file_tools', 'bash_tool'],
-                            'avoid_tools': [],
-                            'tool_timeout': 30
-                        }
+                        "tool_preferences": {
+                            "preferred_tools": ["file_tools", "bash_tool"],
+                            "avoid_tools": [],
+                            "tool_timeout": 30,
+                        },
                     },
-                    'architect': {
-                        'capabilities': [
-                            'system_design', 'architecture_analysis', 'documentation',
-                            'code_review', 'performance_optimization'
+                    "architect": {
+                        "capabilities": [
+                            "system_design",
+                            "architecture_analysis",
+                            "documentation",
+                            "code_review",
+                            "performance_optimization",
                         ],
-                        'communication_style': 'strategic',
-                        'model_preferences': {
-                            'temperature': 0.5,
-                            'max_tokens': 8000,
-                            'top_p': 0.95
+                        "communication_style": "strategic",
+                        "model_preferences": {
+                            "temperature": 0.5,
+                            "max_tokens": 8000,
+                            "top_p": 0.95,
                         },
-                        'behavior_settings': {
-                            'verbosity_level': 'comprehensive',
-                            'focus_on_patterns': True,
-                            'include_trade_offs': True
+                        "behavior_settings": {
+                            "verbosity_level": "comprehensive",
+                            "focus_on_patterns": True,
+                            "include_trade_offs": True,
                         },
-                        'tool_preferences': {
-                            'preferred_tools': ['search_tool', 'file_tools', 'analysis_tools'],
-                            'avoid_tools': ['bash_tool'],
-                            'tool_timeout': 60
-                        }
+                        "tool_preferences": {
+                            "preferred_tools": [
+                                "search_tool",
+                                "file_tools",
+                                "analysis_tools",
+                            ],
+                            "avoid_tools": ["bash_tool"],
+                            "tool_timeout": 60,
+                        },
                     },
-                    'debugger': {
-                        'capabilities': [
-                            'debugging', 'error_analysis', 'performance_analysis',
-                            'log_analysis', 'troubleshooting'
+                    "debugger": {
+                        "capabilities": [
+                            "debugging",
+                            "error_analysis",
+                            "performance_analysis",
+                            "log_analysis",
+                            "troubleshooting",
                         ],
-                        'communication_style': 'analytical',
-                        'model_preferences': {
-                            'temperature': 0.2,
-                            'max_tokens': 5000,
-                            'top_p': 0.8
+                        "communication_style": "analytical",
+                        "model_preferences": {
+                            "temperature": 0.2,
+                            "max_tokens": 5000,
+                            "top_p": 0.8,
                         },
-                        'behavior_settings': {
-                            'verbosity_level': 'focused',
-                            'step_by_step': True,
-                            'ask_clarifying_questions': True
+                        "behavior_settings": {
+                            "verbosity_level": "focused",
+                            "step_by_step": True,
+                            "ask_clarifying_questions": True,
                         },
-                        'tool_preferences': {
-                            'preferred_tools': ['search_tool', 'file_tools', 'analysis_tools'],
-                            'avoid_tools': [],
-                            'tool_timeout': 45
-                        }
-                    }
-                }
+                        "tool_preferences": {
+                            "preferred_tools": [
+                                "search_tool",
+                                "file_tools",
+                                "analysis_tools",
+                            ],
+                            "avoid_tools": [],
+                            "tool_timeout": 45,
+                        },
+                    },
+                },
             }
         }
 
@@ -569,7 +596,7 @@ class ConfigManager:
         config_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Write default configuration
-        with open(config_file, 'w', encoding='utf-8') as f:
+        with open(config_file, "w", encoding="utf-8") as f:
             yaml.dump(default_config, f, default_flow_style=False, indent=2)
 
         self.logger.info(f"Created default persona configuration at {config_file}")
@@ -579,51 +606,61 @@ class ConfigManager:
         if not isinstance(config, dict):
             raise ValidationError("Configuration must be a dictionary")
 
-        if 'personas' not in config:
+        if "personas" not in config:
             # Empty config is allowed, will create default
             return
 
-        personas_config = config['personas']
+        personas_config = config["personas"]
         if not isinstance(personas_config, dict):
             raise ValidationError("personas configuration must be a dictionary")
 
         # Validate persona configs
-        if 'persona_configs' in personas_config:
-            await self._validate_persona_configs(personas_config['persona_configs'])
+        if "persona_configs" in personas_config:
+            await self._validate_persona_configs(personas_config["persona_configs"])
 
     async def _validate_persona_configs(self, persona_configs: Dict[str, Any]) -> None:
         """Validate individual persona configurations"""
         for persona_id, persona_config in persona_configs.items():
             if not isinstance(persona_config, dict):
-                raise ValidationError(f"Persona {persona_id} configuration must be a dictionary")
+                raise ValidationError(
+                    f"Persona {persona_id} configuration must be a dictionary"
+                )
 
             # Validate required persona fields
-            required_fields = ['capabilities', 'communication_style']
+            required_fields = ["capabilities", "communication_style"]
             for required_field in required_fields:
                 if required_field not in persona_config:
-                    self.logger.warning(f"Persona {persona_id} missing recommended field: {required_field}")
+                    self.logger.warning(
+                        f"Persona {persona_id} missing recommended field: {required_field}"
+                    )
 
             # Validate capabilities
-            if 'capabilities' in persona_config:
-                capabilities = persona_config['capabilities']
+            if "capabilities" in persona_config:
+                capabilities = persona_config["capabilities"]
                 if not isinstance(capabilities, list):
-                    raise ValidationError(f"Persona {persona_id} capabilities must be a list")
+                    raise ValidationError(
+                        f"Persona {persona_id} capabilities must be a list"
+                    )
 
     async def get_persona_config(self, persona_id: str) -> Dict[str, Any]:
         """Get configuration for specific persona"""
         try:
-            persona_configs = await self._get_config_value('personas.persona_configs', {})
+            persona_configs = await self._get_config_value(
+                "personas.persona_configs", {}
+            )
             return persona_configs.get(persona_id, {})
         except Exception as e:
             self.logger.error(f"Error getting persona config for {persona_id}: {e}")
             return {}
 
-    async def _get_config_value(self, config_path: str, default_value: Any = None) -> Any:
+    async def _get_config_value(
+        self, config_path: str, default_value: Any = None
+    ) -> Any:
         """Get nested configuration value by dot notation path"""
         if not self._persona_config_cache:
             await self.load_persona_configuration()
 
-        keys = config_path.split('.')
+        keys = config_path.split(".")
         value = self._persona_config_cache
 
         try:
@@ -637,9 +674,7 @@ class ConfigManager:
             return default_value
 
     async def update_persona_config(
-        self,
-        persona_id: str,
-        config_updates: Dict[str, Any]
+        self, persona_id: str, config_updates: Dict[str, Any]
     ) -> None:
         """Update persona configuration with unified validation and persistence"""
         try:
@@ -653,7 +688,9 @@ class ConfigManager:
             await self._validate_persona_configs({persona_id: updated_config})
 
             # Update in memory
-            await self._update_config_value(f'personas.persona_configs.{persona_id}', updated_config)
+            await self._update_config_value(
+                f"personas.persona_configs.{persona_id}", updated_config
+            )
 
             # Persist to file
             await self._persist_persona_config_change(persona_id, updated_config)
@@ -664,12 +701,14 @@ class ConfigManager:
             self.logger.info(f"Updated configuration for persona {persona_id}")
 
         except Exception as e:
-            self.logger.error(f"Failed to update persona {persona_id} configuration: {e}")
+            self.logger.error(
+                f"Failed to update persona {persona_id} configuration: {e}"
+            )
             raise
 
     async def _update_config_value(self, config_path: str, new_value: Any) -> None:
         """Update nested configuration value by dot notation path"""
-        keys = config_path.split('.')
+        keys = config_path.split(".")
 
         # Ensure persona config cache exists
         if not self._persona_config_cache:
@@ -686,9 +725,7 @@ class ConfigManager:
         current[keys[-1]] = new_value
 
     async def _persist_persona_config_change(
-        self,
-        persona_id: str,
-        updated_config: Dict[str, Any]
+        self, persona_id: str, updated_config: Dict[str, Any]
     ) -> None:
         """Persist persona configuration change to file (I/O em worker thread)."""
         config_file = self._config_files["persona_config"]
@@ -705,51 +742,53 @@ class ConfigManager:
             raise
 
     async def add_persona(
-        self,
-        persona_id: str,
-        persona_config: Dict[str, Any]
+        self, persona_id: str, persona_config: Dict[str, Any]
     ) -> None:
         """Add new persona configuration"""
         # Validate new persona configuration
         await self._validate_persona_configs({persona_id: persona_config})
 
         # Add to in-memory configuration
-        personas_config = await self._get_config_value('personas.persona_configs', {})
+        personas_config = await self._get_config_value("personas.persona_configs", {})
         personas_config[persona_id] = persona_config
 
-        await self._update_config_value('personas.persona_configs', personas_config)
+        await self._update_config_value("personas.persona_configs", personas_config)
 
         # Persist to file
         await self._persist_persona_config_change(persona_id, persona_config)
 
         # Notify observers
-        await self._notify_persona_observers(persona_id, persona_config, event_type='added')
+        await self._notify_persona_observers(
+            persona_id, persona_config, event_type="added"
+        )
 
         self.logger.info(f"Added new persona: {persona_id}")
 
     async def remove_persona(self, persona_id: str) -> None:
         """Remove persona configuration"""
-        personas_config = await self._get_config_value('personas.persona_configs', {})
+        personas_config = await self._get_config_value("personas.persona_configs", {})
 
         if persona_id not in personas_config:
             raise ValidationError(f"Persona {persona_id} not found")
 
         # Remove from in-memory configuration
         del personas_config[persona_id]
-        await self._update_config_value('personas.persona_configs', personas_config)
+        await self._update_config_value("personas.persona_configs", personas_config)
 
         # Update file (I/O delegated to a worker thread).
         config_file = self._config_files["persona_config"]
         await asyncio.to_thread(_remove_persona_from_yaml, config_file, persona_id)
 
         # Notify observers
-        await self._notify_persona_observers(persona_id, {}, event_type='removed')
+        await self._notify_persona_observers(persona_id, {}, event_type="removed")
 
         self.logger.info(f"Removed persona: {persona_id}")
 
     # ========== OBSERVER PATTERN FOR PERSONA CHANGES ==========
 
-    def add_persona_observer(self, observer: Callable[[str, Dict[str, Any], str], None]) -> None:
+    def add_persona_observer(
+        self, observer: Callable[[str, Dict[str, Any], str], None]
+    ) -> None:
         """Add observer for persona configuration changes"""
         self._persona_observers.append(observer)
 
@@ -759,10 +798,7 @@ class ConfigManager:
             self._persona_observers.remove(observer)
 
     async def _notify_persona_observers(
-        self,
-        persona_id: str,
-        config: Dict[str, Any],
-        event_type: str = 'updated'
+        self, persona_id: str, config: Dict[str, Any], event_type: str = "updated"
     ) -> None:
         """Notify all persona observers of configuration changes"""
         for observer in self._persona_observers:
@@ -788,15 +824,15 @@ class ConfigManager:
         loop = asyncio.get_event_loop()
 
         class UnifiedConfigChangeHandler(FileSystemEventHandler):
-            def __init__(self, config_manager: 'ConfigManager', event_loop):
+            def __init__(self, config_manager: "ConfigManager", event_loop):
                 self.config_manager = config_manager
                 self._loop = event_loop
 
             def on_modified(self, event):
-                if event.src_path.endswith('.yaml') or event.src_path.endswith('.yml'):
+                if event.src_path.endswith(".yaml") or event.src_path.endswith(".yml"):
                     file_name = Path(event.src_path).name
 
-                    if file_name == 'persona_config.yaml':
+                    if file_name == "persona_config.yaml":
                         asyncio.run_coroutine_threadsafe(
                             self.config_manager._reload_persona_config(), self._loop
                         )
@@ -819,11 +855,10 @@ class ConfigManager:
             old_persona_config = self._persona_config_cache.copy()
             new_persona_config = await self.load_persona_configuration()
 
-            if new_persona_config != old_persona_config.get('personas', {}):
+            if new_persona_config != old_persona_config.get("personas", {}):
                 # Find changes and notify observers
                 await self._detect_and_notify_persona_changes(
-                    old_persona_config.get('personas', {}),
-                    new_persona_config
+                    old_persona_config.get("personas", {}), new_persona_config
                 )
 
                 self.logger.info("Persona configuration reloaded successfully")
@@ -832,29 +867,27 @@ class ConfigManager:
             self.logger.error(f"Failed to reload persona configuration: {e}")
 
     async def _detect_and_notify_persona_changes(
-        self,
-        old_config: Dict[str, Any],
-        new_config: Dict[str, Any]
+        self, old_config: Dict[str, Any], new_config: Dict[str, Any]
     ) -> None:
         """Detect changes in persona configuration and notify observers"""
-        old_personas = old_config.get('persona_configs', {})
-        new_personas = new_config.get('persona_configs', {})
+        old_personas = old_config.get("persona_configs", {})
+        new_personas = new_config.get("persona_configs", {})
 
         # Detect added personas
         for persona_id in set(new_personas.keys()) - set(old_personas.keys()):
             await self._notify_persona_observers(
-                persona_id, new_personas[persona_id], 'added'
+                persona_id, new_personas[persona_id], "added"
             )
 
         # Detect removed personas
         for persona_id in set(old_personas.keys()) - set(new_personas.keys()):
-            await self._notify_persona_observers(persona_id, {}, 'removed')
+            await self._notify_persona_observers(persona_id, {}, "removed")
 
         # Detect modified personas
         for persona_id in set(old_personas.keys()) & set(new_personas.keys()):
             if old_personas[persona_id] != new_personas[persona_id]:
                 await self._notify_persona_observers(
-                    persona_id, new_personas[persona_id], 'updated'
+                    persona_id, new_personas[persona_id], "updated"
                 )
 
     def stop_hot_reload(self) -> None:
@@ -871,26 +904,28 @@ class ConfigManager:
 # mutations (hot-reload, /persona add/remove) never block the event loop.
 # --------------------------------------------------------------------------
 
-def _update_persona_in_yaml(config_file: Path, persona_id: str,
-                            updated_config: Dict[str, Any]) -> None:
-    with open(config_file, 'r', encoding='utf-8') as f:
+
+def _update_persona_in_yaml(
+    config_file: Path, persona_id: str, updated_config: Dict[str, Any]
+) -> None:
+    with open(config_file, "r", encoding="utf-8") as f:
         file_config = yaml.safe_load(f) or {}
-    if 'personas' not in file_config:
-        file_config['personas'] = {'persona_configs': {}}
-    if 'persona_configs' not in file_config['personas']:
-        file_config['personas']['persona_configs'] = {}
-    file_config['personas']['persona_configs'][persona_id] = updated_config
-    with open(config_file, 'w', encoding='utf-8') as f:
+    if "personas" not in file_config:
+        file_config["personas"] = {"persona_configs": {}}
+    if "persona_configs" not in file_config["personas"]:
+        file_config["personas"]["persona_configs"] = {}
+    file_config["personas"]["persona_configs"][persona_id] = updated_config
+    with open(config_file, "w", encoding="utf-8") as f:
         yaml.dump(file_config, f, default_flow_style=False, indent=2)
 
 
 def _remove_persona_from_yaml(config_file: Path, persona_id: str) -> None:
-    with open(config_file, 'r', encoding='utf-8') as f:
+    with open(config_file, "r", encoding="utf-8") as f:
         file_config = yaml.safe_load(f) or {}
-    personas = file_config.get('personas', {}).get('persona_configs', {})
+    personas = file_config.get("personas", {}).get("persona_configs", {})
     if persona_id in personas:
         del personas[persona_id]
-        with open(config_file, 'w', encoding='utf-8') as f:
+        with open(config_file, "w", encoding="utf-8") as f:
             yaml.dump(file_config, f, default_flow_style=False, indent=2)
 
 

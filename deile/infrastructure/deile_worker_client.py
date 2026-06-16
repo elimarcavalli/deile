@@ -25,8 +25,7 @@ import re
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import (BaseModel, Field, ValidationError, ValidationInfo,
-                      field_validator)
+from pydantic import BaseModel, Field, ValidationError, ValidationInfo, field_validator
 
 from deile.core.exceptions import DEILEError
 from deile.infrastructure.circuit_breaker import CircuitBreaker
@@ -101,6 +100,7 @@ def reset_circuit_breaker() -> None:
     caminho de dispatch.
     """
     _CIRCUIT_BREAKER.reset()
+
 
 _DISPATCH_PATH = "/v1/dispatch"
 _PROGRESS_PATH = "/v1/progress/{task_id}"
@@ -312,6 +312,7 @@ class DispatchPayload(BaseModel):
         if not stripped:
             return None
         from deile.core.models.reasoning import is_valid_effort
+
         if not is_valid_effort(stripped):
             raise ValueError(
                 f"preferred_reasoning must be a known effort (got {stripped!r})"
@@ -513,9 +514,7 @@ def summarize_dispatch_response(data: Any) -> str:
             f"{len(files)} arquivo(s): " + ", ".join(str(f) for f in files[:5])
         )
     if ok is False:
-        return (
-            f"worker FALHOU: {str(data.get('summary') or data.get('error'))[:300]}"
-        )
+        return f"worker FALHOU: {str(data.get('summary') or data.get('error'))[:300]}"
     return (
         f"worker dispatch aceito (task_id={data.get('task_id')}); "
         "use wait_for_result=true para acompanhar."
@@ -689,7 +688,9 @@ class DeileWorkerClient:
         for attempt in range(1, max_attempts + 1):
             try:
                 data = await self._dispatch_once(
-                    body, wait=wait, endpoint_url=endpoint_url,
+                    body,
+                    wait=wait,
+                    endpoint_url=endpoint_url,
                 )
             except WorkerDispatchError as exc:
                 last_exc = exc
@@ -699,7 +700,10 @@ class DeileWorkerClient:
                 delay = self._backoff_delay(attempt - 1)
                 logger.warning(
                     "worker dispatch attempt %d/%d failed (%s); retrying in %.2fs",
-                    attempt, max_attempts, exc.error_code, delay,
+                    attempt,
+                    max_attempts,
+                    exc.error_code,
+                    delay,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -711,7 +715,8 @@ class DeileWorkerClient:
         # type checker happy and is defensive if max_attempts were ever 0.
         await _CIRCUIT_BREAKER.record_failure()
         raise last_exc or WorkerDispatchError(
-            "dispatch exhausted with no attempt", error_code="WORKER_ERROR",
+            "dispatch exhausted with no attempt",
+            error_code="WORKER_ERROR",
         )
 
     @staticmethod
@@ -721,7 +726,7 @@ class DeileWorkerClient:
         ``base * factor^retry_index`` mais jitter uniforme ``±jitter``;
         nunca negativo (issue #620 AC4).
         """
-        delay = _RETRY_BASE_S * (_RETRY_FACTOR ** retry_index)
+        delay = _RETRY_BASE_S * (_RETRY_FACTOR**retry_index)
         delay += random.uniform(-_RETRY_JITTER_S, _RETRY_JITTER_S)
         return max(0.0, delay)
 
@@ -773,6 +778,7 @@ class DeileWorkerClient:
         # in implementer.py. Falls open when opentelemetry-api is not installed.
         try:
             from opentelemetry import propagate as _propagate  # noqa: PLC0415
+
             _propagate.inject(headers)
         except ImportError:
             pass
@@ -935,8 +941,11 @@ class DeileWorkerClient:
         if resp.status_code in (401, 403):
             raise WorkerDispatchError(
                 f"worker auth/forbidden (status={resp.status_code}) at {path}",
-                error_code="WORKER_AUTH_ERROR" if resp.status_code == 401
-                else "WORKER_FORBIDDEN",
+                error_code=(
+                    "WORKER_AUTH_ERROR"
+                    if resp.status_code == 401
+                    else "WORKER_FORBIDDEN"
+                ),
             )
         if resp.status_code >= 500:
             raise WorkerDispatchError(

@@ -108,7 +108,8 @@ def _matches_file_content(
         except re.error as exc:
             logger.warning(
                 "skills: invalid file_content_pattern %r: %s — pattern skipped",
-                raw, exc,
+                raw,
+                exc,
             )
     if not compiled:
         return False
@@ -118,7 +119,9 @@ def _matches_file_content(
             continue
         resolved = _resolve_within(ref, project_root)
         if resolved is None:
-            logger.debug("skills: file_content trigger ignoring out-of-root reference %r", ref)
+            logger.debug(
+                "skills: file_content trigger ignoring out-of-root reference %r", ref
+            )
             continue
         key = str(resolved)
         if key in cache:
@@ -130,7 +133,8 @@ def _matches_file_content(
             except (OSError, IsADirectoryError) as exc:
                 logger.debug(
                     "skills: cannot read %s for file_content trigger (%s); skipped",
-                    resolved, exc,
+                    resolved,
+                    exc,
                 )
                 cache[key] = ""
                 continue
@@ -239,9 +243,9 @@ class SkillRouter:
             "regression: the user added these skills precisely so you would use "
             "them.",
             "",
-            "Concrete example: if the user asks _\"how should I handle X in "
-            "<topic>?\"_ and a skill named `<topic>` is listed below, your first "
-            "action MUST be `invoke_skill(name=\"<topic>\")` — even if you think "
+            'Concrete example: if the user asks _"how should I handle X in '
+            '<topic>?"_ and a skill named `<topic>` is listed below, your first '
+            'action MUST be `invoke_skill(name="<topic>")` — even if you think '
             "you already know the answer. Read the returned body, THEN answer.",
             "",
             "Catalog (`name` — description — _trigger hint_):",

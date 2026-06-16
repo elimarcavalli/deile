@@ -22,6 +22,7 @@ import deploy  # noqa: E402
 
 # ===== CreateNamespaceConfig defaults =======================================
 
+
 def test_create_namespace_config_defaults():
     cfg = deploy.CreateNamespaceConfig()
     # namespace vazio resolve para NS_DEFAULT via __post_init__
@@ -53,12 +54,17 @@ def test_create_namespace_config_custom():
 
 # ===== _parse_create_namespace_flags ========================================
 
+
 def test_parse_flags_basic():
     extra = [
-        "--namespace", "deile-test",
-        "--forge", "github",
-        "--repo", "org/repo",
-        "--anthropic-key", "sk-ant-123",
+        "--namespace",
+        "deile-test",
+        "--forge",
+        "github",
+        "--repo",
+        "org/repo",
+        "--anthropic-key",
+        "sk-ant-123",
     ]
     cfg = deploy._parse_create_namespace_flags(extra)
     assert cfg.namespace == "deile-test"
@@ -69,10 +75,14 @@ def test_parse_flags_basic():
 
 def test_parse_flags_all_llm_keys():
     extra = [
-        "--anthropic-key", "sk-ant",
-        "--openai-key", "sk-oai",
-        "--deepseek-key", "sk-ds",
-        "--google-key", "sk-goo",
+        "--anthropic-key",
+        "sk-ant",
+        "--openai-key",
+        "sk-oai",
+        "--deepseek-key",
+        "sk-ds",
+        "--google-key",
+        "sk-goo",
     ]
     cfg = deploy._parse_create_namespace_flags(extra)
     assert cfg.anthropic_key == "sk-ant"
@@ -90,9 +100,7 @@ def test_parse_flags_worker_replicas():
 
 
 def test_parse_flags_bool_flags():
-    cfg = deploy._parse_create_namespace_flags(
-        ["--enable-claude-worker", "--auto"]
-    )
+    cfg = deploy._parse_create_namespace_flags(["--enable-claude-worker", "--auto"])
     assert cfg.enable_claude_worker is True
     assert cfg.auto is True
 
@@ -125,14 +133,13 @@ def test_parse_flags_unknown_flag_warns_but_continues(capsys):
 
 def test_parse_flags_int_invalid_falls_back(capsys):
     """Flag --worker-replicas com valor não-inteiro emite aviso e ignora."""
-    cfg = deploy._parse_create_namespace_flags(
-        ["--worker-replicas", "abc"]
-    )
+    cfg = deploy._parse_create_namespace_flags(["--worker-replicas", "abc"])
     # Valor default (1) mantido
     assert cfg.worker_replicas == 1
 
 
 # ===== k8s_create_namespace (CLI entrypoint) ================================
+
 
 def test_k8s_create_namespace_registered_in_k8s_dict():
     """create-namespace deve estar no dict _K8S."""
@@ -148,19 +155,29 @@ def test_k8s_create_namespace_in_actions_list():
 
 def test_k8s_create_namespace_propagates_dry_run():
     """dry_run=True deve abortar antes de chamar kubectl."""
-    args = deploy.parse_args([
-        "--dry-run", "k8s", "create-namespace",
-        "--anthropic-key", "sk-ant-test",
-        "--discord-token", "Bot xxx",
-    ])
+    args = deploy.parse_args(
+        [
+            "--dry-run",
+            "k8s",
+            "create-namespace",
+            "--anthropic-key",
+            "sk-ant-test",
+            "--discord-token",
+            "Bot xxx",
+        ]
+    )
     args["extra"] = [
-        "--anthropic-key", "sk-ant-test",
-        "--discord-token", "Bot xxx",
+        "--anthropic-key",
+        "sk-ant-test",
+        "--discord-token",
+        "Bot xxx",
     ]
     # dry_run=True → announce_plan retorna False → retorna 0 sem chamar kubectl
-    with patch.object(deploy, "ensure_container_prereqs", return_value=True), \
-         patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"), \
-         patch.object(deploy, "cluster_reachable", return_value=True):
+    with (
+        patch.object(deploy, "ensure_container_prereqs", return_value=True),
+        patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"),
+        patch.object(deploy, "cluster_reachable", return_value=True),
+    ):
         rc = deploy.k8s_create_namespace(args)
     assert rc == 0  # dry-run: plano impresso, nada executado
 
@@ -171,10 +188,12 @@ def test_k8s_create_namespace_fails_without_llm_key(capsys):
     args["extra"] = ["--discord-token", "Bot xxx"]
     args["yes"] = True  # pula confirmações
 
-    with patch.object(deploy, "read_env", return_value={}), \
-         patch.object(deploy, "ensure_container_prereqs", return_value=True), \
-         patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"), \
-         patch.object(deploy, "cluster_reachable", return_value=True):
+    with (
+        patch.object(deploy, "read_env", return_value={}),
+        patch.object(deploy, "ensure_container_prereqs", return_value=True),
+        patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"),
+        patch.object(deploy, "cluster_reachable", return_value=True),
+    ):
         rc = deploy.k8s_create_namespace(args)
     assert rc == 1
     captured = capsys.readouterr()
@@ -187,10 +206,12 @@ def test_k8s_create_namespace_fails_without_discord_token(capsys):
     args["extra"] = ["--anthropic-key", "sk-ant-test"]
     args["yes"] = True
 
-    with patch.object(deploy, "read_env", return_value={}), \
-         patch.object(deploy, "ensure_container_prereqs", return_value=True), \
-         patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"), \
-         patch.object(deploy, "cluster_reachable", return_value=True):
+    with (
+        patch.object(deploy, "read_env", return_value={}),
+        patch.object(deploy, "ensure_container_prereqs", return_value=True),
+        patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"),
+        patch.object(deploy, "cluster_reachable", return_value=True),
+    ):
         rc = deploy.k8s_create_namespace(args)
     assert rc == 1
     captured = capsys.readouterr()
@@ -202,10 +223,12 @@ def test_k8s_create_namespace_global_namespace_propagated():
     args = deploy.parse_args(["--namespace", "deile-custom", "k8s", "create-namespace"])
     args["extra"] = []
     # Apenas verifica que o namespace é propagado; falha no early check de LLM está OK
-    with patch.object(deploy, "read_env", return_value={}), \
-         patch.object(deploy, "ensure_container_prereqs", return_value=True), \
-         patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"), \
-         patch.object(deploy, "cluster_reachable", return_value=True):
+    with (
+        patch.object(deploy, "read_env", return_value={}),
+        patch.object(deploy, "ensure_container_prereqs", return_value=True),
+        patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"),
+        patch.object(deploy, "cluster_reachable", return_value=True),
+    ):
         # A função vai falhar por falta de LLM — mas queremos testar que o namespace
         # foi propagado para o cfg antes disso.
         captured_cfg = []
@@ -223,6 +246,7 @@ def test_k8s_create_namespace_global_namespace_propagated():
 
 # ===== do_create_namespace via parse_args round-trip ========================
 
+
 def test_do_create_namespace_dry_run_returns_0():
     """do_create_namespace com dry_run=True deve retornar 0 sem efeitos."""
     cfg = deploy.CreateNamespaceConfig(
@@ -232,9 +256,11 @@ def test_do_create_namespace_dry_run_returns_0():
         dry_run=True,
         auto=True,
     )
-    with patch.object(deploy, "ensure_container_prereqs", return_value=True), \
-         patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"), \
-         patch.object(deploy, "cluster_reachable", return_value=True):
+    with (
+        patch.object(deploy, "ensure_container_prereqs", return_value=True),
+        patch.object(deploy, "_kubectl", return_value="/usr/bin/kubectl"),
+        patch.object(deploy, "cluster_reachable", return_value=True),
+    ):
         rc = deploy.do_create_namespace(cfg)
     assert rc == 0
 

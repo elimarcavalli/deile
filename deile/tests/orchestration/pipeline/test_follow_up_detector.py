@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile.orchestration.pipeline.follow_up_detector import (FollowUp,
-                                                             detect_follow_ups)
+from deile.orchestration.pipeline.follow_up_detector import FollowUp, detect_follow_ups
 
 
 class TestDetectFollowUps:

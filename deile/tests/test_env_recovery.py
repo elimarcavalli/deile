@@ -39,6 +39,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _import_deile_root():
     """Import deile.py (root script) via importlib and return the module."""
     root_script = Path(__file__).resolve().parent.parent.parent / "deile.py"
@@ -51,6 +52,7 @@ def _import_deile_root():
 # ---------------------------------------------------------------------------
 # Tests for _env_file_has_valid_key  (deile.py - root script)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 class TestEnvFileHasValidKey:
@@ -93,8 +95,7 @@ class TestEnvFileHasValidKey:
     def test_only_comments_returns_false(self, deile_mod, env_file):
         """Case 3: só comentários retorna False."""
         env_file.write_text(
-            "# DEILE configuration file\n"
-            "# another comment line\n",
+            "# DEILE configuration file\n" "# another comment line\n",
             encoding="utf-8",
         )
         assert deile_mod._env_file_has_valid_key() is False
@@ -107,16 +108,15 @@ class TestEnvFileHasValidKey:
     def test_key_with_valid_value_returns_true(self, deile_mod, env_file):
         """Case 5: chave com valor preenchido retorna True."""
         env_file.write_text(
-            "ANTHROPIC_API_KEY=sk-ant-12345\n", encoding="utf-8",
+            "ANTHROPIC_API_KEY=sk-ant-12345\n",
+            encoding="utf-8",
         )
         assert deile_mod._env_file_has_valid_key() is True
 
     def test_mixed_keys_with_valid_returns_true(self, deile_mod, env_file):
         """Case 6: várias chaves, uma com valor válido → True."""
         env_file.write_text(
-            "OPENAI_API_KEY=\n"
-            "DEEPSEEK_API_KEY=ds-secret-456\n"
-            "GOOGLE_API_KEY=\n",
+            "OPENAI_API_KEY=\n" "DEEPSEEK_API_KEY=ds-secret-456\n" "GOOGLE_API_KEY=\n",
             encoding="utf-8",
         )
         assert deile_mod._env_file_has_valid_key() is True
@@ -124,21 +124,24 @@ class TestEnvFileHasValidKey:
     def test_only_unrecognized_keys_returns_false(self, deile_mod, env_file):
         """Case 7: apenas chaves não reconhecidas → False."""
         env_file.write_text(
-            "MY_CUSTOM_KEY=abc\nSOME_OTHER=xyz\n", encoding="utf-8",
+            "MY_CUSTOM_KEY=abc\nSOME_OTHER=xyz\n",
+            encoding="utf-8",
         )
         assert deile_mod._env_file_has_valid_key() is False
 
     def test_spaces_around_key_name_returns_true(self, deile_mod, env_file):
         """Case 8: espaços extras no nome da chave (k.strip()) → True."""
         env_file.write_text(
-            "  ANTHROPIC_API_KEY  =  sk-ant-xyz  \n", encoding="utf-8",
+            "  ANTHROPIC_API_KEY  =  sk-ant-xyz  \n",
+            encoding="utf-8",
         )
         assert deile_mod._env_file_has_valid_key() is True
 
     def test_line_without_equals_returns_false(self, deile_mod, env_file):
         """Case 9: linha sem `=` é ignorada → False."""
         env_file.write_text(
-            "ANTHROPIC_API_KEY\n", encoding="utf-8",
+            "ANTHROPIC_API_KEY\n",
+            encoding="utf-8",
         )
         assert deile_mod._env_file_has_valid_key() is False
 
@@ -146,6 +149,7 @@ class TestEnvFileHasValidKey:
 # ---------------------------------------------------------------------------
 # Tests for _run_env_recovery  (deile/cli.py)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 class TestRunEnvRecovery:
@@ -180,8 +184,12 @@ class TestRunEnvRecovery:
         isolates os.environ mutations between test methods.
         """
         saved = dict(os.environ)
-        for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-                  "DEEPSEEK_API_KEY", "GOOGLE_API_KEY"):
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "GOOGLE_API_KEY",
+        ):
             os.environ.pop(k, None)
         yield
         os.environ.clear()
@@ -202,7 +210,10 @@ class TestRunEnvRecovery:
     @patch("getpass.getpass", side_effect=KeyboardInterrupt)
     @patch("builtins.print")
     def test_keyboard_interrupt_returns_false(
-        self, mock_print, mock_getpass, mock_isatty,
+        self,
+        mock_print,
+        mock_getpass,
+        mock_isatty,
     ):
         """Case 2: usuário cancela com KeyboardInterrupt → False."""
         from deile.cli import _run_env_recovery
@@ -215,7 +226,10 @@ class TestRunEnvRecovery:
     @patch("getpass.getpass", side_effect=EOFError)
     @patch("builtins.print")
     def test_eof_error_returns_false(
-        self, mock_print, mock_getpass, mock_isatty,
+        self,
+        mock_print,
+        mock_getpass,
+        mock_isatty,
     ):
         """Case 3: usuário cancela com EOFError → False."""
         from deile.cli import _run_env_recovery
@@ -229,7 +243,11 @@ class TestRunEnvRecovery:
     @patch("deile.cli.os.getenv", return_value="")
     @patch("builtins.print")
     def test_zero_keys_returns_false(
-        self, mock_print, mock_getenv, mock_getpass, mock_isatty,
+        self,
+        mock_print,
+        mock_getenv,
+        mock_getpass,
+        mock_isatty,
     ):
         """Case 4: todas as entradas vazias e sem env var → False."""
         from deile.cli import _run_env_recovery
@@ -243,7 +261,12 @@ class TestRunEnvRecovery:
     @patch("deile.cli.os.chmod")
     @patch("builtins.print")
     def test_one_key_writes_env_and_returns_true(
-        self, mock_print, mock_chmod, mock_find, mock_isatty, tmp_path,
+        self,
+        mock_print,
+        mock_chmod,
+        mock_find,
+        mock_isatty,
+        tmp_path,
     ):
         """Case 5: uma chave inserida → .env criado, load_dotenv, True."""
         import deile.cli as _cli
@@ -252,10 +275,10 @@ class TestRunEnvRecovery:
         with patch.object(_cli, "_PROJECT_ROOT", tmp_path):
             with patch("getpass.getpass") as gp:
                 gp.side_effect = [
-                    "sk-ant-secret123",   # ANTHROPIC_API_KEY ✓
-                    "",                    # OPENAI_API_KEY     (empty)
-                    "",                    # DEEPSEEK_API_KEY   (empty)
-                    "",                    # GOOGLE_API_KEY     (empty)
+                    "sk-ant-secret123",  # ANTHROPIC_API_KEY ✓
+                    "",  # OPENAI_API_KEY     (empty)
+                    "",  # DEEPSEEK_API_KEY   (empty)
+                    "",  # GOOGLE_API_KEY     (empty)
                 ]
                 with patch("dotenv.load_dotenv") as _:
                     result = _cli._run_env_recovery()
@@ -266,12 +289,15 @@ class TestRunEnvRecovery:
         assert "ANTHROPIC_API_KEY=sk-ant-secret123" in text
         # Empty-value keys must NOT appear in final file (filtered by `if v`)
         for line in text.splitlines():
-            assert not line.startswith("OPENAI_API_KEY="), \
-                f"OPENAI_API_KEY should not appear (empty value): {line!r}"
-            assert not line.startswith("DEEPSEEK_API_KEY="), \
-                f"DEEPSEEK_API_KEY should not appear (empty value): {line!r}"
-            assert not line.startswith("GOOGLE_API_KEY="), \
-                f"GOOGLE_API_KEY should not appear (empty value): {line!r}"
+            assert not line.startswith(
+                "OPENAI_API_KEY="
+            ), f"OPENAI_API_KEY should not appear (empty value): {line!r}"
+            assert not line.startswith(
+                "DEEPSEEK_API_KEY="
+            ), f"DEEPSEEK_API_KEY should not appear (empty value): {line!r}"
+            assert not line.startswith(
+                "GOOGLE_API_KEY="
+            ), f"GOOGLE_API_KEY should not appear (empty value): {line!r}"
 
     # -- 6. merge preserves DEILE_* vars --
 
@@ -280,7 +306,12 @@ class TestRunEnvRecovery:
     @patch("deile.cli.os.chmod")
     @patch("builtins.print")
     def test_merge_preserves_deile_vars(
-        self, mock_print, mock_chmod, mock_find, mock_isatty, tmp_path,
+        self,
+        mock_print,
+        mock_chmod,
+        mock_find,
+        mock_isatty,
+        tmp_path,
     ):
         """Case 6: .env existente com DEILE_* vars e chave antiga é mergeado."""
         import deile.cli as _cli
@@ -299,10 +330,10 @@ class TestRunEnvRecovery:
         with patch.object(_cli, "_PROJECT_ROOT", tmp_path):
             with patch("getpass.getpass") as gp:
                 gp.side_effect = [
-                    "sk-new-key",   # ANTHROPIC_API_KEY → new value
-                    "",              # OPENAI_API_KEY     (empty)
-                    "",              # DEEPSEEK_API_KEY   (empty)
-                    "g-new-key",     # GOOGLE_API_KEY     → new value
+                    "sk-new-key",  # ANTHROPIC_API_KEY → new value
+                    "",  # OPENAI_API_KEY     (empty)
+                    "",  # DEEPSEEK_API_KEY   (empty)
+                    "g-new-key",  # GOOGLE_API_KEY     → new value
                 ]
                 with patch("dotenv.load_dotenv") as _:
                     result = _cli._run_env_recovery()
@@ -325,7 +356,12 @@ class TestRunEnvRecovery:
     @patch("deile.cli.os.chmod")
     @patch("builtins.print")
     def test_preserves_current_env_value_on_empty_input(
-        self, mock_print, mock_chmod, mock_find, mock_isatty, tmp_path,
+        self,
+        mock_print,
+        mock_chmod,
+        mock_find,
+        mock_isatty,
+        tmp_path,
     ):
         """Case 7: entrada vazia + env var existente → valor preservado.
 
@@ -342,10 +378,10 @@ class TestRunEnvRecovery:
         with patch.object(_cli, "_PROJECT_ROOT", tmp_path):
             with patch("getpass.getpass") as gp:
                 gp.side_effect = [
-                    "",    # ANTHROPIC → empty → keep current
-                    "",    # OPENAI
-                    "",    # DEEPSEEK
-                    "",    # GOOGLE
+                    "",  # ANTHROPIC → empty → keep current
+                    "",  # OPENAI
+                    "",  # DEEPSEEK
+                    "",  # GOOGLE
                 ]
                 with patch("dotenv.load_dotenv") as _:
                     result = _cli._run_env_recovery()
@@ -362,7 +398,12 @@ class TestRunEnvRecovery:
     @patch("deile.cli.os.chmod")
     @patch("builtins.print")
     def test_fallback_sets_os_environ_when_dotenv_missing(
-        self, mock_print, mock_chmod, mock_find, mock_isatty, tmp_path,
+        self,
+        mock_print,
+        mock_chmod,
+        mock_find,
+        mock_isatty,
+        tmp_path,
     ):
         """Case 8: dotenv não disponível → fallback seta os.environ diretamente."""
         import deile.cli as _cli
@@ -394,7 +435,11 @@ class TestRunEnvRecovery:
     @patch("deile.cli.os.chmod")
     @patch("builtins.print")
     def test_custom_dotenv_path_is_used(
-        self, mock_print, mock_chmod, mock_isatty, tmp_path,
+        self,
+        mock_print,
+        mock_chmod,
+        mock_isatty,
+        tmp_path,
     ):
         """Case 9: _find_dotenv aponta path custom → .env escrito lá."""
         import deile.cli as _cli
@@ -414,7 +459,6 @@ class TestRunEnvRecovery:
                     result = _cli._run_env_recovery()
 
         assert result is True
-        assert custom_env.exists(), \
-            f".env should have been created at {custom_env}"
+        assert custom_env.exists(), f".env should have been created at {custom_env}"
         text = custom_env.read_text(encoding="utf-8")
         assert "ANTHROPIC_API_KEY=sk-custom-path-key" in text

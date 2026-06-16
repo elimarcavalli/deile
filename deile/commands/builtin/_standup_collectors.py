@@ -27,7 +27,9 @@ from typing import TYPE_CHECKING, Any, Dict, List
 
 from ...core.exceptions import CommandError
 from ._git_helpers import ensure_gh_authenticated  # noqa: F401 — re-exported
-from ._git_helpers import ensure_git_repo
+from ._git_helpers import (
+    ensure_git_repo,
+)
 
 if TYPE_CHECKING:
     from ...orchestration.pipeline.github_client import GitHubClient
@@ -56,7 +58,9 @@ def parse_since(duration: str) -> timedelta:
         raise CommandError("Duração vazia.")
     match = re.match(r"^\s*(\d+)([hdwHDW])\s*$", duration)
     if not match:
-        raise CommandError(f"Duração inválida: {duration}. Use formato como 24h, 3d, 1w.")
+        raise CommandError(
+            f"Duração inválida: {duration}. Use formato como 24h, 3d, 1w."
+        )
     val, unit = int(match.group(1)), match.group(2).lower()
     if val == 0:
         raise CommandError("Duração não pode ser zero.")
@@ -149,7 +153,9 @@ async def collect_prs(client: "GitHubClient", since_iso: str) -> List[Dict[str, 
     return await client.list_prs_updated_since(since_iso)
 
 
-async def collect_issues(client: "GitHubClient", since_iso: str) -> List[Dict[str, Any]]:
+async def collect_issues(
+    client: "GitHubClient", since_iso: str
+) -> List[Dict[str, Any]]:
     """Companion de :func:`collect_prs` para issues."""
     return await client.list_issues_updated_since(since_iso)
 
@@ -204,7 +210,9 @@ def build_prompt(data: StandupData) -> str:
     if not data.prs:
         prompt += "- (nenhuma)\n"
     for pr in data.prs:
-        prompt += f"- #{pr['number']} [{pr['state']}] por {pr['author']}: {pr['title']}\n"
+        prompt += (
+            f"- #{pr['number']} [{pr['state']}] por {pr['author']}: {pr['title']}\n"
+        )
 
     prompt += f"\nIssues ({len(data.issues)}):\n"
     if not data.issues:

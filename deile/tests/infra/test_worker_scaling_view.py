@@ -24,12 +24,14 @@ if str(_INFRA_K8S) not in sys.path:
 @pytest.fixture
 def view_demo():
     from _panel import WorkerScalingView
+
     return WorkerScalingView(data=None)
 
 
 @pytest.fixture
 def view_with_data():
     from _panel import WorkerScalingView
+
     data = MagicMock()
     data.context = MagicMock()
     data.context.namespace = "deile"
@@ -54,9 +56,10 @@ def _render(view, app) -> str:
 # Render — lista todos os workers do registro
 # --------------------------------------------------------------------------- #
 
+
 def test_render_lists_all_fleet_workers(view_demo, app_stub):
-    from deile.orchestration.pipeline.dispatch_resolver import \
-        get_valid_dispatchers
+    from deile.orchestration.pipeline.dispatch_resolver import get_valid_dispatchers
+
     out = _render(view_demo, app_stub)
     assert "WORKER SCALING" in out
     for dispatcher in get_valid_dispatchers():
@@ -72,6 +75,7 @@ def test_render_shows_desired_and_ready_columns(view_demo, app_stub):
 # Navegação
 # --------------------------------------------------------------------------- #
 
+
 def test_navigation_wraps(view_demo, app_stub):
     n = len(view_demo._worker_deployments())
     assert n >= 2
@@ -84,6 +88,7 @@ def test_navigation_wraps(view_demo, app_stub):
 
 def test_q_and_esc_return_to_dashboard(view_demo, app_stub):
     from _panel import Action
+
     for key in ("q", "ESC"):
         r = view_demo.handle_key(key, app_stub)
         assert r.kind == Action.NAV and r.target == "dashboard"
@@ -93,13 +98,16 @@ def test_q_and_esc_return_to_dashboard(view_demo, app_stub):
 # [+]/[-] aplicam scale via _scale_deployment
 # --------------------------------------------------------------------------- #
 
+
 def test_plus_increments_and_scales(view_with_data, app_stub):
     import _panel
+
     view_with_data.cursor = 0
     deploy = view_with_data._worker_deployments()[0]
-    with patch.object(_panel, "_read_deployment_replicas", return_value=2) as rd, \
-         patch.object(_panel, "_scale_deployment",
-                      return_value=(True, "ok")) as sc:
+    with (
+        patch.object(_panel, "_read_deployment_replicas", return_value=2) as rd,
+        patch.object(_panel, "_scale_deployment", return_value=(True, "ok")) as sc,
+    ):
         view_with_data.handle_key("+", app_stub)
     rd.assert_called_once()
     # target = 2 + 1 = 3 no deployment selecionado.
@@ -109,9 +117,12 @@ def test_plus_increments_and_scales(view_with_data, app_stub):
 
 def test_minus_clamps_at_zero(view_with_data, app_stub):
     import _panel
+
     view_with_data.cursor = 0
-    with patch.object(_panel, "_read_deployment_replicas", return_value=0), \
-         patch.object(_panel, "_scale_deployment") as sc:
+    with (
+        patch.object(_panel, "_read_deployment_replicas", return_value=0),
+        patch.object(_panel, "_scale_deployment") as sc,
+    ):
         view_with_data.handle_key("-", app_stub)
     # Já em 0 → não chama scale (clamp), mostra info.
     sc.assert_not_called()
@@ -122,6 +133,7 @@ def test_minus_clamps_at_zero(view_with_data, app_stub):
 # [enter] → prompt numérico de valor exato
 # --------------------------------------------------------------------------- #
 
+
 def test_enter_opens_numeric_prompt(view_with_data, app_stub):
     view_with_data.cursor = 0
     view_with_data.handle_key("\r", app_stub)
@@ -131,13 +143,13 @@ def test_enter_opens_numeric_prompt(view_with_data, app_stub):
 
 def test_prompt_digits_and_enter_applies(view_with_data, app_stub):
     import _panel
+
     view_with_data.cursor = 0
     deploy = view_with_data._worker_deployments()[0]
     view_with_data.handle_key("\r", app_stub)  # abre prompt
     view_with_data.handle_key("5", app_stub)
     assert view_with_data.mode[2] == ["5"]
-    with patch.object(_panel, "_scale_deployment",
-                      return_value=(True, "ok")) as sc:
+    with patch.object(_panel, "_scale_deployment", return_value=(True, "ok")) as sc:
         view_with_data.handle_key("\r", app_stub)
     sc.assert_called_once_with("deile", deploy, 5)
     assert view_with_data.mode is None  # prompt fechou
@@ -145,6 +157,7 @@ def test_prompt_digits_and_enter_applies(view_with_data, app_stub):
 
 def test_prompt_esc_cancels_without_scaling(view_with_data, app_stub):
     import _panel
+
     view_with_data.cursor = 0
     view_with_data.handle_key("\r", app_stub)
     with patch.object(_panel, "_scale_deployment") as sc:
@@ -155,13 +168,13 @@ def test_prompt_esc_cancels_without_scaling(view_with_data, app_stub):
 
 def test_prompt_clamps_to_max(view_with_data, app_stub):
     import _panel
+
     view_with_data.cursor = 0
     deploy = view_with_data._worker_deployments()[0]
     view_with_data.handle_key("\r", app_stub)
     view_with_data.handle_key("9", app_stub)
     view_with_data.handle_key("9", app_stub)  # buffer "99"
-    with patch.object(_panel, "_scale_deployment",
-                      return_value=(True, "ok")) as sc:
+    with patch.object(_panel, "_scale_deployment", return_value=(True, "ok")) as sc:
         view_with_data.handle_key("\r", app_stub)
     # 99 → clamp em _MAX_REPLICAS (20).
     sc.assert_called_once_with("deile", deploy, view_with_data._MAX_REPLICAS)
@@ -171,8 +184,10 @@ def test_prompt_clamps_to_max(view_with_data, app_stub):
 # Demo mode — nunca toca cluster
 # --------------------------------------------------------------------------- #
 
+
 def test_demo_mode_no_scale_call(view_demo, app_stub):
     import _panel
+
     view_demo.cursor = 0
     with patch.object(_panel, "_scale_deployment") as sc:
         view_demo.handle_key("+", app_stub)

@@ -10,8 +10,7 @@ from __future__ import annotations
 import pytest
 
 from deile.observability import dispatch_metrics as dm
-from deile.observability import (reset_dispatch_metrics,
-                                 reset_observability_config)
+from deile.observability import reset_dispatch_metrics, reset_observability_config
 
 # Os testes deste módulo instanciam um MeterProvider real do SDK OTel. O extra
 # ``[otel]`` é opcional (DEILE roda em no-op sem ele), então sem o SDK o módulo
@@ -72,6 +71,7 @@ def test_metrics_disabled_isolated(monkeypatch):
 
     # Traces/logs NÃO afetados: a config dos outros sinais segue habilitada.
     from deile.observability.config import get_observability_config
+
     config = get_observability_config()
     assert config.metrics_disabled is True
     assert config.logs_disabled is False

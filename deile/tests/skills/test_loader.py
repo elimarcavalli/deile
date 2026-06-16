@@ -15,8 +15,12 @@ from pathlib import Path
 import pytest
 
 from deile.skills.base import Skill
-from deile.skills.loader import (SkillLoader, SkillLoadError, normalize_name,
-                                 parse_skill_text)
+from deile.skills.loader import (
+    SkillLoader,
+    SkillLoadError,
+    normalize_name,
+    parse_skill_text,
+)
 
 
 @pytest.fixture
@@ -28,9 +32,11 @@ def capture_loader_warnings(monkeypatch: pytest.MonkeyPatch) -> list:
     silently clobber the capture.
     """
     from deile.skills import loader as loader_mod
+
     warns: list = []
     monkeypatch.setattr(
-        loader_mod.logger, "warning",
+        loader_mod.logger,
+        "warning",
         lambda msg, *a, **kw: warns.append(msg % a if a else msg),
     )
     return warns
@@ -90,13 +96,19 @@ body"""
             "---\nname: foo\ndescription: bar\n---\n", Path("x.md")
         )
         assert skill is None
-        assert any("empty body" in m for m in capture_loader_warnings), capture_loader_warnings
+        assert any(
+            "empty body" in m for m in capture_loader_warnings
+        ), capture_loader_warnings
 
-    def test_invalid_yaml_returns_none_with_warning(self, capture_loader_warnings) -> None:
+    def test_invalid_yaml_returns_none_with_warning(
+        self, capture_loader_warnings
+    ) -> None:
         bad = "---\nname: 'unclosed\n---\nbody"
         skill = parse_skill_text(bad, Path("x.md"))
         assert skill is None
-        assert any("invalid YAML" in m for m in capture_loader_warnings), capture_loader_warnings
+        assert any(
+            "invalid YAML" in m for m in capture_loader_warnings
+        ), capture_loader_warnings
 
     def test_non_string_name_falls_back_to_stem(
         self, caplog: pytest.LogCaptureFixture
@@ -206,7 +218,7 @@ body"""
 
     def test_priority_string_numeric_still_works(self) -> None:
         # A string that parses as int is OK — YAML quoting habits vary.
-        text = "---\nname: x\ndescription: y\npriority: \"42\"\n---\nbody"
+        text = '---\nname: x\ndescription: y\npriority: "42"\n---\nbody'
         skill = parse_skill_text(text, Path("x.md"))
         assert skill is not None
         assert skill.priority == 42

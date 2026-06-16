@@ -78,9 +78,7 @@ async def test_streaming_with_tools_emits_tool_use_events(gemini_provider):
                 )
             )
         ],
-        usage_metadata=SimpleNamespace(
-            prompt_token_count=10, candidates_token_count=2
-        ),
+        usage_metadata=SimpleNamespace(prompt_token_count=10, candidates_token_count=2),
     )
 
     fake_chat = MagicMock()

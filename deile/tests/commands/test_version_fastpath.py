@@ -28,9 +28,7 @@ from deile.commands.registry import CommandRegistry
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # repo/
 
-_VERSION_RE = re.compile(
-    r"^DEILE v(\d+\.\d+\.\d+) \(build (\d{8})\)\s*$"
-)
+_VERSION_RE = re.compile(r"^DEILE v(\d+\.\d+\.\d+) \(build (\d{8})\)\s*$")
 
 # ---------------------------------------------------------------------------
 # Formato curto de saída
@@ -44,7 +42,9 @@ class TestShortVersionFormat:
         """A saída deve casar com: DEILE vX.Y.Z (build YYYYMMDD)"""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, f"stderr: {result.stderr}"
         out = result.stdout.strip()
@@ -54,18 +54,25 @@ class TestShortVersionFormat:
         """A versão exibida deve bater com deile.__version__."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         out = result.stdout.strip()
         import deile.__version__ as version_mod
-        expected = f"DEILE v{version_mod.__version__} (build {version_mod.__build_number__})"
+
+        expected = (
+            f"DEILE v{version_mod.__version__} (build {version_mod.__build_number__})"
+        )
         assert out == expected, f"Esperado {expected!r}, obtido {out!r}"
 
     def test_build_number_is_eight_digits(self):
         """O build number deve ter exatamente 8 dígitos."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         match = _VERSION_RE.match(result.stdout.strip())
         assert match is not None
@@ -75,7 +82,8 @@ class TestShortVersionFormat:
         """Fast-path deve sair com 0."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0
 
@@ -83,7 +91,9 @@ class TestShortVersionFormat:
         """A saída deve ser exatamente 1 linha."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         lines = result.stdout.strip().split("\n")
         assert len(lines) == 1, f"Esperado 1 linha, obtido {len(lines)}: {lines}"
@@ -101,7 +111,9 @@ class TestVAlias:
         """python3 deile.py -v deve produzir a mesma saída que --version."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "-v"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0
         assert _VERSION_RE.match(result.stdout.strip())
@@ -110,11 +122,15 @@ class TestVAlias:
         """-v e --version produzem saídas idênticas."""
         r1 = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         r2 = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "-v"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         assert r1.stdout == r2.stdout
 
@@ -140,7 +156,9 @@ class TestVAlias:
         """-v junto com outros argumentos ainda funciona (fast-path intercepta)."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "-v", "mensagem"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0
         assert _VERSION_RE.match(result.stdout.strip())
@@ -158,30 +176,38 @@ class TestZeroSideEffects:
         """Rodar --version num dir limpo não cria .venv."""
         # Copia apenas deile.py e deile/__version__.py para dir limpo
         import shutil
+
         work = tmp_path / "work"
         work.mkdir()
         # Copia deile.py e deile/
-        shutil.copytree(REPO_ROOT / "deile", work / "deile",
-                        ignore=shutil.ignore_patterns("*.pyc", "__pycache__"))
+        shutil.copytree(
+            REPO_ROOT / "deile",
+            work / "deile",
+            ignore=shutil.ignore_patterns("*.pyc", "__pycache__"),
+        )
         shutil.copy2(REPO_ROOT / "deile.py", work / "deile.py")
 
         result = subprocess.run(
             [sys.executable, str(work / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(work),
+            capture_output=True,
+            text=True,
+            cwd=str(work),
         )
         assert result.returncode == 0
-        assert not (work / ".venv").exists(), (
-            ".venv foi criado — fast-path não deve ter side-effects"
-        )
-        assert not (work / ".env").exists(), (
-            ".env foi criado — fast-path não deve ter side-effects"
-        )
+        assert not (
+            work / ".venv"
+        ).exists(), ".venv foi criado — fast-path não deve ter side-effects"
+        assert not (
+            work / ".env"
+        ).exists(), ".env foi criado — fast-path não deve ter side-effects"
 
     def test_no_env_touched(self):
         """Rodar --version não deve modificar .env existente."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0
         # Não há assertions sobre .env — só garantimos que não crashou
@@ -199,7 +225,9 @@ class TestNonTTYBehavior:
         """Com stdout não-TTY, --version não deve perguntar sobre painel completo."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         # Sem TTY, não deve haver prompt
         assert "Instalar dependências" not in result.stdout
@@ -209,7 +237,9 @@ class TestNonTTYBehavior:
         """Fast-path não deve escrever nada em stderr."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         assert result.stderr == ""
 
@@ -217,7 +247,10 @@ class TestNonTTYBehavior:
         """Fast-path não deve ler stdin em modo não-interativo."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            input="y\n", capture_output=True, text=True, cwd=str(REPO_ROOT),
+            input="y\n",
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         # Mesmo com "y" no stdin, não deve haver prompt
         assert "DEILE v" in result.stdout
@@ -239,7 +272,9 @@ class TestSubprocessSmoke:
         env.pop("PYTHONPATH", None)
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
             env=env,
         )
         assert result.returncode == 0
@@ -249,7 +284,9 @@ class TestSubprocessSmoke:
         """--version funciona quando chamado de um subdiretório."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT / "deile"),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT / "deile"),
         )
         assert result.returncode == 0
         assert "DEILE v" in result.stdout
@@ -258,17 +295,21 @@ class TestSubprocessSmoke:
         """A saída curta não deve conter markup Rich."""
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
         )
         assert "[" not in result.stdout  # Rich usa [bold], [cyan], etc.
 
     def test_version_response_time_under_200ms(self):
         """Fast-path deve responder em < 200ms (não faz bootstrap)."""
         import time
+
         t0 = time.monotonic()
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, cwd=str(REPO_ROOT),
+            capture_output=True,
+            cwd=str(REPO_ROOT),
         )
         elapsed = time.monotonic() - t0
         assert result.returncode == 0
@@ -287,6 +328,7 @@ def _load_deile_script():
     portanto usamos importlib para carregar o script com um nome distinto.
     """
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
         "_deile_script", str(REPO_ROOT / "deile.py")
     )
@@ -310,8 +352,10 @@ class TestInteractiveTTYPrompt:
 
         fake_venv = MagicMock()
         fake_venv.exists.return_value = False
-        with patch("sys.stdout.isatty", return_value=True), \
-             patch("builtins.input", return_value="n"):
+        with (
+            patch("sys.stdout.isatty", return_value=True),
+            patch("builtins.input", return_value="n"),
+        ):
             mod = _load_deile_script()
             with patch.object(mod, "_venv_python", return_value=fake_venv):
                 with pytest.raises(SystemExit) as exc_info:
@@ -326,11 +370,15 @@ class TestInteractiveTTYPrompt:
         fake_stdout = StringIO()
         fake_venv = MagicMock()
         fake_venv.exists.return_value = False
-        with patch("sys.stdout.isatty", return_value=True), \
-             patch("builtins.input", return_value="n"):
+        with (
+            patch("sys.stdout.isatty", return_value=True),
+            patch("builtins.input", return_value="n"),
+        ):
             mod = _load_deile_script()
-            with patch.object(mod, "_venv_python", return_value=fake_venv), \
-                 patch.object(mod.sys, "stdout", fake_stdout):
+            with (
+                patch.object(mod, "_venv_python", return_value=fake_venv),
+                patch.object(mod.sys, "stdout", fake_stdout),
+            ):
                 with pytest.raises(SystemExit) as exc_info:
                     mod._fast_version()
                 assert exc_info.value.code == 0
@@ -344,14 +392,18 @@ class TestInteractiveTTYPrompt:
 
         fake_venv = MagicMock()
         fake_venv.exists.return_value = False
-        with patch("sys.stdout.isatty", return_value=True), \
-             patch("builtins.input", return_value="y"):
+        with (
+            patch("sys.stdout.isatty", return_value=True),
+            patch("builtins.input", return_value="y"),
+        ):
             mod = _load_deile_script()
-            with patch.object(mod, "_venv_python", return_value=fake_venv), \
-                 patch.object(mod, "_check_python_version") as mock_check, \
-                 patch.object(mod, "_create_venv") as mock_venv, \
-                 patch.object(mod, "_install_deps") as mock_deps, \
-                 patch.object(mod, "_exec_in_venv") as mock_exec:
+            with (
+                patch.object(mod, "_venv_python", return_value=fake_venv),
+                patch.object(mod, "_check_python_version") as mock_check,
+                patch.object(mod, "_create_venv") as mock_venv,
+                patch.object(mod, "_install_deps") as mock_deps,
+                patch.object(mod, "_exec_in_venv") as mock_exec,
+            ):
                 with pytest.raises(SystemExit) as exc_info:
                     mod._fast_version()
                 assert exc_info.value.code == 0
@@ -366,15 +418,19 @@ class TestInteractiveTTYPrompt:
 
         fake_venv = MagicMock()
         fake_venv.exists.return_value = False
-        with patch("sys.stdout.isatty", return_value=True), \
-             patch("builtins.input", return_value="y"):
+        with (
+            patch("sys.stdout.isatty", return_value=True),
+            patch("builtins.input", return_value="y"),
+        ):
             mod = _load_deile_script()
-            with patch.object(mod, "_venv_python", return_value=fake_venv), \
-                 patch.object(mod, "_check_python_version"), \
-                 patch.object(mod, "_create_venv"), \
-                 patch.object(mod, "_install_deps"), \
-                 patch.object(mod, "_exec_in_venv"), \
-                 patch.object(mod, "_ensure_env_file") as mock_env:
+            with (
+                patch.object(mod, "_venv_python", return_value=fake_venv),
+                patch.object(mod, "_check_python_version"),
+                patch.object(mod, "_create_venv"),
+                patch.object(mod, "_install_deps"),
+                patch.object(mod, "_exec_in_venv"),
+                patch.object(mod, "_ensure_env_file") as mock_env,
+            ):
                 with pytest.raises(SystemExit) as exc_info:
                     mod._fast_version()
                 assert exc_info.value.code == 0
@@ -386,8 +442,10 @@ class TestInteractiveTTYPrompt:
 
         fake_venv = MagicMock()
         fake_venv.exists.return_value = False
-        with patch("sys.stdout.isatty", return_value=True), \
-             patch("builtins.input", side_effect=EOFError):
+        with (
+            patch("sys.stdout.isatty", return_value=True),
+            patch("builtins.input", side_effect=EOFError),
+        ):
             mod = _load_deile_script()
             with patch.object(mod, "_venv_python", return_value=fake_venv):
                 with pytest.raises(SystemExit) as exc_info:

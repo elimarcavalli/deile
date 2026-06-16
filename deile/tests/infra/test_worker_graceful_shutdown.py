@@ -6,6 +6,7 @@ não concluídas; um dispatch HTTP chegando durante o shutdown é rejeitado com
 503. O watchdog de hard-deadline chama ``os._exit(0)`` (mockado) se o drain
 estourar 35s.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,11 +49,13 @@ async def test_graceful_shutdown_drains_and_marks_terminal(_clean_state):
 
     async def _bg():
         worker_server._TASKS["aaaaaaaaaaaa"] = {
-            "task_id": "aaaaaaaaaaaa", "ok": None,
+            "task_id": "aaaaaaaaaaaa",
+            "ok": None,
         }
         await asyncio.sleep(0.02)
         worker_server._TASKS["aaaaaaaaaaaa"] = {
-            "task_id": "aaaaaaaaaaaa", "ok": True,
+            "task_id": "aaaaaaaaaaaa",
+            "ok": True,
         }
         done.set()
 
@@ -80,7 +83,8 @@ async def test_drain_timeout_marks_remaining_terminal(_clean_state, monkeypatch)
 
     async def _bg():
         worker_server._TASKS["bbbbbbbbbbbb"] = {
-            "task_id": "bbbbbbbbbbbb", "ok": None,
+            "task_id": "bbbbbbbbbbbb",
+            "ok": None,
         }
         await release.wait()  # nunca liberado dentro do drain
 
@@ -122,9 +126,7 @@ def test_mark_inflight_tasks_terminal(_clean_state):
 @pytest.fixture
 async def client(_clean_state):
     app = worker_server.build_app(_TOKEN)
-    async with aiohttp_test_utils.TestClient(
-        aiohttp_test_utils.TestServer(app)
-    ) as cli:
+    async with aiohttp_test_utils.TestClient(aiohttp_test_utils.TestServer(app)) as cli:
         yield cli
 
 

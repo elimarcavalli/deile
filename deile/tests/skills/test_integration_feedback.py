@@ -48,15 +48,15 @@ def python_skill_router(monkeypatch: pytest.MonkeyPatch):
         )
     )
     captured: dict = {}
-    router = SkillRouter(registry, language_detector=LanguageDetector(), max_skills_per_turn=4)
+    router = SkillRouter(
+        registry, language_detector=LanguageDetector(), max_skills_per_turn=4
+    )
 
     async def _fake_bootstrap(config=None, *, project_dir=None, **kwargs):
         captured["project_dir"] = project_dir
         return router
 
-    monkeypatch.setattr(
-        "deile.core.context_manager.bootstrap_skills", _fake_bootstrap
-    )
+    monkeypatch.setattr("deile.core.context_manager.bootstrap_skills", _fake_bootstrap)
     return captured
 
 
@@ -107,7 +107,9 @@ class TestActiveSkillsStashOnSession:
         self, python_skill_router
     ) -> None:
         cm = ContextManager()
-        parse_result = ParseResult(status=ParseStatus.SUCCESS, file_references=["script.py"])
+        parse_result = ParseResult(
+            status=ParseStatus.SUCCESS, file_references=["script.py"]
+        )
         session = SimpleNamespace(
             conversation_history=[{"role": "user", "content": "fix script.py"}],
             context_data={},
@@ -124,7 +126,9 @@ class TestActiveSkillsStashOnSession:
         self, python_skill_router
     ) -> None:
         cm = ContextManager()
-        parse_result = ParseResult(status=ParseStatus.SUCCESS, file_references=["README.md"])
+        parse_result = ParseResult(
+            status=ParseStatus.SUCCESS, file_references=["README.md"]
+        )
         session = SimpleNamespace(
             conversation_history=[{"role": "user", "content": "explain readme"}],
             context_data={},

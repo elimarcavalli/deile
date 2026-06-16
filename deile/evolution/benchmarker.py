@@ -32,7 +32,7 @@ class Benchmarker:
                 "memory_usage_mb": process.memory_info().rss / 1024 / 1024,
                 "cpu_usage_percent": process.cpu_percent(),
                 "response_time_ms": await self._measure_response_time(),
-                "timestamp": time.time()
+                "timestamp": time.time(),
             }
 
         except Exception as e:
@@ -74,7 +74,7 @@ class Benchmarker:
 
         return {
             "duration_ms": (time.time() - start_time) * 1000,
-            "operations_per_second": 100 / (time.time() - start_time)
+            "operations_per_second": 100 / (time.time() - start_time),
         }
 
     async def shutdown(self) -> None:

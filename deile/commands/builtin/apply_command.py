@@ -10,8 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (PATCHES_DIR, list_patch_files, split_args,
-                      wrap_command_errors)
+from ._shared import PATCHES_DIR, list_patch_files, split_args, wrap_command_errors
 
 
 class ApplyCommand(DirectCommand):
@@ -41,6 +40,7 @@ class ApplyCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="apply",
             description=(
@@ -117,7 +117,9 @@ class ApplyCommand(DirectCommand):
         table.add_column("Size", style="blue")
 
         for patch_file in patch_files:
-            location = "PATCHES/" if patch_file.parent.name == PATCHES_DIR.name else "current"
+            location = (
+                "PATCHES/" if patch_file.parent.name == PATCHES_DIR.name else "current"
+            )
             size = f"{patch_file.stat().st_size:,}B"
             table.add_row(patch_file.name, location, size)
 

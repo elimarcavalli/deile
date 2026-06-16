@@ -5,6 +5,7 @@ devem servir o resultado original (200 + ``already_dispatched``); uma key de
 task ainda em execução → 409 ``duplicate_in_flight``; uma key expirada (>300s)
 → nova task.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -45,9 +46,7 @@ def _clean_state():
 @pytest.fixture
 async def client(_clean_state):
     app = worker_server.build_app(_TOKEN)
-    async with aiohttp_test_utils.TestClient(
-        aiohttp_test_utils.TestServer(app)
-    ) as cli:
+    async with aiohttp_test_utils.TestClient(aiohttp_test_utils.TestServer(app)) as cli:
         yield cli
 
 
@@ -55,12 +54,17 @@ def _fake_run_task(ok=True):
     async def _fake(task_id, brief, channel_id, *a, **kw):
         result = {
             "schema_version": worker_server.RESULT_SCHEMA_VERSION,
-            "task_id": task_id, "ok": ok, "elapsed_s": 0.01,
-            "brief": brief, "summary": "done", "files": [],
+            "task_id": task_id,
+            "ok": ok,
+            "elapsed_s": 0.01,
+            "brief": brief,
+            "summary": "done",
+            "files": [],
             "channel_id": channel_id,
         }
         worker_server._TASKS[task_id] = result
         return result
+
     return _fake
 
 
@@ -95,27 +99,41 @@ async def test_in_flight_key_returns_409(client, monkeypatch):
     async def _blocking_run_task(task_id, brief, channel_id, *a, **kw):
         # ``ok`` permanece None enquanto bloqueado → estado "em execução".
         worker_server._TASKS[task_id] = {
-            "task_id": task_id, "ok": None, "brief": brief,
+            "task_id": task_id,
+            "ok": None,
+            "brief": brief,
         }
         started.set()
         await release.wait()
-        result = {"schema_version": worker_server.RESULT_SCHEMA_VERSION,
-                  "task_id": task_id, "ok": True, "elapsed_s": 0.01,
-                  "brief": brief, "summary": "done", "files": []}
+        result = {
+            "schema_version": worker_server.RESULT_SCHEMA_VERSION,
+            "task_id": task_id,
+            "ok": True,
+            "elapsed_s": 0.01,
+            "brief": brief,
+            "summary": "done",
+            "files": [],
+        }
         worker_server._TASKS[task_id] = result
         return result
 
     monkeypatch.setattr(worker_server, "_run_task", _blocking_run_task)
 
     # Fire-and-forget para a 1ª task ficar em execução de verdade.
-    r1 = await _post(client, {"brief": "x", "channel_id": "222",
-                              "wait_for_result": False}, key="same-key")
+    r1 = await _post(
+        client,
+        {"brief": "x", "channel_id": "222", "wait_for_result": False},
+        key="same-key",
+    )
     assert r1.status == 202
     await asyncio.wait_for(started.wait(), timeout=2.0)
 
     # 2ª com a mesma key, enquanto a 1ª está em voo → 409.
-    r2 = await _post(client, {"brief": "x", "channel_id": "222",
-                              "wait_for_result": False}, key="same-key")
+    r2 = await _post(
+        client,
+        {"brief": "x", "channel_id": "222", "wait_for_result": False},
+        key="same-key",
+    )
     assert r2.status == 409
     d2 = await r2.json()
     assert d2["error"]["code"] == "duplicate_in_flight"

@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from deile.cron.store import open_cron_store
-from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
-                              ToolResult, ToolSchema)
+from deile.tools.base import (
+    SecurityLevel,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 from deile.tools.cron_tool_base import unexpected_error
 
 
@@ -50,7 +56,8 @@ class CronDeleteTool(Tool):
 
         if not entry_id:
             return ToolResult.error_result(
-                message="id is required", error_code="MISSING_ID",
+                message="id is required",
+                error_code="MISSING_ID",
             )
 
         try:

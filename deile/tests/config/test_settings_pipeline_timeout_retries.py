@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import pytest
 
-from deile.config.settings import (Settings, _apply_env_overrides,
-                                   _apply_nested_dict, _to_optional_nonneg_int,
-                                   _to_optional_positive_int)
+from deile.config.settings import (
+    Settings,
+    _apply_env_overrides,
+    _apply_nested_dict,
+    _to_optional_nonneg_int,
+    _to_optional_positive_int,
+)
 
 
 class TestOptionalPositiveIntValidator:
@@ -96,14 +100,16 @@ class TestSettingsDefaults:
 class TestApplyOverrides:
     def test_timeout_round_trips_via_apply_overrides(self):
         s = Settings()
-        s.apply_overrides({
-            "pipeline": {
-                "timeouts_s": {
-                    "classify": 300,
-                    "implement": 1800,
+        s.apply_overrides(
+            {
+                "pipeline": {
+                    "timeouts_s": {
+                        "classify": 300,
+                        "implement": 1800,
+                    }
                 }
             }
-        })
+        )
         assert s.pipeline_timeout_s_classify == 300
         assert s.pipeline_timeout_s_implement == 1800
         # Unset fields stay None
@@ -111,14 +117,16 @@ class TestApplyOverrides:
 
     def test_retries_round_trips_via_apply_overrides(self):
         s = Settings()
-        s.apply_overrides({
-            "pipeline": {
-                "retries": {
-                    "classify": 5,
-                    "implement": 1,
+        s.apply_overrides(
+            {
+                "pipeline": {
+                    "retries": {
+                        "classify": 5,
+                        "implement": 1,
+                    }
                 }
             }
-        })
+        )
         assert s.pipeline_retries_classify == 5
         assert s.pipeline_retries_implement == 1
         assert s.pipeline_retries_refine is None
@@ -192,8 +200,16 @@ class TestEnvVarOverrides:
             monkeypatch.setenv(f"DEILE_PIPELINE_RETRIES_{stage}", "1")
         s = Settings()
         _apply_env_overrides(s)
-        for attr_suffix in ("classify", "refine", "implement", "pr_review", "follow_ups"):
-            assert getattr(s, f"pipeline_timeout_s_{attr_suffix}") == 100, \
-                f"pipeline_timeout_s_{attr_suffix} should be 100"
-            assert getattr(s, f"pipeline_retries_{attr_suffix}") == 1, \
-                f"pipeline_retries_{attr_suffix} should be 1"
+        for attr_suffix in (
+            "classify",
+            "refine",
+            "implement",
+            "pr_review",
+            "follow_ups",
+        ):
+            assert (
+                getattr(s, f"pipeline_timeout_s_{attr_suffix}") == 100
+            ), f"pipeline_timeout_s_{attr_suffix} should be 100"
+            assert (
+                getattr(s, f"pipeline_retries_{attr_suffix}") == 1
+            ), f"pipeline_retries_{attr_suffix} should be 1"

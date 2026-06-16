@@ -40,9 +40,7 @@ class TestE2ED1PersistedSession:
 
         # Process B (new agent, same DB)
         agent_b = DeileAgent()
-        s2 = await agent_b.get_or_create_session(
-            "bot_session_alice", persisted=True
-        )
+        s2 = await agent_b.get_or_create_session("bot_session_alice", persisted=True)
         assert s2.context_data.get("facts", {}).get("name") == "Alice"
         await agent_b.shutdown()
 
@@ -60,6 +58,7 @@ class TestE2ED2ExtraSystemPrompt:
             session = self._get_or_create_session(session_id, **kwargs)
             if extra is not None:
                 from deile.core.bot_hooks import sanitize_extra_system_prompt
+
                 session.context_data["extra_system_prompt"] = (
                     sanitize_extra_system_prompt(str(extra))
                 )
@@ -86,9 +85,7 @@ class TestE2ED3BotContext:
         from deile.tools.base import ToolContext
 
         agent = DeileAgent()
-        s = await agent.get_or_create_session(
-            "t2", working_directory=str(tmp_path)
-        )
+        s = await agent.get_or_create_session("t2", working_directory=str(tmp_path))
         s.context_data["bot_context"] = {"provider": "discord", "scope": "DM"}
         # Simulate the agent dispatching a tool: build ToolContext as agent does
         bc = s.context_data.get("bot_context") or {}
@@ -143,9 +140,7 @@ class TestE2ED5StreamChunkIntegrity:
         async for c in agent.process_input_stream_chunks("liste 5 frutas"):
             chunks.append(c)
         assert chunks[-1].kind == "done"
-        text_only = "".join(
-            c.payload["text"] for c in chunks if c.kind == "text"
-        )
+        text_only = "".join(c.payload["text"] for c in chunks if c.kind == "text")
         assert text_only == chunks[-1].payload["text"]
         assert "morango" in chunks[-1].payload["text"]
 

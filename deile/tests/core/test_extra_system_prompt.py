@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from deile.core.bot_hooks import (get_bot_context, merge_extra_system_prompt,
-                                  sanitize_extra_system_prompt)
+from deile.core.bot_hooks import (
+    get_bot_context,
+    merge_extra_system_prompt,
+    sanitize_extra_system_prompt,
+)
 
 
 class TestSanitize:
@@ -86,7 +89,9 @@ class TestToolContextExtra:
     def test_tool_context_has_extra(self):
         from deile.tools.base import ToolContext
 
-        ctx = ToolContext(user_input="x", extra={"bot_context": {"provider": "discord"}})
+        ctx = ToolContext(
+            user_input="x", extra={"bot_context": {"provider": "discord"}}
+        )
         assert ctx.extra["bot_context"]["provider"] == "discord"
 
     def test_default_extra_empty(self):

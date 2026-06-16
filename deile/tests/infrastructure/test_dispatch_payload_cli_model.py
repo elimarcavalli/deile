@@ -12,47 +12,55 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from deile.infrastructure.deile_worker_client import (DispatchPayload,
-                                                      build_dispatch_payload)
+from deile.infrastructure.deile_worker_client import (
+    DispatchPayload,
+    build_dispatch_payload,
+)
 
 
 class TestCliModelValidator:
-    @pytest.mark.parametrize("free", [
-        "openrouter/deepseek/deepseek-chat",
-        "qwen3-coder-plus",
-        "gpt-5.5-codex",
-        "anthropic/claude-3.7-sonnet",
-        "Mixed-Case/Model.v2",   # CLI ids podem ter maiúsculas — slug regex não.
-    ])
+    @pytest.mark.parametrize(
+        "free",
+        [
+            "openrouter/deepseek/deepseek-chat",
+            "qwen3-coder-plus",
+            "gpt-5.5-codex",
+            "anthropic/claude-3.7-sonnet",
+            "Mixed-Case/Model.v2",  # CLI ids podem ter maiúsculas — slug regex não.
+        ],
+    )
     def test_accepts_free_string(self, free):
         p = DispatchPayload(brief="x", channel_id="c", cli_model=free)
         assert p.cli_model == free
 
     def test_does_not_require_provider_colon(self):
         # Justamente o que o validator de preferred_model REJEITARIA.
-        p = DispatchPayload(brief="x", channel_id="c",
-                            cli_model="qwen3-coder-plus")
+        p = DispatchPayload(brief="x", channel_id="c", cli_model="qwen3-coder-plus")
         assert p.cli_model == "qwen3-coder-plus"
         # E o mesmo valor em preferred_model é rejeitado — provando que o
         # campo separado não enfraqueceu a fronteira do deile-worker.
         with pytest.raises(ValidationError):
-            DispatchPayload(brief="x", channel_id="c",
-                            preferred_model="qwen3-coder-plus")
+            DispatchPayload(
+                brief="x", channel_id="c", preferred_model="qwen3-coder-plus"
+            )
 
     def test_none_and_default_stay_none(self):
         assert DispatchPayload(brief="x", channel_id="c").cli_model is None
-        assert DispatchPayload(brief="x", channel_id="c",
-                               cli_model=None).cli_model is None
+        assert (
+            DispatchPayload(brief="x", channel_id="c", cli_model=None).cli_model is None
+        )
 
     def test_empty_and_whitespace_collapse_to_none(self):
-        assert DispatchPayload(brief="x", channel_id="c",
-                               cli_model="").cli_model is None
-        assert DispatchPayload(brief="x", channel_id="c",
-                               cli_model="   ").cli_model is None
+        assert (
+            DispatchPayload(brief="x", channel_id="c", cli_model="").cli_model is None
+        )
+        assert (
+            DispatchPayload(brief="x", channel_id="c", cli_model="   ").cli_model
+            is None
+        )
 
     def test_strips_surrounding_whitespace(self):
-        p = DispatchPayload(brief="x", channel_id="c",
-                            cli_model="  qwen3-coder-plus  ")
+        p = DispatchPayload(brief="x", channel_id="c", cli_model="  qwen3-coder-plus  ")
         assert p.cli_model == "qwen3-coder-plus"
 
     def test_enforces_max_length(self):
@@ -63,7 +71,8 @@ class TestCliModelValidator:
         # Os dois campos coexistem sem interferência (deile-worker ignora
         # cli_model; CLI worker ignora preferred_model).
         p = DispatchPayload(
-            brief="x", channel_id="c",
+            brief="x",
+            channel_id="c",
             preferred_model="deepseek:deepseek-v4-pro",
             cli_model="openrouter/deepseek/deepseek-chat",
         )
@@ -74,7 +83,8 @@ class TestCliModelValidator:
 class TestBuildDispatchPayloadCliModel:
     def test_adds_cli_model_when_truthy(self):
         p = build_dispatch_payload(
-            brief="x", channel_id="c",
+            brief="x",
+            channel_id="c",
             cli_model="openrouter/deepseek/deepseek-chat",
         )
         assert p["cli_model"] == "openrouter/deepseek/deepseek-chat"
@@ -95,7 +105,9 @@ class TestBuildDispatchPayloadCliModel:
         # build_dispatch_payload monta o dict; DispatchPayload.model_validate o
         # aceita (sem regex) — fluxo ponta-a-ponta do campo livre.
         raw = build_dispatch_payload(
-            brief="x", channel_id="c", cli_model="qwen3-coder-plus",
+            brief="x",
+            channel_id="c",
+            cli_model="qwen3-coder-plus",
         )
         validated = DispatchPayload.model_validate(raw)
         assert validated.cli_model == "qwen3-coder-plus"

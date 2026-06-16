@@ -46,14 +46,18 @@ def _try_import_pipeline_status_server():
     """
     candidates = [
         Path("/app/pipeline_status_server.py"),
-        Path(__file__).resolve().parents[3] / "infra" / "k8s" / "pipeline_status_server.py",
+        Path(__file__).resolve().parents[3]
+        / "infra"
+        / "k8s"
+        / "pipeline_status_server.py",
     ]
     for path in candidates:
         if not path.is_file():
             continue
         try:
             spec = importlib.util.spec_from_file_location(
-                "pipeline_status_server", str(path),
+                "pipeline_status_server",
+                str(path),
             )
             if spec is None or spec.loader is None:
                 continue
@@ -64,7 +68,9 @@ def _try_import_pipeline_status_server():
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "failed to load pipeline_status_server from %s: %s — "
-                "introspection endpoints disabled this run", path, exc,
+                "introspection endpoints disabled this run",
+                path,
+                exc,
             )
             return None
     logger.info(
@@ -88,6 +94,7 @@ def _build_notifier(user_id: str):
 
     async def _dm(uid: str, text: str):
         from deile.integrations.bot import get_bot_client
+
         return await get_bot_client().dm_send(user_id=uid, text=text)
 
     return DiscordNotifier(user_id or None, dm_fn=_dm)
@@ -120,8 +127,10 @@ async def _start_status_server(monitor) -> "tuple|None":
         # Conecta o force-tick callback. Wraps em coroutine schedule pra não
         # bloquear o handler HTTP — o tick rola no loop principal do monitor.
         if hasattr(state, "set_force_tick_callback"):
+
             def _force_tick_cb():
                 asyncio.ensure_future(monitor.tick())
+
             state.set_force_tick_callback(_force_tick_cb)
         # Injeta o state no monitor pra ele publicar em cada tick.
         try:
@@ -145,11 +154,11 @@ async def _start_status_server(monitor) -> "tuple|None":
         await site.start()
         logger.info(
             "pipeline_status_server listening on %s:%d (issue #347 introspection)",
-            host, port,
+            host,
+            port,
         )
     except OSError as exc:
-        logger.warning("pipeline_status_server bind %s:%d failed: %s",
-                       host, port, exc)
+        logger.warning("pipeline_status_server bind %s:%d failed: %s", host, port, exc)
         await runner.cleanup()
         return None
     return (runner, site)
@@ -169,7 +178,9 @@ def _warn_if_no_forge_token() -> None:
 async def run_pipeline_forever() -> int:
     """Build the monitor from settings, start it, and block until SIGTERM/SIGINT."""
     from deile.orchestration.pipeline.monitor import (
-        PipelineMonitor, build_default_pipeline_config)
+        PipelineMonitor,
+        build_default_pipeline_config,
+    )
 
     _warn_if_no_forge_token()
     cfg = build_default_pipeline_config()
@@ -179,7 +190,9 @@ async def run_pipeline_forever() -> int:
     monitor = PipelineMonitor(cfg, notifier=_build_notifier(cfg.notify_user_id or ""))
     logger.info(
         "starting pipeline monitor (repo=%s, dispatch=%s, poll=%ss, identity=%s)",
-        cfg.repo, cfg.dispatch_mode, cfg.poll_interval_seconds,
+        cfg.repo,
+        cfg.dispatch_mode,
+        cfg.poll_interval_seconds,
         monitor.identity.monitor_id,
     )
     # Sobe o HTTP introspection server ANTES de monitor.start() — o catch-up
@@ -216,10 +229,12 @@ async def run_pipeline_forever() -> int:
 
 def main() -> int:
     from deile.log_mgmt import init_logging
+
     init_logging(pod_name="deile-pipeline")
     return asyncio.run(run_pipeline_forever())
 
 
 if __name__ == "__main__":  # pragma: no cover
     import sys
+
     sys.exit(main())

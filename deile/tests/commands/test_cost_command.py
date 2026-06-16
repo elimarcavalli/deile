@@ -13,6 +13,7 @@ from deile.commands.builtin.cost_command import CostCommand
 
 def _render_rich(obj) -> str:
     from rich.console import Console
+
     buf = StringIO()
     console = Console(file=buf, highlight=False, markup=False, width=200)
     console.print(obj)
@@ -51,7 +52,9 @@ async def test_summary_empty_database_no_crash():
     cmd = CostCommand()
     empty_summary = _make_summary()
     with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=empty_summary):
-        with patch.object(cmd.cost_tracker, "get_current_session_cost", return_value=Decimal("0")):
+        with patch.object(
+            cmd.cost_tracker, "get_current_session_cost", return_value=Decimal("0")
+        ):
             result = await cmd.execute(_make_context("summary"))
     assert result.success
 
@@ -62,7 +65,9 @@ async def test_summary_populated_database_shows_real_data():
     summary = _make_summary(total="1.68", entry_count=10, categories=cats)
     cmd = CostCommand()
     with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
-        with patch.object(cmd.cost_tracker, "get_current_session_cost", return_value=Decimal("0.1")):
+        with patch.object(
+            cmd.cost_tracker, "get_current_session_cost", return_value=Decimal("0.1")
+        ):
             result = await cmd.execute(_make_context("summary"))
     assert result.success
     rendered = _render_rich(result.content)
@@ -74,7 +79,9 @@ async def test_decimal_formatting_no_exception():
     summary = _make_summary(total="1.234567890")
     cmd = CostCommand()
     with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
-        with patch.object(cmd.cost_tracker, "get_current_session_cost", return_value=Decimal("0")):
+        with patch.object(
+            cmd.cost_tracker, "get_current_session_cost", return_value=Decimal("0")
+        ):
             result = await cmd.execute(_make_context("summary"))
     assert result.success
 
@@ -83,6 +90,7 @@ async def test_decimal_formatting_no_exception():
 async def test_version_from_version_module(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     from deile.__version__ import __version__
+
     export_data = '{"entries": [{"id": "1", "amount": 0.01}], "total_entries": 1}'
     summary = _make_summary(total="0.01", entry_count=1)
     cmd = CostCommand()
@@ -152,7 +160,9 @@ async def test_budget_list_empty_no_crash():
 @pytest.mark.unit
 async def test_budget_set_persists():
     cmd = CostCommand()
-    with patch.object(cmd.cost_tracker, "set_budget_limit", return_value=True) as mock_set:
+    with patch.object(
+        cmd.cost_tracker, "set_budget_limit", return_value=True
+    ) as mock_set:
         result = await cmd.execute(_make_context("budget set api_calls monthly 50"))
     assert result.success
     mock_set.assert_called_once_with("api_calls", "monthly", 50.0)
@@ -168,8 +178,18 @@ async def test_budget_set_invalid_amount_returns_error():
 @pytest.mark.unit
 async def test_top_n_returns_most_expensive():
     top = [
-        {"category": "api_calls", "subcategory": "gpt4", "amount": 0.5, "description": "call"},
-        {"category": "compute", "subcategory": "gpu", "amount": 0.3, "description": "run"},
+        {
+            "category": "api_calls",
+            "subcategory": "gpt4",
+            "amount": 0.5,
+            "description": "call",
+        },
+        {
+            "category": "compute",
+            "subcategory": "gpu",
+            "amount": 0.3,
+            "description": "run",
+        },
     ]
     summary = _make_summary(total="0.8", entry_count=2, top_expenses=top)
     cmd = CostCommand()
@@ -205,6 +225,7 @@ async def test_export_json_writes_valid_file(tmp_path, monkeypatch):
     json_files = list(tmp_path.glob("costs_export_*.json"))
     assert len(json_files) == 1
     import json
+
     data = json.loads(json_files[0].read_text())
     assert "entries" in data
 
@@ -300,7 +321,11 @@ async def test_forecast_insufficient_data_message():
         result = await cmd.execute(_make_context("forecast"))
     assert result.success
     rendered = _render_rich(result.content)
-    assert "insuficiente" in rendered.lower() or "insufficient" in rendered.lower() or "Dados" in rendered
+    assert (
+        "insuficiente" in rendered.lower()
+        or "insufficient" in rendered.lower()
+        or "Dados" in rendered
+    )
 
 
 @pytest.mark.unit
@@ -344,15 +369,27 @@ async def test_all_subcommands_dispatched(tmp_path, monkeypatch):
         # "no data" guard (issue #301) and we exercise the full dispatch.
         summary = _make_summary(total="0.01", entry_count=1)
         with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
-            with patch.object(cmd.cost_tracker, "get_current_session_cost", return_value=Decimal("0")):
-                with patch.object(cmd.cost_tracker, "export_costs", return_value=extra_patches.get("export_costs", "{}")):
+            with patch.object(
+                cmd.cost_tracker, "get_current_session_cost", return_value=Decimal("0")
+            ):
+                with patch.object(
+                    cmd.cost_tracker,
+                    "export_costs",
+                    return_value=extra_patches.get("export_costs", "{}"),
+                ):
                     with patch.object(cmd.cost_tracker, "_load_budget_limits"):
                         cmd.cost_tracker.budget_limits = {}
                         cmd.cost_tracker.cost_alerts = []
-                        with patch.object(cmd.cost_tracker, "get_pricing_estimate", return_value={"error": "no pricing"}):
+                        with patch.object(
+                            cmd.cost_tracker,
+                            "get_pricing_estimate",
+                            return_value={"error": "no pricing"},
+                        ):
                             result = await cmd.execute(ctx)
         rendered = _render_rich(result.content) if result.content else ""
-        assert "desconhecida" not in rendered.lower(), f"Subcomando '{args}' sem dispatch real"
+        assert (
+            "desconhecida" not in rendered.lower()
+        ), f"Subcomando '{args}' sem dispatch real"
 
 
 @pytest.mark.unit

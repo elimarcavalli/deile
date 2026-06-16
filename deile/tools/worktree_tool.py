@@ -33,11 +33,16 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from deile.orchestration.pipeline.worktree_manager import (WorktreeError,
-                                                           WorktreeManager)
+from deile.orchestration.pipeline.worktree_manager import WorktreeError, WorktreeManager
 from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
-from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
-                              ToolResult, ToolSchema)
+from deile.tools.base import (
+    SecurityLevel,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +115,6 @@ class WorktreeTool(Tool):
                 category=ToolCategory.SYSTEM,
             )
         )
-
 
     async def execute(self, context: ToolContext) -> ToolResult:  # noqa: C901
         action = (context.parsed_args.get("action") or "").strip().lower()
@@ -215,12 +219,24 @@ class WorktreeTool(Tool):
             if not item.is_dir():
                 continue
             if (item / ".git").exists():
-                entries.append({"path": str(item), "branch": item.name, "base_repo": str(base_path)})
+                entries.append(
+                    {
+                        "path": str(item),
+                        "branch": item.name,
+                        "base_repo": str(base_path),
+                    }
+                )
             else:
                 # One level deeper for subdir-namespaced worktrees (e.g. .worktrees/<monitor>/<branch>)
                 for sub in sorted(item.iterdir()):
                     if sub.is_dir() and (sub / ".git").exists():
-                        entries.append({"path": str(sub), "branch": sub.name, "base_repo": str(base_path)})
+                        entries.append(
+                            {
+                                "path": str(sub),
+                                "branch": sub.name,
+                                "base_repo": str(base_path),
+                            }
+                        )
 
         return ToolResult.success_result(
             data={"worktrees": entries},

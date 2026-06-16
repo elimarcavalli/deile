@@ -76,7 +76,9 @@ class MarkdownToASTParser:
             return [MarkupSpan(SpanKind.HEADING, m.group(2), meta={"level": level})]
         m = _NUMBERED_RE.match(line)
         if m:
-            return [MarkupSpan(SpanKind.NUMBERED, m.group(2), meta={"index": m.group(1)})]
+            return [
+                MarkupSpan(SpanKind.NUMBERED, m.group(2), meta={"index": m.group(1)})
+            ]
         m = _BULLET_RE.match(line)
         if m:
             return [MarkupSpan(SpanKind.BULLET, m.group(1))]

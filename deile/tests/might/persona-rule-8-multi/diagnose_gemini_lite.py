@@ -70,7 +70,9 @@ async def phase_A_baseline(agent: DeileAgent, log_lines: list) -> None:
     log_lines.append(_format_tool_calls(response.tool_results))
     log_lines.append(f"\n--- RESPONSE TEXT ---\n{response.content}")
     log_lines.append(f"\n--- METADATA ---\n  duration: {dt:.2f}s")
-    log_lines.append(f"  model_used: {response.metadata.get('model_used', '?') if response.metadata else '?'}")
+    log_lines.append(
+        f"  model_used: {response.metadata.get('model_used', '?') if response.metadata else '?'}"
+    )
 
 
 async def phase_B_explicit(agent: DeileAgent, log_lines: list) -> None:
@@ -107,7 +109,9 @@ async def phase_C_raw_sdk(log_lines: list) -> None:
     from google.genai.types import FunctionDeclaration, HttpOptions, Tool
 
     api_key = os.getenv("GOOGLE_API_KEY")
-    client = genai.Client(api_key=api_key, http_options=HttpOptions(api_version="v1beta"))
+    client = genai.Client(
+        api_key=api_key, http_options=HttpOptions(api_version="v1beta")
+    )
 
     fd = FunctionDeclaration(
         name="get_current_weather",
@@ -151,7 +155,9 @@ async def phase_C_raw_sdk(log_lines: list) -> None:
             fc = getattr(p, "function_call", None)
             txt = getattr(p, "text", None)
             if fc:
-                log_lines.append(f"    [{i}] function_call name={fc.name} args={dict(fc.args or {})}")
+                log_lines.append(
+                    f"    [{i}] function_call name={fc.name} args={dict(fc.args or {})}"
+                )
             elif txt:
                 log_lines.append(f"    [{i}] text: {txt[:200]}")
             else:
@@ -171,7 +177,9 @@ async def phase_D_raw_sdk_no_persona(log_lines: list) -> None:
     from google.genai.types import FunctionDeclaration, HttpOptions, Tool
 
     api_key = os.getenv("GOOGLE_API_KEY")
-    client = genai.Client(api_key=api_key, http_options=HttpOptions(api_version="v1beta"))
+    client = genai.Client(
+        api_key=api_key, http_options=HttpOptions(api_version="v1beta")
+    )
 
     fd = FunctionDeclaration(
         name="read_file",
@@ -218,7 +226,9 @@ async def phase_D_raw_sdk_no_persona(log_lines: list) -> None:
             fc = getattr(p, "function_call", None)
             txt = getattr(p, "text", None)
             if fc:
-                log_lines.append(f"    [{i}] function_call name={fc.name} args={dict(fc.args or {})}")
+                log_lines.append(
+                    f"    [{i}] function_call name={fc.name} args={dict(fc.args or {})}"
+                )
             elif txt:
                 log_lines.append(f"    [{i}] text: {txt[:200]}")
 

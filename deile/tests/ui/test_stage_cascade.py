@@ -38,9 +38,7 @@ async def test_cascade_stream_emits_initial_then_forwards_source() -> None:
     assert len(out) >= 2
     assert out[0].type is StreamEventType.STAGE
     assert out[0].stage and "Interpretando" in out[0].stage
-    assert any(
-        e.type is StreamEventType.TEXT_DELTA and e.text == "hello" for e in out
-    )
+    assert any(e.type is StreamEventType.TEXT_DELTA and e.text == "hello" for e in out)
 
 
 async def test_cascade_stream_unknown_key_still_yields_initial_label() -> None:
@@ -70,7 +68,9 @@ async def test_cascade_stream_stamps_event_iteration_on_stage_events() -> None:
     assert initial_stage.iteration == 7
 
 
-async def test_cascade_stream_kwarg_iteration_does_not_collide_with_message_ctx() -> None:
+async def test_cascade_stream_kwarg_iteration_does_not_collide_with_message_ctx() -> (
+    None
+):
     """Reproduce the kwarg collision bug: callers pass ``iteration`` in the
     message-format ctx (e.g. for ``await_next_response``'s {iteration}
     placeholder), and the helper's own loop-iteration field must not clash.
@@ -84,9 +84,7 @@ async def test_cascade_stream_kwarg_iteration_does_not_collide_with_message_ctx(
     ):
         out.append(ev)
 
-    assert any(
-        e.type is StreamEventType.STAGE and "3" in (e.stage or "") for e in out
-    )
+    assert any(e.type is StreamEventType.STAGE and "3" in (e.stage or "") for e in out)
 
 
 # ────────────────────────────────────────────────────────────────────────

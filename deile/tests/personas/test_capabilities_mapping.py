@@ -12,12 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deile.personas.base import AgentCapability
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_unified_config(capabilities: list):
     """Build a minimal unified PersonaConfig-like object."""
@@ -40,7 +38,8 @@ def _make_manager():
     manager.loader = MagicMock()
     manager.loader.load_persona_instructions = AsyncMock(
         # system_instruction requires min_length=100
-        return_value="You are a test persona for capabilities mapping. " * 3,
+        return_value="You are a test persona for capabilities mapping. "
+        * 3,
     )
     manager.memory_manager = None
     manager._memory_integrated = False
@@ -63,6 +62,7 @@ class _FakePersona:
 # AC1: valid capabilities are mapped correctly
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 async def test_valid_capabilities_mapped():
     """capabilities=['code_generation','testing'] → [CODE_GENERATION, TESTING]."""
@@ -82,13 +82,16 @@ async def test_valid_capabilities_mapped():
 # AC2: unknown string is skipped with WARNING; valid ones remain
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 async def test_unknown_capability_skipped_with_warning(caplog):
     """'voar' is invalid → skipped with WARNING; valid strings remain."""
     manager = _make_manager()
 
-    with patch("deile.personas.manager.BaseAutonomousPersona", _FakePersona), \
-         caplog.at_level(logging.WARNING, logger="deile.personas.manager"):
+    with (
+        patch("deile.personas.manager.BaseAutonomousPersona", _FakePersona),
+        caplog.at_level(logging.WARNING, logger="deile.personas.manager"),
+    ):
         unified_cfg = _make_unified_config(["code_generation", "voar"])
         await manager._create_persona_from_config("test_persona", unified_cfg)
 
@@ -103,13 +106,16 @@ async def test_unknown_capability_skipped_with_warning(caplog):
 # AC3a: all-invalid list → default CODE_ANALYSIS + WARNING
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 async def test_all_invalid_capabilities_uses_default(caplog):
     """All capabilities invalid → [CODE_ANALYSIS] with WARNING; no ValidationError."""
     manager = _make_manager()
 
-    with patch("deile.personas.manager.BaseAutonomousPersona", _FakePersona), \
-         caplog.at_level(logging.WARNING, logger="deile.personas.manager"):
+    with (
+        patch("deile.personas.manager.BaseAutonomousPersona", _FakePersona),
+        caplog.at_level(logging.WARNING, logger="deile.personas.manager"),
+    ):
         unified_cfg = _make_unified_config(["voar", "teleportar"])
         await manager._create_persona_from_config("test_persona", unified_cfg)
 
@@ -123,13 +129,16 @@ async def test_all_invalid_capabilities_uses_default(caplog):
 # AC3b: empty list → default CODE_ANALYSIS + WARNING
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 async def test_empty_capabilities_uses_default(caplog):
     """Empty capabilities list → [CODE_ANALYSIS] with WARNING; no ValidationError."""
     manager = _make_manager()
 
-    with patch("deile.personas.manager.BaseAutonomousPersona", _FakePersona), \
-         caplog.at_level(logging.WARNING, logger="deile.personas.manager"):
+    with (
+        patch("deile.personas.manager.BaseAutonomousPersona", _FakePersona),
+        caplog.at_level(logging.WARNING, logger="deile.personas.manager"),
+    ):
         unified_cfg = _make_unified_config([])
         await manager._create_persona_from_config("test_persona", unified_cfg)
 
@@ -142,6 +151,7 @@ async def test_empty_capabilities_uses_default(caplog):
 # ---------------------------------------------------------------------------
 # AC4: main path (BaseAutonomousPersona) used, NOT _create_minimal_persona
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 async def test_main_path_used_not_fallback():

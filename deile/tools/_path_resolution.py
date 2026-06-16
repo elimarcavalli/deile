@@ -53,15 +53,30 @@ _PYTHON_LAUNCHER = "python" if sys.platform == "win32" else "python3"
 
 # Extension → cheap, side-effect-free validator the LLM should run after a write.
 _POST_WRITE_VALIDATORS: Dict[str, Dict[str, str]] = {
-    ".py":  {"kind": "python_syntax",  "template": f"{_PYTHON_LAUNCHER} -m py_compile {{path}}"},
-    ".sh":  {"kind": "bash_syntax",    "template": "bash -n {path}"},
-    ".json": {"kind": "json_parse",    "template": f'{_PYTHON_LAUNCHER} -c "import json; json.load(open({{path!r}}))"'},
-    ".yaml": {"kind": "yaml_parse",    "template": f'{_PYTHON_LAUNCHER} -c "import yaml; yaml.safe_load(open({{path!r}}))"'},
-    ".yml":  {"kind": "yaml_parse",    "template": f'{_PYTHON_LAUNCHER} -c "import yaml; yaml.safe_load(open({{path!r}}))"'},
-    ".js":  {"kind": "node_syntax",    "template": "node --check {path}"},
-    ".mjs": {"kind": "node_syntax",    "template": "node --check {path}"},
-    ".ts":  {"kind": "typescript_check", "template": "npx --yes tsc --noEmit {path}"},
-    ".tsx": {"kind": "typescript_check", "template": "npx --yes tsc --noEmit --jsx react {path}"},
+    ".py": {
+        "kind": "python_syntax",
+        "template": f"{_PYTHON_LAUNCHER} -m py_compile {{path}}",
+    },
+    ".sh": {"kind": "bash_syntax", "template": "bash -n {path}"},
+    ".json": {
+        "kind": "json_parse",
+        "template": f'{_PYTHON_LAUNCHER} -c "import json; json.load(open({{path!r}}))"',
+    },
+    ".yaml": {
+        "kind": "yaml_parse",
+        "template": f'{_PYTHON_LAUNCHER} -c "import yaml; yaml.safe_load(open({{path!r}}))"',
+    },
+    ".yml": {
+        "kind": "yaml_parse",
+        "template": f'{_PYTHON_LAUNCHER} -c "import yaml; yaml.safe_load(open({{path!r}}))"',
+    },
+    ".js": {"kind": "node_syntax", "template": "node --check {path}"},
+    ".mjs": {"kind": "node_syntax", "template": "node --check {path}"},
+    ".ts": {"kind": "typescript_check", "template": "npx --yes tsc --noEmit {path}"},
+    ".tsx": {
+        "kind": "typescript_check",
+        "template": "npx --yes tsc --noEmit --jsx react {path}",
+    },
 }
 
 
@@ -107,6 +122,7 @@ def _apply_post_write_hint(
 
 class LocalFileAccessViolation(ValidationError):
     """Exceção para violações de acesso a arquivos locais"""
+
     pass
 
 
@@ -206,10 +222,14 @@ def _resolve_absolute_or_strip(
             f"path is just slashes: {raw!r} — refuse to write to the project "
             "root as a file"
         )
-    return stripped, None, (
-        "leading '/' stripped — interpreted as project-relative, "
-        "NOT as a system-absolute path. The file lives INSIDE the "
-        "project working directory."
+    return (
+        stripped,
+        None,
+        (
+            "leading '/' stripped — interpreted as project-relative, "
+            "NOT as a system-absolute path. The file lives INSIDE the "
+            "project working directory."
+        ),
     )
 
 
@@ -227,9 +247,7 @@ def _resolve_project_path(file_path: str, working_directory: str) -> ResolvedPat
 
     raw = file_path
     if not isinstance(raw, str):
-        raise LocalFileAccessViolation(
-            f"path must be str, got {type(raw).__name__}"
-        )
+        raise LocalFileAccessViolation(f"path must be str, got {type(raw).__name__}")
 
     stripped = raw.strip()
     if not stripped:
@@ -276,7 +294,9 @@ def _resolve_project_path(file_path: str, working_directory: str) -> ResolvedPat
     work_dir = Path(working_directory).resolve()
     target: Optional[Path] = None
     if candidate.startswith("/"):
-        candidate, target, slash_note = _resolve_absolute_or_strip(candidate, work_dir, raw)
+        candidate, target, slash_note = _resolve_absolute_or_strip(
+            candidate, work_dir, raw
+        )
         if slash_note:
             notes.append(slash_note)
 
@@ -318,9 +338,7 @@ def _resolve_project_path(file_path: str, working_directory: str) -> ResolvedPat
     note = "; ".join(notes) if notes else None
 
     if note is not None:
-        logger.debug(
-            "path normalized: input=%r resolved=%s note=%s", raw, target, note
-        )
+        logger.debug("path normalized: input=%r resolved=%s note=%s", raw, target, note)
 
     return ResolvedPath(
         absolute=str(target),
@@ -330,7 +348,9 @@ def _resolve_project_path(file_path: str, working_directory: str) -> ResolvedPat
     )
 
 
-def _validate_path_within_working_directory(file_path: str, working_directory: str) -> str:
+def _validate_path_within_working_directory(
+    file_path: str, working_directory: str
+) -> str:
     """Backward-compatible wrapper returning only the absolute path.
 
     Existing callers that only need the path string can keep using this. New
@@ -353,10 +373,18 @@ def _validate_path_within_working_directory(file_path: str, working_directory: s
 _PATH_ARG_KEYS_PRIMARY: Tuple[str, ...] = ("file_path", "path")
 _PATH_ARG_KEYS_FALLBACK: Tuple[str, ...] = ("file", "filename", "filepath")
 _PATH_ARG_KEYS_WRITE: Tuple[str, ...] = (
-    "file_path", "filename", "path", "file", "filepath",
+    "file_path",
+    "filename",
+    "path",
+    "file",
+    "filepath",
 )
 _PATH_ARG_KEYS_EDIT: Tuple[str, ...] = (
-    "file_path", "path", "filename", "file", "filepath",
+    "file_path",
+    "path",
+    "filename",
+    "file",
+    "filepath",
 )
 # Default precedence kept for backwards-compatible callers (and matches
 # EditFileTool's historical order, which is the same as the canonical
@@ -406,12 +434,12 @@ def _not_found_message(
     retry loops — so keep it stable when editing.
     """
     norm_hint = (
-        f" (input was {resolved.input!r} → {resolved.note})"
-        if resolved.note
-        else ""
+        f" (input was {resolved.input!r} → {resolved.note})" if resolved.note else ""
     )
     bash_hint = ""
-    if include_bash_hint and (resolved.note or _looks_like_outside_project(original_input)):
+    if include_bash_hint and (
+        resolved.note or _looks_like_outside_project(original_input)
+    ):
         # Shell-escape the resolved absolute path so paths containing ``;``,
         # ``&``, ``$``, backticks, spaces or quotes can't fabricate a shell
         # command injection inside the hint string the LLM is shown.

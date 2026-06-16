@@ -78,14 +78,14 @@ async def test_github_branch_exists_returns_true_on_rc0(fake_gh):
 async def test_github_branch_exists_returns_false_on_404(fake_gh):
     forge, responses, _ = fake_gh
     responses.append((1, "", ""))  # first call (--silent)
-    responses.append((1, "HTTP/2 404\n{\"message\":\"Not Found\"}", ""))  # -i
+    responses.append((1, 'HTTP/2 404\n{"message":"Not Found"}', ""))  # -i
     assert await forge.branch_exists("auto/issue-vanished") is False
 
 
 async def test_github_branch_exists_fail_open_on_unknown_error(fake_gh):
     forge, responses, _ = fake_gh
     responses.append((1, "", "network: timeout"))  # --silent
-    responses.append((1, "HTTP/2 500\n{\"message\":\"oops\"}", ""))  # -i
+    responses.append((1, 'HTTP/2 500\n{"message":"oops"}', ""))  # -i
     # Not 404 → fail-open (True) so transient errors never orphan a PR.
     assert await forge.branch_exists("auto/issue-1") is True
 
@@ -120,7 +120,9 @@ async def test_abc_branch_exists_default_is_true_fail_safe():
     # The method is async; call it through GitHubForge instance pointing at
     # the unbound base.
     cfg = ForgeConfig(
-        kind=ForgeKind.GITHUB, host="github.com", project_path="o/r",
+        kind=ForgeKind.GITHUB,
+        host="github.com",
+        project_path="o/r",
         cli_path="/usr/bin/gh",
     )
     forge = GitHubForge(cfg)

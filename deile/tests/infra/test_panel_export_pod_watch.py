@@ -1,4 +1,5 @@
 """Tests: _build_pod_watch_json schema v1, exact keys, and redaction (issue #461)."""
+
 from __future__ import annotations
 
 import json
@@ -33,7 +34,9 @@ class TestBuildPodWatchJsonSchemaKeys:
         assert obj["kind"] == "pod_watch"
 
     def test_pod_name_preserved(self):
-        obj = panel._build_pod_watch_json("deile-worker-7d8c", "worker", [], redactor=None)
+        obj = panel._build_pod_watch_json(
+            "deile-worker-7d8c", "worker", [], redactor=None
+        )
         assert obj["payload"]["pod"] == "deile-worker-7d8c"
 
     def test_role_preserved(self):
@@ -67,6 +70,7 @@ class TestBuildPodWatchJsonRedaction:
 
     def test_redaction_removes_secret_from_lines(self):
         from deile.security.secrets_scanner import SecretsScanner
+
         redactor = SecretsScanner()
         secret = "ghp_" + "C" * 36
         lines = [f"token={secret}"]
@@ -77,6 +81,7 @@ class TestBuildPodWatchJsonRedaction:
     def test_redaction_preserves_line_count(self):
         """AC2 anti-drop: line must be present (redacted), not dropped."""
         from deile.security.secrets_scanner import SecretsScanner
+
         redactor = SecretsScanner()
         secret = "ghp_" + "C" * 36
         lines = [f"token={secret}"]
@@ -86,6 +91,7 @@ class TestBuildPodWatchJsonRedaction:
     def test_redaction_line_starts_with_token_prefix(self):
         """Anti-drop: the 'token=' prefix is preserved, only the secret is replaced."""
         from deile.security.secrets_scanner import SecretsScanner
+
         redactor = SecretsScanner()
         secret = "ghp_" + "C" * 36
         lines = [f"token={secret}"]

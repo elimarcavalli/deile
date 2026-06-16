@@ -37,10 +37,14 @@ class _StubProvider(ModelProvider):
     def model_size(self) -> ModelSize:
         return ModelSize.MEDIUM
 
-    async def generate(self, messages, system_instruction=None, **kwargs):  # pragma: no cover
+    async def generate(
+        self, messages, system_instruction=None, **kwargs
+    ):  # pragma: no cover
         raise NotImplementedError
 
-    async def generate_stream(self, messages, system_instruction=None, tools=None, **kwargs):  # pragma: no cover
+    async def generate_stream(
+        self, messages, system_instruction=None, tools=None, **kwargs
+    ):  # pragma: no cover
         yield None
 
 
@@ -72,7 +76,9 @@ def test_no_effort_returns_empty():
 @pytest.mark.unit
 def test_apply_merges_into_existing_extra_body():
     create_kwargs = {"extra_body": {"foo": 1}, "model": "x"}
-    ModelProvider._apply_reasoning_extra_body(create_kwargs, {"reasoning_effort": "low"})
+    ModelProvider._apply_reasoning_extra_body(
+        create_kwargs, {"reasoning_effort": "low"}
+    )
     assert create_kwargs["extra_body"] == {"foo": 1, "reasoning_effort": "low"}
 
 

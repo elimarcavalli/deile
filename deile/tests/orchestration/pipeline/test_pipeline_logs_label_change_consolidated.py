@@ -1,4 +1,5 @@
 """AC11 — label.change log lines emitted by forge label mutations via pipeline_logger."""
+
 from __future__ import annotations
 
 import logging
@@ -33,7 +34,10 @@ def _forge_wired() -> GitHubForge:
     )
     gh = GitHubForge(cfg)
     gh.on_label_change = lambda kind, num, rem, add: pl.log_label_change(
-        target_kind=kind, target=num, removed=rem, added=add,
+        target_kind=kind,
+        target=num,
+        removed=rem,
+        added=add,
     )
     return gh
 
@@ -56,15 +60,15 @@ class TestLabelChangeAC11:
         label_change_lines = [
             r for r in caplog.records if r.message.startswith("label.change")
         ]
-        assert len(label_change_lines) == 1, (
-            f"Expected exactly 1 label.change line, got: {[r.message for r in label_change_lines]}"
-        )
-        assert "removed=[~workflow:em_implementacao]" in label_change_lines[0].message, (
-            f"Expected removed label in message: {label_change_lines[0].message!r}"
-        )
-        assert "added=[~workflow:em_pr]" in label_change_lines[0].message, (
-            f"Expected added label in message: {label_change_lines[0].message!r}"
-        )
+        assert (
+            len(label_change_lines) == 1
+        ), f"Expected exactly 1 label.change line, got: {[r.message for r in label_change_lines]}"
+        assert (
+            "removed=[~workflow:em_implementacao]" in label_change_lines[0].message
+        ), f"Expected removed label in message: {label_change_lines[0].message!r}"
+        assert (
+            "added=[~workflow:em_pr]" in label_change_lines[0].message
+        ), f"Expected added label in message: {label_change_lines[0].message!r}"
 
     @pytest.mark.asyncio
     @patch.object(GitHubForge, "_run_checked", _fake_run_checked)
@@ -78,26 +82,28 @@ class TestLabelChangeAC11:
         label_change_lines = [
             r for r in caplog.records if r.message.startswith("label.change")
         ]
-        assert len(label_change_lines) == 2, (
-            f"Expected exactly 2 label.change lines, got: {[r.message for r in label_change_lines]}"
-        )
-        assert "removed=[]" in label_change_lines[0].message, (
-            f"Expected removed=[] in add line: {label_change_lines[0].message!r}"
-        )
-        assert "added=[a,b]" in label_change_lines[0].message, (
-            f"Expected added=[a,b] in add line: {label_change_lines[0].message!r}"
-        )
-        assert "removed=[c]" in label_change_lines[1].message, (
-            f"Expected removed=[c] in remove line: {label_change_lines[1].message!r}"
-        )
-        assert "added=[]" in label_change_lines[1].message, (
-            f"Expected added=[] in remove line: {label_change_lines[1].message!r}"
-        )
+        assert (
+            len(label_change_lines) == 2
+        ), f"Expected exactly 2 label.change lines, got: {[r.message for r in label_change_lines]}"
+        assert (
+            "removed=[]" in label_change_lines[0].message
+        ), f"Expected removed=[] in add line: {label_change_lines[0].message!r}"
+        assert (
+            "added=[a,b]" in label_change_lines[0].message
+        ), f"Expected added=[a,b] in add line: {label_change_lines[0].message!r}"
+        assert (
+            "removed=[c]" in label_change_lines[1].message
+        ), f"Expected removed=[c] in remove line: {label_change_lines[1].message!r}"
+        assert (
+            "added=[]" in label_change_lines[1].message
+        ), f"Expected added=[] in remove line: {label_change_lines[1].message!r}"
 
     @pytest.mark.asyncio
     @patch.object(GitHubForge, "_run_checked", _fake_run_checked)
     @patch.object(GitHubForge, "_run", _fake_run)
-    async def test_transition_issue_without_from_label_emits_one_label_change(self, caplog):
+    async def test_transition_issue_without_from_label_emits_one_label_change(
+        self, caplog
+    ):
         """AC11-C: transition_issue with from_label=None emits one label.change line with removed=[]."""
         gh = _forge_wired()
         with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
@@ -109,12 +115,12 @@ class TestLabelChangeAC11:
         label_change_lines = [
             r for r in caplog.records if r.message.startswith("label.change")
         ]
-        assert len(label_change_lines) == 1, (
-            f"Expected exactly 1 label.change line, got: {[r.message for r in label_change_lines]}"
-        )
-        assert "removed=[]" in label_change_lines[0].message, (
-            f"Expected removed=[] in message: {label_change_lines[0].message!r}"
-        )
-        assert "added=[~workflow:em_pr]" in label_change_lines[0].message, (
-            f"Expected added label in message: {label_change_lines[0].message!r}"
-        )
+        assert (
+            len(label_change_lines) == 1
+        ), f"Expected exactly 1 label.change line, got: {[r.message for r in label_change_lines]}"
+        assert (
+            "removed=[]" in label_change_lines[0].message
+        ), f"Expected removed=[] in message: {label_change_lines[0].message!r}"
+        assert (
+            "added=[~workflow:em_pr]" in label_change_lines[0].message
+        ), f"Expected added label in message: {label_change_lines[0].message!r}"

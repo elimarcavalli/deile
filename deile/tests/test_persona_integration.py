@@ -14,10 +14,13 @@ import pytest
 import yaml
 
 from deile.personas.base import AgentCapability, PersonaConfig
+
 # Import the components we're testing
-from deile.personas.integration import (PersonaEnhancedAgent,
-                                        PersonaIntegrationContext,
-                                        PersonaIntegrationLayer)
+from deile.personas.integration import (
+    PersonaEnhancedAgent,
+    PersonaIntegrationContext,
+    PersonaIntegrationLayer,
+)
 from deile.personas.manager import PersonaManager
 
 
@@ -83,11 +86,9 @@ class MockDeileAgent:
 
         # Mock methods
         self.initialize = AsyncMock()
-        self.process_input = AsyncMock(return_value=Mock(
-            content="Test response",
-            status="success",
-            metadata={}
-        ))
+        self.process_input = AsyncMock(
+            return_value=Mock(content="Test response", status="success", metadata={})
+        )
         self.get_stats = AsyncMock(return_value={"status": "active"})
 
 
@@ -116,11 +117,11 @@ def temp_personas_dir():
             "persona_id": "test_developer",
             "description": "Test persona for integration testing",
             "capabilities": ["code_generation", "debugging"],
-            "system_instruction": "You are a test developer persona"
+            "system_instruction": "You are a test developer persona",
         }
 
         config_file = personas_dir / "test_developer.yaml"
-        with open(config_file, 'w') as f:
+        with open(config_file, "w") as f:
             yaml.dump(test_config, f)
 
         yield personas_dir
@@ -137,7 +138,7 @@ class TestPersonaIntegrationContext:
         context = PersonaIntegrationContext(
             agent=mock_deile_agent,
             persona_manager=persona_manager,
-            session_id="test_session"
+            session_id="test_session",
         )
 
         assert context.agent == mock_deile_agent
@@ -155,7 +156,7 @@ class TestPersonaIntegrationContext:
         context = PersonaIntegrationContext(
             agent=mock_deile_agent,
             persona_manager=persona_manager,
-            current_persona=mock_persona
+            current_persona=mock_persona,
         )
 
         assert context.has_active_persona
@@ -174,7 +175,9 @@ class TestPersonaEnhancedAgent:
         assert enhanced_agent.integration_context is None  # Not initialized yet
 
     @pytest.mark.asyncio
-    async def test_persona_enhanced_agent_initialization(self, mock_deile_agent, temp_personas_dir):
+    async def test_persona_enhanced_agent_initialization(
+        self, mock_deile_agent, temp_personas_dir
+    ):
         """Test PersonaEnhancedAgent initialization"""
         # spec=PersonaManager so hasattr(mock_pm, '_initialized') returns False,
         # ensuring the production code calls initialize() rather than skipping it.
@@ -211,16 +214,16 @@ class TestPersonaEnhancedAgent:
 
         enhanced_agent = PersonaEnhancedAgent(mock_deile_agent)
         enhanced_agent.integration_context = PersonaIntegrationContext(
-            agent=mock_deile_agent,
-            persona_manager=Mock(),
-            current_persona=mock_persona
+            agent=mock_deile_agent, persona_manager=Mock(), current_persona=mock_persona
         )
 
         # Mock methods
         enhanced_agent._has_active_persona = Mock(return_value=True)
         enhanced_agent._get_current_persona = AsyncMock(return_value=mock_persona)
         enhanced_agent._enhance_context_with_persona = AsyncMock(return_value={})
-        enhanced_agent._post_process_with_persona = AsyncMock(side_effect=lambda x, *args: x)
+        enhanced_agent._post_process_with_persona = AsyncMock(
+            side_effect=lambda x, *args: x
+        )
 
         _response = await enhanced_agent.process_input_with_persona("test input")
 
@@ -235,12 +238,13 @@ class TestPersonaEnhancedAgent:
 
         enhanced_agent = PersonaEnhancedAgent(mock_deile_agent, mock_pm)
         enhanced_agent.integration_context = PersonaIntegrationContext(
-            agent=mock_deile_agent,
-            persona_manager=mock_pm
+            agent=mock_deile_agent, persona_manager=mock_pm
         )
 
         # Mock methods
-        enhanced_agent._get_current_persona = AsyncMock(return_value=MockBasePersona("new_persona"))
+        enhanced_agent._get_current_persona = AsyncMock(
+            return_value=MockBasePersona("new_persona")
+        )
         enhanced_agent._update_agent_systems_with_persona = AsyncMock()
 
         result = await enhanced_agent.switch_persona("new_persona", "test_session")
@@ -255,9 +259,7 @@ class TestPersonaEnhancedAgent:
 
         enhanced_agent = PersonaEnhancedAgent(mock_deile_agent)
         enhanced_agent.integration_context = PersonaIntegrationContext(
-            agent=mock_deile_agent,
-            persona_manager=Mock(),
-            current_persona=mock_persona
+            agent=mock_deile_agent, persona_manager=Mock(), current_persona=mock_persona
         )
         enhanced_agent._has_active_persona = Mock(return_value=True)
 
@@ -338,7 +340,9 @@ class TestPersonaManagerIntegration:
     """Test PersonaManager integration features"""
 
     @pytest.mark.asyncio
-    async def test_persona_manager_with_memory_manager(self, mock_memory_manager, temp_personas_dir):
+    async def test_persona_manager_with_memory_manager(
+        self, mock_memory_manager, temp_personas_dir
+    ):
         """Test PersonaManager with memory manager integration"""
         # Create PersonaManager with memory integration
         pm = PersonaManager(memory_manager=mock_memory_manager)
@@ -382,9 +386,7 @@ class TestPersonaManagerIntegration:
         pm._active_persona = "test_persona"
 
         await pm.store_interaction(
-            user_input="Hello",
-            response="Hi there",
-            session_id="test_session"
+            user_input="Hello", response="Hi there", session_id="test_session"
         )
 
         # Verify interaction was stored
@@ -434,7 +436,7 @@ class TestEndToEndIntegration:
         enhanced_agent = PersonaEnhancedAgent(mock_deile_agent, pm)
 
         # 3. Initialize (mocked)
-        with patch.object(pm, 'initialize', new=AsyncMock()):
+        with patch.object(pm, "initialize", new=AsyncMock()):
             await enhanced_agent.initialize()
 
         # 4. Test stats collection
@@ -454,7 +456,9 @@ class TestEndToEndIntegration:
         pm._current_context = mock_context
 
         # Simulate memory operations during persona switch
-        with patch('deile.personas.context.PersonaContext.create', new=AsyncMock()) as mock_create:
+        with patch(
+            "deile.personas.context.PersonaContext.create", new=AsyncMock()
+        ) as mock_create:
             mock_new_context = Mock()
             mock_create.return_value = mock_new_context
 
@@ -470,6 +474,7 @@ class TestEndToEndIntegration:
 
 
 # Performance and edge case tests
+
 
 class TestIntegrationPerformance:
     """Test integration performance and edge cases"""
@@ -513,6 +518,7 @@ class TestIntegrationPerformance:
 
 # Configuration and validation tests
 
+
 class TestIntegrationValidation:
     """Test integration validation and configuration"""
 
@@ -539,9 +545,7 @@ class TestIntegrationValidation:
 
         # Create context with validation
         context = PersonaIntegrationContext(
-            agent=mock_deile_agent,
-            persona_manager=pm,
-            session_id="valid_session"
+            agent=mock_deile_agent, persona_manager=pm, session_id="valid_session"
         )
 
         assert context.session_id == "valid_session"

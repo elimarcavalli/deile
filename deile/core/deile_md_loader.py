@@ -72,7 +72,9 @@ def _read_if_exists(path: Path) -> Optional[str]:
         if size > cap:
             logger.warning(
                 "DEILE.md %s excede %d bytes (atual: %d); truncando.",
-                path, cap, size,
+                path,
+                cap,
+                size,
             )
             content = path.read_bytes()[:cap].decode("utf-8", errors="replace")
         else:
@@ -115,10 +117,11 @@ def clear_cache() -> None:
 @dataclass(frozen=True)
 class DEILEMDSource:
     """Representa uma camada de DEILE.md com metadados de origem."""
-    label: str       # "CORE", "USUÁRIO", "PROJETO"
+
+    label: str  # "CORE", "USUÁRIO", "PROJETO"
     path: Path
     content: str
-    priority: int    # 1=Core, 2=Usuário, 3=CWD
+    priority: int  # 1=Core, 2=Usuário, 3=CWD
 
 
 # ── Main loader ─────────────────────────────────────────────────────────────
@@ -128,8 +131,7 @@ class DEILEMDSource:
 # de origem, número de camada e relação de autoridade.
 _LAYER_HEADERS = {
     "CORE": (
-        "[DEILE.md CAMADA 1/3 — CORE — NÃO NEGOCIÁVEIS, "
-        "fonte: pacote core/DEILE.md]"
+        "[DEILE.md CAMADA 1/3 — CORE — NÃO NEGOCIÁVEIS, " "fonte: pacote core/DEILE.md]"
     ),
     "USUÁRIO": (
         "[DEILE.md CAMADA 2/3 — USUÁRIO — não podem contradizer o CORE, "
@@ -163,7 +165,11 @@ class DEILEMDLoader:
     def load_cwd(self) -> Optional[DEILEMDSource]:
         return self._load_layer("PROJETO", self._cwd_path, 3)
 
-    def load_all(self) -> Tuple[Optional[DEILEMDSource], Optional[DEILEMDSource], Optional[DEILEMDSource]]:
+    def load_all(
+        self,
+    ) -> Tuple[
+        Optional[DEILEMDSource], Optional[DEILEMDSource], Optional[DEILEMDSource]
+    ]:
         """Carrega as três camadas. Cada slot pode ser None se ausente."""
         return (self.load_core(), self.load_user(), self.load_cwd())
 

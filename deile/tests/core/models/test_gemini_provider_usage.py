@@ -21,6 +21,7 @@ from deile.core.models.gemini_provider import GeminiProvider
 
 # -------- helpers de fixture -------------------------------------------------
 
+
 def _fake_usage_md(prompt=0, candidates=0, total=0, cached=0):
     return SimpleNamespace(
         prompt_token_count=prompt,
@@ -36,13 +37,19 @@ def _fake_response(usage_md=None):
 
 # -------- _extract_gemini_usage ---------------------------------------------
 
+
 class TestExtractGeminiUsage:
     def test_reads_all_four_token_fields(self):
         prov = MagicMock(spec=GeminiProvider)
         prov._compute_cost = lambda u: 0.0  # ignore cost in this test
-        resp = _fake_response(_fake_usage_md(
-            prompt=1500, candidates=380, total=1880, cached=200,
-        ))
+        resp = _fake_response(
+            _fake_usage_md(
+                prompt=1500,
+                candidates=380,
+                total=1880,
+                cached=200,
+            )
+        )
         usage = GeminiProvider._extract_gemini_usage(prov, resp, request_time=2.5)
         assert usage.prompt_tokens == 1500
         assert usage.completion_tokens == 380
@@ -65,7 +72,7 @@ class TestExtractGeminiUsage:
         prov._compute_cost = lambda u: 0.0
         resp = _fake_response(_fake_usage_md(prompt=100, candidates=50, total=0))
         usage = GeminiProvider._extract_gemini_usage(prov, resp)
-        assert usage.total_tokens == 150     # fallback: prompt + completion
+        assert usage.total_tokens == 150  # fallback: prompt + completion
 
     def test_calls_compute_cost(self):
         prov = MagicMock(spec=GeminiProvider)
@@ -81,8 +88,8 @@ class TestExtractGeminiUsage:
         prov._compute_cost = MagicMock(side_effect=RuntimeError("catalog miss"))
         resp = _fake_response(_fake_usage_md(prompt=10, candidates=5))
         usage = GeminiProvider._extract_gemini_usage(prov, resp)
-        assert usage.cost_estimate == 0.0    # default, sem propagar
-        assert usage.prompt_tokens == 10     # tokens ainda capturados
+        assert usage.cost_estimate == 0.0  # default, sem propagar
+        assert usage.prompt_tokens == 10  # tokens ainda capturados
 
 
 # -------- _compute_cost (real method, sem mock) -----------------------------
@@ -96,6 +103,7 @@ class TestExtractGeminiUsage:
 # Estes testes constroem um GeminiProvider REAL (sem mock do _compute_cost) e
 # travam a presença + a semântica superset-aware do cálculo.
 
+
 class _FakeHandle:
     def __init__(self, pricing) -> None:
         self.pricing = pricing
@@ -104,11 +112,13 @@ class _FakeHandle:
 def _real_gemini_provider(input_per_1m, output_per_1m, cached_per_1m):
     """GeminiProvider real com pricing stubado — sem init de cliente/SDK."""
     prov = GeminiProvider.__new__(GeminiProvider)
-    prov._handle = _FakeHandle(SimpleNamespace(
-        input_per_1m_usd=input_per_1m,
-        output_per_1m_usd=output_per_1m,
-        cached_input_per_1m_usd=cached_per_1m,
-    ))
+    prov._handle = _FakeHandle(
+        SimpleNamespace(
+            input_per_1m_usd=input_per_1m,
+            output_per_1m_usd=output_per_1m,
+            cached_input_per_1m_usd=cached_per_1m,
+        )
+    )
     return prov
 
 
@@ -119,9 +129,14 @@ class TestComputeCostReal:
 
     def test_cost_is_non_zero_for_real_provider(self):
         prov = _real_gemini_provider(2.0, 12.0, 0.5)
-        resp = _fake_response(_fake_usage_md(
-            prompt=1000, candidates=500, total=1500, cached=100,
-        ))
+        resp = _fake_response(
+            _fake_usage_md(
+                prompt=1000,
+                candidates=500,
+                total=1500,
+                cached=100,
+            )
+        )
         usage = GeminiProvider._extract_gemini_usage(prov, resp, request_time=1.0)
         # 900 não-cacheado @ $2 + 500 saída @ $12 + 100 cache @ $0.5
         expected = (900 / 1e6) * 2.0 + (500 / 1e6) * 12.0 + (100 / 1e6) * 0.5
@@ -133,8 +148,10 @@ class TestComputeCostReal:
         # google-genai): a parcela cacheada não pode ser cobrada duas vezes.
         prov = _real_gemini_provider(5.0, 10.0, 1.0)
         usage = ModelUsage(
-            prompt_tokens=1_000_000, completion_tokens=0,
-            total_tokens=1_000_000, cached_tokens=700_000,
+            prompt_tokens=1_000_000,
+            completion_tokens=0,
+            total_tokens=1_000_000,
+            cached_tokens=700_000,
         )
         # 300k @ $5 + 700k @ $1 = $1.50 + $0.70 = $2.20 (base double-cobraria $5.70)
         assert prov._compute_cost(usage) == pytest.approx(2.20)
@@ -148,15 +165,24 @@ class TestComputeCostReal:
 
 # -------- _aggregate_usage --------------------------------------------------
 
+
 class TestAggregateUsage:
     def test_sums_all_fields(self):
         a = ModelUsage(
-            prompt_tokens=100, completion_tokens=50, cached_tokens=10,
-            total_tokens=150, request_time=1.0, cost_estimate=0.001,
+            prompt_tokens=100,
+            completion_tokens=50,
+            cached_tokens=10,
+            total_tokens=150,
+            request_time=1.0,
+            cost_estimate=0.001,
         )
         b = ModelUsage(
-            prompt_tokens=200, completion_tokens=80, cached_tokens=20,
-            total_tokens=280, request_time=2.5, cost_estimate=0.002,
+            prompt_tokens=200,
+            completion_tokens=80,
+            cached_tokens=20,
+            total_tokens=280,
+            request_time=2.5,
+            cost_estimate=0.002,
         )
         c = GeminiProvider._aggregate_usage(a, b)
         assert c.prompt_tokens == 300
@@ -169,7 +195,9 @@ class TestAggregateUsage:
     def test_aggregate_with_empty_usage_is_idempotent(self):
         empty = ModelUsage()
         other = ModelUsage(
-            prompt_tokens=10, completion_tokens=5, cost_estimate=0.001,
+            prompt_tokens=10,
+            completion_tokens=5,
+            cost_estimate=0.001,
         )
         # Empty + outro = outro
         result = GeminiProvider._aggregate_usage(empty, other)
@@ -187,6 +215,7 @@ class TestAggregateUsage:
 
 # -------- chat_with_tools chama _record_usage --------------------------------
 
+
 @pytest.mark.asyncio
 class TestChatWithToolsPersists:
     async def test_records_usage_on_success(self):
@@ -195,9 +224,13 @@ class TestChatWithToolsPersists:
         prov.provider_id = "gemini"
         prov.model_name = "gemini-3.1-pro-preview"
         # _gemini_chat_with_tools devolve 3-tuple agora (text, results, usage).
-        agg = ModelUsage(prompt_tokens=500, completion_tokens=200,
-                         cached_tokens=50, total_tokens=700,
-                         cost_estimate=0.003)
+        agg = ModelUsage(
+            prompt_tokens=500,
+            completion_tokens=200,
+            cached_tokens=50,
+            total_tokens=700,
+            cost_estimate=0.003,
+        )
         prov._gemini_chat_with_tools = AsyncMock(
             return_value=("hi", [], agg),
         )
@@ -209,7 +242,10 @@ class TestChatWithToolsPersists:
         prov._record_failed_usage = AsyncMock()
 
         text, results, usage = await GeminiProvider.chat_with_tools(
-            prov, messages=[], tools=[], system_instruction="sys",
+            prov,
+            messages=[],
+            tools=[],
+            system_instruction="sys",
             session_id="sess-42",
         )
 
@@ -239,12 +275,14 @@ class TestChatWithToolsPersists:
         prov._record_usage = AsyncMock()
         prov._record_failed_usage = AsyncMock()
 
-        with patch("deile.core.models.gemini_provider.make_gemini_envelope") \
-                as mk_env:
+        with patch("deile.core.models.gemini_provider.make_gemini_envelope") as mk_env:
             mk_env.return_value = MagicMock()
             with pytest.raises(ProviderInvocationError):
                 await GeminiProvider.chat_with_tools(
-                    prov, messages=[], tools=[], system_instruction="sys",
+                    prov,
+                    messages=[],
+                    tools=[],
+                    system_instruction="sys",
                     session_id="sess-99",
                 )
 
@@ -256,13 +294,18 @@ class TestChatWithToolsPersists:
 
 # -------- generate() chama _record_usage no sucesso ------------------------
 
+
 @pytest.mark.asyncio
 class TestGenerateRecords:
     async def test_record_called_with_response_usage(self):
         # Stub mínimo do response retornado por _generate_with_new_sdk
-        usage = ModelUsage(prompt_tokens=120, completion_tokens=60,
-                           cached_tokens=10, total_tokens=180,
-                           cost_estimate=0.0015)
+        usage = ModelUsage(
+            prompt_tokens=120,
+            completion_tokens=60,
+            cached_tokens=10,
+            total_tokens=180,
+            cost_estimate=0.0015,
+        )
         response = SimpleNamespace(usage=usage, content="ok")
         prov = MagicMock(spec=GeminiProvider)
         prov.provider_id = "gemini"
@@ -275,10 +318,14 @@ class TestGenerateRecords:
         prov._record_usage = AsyncMock()
         prov._last_request_time = 0.0
 
-        with patch("deile.core.models.gemini_provider.is_debug_enabled",
-                   return_value=False):
+        with patch(
+            "deile.core.models.gemini_provider.is_debug_enabled", return_value=False
+        ):
             result = await GeminiProvider.generate(
-                prov, messages=[], system_instruction="x", session_id="s1",
+                prov,
+                messages=[],
+                system_instruction="x",
+                session_id="s1",
             )
 
         assert result is response

@@ -35,16 +35,16 @@ class TestOtelImports:
     def test_otel_sdk_logs_batch_processor_importable(self):
         """opentelemetry.sdk._logs.export.BatchLogRecordProcessor é importável."""
         try:
-            from opentelemetry.sdk._logs.export import \
-                BatchLogRecordProcessor  # noqa: F401
+            from opentelemetry.sdk._logs.export import (  # noqa: F401
+                BatchLogRecordProcessor,
+            )
         except ImportError as e:
             pytest.skip(f"BatchLogRecordProcessor não disponível: {e}")
 
     def test_in_memory_log_exporter_importable(self):
         """opentelemetry.sdk._logs.export.InMemoryLogExporter é importável."""
         try:
-            from opentelemetry.sdk._logs.export import \
-                InMemoryLogExporter  # noqa: F401
+            from opentelemetry.sdk._logs.export import InMemoryLogExporter  # noqa: F401
         except ImportError as e:
             pytest.skip(f"InMemoryLogExporter não disponível: {e}")
 
@@ -65,7 +65,8 @@ class TestOtelImports:
         # os.environ direct reads are forbidden (use get_observability_config())
         # Allow 'os' in comments and import statements, but not os.environ calls
         import re
-        direct_env_calls = re.findall(r'os\.environ', source)
+
+        direct_env_calls = re.findall(r"os\.environ", source)
         assert len(direct_env_calls) == 0, (
             f"dispatch_log_export.py has {len(direct_env_calls)} direct os.environ "
             f"reads — use get_observability_config() instead"

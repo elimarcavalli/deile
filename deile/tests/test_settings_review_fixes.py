@@ -25,8 +25,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deile.commands.settings_manager import SettingsManager
-from deile.config.settings import (LogLevel, Settings,
-                                   _is_project_layer_trusted, _set_typed)
+from deile.config.settings import (
+    LogLevel,
+    Settings,
+    _is_project_layer_trusted,
+    _set_typed,
+)
 from deile.security.permissions import PermissionLevel, PermissionManager
 
 pytestmark = pytest.mark.security
@@ -69,9 +73,7 @@ class TestP0_1_NoValueLeakOnValidation:
         with patch(
             "deile.commands.settings_manager._emit_settings_audit"
         ) as audit_mock:
-            result = mgr.set_setting(
-                "logging.level", secret_like_value, scope="global"
-            )
+            result = mgr.set_setting("logging.level", secret_like_value, scope="global")
 
         assert result is False
         assert audit_mock.called
@@ -265,12 +267,13 @@ class TestP2_1_OrderingPermBeforeValidation:
         pm_mock = MagicMock()
         pm_mock.check_permission.return_value = False
 
-        with patch(
-            "deile.commands._settings_security_hooks.get_permission_manager",
-            return_value=pm_mock,
-        ), patch(
-            "deile.commands.settings_manager._emit_settings_audit"
-        ) as audit_mock:
+        with (
+            patch(
+                "deile.commands._settings_security_hooks.get_permission_manager",
+                return_value=pm_mock,
+            ),
+            patch("deile.commands.settings_manager._emit_settings_audit") as audit_mock,
+        ):
             # Both invalid (int) and would-be-valid ("INFO") must yield denied.
             mgr.set_setting("logging.level", 42, scope="global")
             mgr.set_setting("logging.level", "INFO", scope="global")
@@ -298,9 +301,7 @@ class TestP2_2_CaseInsensitivePaths:
 
         if os.path.normcase(str(target)) == os.path.normcase(case_variant):
             # We're on a case-insensitive FS — the trust check must accept.
-            trusted, reason = _is_project_layer_trusted(
-                target, [case_variant], "deny"
-            )
+            trusted, reason = _is_project_layer_trusted(target, [case_variant], "deny")
             assert trusted is True
             assert reason == "allowlisted"
         else:
@@ -343,9 +344,7 @@ class TestP2_3_DetailedSkillsResult:
             "deile.commands._settings_security_hooks.get_permission_manager",
             return_value=pm_mock,
         ):
-            ok, reason = mgr.add_skills_path_detailed(
-                tmp_path / "x", scope="global"
-            )
+            ok, reason = mgr.add_skills_path_detailed(tmp_path / "x", scope="global")
         assert ok is False and reason == "denied"
 
     def test_remove_reasons(self, tmp_path, allow_writes):

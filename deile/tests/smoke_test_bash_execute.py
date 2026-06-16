@@ -53,6 +53,7 @@ async def main() -> int:
     # (subprocess, not the agent) — that's the ground truth the agent
     # must repeat back to prove it actually executed.
     import subprocess
+
     proof = subprocess.run(
         ["python3", str(ola)], capture_output=True, text=True, check=True
     )

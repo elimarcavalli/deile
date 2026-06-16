@@ -14,6 +14,7 @@ Implementação deliberadamente delgada — instancia
 ``ClusterObservabilityClient`` apontando para o pod ``deile-pipeline``
 e exibe o que recebe. Nenhum dado é mutado (3 GETs, zero mutação).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -147,6 +148,7 @@ class TasksCommand(DirectCommand):
 
     def __init__(self) -> None:
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="tasks",
             description=(
@@ -162,6 +164,7 @@ class TasksCommand(DirectCommand):
     @wrap_command_errors("tasks", message_template="Falha ao executar /tasks: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
         from ...security.audit_logger import AuditEventType, SeverityLevel
+
         emit_audit_event(
             event_type=AuditEventType.COMMAND_EXECUTED,
             severity=SeverityLevel.INFO,
@@ -198,7 +201,9 @@ class TasksCommand(DirectCommand):
         if pipeline_token is None:
             secret_path = "/run/secrets/pipeline-status/AUTH_TOKEN"
             try:
-                pipeline_token = open(secret_path).read().strip() or None  # noqa: WPS515
+                pipeline_token = (
+                    open(secret_path).read().strip() or None
+                )  # noqa: WPS515
             except OSError:
                 pass
 

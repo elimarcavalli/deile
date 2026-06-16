@@ -147,4 +147,6 @@ class TestPrintOneshotContent:
             tables.append(t)
 
         out = self._capture(tables)
-        assert "<rich.table.Table" not in out, "Should render all tables, not print list repr"
+        assert (
+            "<rich.table.Table" not in out
+        ), "Should render all tables, not print list repr"

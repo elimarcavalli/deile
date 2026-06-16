@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 class ErrorSeverity(Enum):
     """Error severity levels for persona operations"""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -78,6 +79,7 @@ class ErrorContext:
         try:
             # Try to serialize to check for circular references
             import json
+
             json.dumps(value, default=str)
             self.metadata[key] = value
         except (TypeError, ValueError):
@@ -94,52 +96,56 @@ class ErrorContext:
 
     def capture_stack_trace(self) -> None:
         """Capture current stack trace for debugging"""
-        self.stack_trace = traceback.format_exc() if traceback.format_exc().strip() != "NoneType: None" else None
+        self.stack_trace = (
+            traceback.format_exc()
+            if traceback.format_exc().strip() != "NoneType: None"
+            else None
+        )
 
     def to_audit_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for audit logging"""
         return {
-            'error_id': self.error_id,
-            'timestamp': self.timestamp.isoformat(),
-            'correlation_id': self.correlation_id,
-            'severity': self.severity.value,
-            'error_type': self.error_type,
-            'error_code': self.error_code,
-            'component': self.component,
-            'operation': self.operation,
-            'persona_id': self.persona_id,
-            'user_id': self.user_id,
-            'session_id': self.session_id,
-            'recovery_attempted': self.auto_recovery_attempted,
-            'recovery_success': self.recovery_success,
-            'recovery_strategy': self.recovery_strategy_used,
-            'audit_correlation_id': self.audit_correlation_id,
-            'metadata': self.metadata
+            "error_id": self.error_id,
+            "timestamp": self.timestamp.isoformat(),
+            "correlation_id": self.correlation_id,
+            "severity": self.severity.value,
+            "error_type": self.error_type,
+            "error_code": self.error_code,
+            "component": self.component,
+            "operation": self.operation,
+            "persona_id": self.persona_id,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "recovery_attempted": self.auto_recovery_attempted,
+            "recovery_success": self.recovery_success,
+            "recovery_strategy": self.recovery_strategy_used,
+            "audit_correlation_id": self.audit_correlation_id,
+            "metadata": self.metadata,
         }
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
         return {
-            'error_id': self.error_id,
-            'timestamp': self.timestamp.isoformat(),
-            'correlation_id': self.correlation_id,
-            'severity': self.severity.value,
-            'error_type': self.error_type,
-            'error_code': self.error_code,
-            'component': self.component,
-            'operation': self.operation,
-            'persona_id': self.persona_id,
-            'user_id': self.user_id,
-            'session_id': self.session_id,
-            'system_state': self.system_state,
-            'operation_parameters': self.operation_parameters,
-            'recovery_suggestions': self.recovery_suggestions,
-            'auto_recovery_attempted': self.auto_recovery_attempted,
-            'recovery_success': self.recovery_success,
-            'recovery_strategy_used': self.recovery_strategy_used,
-            'audit_correlation_id': self.audit_correlation_id,
-            'metadata': self.metadata,
-            'stack_trace': self.stack_trace
+            "error_id": self.error_id,
+            "timestamp": self.timestamp.isoformat(),
+            "correlation_id": self.correlation_id,
+            "severity": self.severity.value,
+            "error_type": self.error_type,
+            "error_code": self.error_code,
+            "component": self.component,
+            "operation": self.operation,
+            "persona_id": self.persona_id,
+            "user_id": self.user_id,
+            "session_id": self.session_id,
+            "system_state": self.system_state,
+            "operation_parameters": self.operation_parameters,
+            "recovery_suggestions": self.recovery_suggestions,
+            "auto_recovery_attempted": self.auto_recovery_attempted,
+            "recovery_success": self.recovery_success,
+            "recovery_strategy_used": self.recovery_strategy_used,
+            "audit_correlation_id": self.audit_correlation_id,
+            "metadata": self.metadata,
+            "stack_trace": self.stack_trace,
         }
 
     @classmethod
@@ -155,18 +161,18 @@ class ErrorContext:
             error_code=error.error_code,
             operation=error.operation or "unknown",
             persona_id=error.persona_id,
-            **kwargs
+            **kwargs,
         )
 
         # Set severity based on error type
         context.severity = cls._determine_severity_from_error(error)
 
         # Add recovery suggestion if available
-        if hasattr(error, 'recovery_suggestion') and error.recovery_suggestion:
+        if hasattr(error, "recovery_suggestion") and error.recovery_suggestion:
             context.add_recovery_suggestion(error.recovery_suggestion)
 
         # Add error context
-        if hasattr(error, 'context'):
+        if hasattr(error, "context"):
             for key, value in error.context.items():
                 context.add_metadata(key, value)
 
@@ -175,11 +181,14 @@ class ErrorContext:
     @staticmethod
     def _determine_severity_from_error(error) -> ErrorSeverity:
         """Determine severity level from error type"""
-        from ..core.exceptions import (PersonaConfigError,
-                                       PersonaExecutionError,
-                                       PersonaInitializationError,
-                                       PersonaIntegrationError,
-                                       PersonaLoadError, PersonaSwitchError)
+        from ..core.exceptions import (
+            PersonaConfigError,
+            PersonaExecutionError,
+            PersonaInitializationError,
+            PersonaIntegrationError,
+            PersonaLoadError,
+            PersonaSwitchError,
+        )
 
         severity_mapping = {
             PersonaConfigError: ErrorSeverity.HIGH,

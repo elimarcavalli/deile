@@ -33,11 +33,13 @@ import _panel_data as pd  # noqa: E402
 
 # ===== Cache TTL ============================================================
 
+
 class TestCache:
     def test_first_call_invokes_fetcher(self):
         calls: List[int] = []
-        cache = pd.Cache(ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok",
-                         fallback="-")
+        cache = pd.Cache(
+            ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok", fallback="-"
+        )
         assert cache.get() == "ok"
         assert calls == [1]
 
@@ -46,8 +48,9 @@ class TestCache:
         # devolve sempre o cached. O refresh fica por conta do
         # BackgroundRefresher chamando `maybe_refresh()`.
         calls: List[int] = []
-        cache = pd.Cache(ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok",
-                         fallback="-")
+        cache = pd.Cache(
+            ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok", fallback="-"
+        )
         cache.get()
         cache.get()
         cache.get()
@@ -58,17 +61,19 @@ class TestCache:
         # garantia, render no thread principal podia disparar fetch
         # sincrono e congelar a UI.
         calls: List[int] = []
-        cache = pd.Cache(ttl_s=0.0, fetcher=lambda: calls.append(1) or "ok",
-                         fallback="-")
-        cache.get()                # primeiro fetch (cold start)
-        cache.get()                # cache stale, mas NÃO refaz
+        cache = pd.Cache(
+            ttl_s=0.0, fetcher=lambda: calls.append(1) or "ok", fallback="-"
+        )
+        cache.get()  # primeiro fetch (cold start)
+        cache.get()  # cache stale, mas NÃO refaz
         cache.get()
         assert calls == [1]
 
     def test_force_bypasses_ttl(self):
         calls: List[int] = []
-        cache = pd.Cache(ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok",
-                         fallback="-")
+        cache = pd.Cache(
+            ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok", fallback="-"
+        )
         cache.get()
         cache.get(force=True)
         assert calls == [1, 1]
@@ -77,26 +82,27 @@ class TestCache:
         # `maybe_refresh` faz fetch só se TTL venceu — é o que o
         # BackgroundRefresher chama em loop.
         calls: List[int] = []
-        cache = pd.Cache(ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok",
-                         fallback="-")
-        cache.get()                              # 1º fetch (cold)
-        assert cache.maybe_refresh() is False    # TTL ainda fresco
+        cache = pd.Cache(
+            ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok", fallback="-"
+        )
+        cache.get()  # 1º fetch (cold)
+        assert cache.maybe_refresh() is False  # TTL ainda fresco
         assert calls == [1]
 
     def test_maybe_refresh_fetches_when_stale(self):
         calls: List[int] = []
-        cache = pd.Cache(ttl_s=0.0, fetcher=lambda: calls.append(1) or "ok",
-                         fallback="-")
-        cache.get()                              # 1º fetch (cold)
-        assert cache.maybe_refresh() is True     # TTL=0 → sempre stale
+        cache = pd.Cache(
+            ttl_s=0.0, fetcher=lambda: calls.append(1) or "ok", fallback="-"
+        )
+        cache.get()  # 1º fetch (cold)
+        assert cache.maybe_refresh() is True  # TTL=0 → sempre stale
         assert calls == [1, 1]
 
     def test_invalidate_marks_stale_without_dropping_value(self):
         # `invalidate` (usado pelo hotkey [r]) marca como vencido mas
         # devolve o valor antigo via get() — o BackgroundRefresher
         # repõe no próximo tick sem segurar a UI.
-        cache = pd.Cache(ttl_s=10.0, fetcher=lambda: "fresh",
-                         fallback="-")
+        cache = pd.Cache(ttl_s=10.0, fetcher=lambda: "fresh", fallback="-")
         cache.get()
         cache.invalidate()
         # get() ainda devolve "fresh", sem chamar fetcher de novo.
@@ -118,7 +124,7 @@ class TestCache:
         # `get()` não refaz fetch (contrato novo); precisamos do
         # `maybe_refresh` para vir o erro.
         assert cache.maybe_refresh() is True
-        assert cache.get() == "good"             # mantém último valor bom
+        assert cache.get() == "good"  # mantém último valor bom
         assert cache.last_error is not None
         assert "boom" in cache.last_error
 
@@ -132,24 +138,29 @@ class TestCache:
 
 # ===== _fmt_age =============================================================
 
+
 class TestFmtAge:
-    @pytest.mark.parametrize("secs,expected", [
-        (None, "—"),
-        (-5, "0s"),
-        (0, "0s"),
-        (45, "45s"),
-        (60, "1m"),
-        (119, "1m"),
-        (3600, "1h"),
-        (3660, "1h01m"),
-        (86400, "1d"),
-        (90000, "1d"),
-    ])
+    @pytest.mark.parametrize(
+        "secs,expected",
+        [
+            (None, "—"),
+            (-5, "0s"),
+            (0, "0s"),
+            (45, "45s"),
+            (60, "1m"),
+            (119, "1m"),
+            (3600, "1h"),
+            (3660, "1h01m"),
+            (86400, "1d"),
+            (90000, "1d"),
+        ],
+    )
     def test_humanizes(self, secs, expected):
         assert pd._fmt_age(secs) == expected
 
 
 # ===== ActivityEvent timestamps (issue #348) ================================
+
 
 class TestActivityEventTimestamps:
     """`ActivityEvent.hhmmss` retorna UTC explícito com sufixo Z.
@@ -163,8 +174,11 @@ class TestActivityEventTimestamps:
         # 14:00 UTC — em America/Sao_Paulo (-3) seria 11:00 local.
         ts = datetime(2026, 5, 27, 14, 0, 0, tzinfo=timezone.utc)
         ev = pd.ActivityEvent(
-            ts=ts, actor="pipeline", action="dispatch",
-            target="", detail="test",
+            ts=ts,
+            actor="pipeline",
+            action="dispatch",
+            target="",
+            detail="test",
         )
         assert ev.hhmmss == "14:00:00Z"
         # Não deve ser hora local!
@@ -174,8 +188,11 @@ class TestActivityEventTimestamps:
         """`hhmmss_local` deve retornar hora local com offset."""
         ts = datetime(2026, 5, 27, 14, 0, 0, tzinfo=timezone.utc)
         ev = pd.ActivityEvent(
-            ts=ts, actor="pipeline", action="dispatch",
-            target="", detail="test",
+            ts=ts,
+            actor="pipeline",
+            action="dispatch",
+            target="",
+            detail="test",
         )
         local = ev.hhmmss_local
         # Formato: HH:MM ±ZZZZ (ex: "11:00 -0300")
@@ -187,8 +204,11 @@ class TestActivityEventTimestamps:
         """`hhmmss` deve ter exatamente 9 caracteres: HH:MM:SSZ."""
         ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
         ev = pd.ActivityEvent(
-            ts=ts, actor="pipeline", action="dispatch",
-            target="", detail="test",
+            ts=ts,
+            actor="pipeline",
+            action="dispatch",
+            target="",
+            detail="test",
         )
         assert ev.hhmmss == "00:00:00Z"
         assert len(ev.hhmmss) == 9
@@ -197,13 +217,17 @@ class TestActivityEventTimestamps:
         """00:00 UTC deve ser '00:00:00Z', não voltar dia anterior."""
         ts = datetime(2026, 5, 27, 0, 0, 0, tzinfo=timezone.utc)
         ev = pd.ActivityEvent(
-            ts=ts, actor="pipeline", action="dispatch",
-            target="", detail="test",
+            ts=ts,
+            actor="pipeline",
+            action="dispatch",
+            target="",
+            detail="test",
         )
         assert ev.hhmmss == "00:00:00Z"
 
 
 # ===== _parse_k8s_ts / _parse_log_line ======================================
+
 
 class TestK8sTs:
     def test_parses_rfc3339_z(self):
@@ -222,8 +246,10 @@ class TestK8sTs:
 
 class TestParseLogLine:
     def test_extracts_ts_and_body(self):
-        raw = ("2026-05-23T14:21:56.123-03:00 2026-05-23 17:21:56,123 INFO "
-               "deile.foo something happened")
+        raw = (
+            "2026-05-23T14:21:56.123-03:00 2026-05-23 17:21:56,123 INFO "
+            "deile.foo something happened"
+        )
         ll = pd._parse_log_line(raw)
         assert ll is not None
         assert ll.ts.year == 2026
@@ -235,113 +261,173 @@ class TestParseLogLine:
 
 # ===== _classify_pipeline_line =============================================
 
+
 class TestPipelineClassifier:
     def _line(self, body: str) -> pd.LogLine:
-        return pd.LogLine(ts=datetime(2026, 5, 23, 14, 0, tzinfo=timezone.utc),
-                          body=body)
+        return pd.LogLine(
+            ts=datetime(2026, 5, 23, 14, 0, tzinfo=timezone.utc), body=body
+        )
 
     def test_mention_group_legacy_stages_fallback(self):
         # Legacy "mention group" log lines are no longer emitted by stages.py
         # (_MENTION_RE was retired). A line with the full module prefix still
         # matches _STAGES_RE and returns action="stages".
-        ev = pd._classify_pipeline_line(self._line(
-            "deile.orchestration.pipeline.stages mention group issue:278: "
-            "triggers=['assignee']"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "deile.orchestration.pipeline.stages mention group issue:278: "
+                "triggers=['assignee']"
+            )
+        )
         assert ev is not None
         assert ev.action == "stages"
 
     def test_mention_pr_legacy_returns_none(self):
         # Legacy "mention group pr:..." without the full module prefix no longer
         # matches any pattern and returns None.
-        ev = pd._classify_pipeline_line(self._line(
-            "stages mention group pr:291: triggers=['reviewer']"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line("stages mention group pr:291: triggers=['reviewer']")
+        )
         assert ev is None
 
     def test_dispatch_starting(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "INFO deile.infrastructure.deile_worker_client worker dispatch starting"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "INFO deile.infrastructure.deile_worker_client worker dispatch starting"
+            )
+        )
         assert ev is not None and ev.action == "dispatch"
         assert "starting" in ev.detail
 
     def test_http_post(self):
-        ev = pd._classify_pipeline_line(self._line(
-            'httpx HTTP Request: POST http://x/v1/dispatch "HTTP/1.1 200 OK"'
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                'httpx HTTP Request: POST http://x/v1/dispatch "HTTP/1.1 200 OK"'
+            )
+        )
         assert ev is not None and ev.action == "http"
         assert "200" in ev.detail
 
     def test_startup(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "INFO deile.pipeline.runner starting pipeline monitor (repo=...)"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "INFO deile.pipeline.runner starting pipeline monitor (repo=...)"
+            )
+        )
         assert ev is not None and ev.action == "startup"
 
     def test_unrelated_returns_none(self):
-        assert pd._classify_pipeline_line(self._line(
-            "completely unrelated log line about something else"
-        )) is None
+        assert (
+            pd._classify_pipeline_line(
+                self._line("completely unrelated log line about something else")
+            )
+            is None
+        )
 
 
 # ===== _classify_pipeline_line — canonical families (#448) ==================
+
 
 class TestPipelineClassifierCanonical:
     """AC1, AC2, AC3, AC6, AC8, AC9, AC10 — canonical branches + legacy regression."""
 
     def _line(self, body: str) -> pd.LogLine:
-        return pd.LogLine(ts=datetime(2026, 5, 31, 10, 0, tzinfo=timezone.utc),
-                          body=body)
+        return pd.LogLine(
+            ts=datetime(2026, 5, 31, 10, 0, tzinfo=timezone.utc), body=body
+        )
 
     # ── AC1: all 15 subtypes recognized (table-driven) ────────────────────
-    @pytest.mark.parametrize("body,expected_action,expected_target_substr", [
-        ("refinement.critique issue=278 persona=architect verdict=vago",
-         "refinement.critique", "#278"),
-        ("refinement.refine issue=278 round=2 persona=architect body_chars=1500 verdict=claro",
-         "refinement.refine", "#278"),
-        ("decomposition.fanout intent=10 derivadas=[11,12] complexity=[M,L]",
-         "decomposition.fanout", "#10"),
-        ("batch.claim sha=abc12345defg issues=[1,2] reason=auto",
-         "batch.claim", "~batch:abc12345"),
-        ("batch.release sha=abc12345defg reason=done",
-         "batch.release", "~batch:abc12345"),
-        ("label.change target_kind=issue target=300 removed=[~workflow:nova] added=[~workflow:revisada]",
-         "label.change", "#300"),
-        ("label.change target_kind=pr target=55 removed=[] added=[~review:pendente]",
-         "label.change", "PR#55"),
-        ("reaper.unblock target_kind=issue target=400 attempts=1 reason=retrying",
-         "reaper.unblock", "#400"),
-        ("reaper.block target_kind=issue target=400 attempts=5 cap=5 reason=max_attempts",
-         "reaper.block", "#400"),
-        ("auth.fail target=worker-abc attempts=3 thr=3 reason=expired",
-         "auth.fail", "worker-abc"),
-        ("auth.backoff target=worker-abc attempts=4 backoff_s=120 until=2026-05-31T11:00:00Z",
-         "auth.backoff", "worker-abc"),
-        ("auth.skip target=worker-abc remaining_s=90",
-         "auth.skip", "worker-abc"),
-        ("auth.recover target=worker-abc reason=token_refreshed",
-         "auth.recover", "worker-abc"),
-        ("routing.mention target_kind=issue target=278 via=assignee",
-         "routing.mention", "#278"),
-        ("routing.pr_unified target_kind=pr target=91 via=reviewer",
-         "routing.pr_unified", "PR#91"),
-        ("routing.dropped target_kind=issue target=278 reason=no_handler",
-         "routing.dropped", "#278"),
-    ])
+    @pytest.mark.parametrize(
+        "body,expected_action,expected_target_substr",
+        [
+            (
+                "refinement.critique issue=278 persona=architect verdict=vago",
+                "refinement.critique",
+                "#278",
+            ),
+            (
+                "refinement.refine issue=278 round=2 persona=architect body_chars=1500 verdict=claro",
+                "refinement.refine",
+                "#278",
+            ),
+            (
+                "decomposition.fanout intent=10 derivadas=[11,12] complexity=[M,L]",
+                "decomposition.fanout",
+                "#10",
+            ),
+            (
+                "batch.claim sha=abc12345defg issues=[1,2] reason=auto",
+                "batch.claim",
+                "~batch:abc12345",
+            ),
+            (
+                "batch.release sha=abc12345defg reason=done",
+                "batch.release",
+                "~batch:abc12345",
+            ),
+            (
+                "label.change target_kind=issue target=300 removed=[~workflow:nova] added=[~workflow:revisada]",
+                "label.change",
+                "#300",
+            ),
+            (
+                "label.change target_kind=pr target=55 removed=[] added=[~review:pendente]",
+                "label.change",
+                "PR#55",
+            ),
+            (
+                "reaper.unblock target_kind=issue target=400 attempts=1 reason=retrying",
+                "reaper.unblock",
+                "#400",
+            ),
+            (
+                "reaper.block target_kind=issue target=400 attempts=5 cap=5 reason=max_attempts",
+                "reaper.block",
+                "#400",
+            ),
+            (
+                "auth.fail target=worker-abc attempts=3 thr=3 reason=expired",
+                "auth.fail",
+                "worker-abc",
+            ),
+            (
+                "auth.backoff target=worker-abc attempts=4 backoff_s=120 until=2026-05-31T11:00:00Z",
+                "auth.backoff",
+                "worker-abc",
+            ),
+            ("auth.skip target=worker-abc remaining_s=90", "auth.skip", "worker-abc"),
+            (
+                "auth.recover target=worker-abc reason=token_refreshed",
+                "auth.recover",
+                "worker-abc",
+            ),
+            (
+                "routing.mention target_kind=issue target=278 via=assignee",
+                "routing.mention",
+                "#278",
+            ),
+            (
+                "routing.pr_unified target_kind=pr target=91 via=reviewer",
+                "routing.pr_unified",
+                "PR#91",
+            ),
+            (
+                "routing.dropped target_kind=issue target=278 reason=no_handler",
+                "routing.dropped",
+                "#278",
+            ),
+        ],
+    )
     def test_canonical_recognized(self, body, expected_action, expected_target_substr):
         ev = pd._classify_pipeline_line(self._line(body))
         assert ev is not None, f"Expected ActivityEvent for: {body!r}"
         assert ev.action == expected_action
-        assert expected_target_substr in ev.target, (
-            f"target={ev.target!r} does not contain {expected_target_substr!r}"
-        )
+        assert (
+            expected_target_substr in ev.target
+        ), f"target={ev.target!r} does not contain {expected_target_substr!r}"
 
     # ── AC2: unknown family falls through to legacy, no exception ─────────
     def test_unknown_family_falls_to_legacy_stages(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "unknown.family key=val"
-        ))
+        ev = pd._classify_pipeline_line(self._line("unknown.family key=val"))
         # Not a canonical family; should return None (no legacy match either).
         assert ev is None
 
@@ -353,41 +439,50 @@ class TestPipelineClassifierCanonical:
 
     # ── AC3: extra k=v pairs preserved additive-only ──────────────────────
     def test_extra_kv_preserved_in_detail(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "refinement.critique issue=278 persona=architect verdict=vago extra_key=hello"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "refinement.critique issue=278 persona=architect verdict=vago extra_key=hello"
+            )
+        )
         assert ev is not None
         # extra_key should NOT appear in detail (detail is family-specific selection),
         # but the line must be recognized (not dropped).
         assert ev.action == "refinement.critique"
 
     def test_gaps_included_when_present(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "refinement.critique issue=278 persona=architect verdict=vago gaps=scope"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "refinement.critique issue=278 persona=architect verdict=vago gaps=scope"
+            )
+        )
         assert ev is not None
         assert "gaps=scope" in ev.detail
 
     def test_gaps_absent_when_not_in_line(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "refinement.critique issue=278 persona=architect verdict=claro"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line("refinement.critique issue=278 persona=architect verdict=claro")
+        )
         assert ev is not None
         assert "gaps" not in ev.detail
 
     # ── AC6: 6 secret patterns redacted ───────────────────────────────────
     # routing.dropped includes ALL non-target kv pairs in detail, so secrets
     # appended to the line will appear in detail as <redacted>.
-    @pytest.mark.parametrize("secret_kv", [
-        "token=supersecret123",
-        "bearer=mysecrettoken",
-        "api_key=myapikey",
-        "secret=mysecret",
-        "password=mypassword",
-        "authorization=Bearer_xyz",
-    ])
+    @pytest.mark.parametrize(
+        "secret_kv",
+        [
+            "token=supersecret123",
+            "bearer=mysecrettoken",
+            "api_key=myapikey",
+            "secret=mysecret",
+            "password=mypassword",
+            "authorization=Bearer_xyz",
+        ],
+    )
     def test_secret_redacted(self, secret_kv):
-        body = f"routing.dropped target_kind=issue target=278 reason=expired {secret_kv}"
+        body = (
+            f"routing.dropped target_kind=issue target=278 reason=expired {secret_kv}"
+        )
         ev = pd._classify_pipeline_line(self._line(body))
         assert ev is not None
         assert "<redacted>" in ev.detail
@@ -397,70 +492,80 @@ class TestPipelineClassifierCanonical:
 
     # ── AC8: target derivation per family ─────────────────────────────────
     def test_batch_sha8_truncation(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "batch.claim sha=abcdef1234567890 issues=[1] reason=auto"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line("batch.claim sha=abcdef1234567890 issues=[1] reason=auto")
+        )
         assert ev is not None
         assert ev.target == "~batch:abcdef12"
 
     def test_issue_target_hash_prefix(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "refinement.refine issue=42 round=1 persona=architect body_chars=500 verdict=claro"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "refinement.refine issue=42 round=1 persona=architect body_chars=500 verdict=claro"
+            )
+        )
         assert ev is not None
         assert ev.target == "#42"
 
     def test_pr_target_pr_prefix(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "label.change target_kind=pr target=99 removed=[] added=[~review:pendente]"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "label.change target_kind=pr target=99 removed=[] added=[~review:pendente]"
+            )
+        )
         assert ev is not None
         assert ev.target == "PR#99"
 
     def test_auth_target_raw_id(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "auth.skip target=claude-worker-pod attempts=0 remaining_s=60"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line("auth.skip target=claude-worker-pod attempts=0 remaining_s=60")
+        )
         assert ev is not None
         assert ev.target == "claude-worker-pod"
 
     # ── AC9: detail contains expected keys per family ─────────────────────
     def test_refinement_critique_detail_keys(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "refinement.critique issue=278 persona=architect verdict=vago"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line("refinement.critique issue=278 persona=architect verdict=vago")
+        )
         assert ev is not None
         assert "persona=architect" in ev.detail
         assert "verdict=vago" in ev.detail
 
     def test_refinement_refine_detail_keys(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "refinement.refine issue=278 round=2 persona=architect body_chars=1500 verdict=claro"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "refinement.refine issue=278 round=2 persona=architect body_chars=1500 verdict=claro"
+            )
+        )
         assert ev is not None
         assert "round=2" in ev.detail
         assert "body_chars=1500" in ev.detail
 
     def test_reaper_block_attempts_cap(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "reaper.block target_kind=issue target=400 attempts=5 cap=5 reason=max_attempts"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "reaper.block target_kind=issue target=400 attempts=5 cap=5 reason=max_attempts"
+            )
+        )
         assert ev is not None
         assert "attempts=5/5" in ev.detail
         assert "reason=max_attempts" in ev.detail
 
     def test_auth_fail_attempts_threshold(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "auth.fail target=worker-abc attempts=3 thr=3 reason=expired"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line("auth.fail target=worker-abc attempts=3 thr=3 reason=expired")
+        )
         assert ev is not None
         assert "attempts=3/3" in ev.detail
         assert "reason=expired" in ev.detail
 
     def test_auth_backoff_detail_keys(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "auth.backoff target=worker-abc attempts=4 backoff_s=120 until=2026-05-31T11:00:00Z"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "auth.backoff target=worker-abc attempts=4 backoff_s=120 until=2026-05-31T11:00:00Z"
+            )
+        )
         assert ev is not None
         assert "backoff_s=120" in ev.detail
         assert "until=2026-05-31T11:00:00Z" in ev.detail
@@ -468,52 +573,63 @@ class TestPipelineClassifierCanonical:
     # ── AC10: legacy patterns (mention retired, others unchanged) ─────────
     def test_legacy_mention_issue_stages_fallback(self):
         # _MENTION_RE retired — line with full module prefix matches _STAGES_RE.
-        ev = pd._classify_pipeline_line(self._line(
-            "deile.orchestration.pipeline.stages mention group issue:278: triggers=['assignee']"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "deile.orchestration.pipeline.stages mention group issue:278: triggers=['assignee']"
+            )
+        )
         assert ev is not None
         assert ev.action == "stages"
 
     def test_legacy_mention_pr_returns_none(self):
         # _MENTION_RE retired — short form without module prefix returns None.
-        ev = pd._classify_pipeline_line(self._line(
-            "stages mention group pr:291: triggers=['reviewer']"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line("stages mention group pr:291: triggers=['reviewer']")
+        )
         assert ev is None
 
     def test_legacy_dispatch_starting(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "INFO deile.infrastructure.deile_worker_client worker dispatch starting"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "INFO deile.infrastructure.deile_worker_client worker dispatch starting"
+            )
+        )
         assert ev is not None
         assert ev.action == "dispatch"
         assert "starting" in ev.detail
 
     def test_legacy_dispatch_completed(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "INFO deile.infrastructure.deile_worker_client worker dispatch completed"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "INFO deile.infrastructure.deile_worker_client worker dispatch completed"
+            )
+        )
         assert ev is not None
         assert ev.action == "dispatch"
         assert "completed" in ev.detail
 
     def test_legacy_http_post(self):
-        ev = pd._classify_pipeline_line(self._line(
-            'httpx HTTP Request: POST http://x/v1/dispatch "HTTP/1.1 200 OK"'
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                'httpx HTTP Request: POST http://x/v1/dispatch "HTTP/1.1 200 OK"'
+            )
+        )
         assert ev is not None
         assert ev.action == "http"
         assert "200" in ev.detail
 
     def test_legacy_startup(self):
-        ev = pd._classify_pipeline_line(self._line(
-            "INFO deile.pipeline.runner starting pipeline monitor (repo=...)"
-        ))
+        ev = pd._classify_pipeline_line(
+            self._line(
+                "INFO deile.pipeline.runner starting pipeline monitor (repo=...)"
+            )
+        )
         assert ev is not None
         assert ev.action == "startup"
 
 
 # ===== PipelineState.canonical_dropped counters (#448) =====================
+
 
 class TestPipelineStateDropCounters:
     """AC4, AC5, AC11 — guard checks in _parse + cap on events list."""
@@ -551,8 +667,10 @@ class TestPipelineStateDropCounters:
     def test_carriage_return_in_canonical_line_increments_counter(self):
         # \r is consumed by splitlines() so it never reaches ll.body via the
         # normal text path.  Inject a LogLine with \r in the body directly.
-        fake_ll = pd.LogLine(ts=datetime(2026, 5, 31, 10, 0, 0, tzinfo=timezone.utc),
-                             body="refinement.critique issue=1\rpersona=architect verdict=claro")
+        fake_ll = pd.LogLine(
+            ts=datetime(2026, 5, 31, 10, 0, 0, tzinfo=timezone.utc),
+            body="refinement.critique issue=1\rpersona=architect verdict=claro",
+        )
         with patch("_panel_data._parse_log_line", return_value=fake_ll):
             state = pd.PipelineProvider.__new__(pd.PipelineProvider)._parse("dummy")
         assert state.canonical_dropped["line_has_forbidden_char"] == 1
@@ -560,14 +678,14 @@ class TestPipelineStateDropCounters:
     # ── AC11: events capped at 60 ─────────────────────────────────────────
     def test_events_capped_at_60(self):
         lines = "\n".join(
-            self._raw(f"auth.skip target=worker-{i} remaining_s={i}")
-            for i in range(80)
+            self._raw(f"auth.skip target=worker-{i} remaining_s={i}") for i in range(80)
         )
         state = self._provider()._parse(lines)
         assert len(state.events) <= 60
 
 
 # ===== _redact_canonical_detail (unit) ======================================
+
 
 class TestCanonicalHelpers:
     def test_redact_token(self):
@@ -595,30 +713,46 @@ class TestCanonicalHelpers:
 
 # ===== _derive_workflow =====================================================
 
+
 class TestDeriveWorkflow:
     def test_empty(self):
         assert pd._derive_workflow([]) == ""
 
     def test_picks_workflow_label(self):
-        assert pd._derive_workflow(["bug", "~workflow:em_implementacao"]) \
+        assert (
+            pd._derive_workflow(["bug", "~workflow:em_implementacao"])
             == "em_implementacao"
+        )
 
     def test_bloqueada_wins_over_other_workflow_label(self):
         # Estado terminal: o pipeline a respeita mesmo quando outra label
         # de fase ainda está presente. Sem essa precedência, a UI mostraria
         # o estado anterior em vez do bloqueio.
-        assert pd._derive_workflow([
-            "~workflow:em_implementacao", "~workflow:bloqueada",
-        ]) == "bloqueada"
-        assert pd._derive_workflow([
-            "~workflow:bloqueada", "~workflow:em_implementacao",
-        ]) == "bloqueada"
+        assert (
+            pd._derive_workflow(
+                [
+                    "~workflow:em_implementacao",
+                    "~workflow:bloqueada",
+                ]
+            )
+            == "bloqueada"
+        )
+        assert (
+            pd._derive_workflow(
+                [
+                    "~workflow:bloqueada",
+                    "~workflow:em_implementacao",
+                ]
+            )
+            == "bloqueada"
+        )
 
     def test_non_workflow_labels_ignored(self):
         assert pd._derive_workflow(["help wanted", "P0"]) == ""
 
 
 # ===== PodsProvider =========================================================
+
 
 class TestPodsProvider:
     def _payload(self) -> Dict[str, Any]:
@@ -633,8 +767,11 @@ class TestPodsProvider:
                         "phase": "Running",
                         "startTime": "2026-05-23T14:00:00Z",
                         "containerStatuses": [
-                            {"ready": True, "restartCount": 0,
-                             "state": {"running": {}}},
+                            {
+                                "ready": True,
+                                "restartCount": 0,
+                                "state": {"running": {}},
+                            },
                         ],
                     },
                     "spec": {"nodeName": "test-node"},
@@ -655,9 +792,10 @@ class TestPodsProvider:
                         "name": "unknown-app",
                         "labels": {"app": "something-else"},
                     },
-                    "status": {"phase": "Running",
-                               "containerStatuses": [{"ready": True,
-                                                       "restartCount": 5}]},
+                    "status": {
+                        "phase": "Running",
+                        "containerStatuses": [{"ready": True, "restartCount": 5}],
+                    },
                     "spec": {},
                 },
             ],
@@ -696,15 +834,20 @@ class TestPodsProvider:
 
     def test_ordering_pipeline_first_then_worker(self):
         payload = self._payload()
-        payload["items"].append({
-            "metadata": {"name": "deile-pipeline-zzz",
-                         "labels": {"app": "deile-pipeline"}},
-            "status": {"phase": "Running",
-                       "startTime": "2026-05-23T14:00:00Z",
-                       "containerStatuses": [{"ready": True,
-                                              "restartCount": 0}]},
-            "spec": {},
-        })
+        payload["items"].append(
+            {
+                "metadata": {
+                    "name": "deile-pipeline-zzz",
+                    "labels": {"app": "deile-pipeline"},
+                },
+                "status": {
+                    "phase": "Running",
+                    "startTime": "2026-05-23T14:00:00Z",
+                    "containerStatuses": [{"ready": True, "restartCount": 0}],
+                },
+                "spec": {},
+            }
+        )
         prov = self._provider_with_payload(payload)
         rows = prov.get()
         assert rows[0].role == "pipeline"
@@ -726,6 +869,7 @@ class TestPodsProvider:
 
 # ===== WorkerProvider (busy detection) =====================================
 
+
 class TestWorkerProvider:
     def _build(self) -> pd.WorkerProvider:
         prov = pd.WorkerProvider(ttl_s=0.0)
@@ -738,9 +882,8 @@ class TestWorkerProvider:
         now = datetime.now(timezone.utc)
         out = []
         for i, body in enumerate(bodies):
-            ts = (now - timedelta(seconds=i * 2))
-            out.append(ts.strftime("%Y-%m-%dT%H:%M:%S.000000000+00:00")
-                       + f" {body}")
+            ts = now - timedelta(seconds=i * 2)
+            out.append(ts.strftime("%Y-%m-%dT%H:%M:%S.000000000+00:00") + f" {body}")
         return "\n".join(out)
 
     def test_idle_when_only_health_in_window(self):
@@ -780,9 +923,11 @@ class TestWorkerProvider:
     def test_idle_when_dispatch_older_than_90s(self):
         prov = self._build()
         # Linha com timestamp "antigo" — 5 min atrás
-        old_ts = (datetime.now(timezone.utc) - timedelta(minutes=5))
-        old_str = (old_ts.strftime("%Y-%m-%dT%H:%M:%S.000000000+00:00")
-                   + ' POST /v1/dispatch HTTP/1.1 200')
+        old_ts = datetime.now(timezone.utc) - timedelta(minutes=5)
+        old_str = (
+            old_ts.strftime("%Y-%m-%dT%H:%M:%S.000000000+00:00")
+            + " POST /v1/dispatch HTTP/1.1 200"
+        )
         names_text = "worker-3"
 
         def fake_capture(cmd, timeout):
@@ -797,6 +942,7 @@ class TestWorkerProvider:
 
 # ===== GitHubProvider =======================================================
 
+
 class TestGitHubProvider:
     def _items(self) -> List[Dict[str, Any]]:
         return [
@@ -804,8 +950,7 @@ class TestGitHubProvider:
                 "number": 296,
                 "title": "[FEATURE] foo",
                 "state": "open",
-                "labels": [{"name": "feature"},
-                           {"name": "~workflow:em_implementacao"}],
+                "labels": [{"name": "feature"}, {"name": "~workflow:em_implementacao"}],
                 "assignees": [{"login": "deile-one"}],
                 "updated_at": "2026-05-23T12:00:00Z",
                 "html_url": "https://github.com/x/y/issues/296",
@@ -814,8 +959,10 @@ class TestGitHubProvider:
                 "number": 283,
                 "title": "[FEATURE] bar",
                 "state": "open",
-                "labels": [{"name": "~workflow:em_implementacao"},
-                           {"name": "~workflow:bloqueada"}],
+                "labels": [
+                    {"name": "~workflow:em_implementacao"},
+                    {"name": "~workflow:bloqueada"},
+                ],
                 "assignees": [{"login": "elimarcavalli"}],
                 "updated_at": "2026-05-22T20:00:00Z",
                 "html_url": "https://github.com/x/y/issues/283",
@@ -868,6 +1015,7 @@ class TestGitHubProvider:
 
 # ===== CostsProvider ========================================================
 
+
 class TestCostsProvider:
     def _populated_db(self, tmp_path: Path) -> Path:
         db = tmp_path / "usage.db"
@@ -888,14 +1036,66 @@ class TestCostsProvider:
         """)
         now = time.time()
         rows = [
-            (now - 30, "anthropic", "claude", "premium", "s1",
-             100, 50, 0, 150, 0.10, 1000, 1, None),
-            (now - 60, "anthropic", "claude", "premium", "s1",
-             200, 80, 0, 280, 0.15, 1000, 1, None),
-            (now - 1800, "openai", "gpt-4", "premium", "s2",
-             100, 50, 0, 150, 0.05, 800, 1, None),
-            (now - 90000, "deepseek", "ds", "basic", "s3",  # >24h ago: filtrado
-             50, 20, 0, 70, 0.99, 500, 1, None),
+            (
+                now - 30,
+                "anthropic",
+                "claude",
+                "premium",
+                "s1",
+                100,
+                50,
+                0,
+                150,
+                0.10,
+                1000,
+                1,
+                None,
+            ),
+            (
+                now - 60,
+                "anthropic",
+                "claude",
+                "premium",
+                "s1",
+                200,
+                80,
+                0,
+                280,
+                0.15,
+                1000,
+                1,
+                None,
+            ),
+            (
+                now - 1800,
+                "openai",
+                "gpt-4",
+                "premium",
+                "s2",
+                100,
+                50,
+                0,
+                150,
+                0.05,
+                800,
+                1,
+                None,
+            ),
+            (
+                now - 90000,
+                "deepseek",
+                "ds",
+                "basic",
+                "s3",  # >24h ago: filtrado
+                50,
+                20,
+                0,
+                70,
+                0.99,
+                500,
+                1,
+                None,
+            ),
         ]
         conn.executemany(
             "INSERT INTO usage_records VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -916,7 +1116,7 @@ class TestCostsProvider:
         db = self._populated_db(tmp_path)
         prov = pd.CostsProvider(db_path=db, ttl_s=0.0)
         snap = prov.get(force=True)
-        assert snap.records_24h == 3   # 4ª linha tem >24h, fica fora
+        assert snap.records_24h == 3  # 4ª linha tem >24h, fica fora
         assert snap.total_24h == pytest.approx(0.30, abs=0.001)
         assert snap.by_provider_24h["anthropic"] == pytest.approx(0.25, abs=0.001)
         assert snap.by_provider_24h["openai"] == pytest.approx(0.05, abs=0.001)
@@ -935,14 +1135,14 @@ class TestCostsProvider:
         prov = pd.CostsProvider(db_path=db, ttl_s=0.0)
         snap = prov.get(force=True)
         sids = [s[0] for s in snap.top_sessions_24h]
-        assert sids[0] == "s1"     # mais caro
+        assert sids[0] == "s1"  # mais caro
 
 
 # ===== Alerts engine ========================================================
 
+
 class TestAlerts:
-    def _data_with(self, pods=None, pipeline=None, issues=None,
-                   errors=None) -> Any:
+    def _data_with(self, pods=None, pipeline=None, issues=None, errors=None) -> Any:
         d = MagicMock()
         d.pods.get.return_value = pods or []
         ps = MagicMock()
@@ -970,16 +1170,14 @@ class TestAlerts:
     def test_pod_restart_crit_above_3(self):
         pod = MagicMock()
         pod.name, pod.restarts, pod.age_s = "x", 4, 3600
-        d = self._data_with(pods=[pod],
-                            pipeline={"last_action_age_s": 10})
+        d = self._data_with(pods=[pod], pipeline={"last_action_age_s": 10})
         alerts = panel._alerts_from_data(d)
         assert any(a.severity == "crit" for a in alerts)
 
     def test_pod_restart_warn_below_30min(self):
         pod = MagicMock()
         pod.name, pod.restarts, pod.age_s = "x", 1, 600
-        d = self._data_with(pods=[pod],
-                            pipeline={"last_action_age_s": 10})
+        d = self._data_with(pods=[pod], pipeline={"last_action_age_s": 10})
         alerts = panel._alerts_from_data(d)
         assert any(a.severity == "warn" for a in alerts)
 
@@ -1002,6 +1200,7 @@ class TestAlerts:
 
 
 # ===== _pod_rows adapter ====================================================
+
 
 class TestModelsProvider:
     def _yaml(self, tmp_path: Path) -> Path:
@@ -1059,8 +1258,10 @@ class TestCurrentModelProvider:
                             {
                                 "env": [
                                     {"name": "OTHER", "value": "x"},
-                                    {"name": "DEILE_PREFERRED_MODEL",
-                                     "value": "anthropic:claude-opus-4-8"},
+                                    {
+                                        "name": "DEILE_PREFERRED_MODEL",
+                                        "value": "anthropic:claude-opus-4-8",
+                                    },
                                 ],
                             },
                         ],
@@ -1068,30 +1269,53 @@ class TestCurrentModelProvider:
                 },
             },
         }
-        assert pd.CurrentModelProvider._extract(sample) \
-            == "anthropic:claude-opus-4-8"
+        assert pd.CurrentModelProvider._extract(sample) == "anthropic:claude-opus-4-8"
 
     def test_missing_env_returns_none(self):
-        sample = {"spec": {"template": {"spec": {
-            "containers": [{"env": [{"name": "OTHER", "value": "x"}]}],
-        }}}}
+        sample = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [{"env": [{"name": "OTHER", "value": "x"}]}],
+                    }
+                }
+            }
+        }
         assert pd.CurrentModelProvider._extract(sample) is None
 
     def test_no_containers_returns_none(self):
-        assert pd.CurrentModelProvider._extract(
-            {"spec": {"template": {"spec": {"containers": []}}}}
-        ) is None
+        assert (
+            pd.CurrentModelProvider._extract(
+                {"spec": {"template": {"spec": {"containers": []}}}}
+            )
+            is None
+        )
 
     def test_fetch_uses_kubectl_per_deployment(self):
         prov = pd.CurrentModelProvider(
-            deployments=("deile-worker", "deile-pipeline"), ttl_s=0.0,
+            deployments=("deile-worker", "deile-pipeline"),
+            ttl_s=0.0,
         )
         prov._kubectl = "kubectl"
         payloads = {
-            "deile-worker": {"spec": {"template": {"spec": {"containers": [
-                {"env": [{"name": "DEILE_PREFERRED_MODEL",
-                          "value": "anthropic:claude-sonnet-4-6"}]},
-            ]}}}},
+            "deile-worker": {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {
+                                    "env": [
+                                        {
+                                            "name": "DEILE_PREFERRED_MODEL",
+                                            "value": "anthropic:claude-sonnet-4-6",
+                                        }
+                                    ]
+                                },
+                            ]
+                        }
+                    }
+                }
+            },
             "deile-pipeline": None,
         }
 
@@ -1109,8 +1333,7 @@ class TestCurrentModelProvider:
 class TestSetPreferredModel:
     def test_no_kubectl_returns_false(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: None)
-        ok, msg = pd.set_preferred_model("deile-worker",
-                                         "anthropic:claude-opus-4-8")
+        ok, msg = pd.set_preferred_model("deile-worker", "anthropic:claude-opus-4-8")
         assert ok is False
         assert "kubectl" in msg
 
@@ -1129,18 +1352,22 @@ class TestSetPreferredModel:
         assert ok is False
         assert "forbidden" in msg
 
-    @pytest.mark.parametrize("bad_slug", [
-        "evil\nDEILE_OTHER=injected",   # newline → outra env via shell
-        "x=y",                          # '=' não é permitido (corromperia argv)
-        "with space",                   # espaço não permitido
-        "ctrl\x01char",                 # caractere de controle
-        "ctrl\x00null",                 # NUL
-        "",                             # vazio
-        "/leading-slash",               # primeiro char inválido
-        "a" * 200,                      # comprimento > 128
-    ])
-    def test_rejects_malicious_slugs_without_calling_kubectl(self, bad_slug,
-                                                              monkeypatch):
+    @pytest.mark.parametrize(
+        "bad_slug",
+        [
+            "evil\nDEILE_OTHER=injected",  # newline → outra env via shell
+            "x=y",  # '=' não é permitido (corromperia argv)
+            "with space",  # espaço não permitido
+            "ctrl\x01char",  # caractere de controle
+            "ctrl\x00null",  # NUL
+            "",  # vazio
+            "/leading-slash",  # primeiro char inválido
+            "a" * 200,  # comprimento > 128
+        ],
+    )
+    def test_rejects_malicious_slugs_without_calling_kubectl(
+        self, bad_slug, monkeypatch
+    ):
         """B2: slugs com caracteres perigosos são recusados ANTES de
         chegar ao kubectl (subprocess.run nunca deve ser chamado)."""
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "kubectl")
@@ -1156,7 +1383,8 @@ class TestSetPreferredModel:
         mock_proc = MagicMock(returncode=0, stdout="ok\n", stderr="")
         with patch("subprocess.run", return_value=mock_proc):
             ok, _ = pd.set_preferred_model(
-                "deile-worker", "anthropic:claude-opus-4-8",
+                "deile-worker",
+                "anthropic:claude-opus-4-8",
             )
         assert ok is True
 
@@ -1192,7 +1420,9 @@ class TestHeadPanelUtcClock:
         console = panel.Console(record=True, width=120)
         console.print(panel_render)
         text = console.export_text()
-        assert "↳" in text, f"_head_panel deve exibir linha de conversão local '↳', mas renderizou:\n{text}"
+        assert (
+            "↳" in text
+        ), f"_head_panel deve exibir linha de conversão local '↳', mas renderizou:\n{text}"
 
     def test_clock_with_data_context(self):
         """Com `data` presente, o clock UTC + linha local continuam."""
@@ -1226,7 +1456,11 @@ class TestPodRowsAdapter:
         d.deile_worker_truth = None
         pod = MagicMock()
         pod.name, pod.role, pod.status, pod.ready, pod.restarts = (
-            "p1", "worker", "Running", True, 0,
+            "p1",
+            "worker",
+            "Running",
+            True,
+            0,
         )
         pod.age_s, pod.started_at, pod.node = 3600, None, "n1"
         d.pods.get.return_value = [pod]
@@ -1264,6 +1498,7 @@ class TestPodRowsAdapter:
 # #294 — `--namespace`, processos locais, tail de logs locais, audit
 # local). Nenhum mock de dados visíveis ao usuário; só fixtures de
 # arquivos tmp + monkeypatch de `ps`/`kubectl`.
+
 
 class TestRuntimeContext:
     def test_detect_defaults(self):
@@ -1304,7 +1539,8 @@ class TestForgeRepoInjectionPanel:
         monkeypatch.setattr(pd, "_read_forge_repo", lambda ns: "gitlab-grp/sub/proj")
         # Se o ConfigMap resolve, _detect_default_repo (git) NÃO deve ser usado.
         monkeypatch.setattr(
-            pd, "_detect_default_repo",
+            pd,
+            "_detect_default_repo",
             lambda: pytest.fail("ConfigMap repo present — git fallback must not run"),
         )
         monkeypatch.setattr(pd, "_read_forge_kind", lambda ns: "gitlab")
@@ -1332,6 +1568,7 @@ class TestForgeRepoInjectionPanel:
         """Sem git no PATH, NÃO finge `elimarcavalli/deile`: devolve a sentinela
         REPO_UNCONFIGURED e emite WARNING claro (AC-3 observabilidade)."""
         import logging
+
         monkeypatch.setattr(pd.shutil, "which", lambda name: None)
         with caplog.at_level(logging.WARNING):
             result = pd._detect_default_repo()
@@ -1344,9 +1581,11 @@ class TestForgeRepoInjectionPanel:
     ):
         """Com git mas sem remote origin, mesma degradação loud."""
         import logging
+
         monkeypatch.setattr(pd.shutil, "which", lambda name: "/usr/bin/git")
         monkeypatch.setattr(
-            pd.subprocess, "run",
+            pd.subprocess,
+            "run",
             lambda *a, **k: MagicMock(returncode=2, stdout="", stderr=""),
         )
         with caplog.at_level(logging.WARNING):
@@ -1379,8 +1618,7 @@ class TestForgeRepoInjectionPanel:
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/k")
         logs = tmp_path / "logs"
         logs.mkdir()
-        ctx = pd.RuntimeContext(logs_dir=logs,
-                                usage_db=tmp_path / "no.db")
+        ctx = pd.RuntimeContext(logs_dir=logs, usage_db=tmp_path / "no.db")
         assert ctx.mode_label == "k8s + local"
 
 
@@ -1392,17 +1630,22 @@ class TestLocalProcessesProvider:
 
     def test_classify_local_process(self):
         assert pd._classify_local_process("python3 deile.py") == "local-deile"
-        assert pd._classify_local_process(
-            "/usr/bin/python -m deilebot run --provider discord"
-        ) == "local-bot"
-        assert pd._classify_local_process(
-            "python -m deile.orchestration.pipeline.monitor"
-        ) == "local-pipeline"
+        assert (
+            pd._classify_local_process(
+                "/usr/bin/python -m deilebot run --provider discord"
+            )
+            == "local-bot"
+        )
+        assert (
+            pd._classify_local_process("python -m deile.orchestration.pipeline.monitor")
+            == "local-pipeline"
+        )
         assert pd._classify_local_process("/usr/bin/python -m other") is None
         # Generic fallback: any python+deile mention.
-        assert pd._classify_local_process(
-            "python /opt/something/deile-helper.py"
-        ) == "local-other"
+        assert (
+            pd._classify_local_process("python /opt/something/deile-helper.py")
+            == "local-other"
+        )
 
     def test_parse_etime(self):
         assert pd._parse_etime("01:23") == 83
@@ -1414,6 +1657,7 @@ class TestLocalProcessesProvider:
         provider = pd.LocalProcessesProvider()
         # Inclui o próprio PID para garantir que é filtrado.
         import os as _os
+
         mine = _os.getpid()
         fake_ps = (
             f"  {mine}    0.0  6144  00:01 python infra/k8s/deploy.py panel\n"
@@ -1422,7 +1666,9 @@ class TestLocalProcessesProvider:
             "   789    0.0  1024  03-12:00:00 python -m deile.orchestration.x\n"
         )
         mock_proc = MagicMock(returncode=0, stdout=fake_ps, stderr="")
-        monkeypatch.setattr(pd.shutil, "which", lambda b: "/bin/ps" if b == "ps" else None)
+        monkeypatch.setattr(
+            pd.shutil, "which", lambda b: "/bin/ps" if b == "ps" else None
+        )
         with patch("subprocess.run", return_value=mock_proc):
             procs = provider.get()
         # 3 esperados (123, 456, 789) — o próprio painel filtrado.
@@ -1479,8 +1725,9 @@ class TestLocalLogsProvider:
         with log.open("w", encoding="utf-8") as fh:
             for _ in range(200):
                 fh.write(junk + "\n")
-            fh.write("2026-05-23 19:39:01,000 - x - INFO - "
-                     "worker dispatch completed\n")
+            fh.write(
+                "2026-05-23 19:39:01,000 - x - INFO - " "worker dispatch completed\n"
+            )
         provider = pd.LocalLogsProvider(log)
         state = provider.get()
         # File size em KB com divisão int — 200*1001 bytes ≈ 195KB.
@@ -1501,8 +1748,8 @@ class TestLocalAuditProvider:
             '"action":"k8s_status","result":"allowed"}\n'
             '{"event_type":"SECURITY_POLICY_CHANGED","ts":"2026-05-23T19:39:02",'
             '"action":"kubectl_set_env","result":"completed"}\n'
-            'INVALID LINE\n'
-            'prefix runtime - '
+            "INVALID LINE\n"
+            "prefix runtime - "
             '{"event_type":"TOOL_EXECUTION","result":"completed"}\n',
             encoding="utf-8",
         )
@@ -1568,16 +1815,20 @@ class TestPanelDataFromContext:
         logs = tmp_path / "logs"
         logs.mkdir()
         ctx = pd.RuntimeContext(
-            local_force=True, logs_dir=logs, usage_db=tmp_path / "u.db",
+            local_force=True,
+            logs_dir=logs,
+            usage_db=tmp_path / "u.db",
         )
         data = pd.PanelData.from_context(ctx)
         # Intercepta `subprocess.run` para detectar QUALQUER chamada
         # (qualquer chamada significa que o `enabled=False` falhou).
         calls = []
         real_run = pd.subprocess.run
+
         def _trap(cmd, *a, **kw):
             calls.append(cmd)
             return real_run(cmd, *a, **kw)
+
         monkeypatch.setattr(pd.subprocess, "run", _trap)
         # Toca cada provider k8s — deve cair em fallback imediato.
         assert data.pods.get() == []
@@ -1594,9 +1845,11 @@ class TestPanelDataFromContext:
         """set_preferred_model com namespace custom deve passar pro kubectl."""
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
         captured: List[List[str]] = []
+
         def _fake_run(cmd, **kw):
             captured.append(cmd)
             return MagicMock(returncode=0, stdout="ok\n", stderr="")
+
         with patch("subprocess.run", side_effect=_fake_run):
             ok, _ = pd.set_preferred_model(
                 "deile-worker",
@@ -1613,12 +1866,13 @@ class TestSetPodTmpSize:
     def test_happy_path_passes_strategic_patch(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
         captured: List[List[str]] = []
+
         def _fake_run(cmd, **kw):
             captured.append(cmd)
             return MagicMock(returncode=0, stdout="patched\n", stderr="")
+
         with patch("subprocess.run", side_effect=_fake_run):
-            ok, msg = pd.set_pod_tmp_size("claude-worker", "2Gi",
-                                          namespace="deile")
+            ok, msg = pd.set_pod_tmp_size("claude-worker", "2Gi", namespace="deile")
         assert ok is True
         assert "patched" in msg
         argv = captured[0]
@@ -1639,14 +1893,17 @@ class TestSetPodTmpSize:
         assert "não permitido" in msg
         run_mock.assert_not_called()
 
-    @pytest.mark.parametrize("bad", [
-        "1Gigabyte",   # sufixo errado
-        "100",         # sem sufixo
-        "2Gi ",        # whitespace
-        "1Gi; rm -rf", # injeção
-        "",            # vazio
-        "0Gi",         # começa com 0 (regex exige 1-9)
-    ])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "1Gigabyte",  # sufixo errado
+            "100",  # sem sufixo
+            "2Gi ",  # whitespace
+            "1Gi; rm -rf",  # injeção
+            "",  # vazio
+            "0Gi",  # começa com 0 (regex exige 1-9)
+        ],
+    )
     def test_rejects_invalid_size(self, monkeypatch, bad):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
         with patch("subprocess.run") as run_mock:
@@ -1657,9 +1914,14 @@ class TestSetPodTmpSize:
 
     def test_kubectl_failure_surfaces_stderr(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
-        with patch("subprocess.run", return_value=MagicMock(
-            returncode=1, stdout="", stderr="boom\n",
-        )):
+        with patch(
+            "subprocess.run",
+            return_value=MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="boom\n",
+            ),
+        ):
             ok, msg = pd.set_pod_tmp_size("deile-worker", "1Gi")
         assert ok is False
         assert "boom" in msg
@@ -1673,11 +1935,21 @@ class TestSetPodTmpSize:
     def test_accepts_all_four_stack_deployments(self, monkeypatch):
         """Whitelist deve cobrir os 4 deployments do stack."""
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
-        with patch("subprocess.run", return_value=MagicMock(
-            returncode=0, stdout="ok", stderr="",
-        )):
-            for dep in ("claude-worker", "deile-worker",
-                        "deile-pipeline", "deilebot", "deile-shell"):
+        with patch(
+            "subprocess.run",
+            return_value=MagicMock(
+                returncode=0,
+                stdout="ok",
+                stderr="",
+            ),
+        ):
+            for dep in (
+                "claude-worker",
+                "deile-worker",
+                "deile-pipeline",
+                "deilebot",
+                "deile-shell",
+            ):
                 ok, _ = pd.set_pod_tmp_size(dep, "1Gi")
                 assert ok is True, f"{dep} deveria estar na whitelist"
 
@@ -1693,6 +1965,7 @@ class TestDeployFlags:
 
     def test_parses_value_flags(self):
         import deploy  # noqa: PLC0415
+
         ov, demo, standalone = deploy._parse_panel_flags(
             ["--namespace", "x", "--repo", "o/r", "--pipeline-deploy", "p"]
         )
@@ -1702,6 +1975,7 @@ class TestDeployFlags:
 
     def test_parses_bool_flags(self):
         import deploy  # noqa: PLC0415
+
         ov, demo, _ = deploy._parse_panel_flags(["--k8s-only"])
         assert ov == {"k8s_force": True}
         ov, _, _ = deploy._parse_panel_flags(["--local-only"])
@@ -1712,18 +1986,21 @@ class TestDeployFlags:
 
     def test_paths_resolved(self):
         import deploy  # noqa: PLC0415
+
         ov, _, _ = deploy._parse_panel_flags(["--usage-db", "/tmp/u.db"])
         assert isinstance(ov["usage_db"], Path)
         assert str(ov["usage_db"]).endswith("u.db")
 
     def test_rejects_missing_value(self):
         import deploy  # noqa: PLC0415
+
         err, _, _ = deploy._parse_panel_flags(["--namespace"])
         assert "_error" in err
         assert "namespace" in err["_error"]
 
     def test_rejects_unknown_flag(self):
         import deploy  # noqa: PLC0415
+
         err, _, _ = deploy._parse_panel_flags(["--never-seen"])
         assert "_error" in err
 
@@ -1731,6 +2008,7 @@ class TestDeployFlags:
         """`--memdebug` não é override de RuntimeContext; deve ir pro slot
         `standalone` (que `k8s_panel` passa pro `run_panel(memdebug=...)`)."""
         import deploy  # noqa: PLC0415
+
         ov, demo, standalone = deploy._parse_panel_flags(["--memdebug"])
         assert ov == {}
         assert demo is False
@@ -1743,12 +2021,18 @@ class TestDeployFlags:
 # instância DEILE rodando no host. Cobre parsing, schema-version skip,
 # GC de PID morto, override via env, e TTL.
 
-def _write_state(dirpath: Path, instance_id: str, pid: int,
-                 *, kind: str = "tool_execution",
-                 detail: str = "execute_bash",
-                 model: str = "deepseek:v4-pro",
-                 heartbeat_age_s: float = 1.0,
-                 schema_version: int = 1) -> Path:
+
+def _write_state(
+    dirpath: Path,
+    instance_id: str,
+    pid: int,
+    *,
+    kind: str = "tool_execution",
+    detail: str = "execute_bash",
+    model: str = "deepseek:v4-pro",
+    heartbeat_age_s: float = 1.0,
+    schema_version: int = 1,
+) -> Path:
     """Helper que escreve um state file no formato canônico do Agent A."""
     now = datetime.now(timezone.utc)
     hb = now - timedelta(seconds=heartbeat_age_s)
@@ -1808,10 +2092,12 @@ class TestLocalInstancesProvider:
 
     def test_parses_valid_state_file(self, tmp_path, monkeypatch):
         import json as _json  # ensure scoped
+
         rt = tmp_path / "run"
         rt.mkdir()
-        _write_state(rt, "cli-abc123", pid=12345,
-                     kind="tool_execution", detail="execute_bash")
+        _write_state(
+            rt, "cli-abc123", pid=12345, kind="tool_execution", detail="execute_bash"
+        )
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
         snaps = provider.get()
@@ -1871,7 +2157,8 @@ class TestLocalInstancesProvider:
         _write_state(rt, "cli-slow", pid=12345, heartbeat_age_s=120.0)
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(
-            runtime_dir=rt, stale_after_s=30.0,
+            runtime_dir=rt,
+            stale_after_s=30.0,
         )
         snaps = provider.get()
         assert 12345 in snaps
@@ -1892,8 +2179,9 @@ class TestLocalInstancesProvider:
     def test_tool_execution_renders_with_detail(self, tmp_path, monkeypatch):
         rt = tmp_path / "run"
         rt.mkdir()
-        _write_state(rt, "cli-toolex", pid=12345,
-                     kind="tool_execution", detail="read_file")
+        _write_state(
+            rt, "cli-toolex", pid=12345, kind="tool_execution", detail="read_file"
+        )
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
         snap = provider.get()[12345]
@@ -1903,9 +2191,14 @@ class TestLocalInstancesProvider:
     def test_llm_call_renders_with_model(self, tmp_path, monkeypatch):
         rt = tmp_path / "run"
         rt.mkdir()
-        _write_state(rt, "cli-llm", pid=12345,
-                     kind="llm_call", detail="completion",
-                     model="anthropic:claude-opus-4-8")
+        _write_state(
+            rt,
+            "cli-llm",
+            pid=12345,
+            kind="llm_call",
+            detail="completion",
+            model="anthropic:claude-opus-4-8",
+        )
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
         snap = provider.get()[12345]
@@ -1934,9 +2227,11 @@ class TestLocalInstancesProvider:
         # Spy: substitui o _fetch para detectar nova chamada.
         calls: List[int] = []
         real_fetch = provider._fetch
+
         def _spy():
             calls.append(1)
             return real_fetch()
+
         provider._cache.fetcher = _spy
         # 2º get dentro do TTL não chama _fetch (cache válido).
         snaps2 = provider.get()
@@ -1946,8 +2241,7 @@ class TestLocalInstancesProvider:
     def test_starting_kind_label(self, tmp_path, monkeypatch):
         rt = tmp_path / "run"
         rt.mkdir()
-        _write_state(rt, "cli-start", pid=12345,
-                     kind="starting", detail="")
+        _write_state(rt, "cli-start", pid=12345, kind="starting", detail="")
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
         assert provider.get()[12345].doing_now_label == "starting…"
@@ -1955,19 +2249,18 @@ class TestLocalInstancesProvider:
     def test_shutting_down_kind_label(self, tmp_path, monkeypatch):
         rt = tmp_path / "run"
         rt.mkdir()
-        _write_state(rt, "cli-shut", pid=12345,
-                     kind="shutting_down", detail="")
+        _write_state(rt, "cli-shut", pid=12345, kind="shutting_down", detail="")
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
         assert provider.get()[12345].doing_now_label == "shutting down"
 
-    def test_unknown_kind_falls_back_to_generic_label(self, tmp_path,
-                                                     monkeypatch):
+    def test_unknown_kind_falls_back_to_generic_label(self, tmp_path, monkeypatch):
         """Forward-compat: kind futuro não conhecido vira `<kind>: <detail>`."""
         rt = tmp_path / "run"
         rt.mkdir()
-        _write_state(rt, "cli-future-kind", pid=12345,
-                     kind="quantum_compute", detail="qubit-42")
+        _write_state(
+            rt, "cli-future-kind", pid=12345, kind="quantum_compute", detail="qubit-42"
+        )
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
         snap = provider.get()[12345]
@@ -1977,10 +2270,10 @@ class TestLocalInstancesProvider:
     def test_multiple_pids_all_indexed(self, tmp_path, monkeypatch):
         rt = tmp_path / "run"
         rt.mkdir()
-        _write_state(rt, "cli-a", pid=1001,
-                     kind="tool_execution", detail="execute_bash")
-        _write_state(rt, "cli-b", pid=2002,
-                     kind="llm_call", model="openai:gpt-5")
+        _write_state(
+            rt, "cli-a", pid=1001, kind="tool_execution", detail="execute_bash"
+        )
+        _write_state(rt, "cli-b", pid=2002, kind="llm_call", model="openai:gpt-5")
         _write_state(rt, "cli-c", pid=3003, kind=None)
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
@@ -1994,14 +2287,15 @@ class TestLocalInstancesProvider:
         # Os 3 labels DEVEM ser diferentes — o bug que esta feature resolve.
         assert len(set(labels.values())) == 3
 
-    def test_listdir_failure_propagates_as_last_error(self, tmp_path,
-                                                     monkeypatch):
+    def test_listdir_failure_propagates_as_last_error(self, tmp_path, monkeypatch):
         """Diretório com permissão negada → last_error preenchido."""
         rt = tmp_path / "run"
         rt.mkdir()
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
+
         def _explode(self):
             raise OSError("permission denied")
+
         monkeypatch.setattr(pd.Path, "glob", _explode)
         snaps = provider.get(force=True)
         assert snaps == {}
@@ -2014,8 +2308,7 @@ class TestLocalInstancesProvider:
         # JSON válido mas sem `pid` — provider pula silenciosamente
         # (log WARNING).
         payload = {"schema_version": 1, "instance_id": "no-pid"}
-        (rt / "no-pid.json").write_text(json.dumps(payload),
-                                        encoding="utf-8")
+        (rt / "no-pid.json").write_text(json.dumps(payload), encoding="utf-8")
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
         assert provider.get() == {}
@@ -2024,12 +2317,12 @@ class TestLocalInstancesProvider:
 class TestLocalInstancesInPanelData:
     """`local_instances` é wired-up corretamente no `PanelData.from_context`."""
 
-    def test_from_context_creates_local_instances_when_available(self,
-                                                                 tmp_path):
+    def test_from_context_creates_local_instances_when_available(self, tmp_path):
         logs = tmp_path / "logs"
         logs.mkdir()
         ctx = pd.RuntimeContext(
-            logs_dir=logs, usage_db=tmp_path / "u.db",
+            logs_dir=logs,
+            usage_db=tmp_path / "u.db",
         )
         data = pd.PanelData.from_context(ctx)
         assert data.local_instances is not None
@@ -2048,7 +2341,8 @@ class TestLocalInstancesInPanelData:
         logs = tmp_path / "logs"
         logs.mkdir()
         ctx = pd.RuntimeContext(
-            logs_dir=logs, usage_db=tmp_path / "u.db",
+            logs_dir=logs,
+            usage_db=tmp_path / "u.db",
         )
         data = pd.PanelData.from_context(ctx)
         providers = data._all_providers()
@@ -2058,12 +2352,15 @@ class TestLocalInstancesInPanelData:
         logs = tmp_path / "logs"
         logs.mkdir()
         ctx = pd.RuntimeContext(
-            logs_dir=logs, usage_db=tmp_path / "u.db",
+            logs_dir=logs,
+            usage_db=tmp_path / "u.db",
         )
         data = pd.PanelData.from_context(ctx)
+
         # Força um erro no provider via Path.glob monkeypatch.
         def _explode(self):
             raise OSError("forced for test")
+
         monkeypatch.setattr(pd.Path, "glob", _explode)
         # Cache cold → get() chama _fetch → set last_error.
         data.local_instances.get(force=True)
@@ -2078,43 +2375,66 @@ class TestPanelShowsPerPidAction:
     """
 
     def test_dashboard_shows_per_pid_action_when_instance_snapshot_present(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         # Mocka PanelData com 2 PIDs locais, cada um com seu snapshot.
         data = MagicMock()
         data.context = MagicMock()
         # 2 processos locais.
         p1 = pd.LocalProcessInfo(
-            pid=28117, role="local-deile",
-            cmd="python3 deile.py", cpu_pct=0.0, rss_kb=25000, etime_s=1800,
+            pid=28117,
+            role="local-deile",
+            cmd="python3 deile.py",
+            cpu_pct=0.0,
+            rss_kb=25000,
+            etime_s=1800,
         )
         p2 = pd.LocalProcessInfo(
-            pid=16694, role="local-deile",
-            cmd="python3 deile.py", cpu_pct=0.0, rss_kb=14000, etime_s=6700,
+            pid=16694,
+            role="local-deile",
+            cmd="python3 deile.py",
+            cpu_pct=0.0,
+            rss_kb=14000,
+            etime_s=6700,
         )
         data.local_processes.get.return_value = [p1, p2]
         # 2 snapshots com `current_action` diferentes.
         now = datetime.now(timezone.utc)
         snap1 = pd.InstanceSnapshot(
-            instance_id="cli-a", pid=28117, role="cli",
-            started_at=now, last_heartbeat_at=now,
+            instance_id="cli-a",
+            pid=28117,
+            role="cli",
+            started_at=now,
+            last_heartbeat_at=now,
             current_action_kind="tool_execution",
             current_action_detail="execute_bash",
             current_action_started_at=now,
             current_action_model="",
-            stats_tokens_in=0, stats_tokens_out=0, stats_cost_usd=0.0,
-            stats_turns=0, stats_tool_calls=0, stats_errors=0,
+            stats_tokens_in=0,
+            stats_tokens_out=0,
+            stats_cost_usd=0.0,
+            stats_turns=0,
+            stats_tool_calls=0,
+            stats_errors=0,
             stale=False,
         )
         snap2 = pd.InstanceSnapshot(
-            instance_id="cli-b", pid=16694, role="cli",
-            started_at=now, last_heartbeat_at=now,
+            instance_id="cli-b",
+            pid=16694,
+            role="cli",
+            started_at=now,
+            last_heartbeat_at=now,
             current_action_kind="llm_call",
             current_action_detail="completion",
             current_action_started_at=now,
             current_action_model="anthropic:claude-opus-4-8",
-            stats_tokens_in=0, stats_tokens_out=0, stats_cost_usd=0.0,
-            stats_turns=0, stats_tool_calls=0, stats_errors=0,
+            stats_tokens_in=0,
+            stats_tokens_out=0,
+            stats_cost_usd=0.0,
+            stats_turns=0,
+            stats_tool_calls=0,
+            stats_errors=0,
             stale=False,
         )
         data.local_instances.get.return_value = {28117: snap1, 16694: snap2}
@@ -2141,8 +2461,12 @@ class TestPanelShowsPerPidAction:
         """PID sem state file (compat com processos legacy) → fallback log."""
         data = MagicMock()
         p = pd.LocalProcessInfo(
-            pid=99999, role="local-other",
-            cmd="python3 deile.py", cpu_pct=0.0, rss_kb=1000, etime_s=60,
+            pid=99999,
+            role="local-other",
+            cmd="python3 deile.py",
+            cpu_pct=0.0,
+            rss_kb=1000,
+            etime_s=60,
         )
         data.local_processes.get.return_value = [p]
         # local_instances vazio — PID 99999 não tem snapshot.
@@ -2159,8 +2483,11 @@ class TestPanelShowsPerPidAction:
         """Pior caso: sem snapshot e sem log → cmdline + busy via CPU."""
         data = MagicMock()
         p = pd.LocalProcessInfo(
-            pid=88888, role="local-other",
-            cmd="python3 deile.py --special", cpu_pct=2.0, rss_kb=1000,
+            pid=88888,
+            role="local-other",
+            cmd="python3 deile.py --special",
+            cpu_pct=2.0,
+            rss_kb=1000,
             etime_s=60,
         )
         data.local_processes.get.return_value = [p]
@@ -2179,8 +2506,12 @@ class TestPanelShowsPerPidAction:
         """Smoke: PanelData sem local_instances (modo k8s-only) não crasha."""
         data = MagicMock(spec=["local_processes", "local_logs"])
         p = pd.LocalProcessInfo(
-            pid=12345, role="local-deile",
-            cmd="python3 deile.py", cpu_pct=0.0, rss_kb=1000, etime_s=60,
+            pid=12345,
+            role="local-deile",
+            cmd="python3 deile.py",
+            cpu_pct=0.0,
+            rss_kb=1000,
+            etime_s=60,
         )
         data.local_processes.get.return_value = [p]
         log_state = MagicMock()
@@ -2193,6 +2524,7 @@ class TestPanelShowsPerPidAction:
 
 
 # ===== StageDispatchProvider (issue #309 fase 2 — Task 17) ==================
+
 
 def _deployment_with_env(envs: Dict[str, str]) -> Dict[str, Any]:
     """Builda um kubectl-get-deployment JSON minimal com as env vars dadas."""
@@ -2216,25 +2548,30 @@ class TestStageDispatchProvider:
         ``"deployment/deile-pipeline"``); valor é o dict JSON a devolver
         (ou ``None`` para simular fetch falho).
         """
+
         def fake(cmd, timeout=None):
             for token, payload in payloads.items():
                 if token in cmd:
                     return payload
             return None
+
         return fake
 
     def test_returns_five_entries_one_per_stage(self):
         from _panel_data import StageDispatchProvider
 
-        from deile.orchestration.pipeline.dispatch_resolver import \
-            PIPELINE_STAGES
+        from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES
+
         payloads = {
             "deployment/deile-pipeline": _deployment_with_env({}),
             "deployment/deile-worker": _deployment_with_env({}),
         }
-        with patch("_panel_data._capture_json",
-                   side_effect=self._route_capture(payloads)), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch(
+                "_panel_data._capture_json", side_effect=self._route_capture(payloads)
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entries = StageDispatchProvider().get_all_stages(force=True)
         assert len(entries) == 5
         assert [e.stage for e in entries] == list(PIPELINE_STAGES)
@@ -2247,19 +2584,24 @@ class TestStageDispatchProvider:
     def test_per_stage_worker_env_takes_precedence(self):
         """``DEILE_PIPELINE_DISPATCH_<STAGE>`` vence o global ``DISPATCH_MODE``."""
         from _panel_data import StageDispatchProvider
+
         payloads = {
-            "deployment/deile-pipeline": _deployment_with_env({
-                "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "claude-worker",
-                "DEILE_PIPELINE_DISPATCH_MODE": "deile-worker",
-            }),
+            "deployment/deile-pipeline": _deployment_with_env(
+                {
+                    "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "claude-worker",
+                    "DEILE_PIPELINE_DISPATCH_MODE": "deile-worker",
+                }
+            ),
             "deployment/deile-worker": _deployment_with_env({}),
         }
-        with patch("_panel_data._capture_json",
-                   side_effect=self._route_capture(payloads)), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch(
+                "_panel_data._capture_json", side_effect=self._route_capture(payloads)
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             by_stage = {
-                e.stage: e
-                for e in StageDispatchProvider().get_all_stages(force=True)
+                e.stage: e for e in StageDispatchProvider().get_all_stages(force=True)
             }
         # implement: per-stage env wins.
         assert by_stage["implement"].worker == "claude-worker"
@@ -2276,19 +2618,24 @@ class TestStageDispatchProvider:
         nunca do worker, então a config era inútil.
         """
         from _panel_data import StageDispatchProvider
+
         payloads = {
-            "deployment/deile-pipeline": _deployment_with_env({
-                "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-8",
-                "DEILE_PIPELINE_MODEL": "anthropic:claude-sonnet-4-6",
-            }),
+            "deployment/deile-pipeline": _deployment_with_env(
+                {
+                    "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-8",
+                    "DEILE_PIPELINE_MODEL": "anthropic:claude-sonnet-4-6",
+                }
+            ),
             "deployment/deile-worker": _deployment_with_env({}),
         }
-        with patch("_panel_data._capture_json",
-                   side_effect=self._route_capture(payloads)), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch(
+                "_panel_data._capture_json", side_effect=self._route_capture(payloads)
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             by_stage = {
-                e.stage: e
-                for e in StageDispatchProvider().get_all_stages(force=True)
+                e.stage: e for e in StageDispatchProvider().get_all_stages(force=True)
             }
         # implement: per-stage env wins.
         assert by_stage["implement"].model == "anthropic:claude-opus-4-8"
@@ -2298,15 +2645,21 @@ class TestStageDispatchProvider:
     def test_preferred_model_aliases_pipeline_model(self):
         """``DEILE_PREFERRED_MODEL`` é aceito como alias do model global."""
         from _panel_data import StageDispatchProvider
+
         payloads = {
-            "deployment/deile-pipeline": _deployment_with_env({
-                "DEILE_PREFERRED_MODEL": "deepseek:deepseek-v4-pro",
-            }),
+            "deployment/deile-pipeline": _deployment_with_env(
+                {
+                    "DEILE_PREFERRED_MODEL": "deepseek:deepseek-v4-pro",
+                }
+            ),
             "deployment/deile-worker": _deployment_with_env({}),
         }
-        with patch("_panel_data._capture_json",
-                   side_effect=self._route_capture(payloads)), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch(
+                "_panel_data._capture_json", side_effect=self._route_capture(payloads)
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entries = StageDispatchProvider().get_all_stages(force=True)
         for e in entries:
             assert e.model == "deepseek:deepseek-v4-pro"
@@ -2314,19 +2667,24 @@ class TestStageDispatchProvider:
     def test_combined_per_stage_worker_and_model(self):
         """Per-stage env de worker E model setados, source='env' no worker."""
         from _panel_data import StageDispatchProvider
+
         payloads = {
-            "deployment/deile-pipeline": _deployment_with_env({
-                "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "claude-worker",
-                "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-8",
-            }),
+            "deployment/deile-pipeline": _deployment_with_env(
+                {
+                    "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "claude-worker",
+                    "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-8",
+                }
+            ),
             "deployment/deile-worker": _deployment_with_env({}),
         }
-        with patch("_panel_data._capture_json",
-                   side_effect=self._route_capture(payloads)), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch(
+                "_panel_data._capture_json", side_effect=self._route_capture(payloads)
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             by_stage = {
-                e.stage: e
-                for e in StageDispatchProvider().get_all_stages(force=True)
+                e.stage: e for e in StageDispatchProvider().get_all_stages(force=True)
             }
         assert by_stage["implement"].worker == "claude-worker"
         assert by_stage["implement"].model == "anthropic:claude-opus-4-8"
@@ -2335,15 +2693,21 @@ class TestStageDispatchProvider:
     def test_canonicalizes_legacy_worker_aliases(self):
         """``deile_worker`` (underscore) vira ``deile-worker`` na view."""
         from _panel_data import StageDispatchProvider
+
         payloads = {
-            "deployment/deile-pipeline": _deployment_with_env({
-                "DEILE_PIPELINE_DISPATCH_MODE": "deile_worker",
-            }),
+            "deployment/deile-pipeline": _deployment_with_env(
+                {
+                    "DEILE_PIPELINE_DISPATCH_MODE": "deile_worker",
+                }
+            ),
             "deployment/deile-worker": _deployment_with_env({}),
         }
-        with patch("_panel_data._capture_json",
-                   side_effect=self._route_capture(payloads)), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch(
+                "_panel_data._capture_json", side_effect=self._route_capture(payloads)
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entries = StageDispatchProvider().get_all_stages(force=True)
         for e in entries:
             assert e.worker == "deile-worker"
@@ -2352,19 +2716,24 @@ class TestStageDispatchProvider:
     def test_blank_per_stage_env_falls_back_to_global(self):
         """Env presente com value vazio é tratado como ausente."""
         from _panel_data import StageDispatchProvider
+
         payloads = {
-            "deployment/deile-pipeline": _deployment_with_env({
-                "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "   ",
-                "DEILE_PIPELINE_DISPATCH_MODE": "claude-worker",
-            }),
+            "deployment/deile-pipeline": _deployment_with_env(
+                {
+                    "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "   ",
+                    "DEILE_PIPELINE_DISPATCH_MODE": "claude-worker",
+                }
+            ),
             "deployment/deile-worker": _deployment_with_env({}),
         }
-        with patch("_panel_data._capture_json",
-                   side_effect=self._route_capture(payloads)), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch(
+                "_panel_data._capture_json", side_effect=self._route_capture(payloads)
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             by_stage = {
-                e.stage: e
-                for e in StageDispatchProvider().get_all_stages(force=True)
+                e.stage: e for e in StageDispatchProvider().get_all_stages(force=True)
             }
         assert by_stage["implement"].worker == "claude-worker"
         assert by_stage["implement"].source == "global"
@@ -2372,6 +2741,7 @@ class TestStageDispatchProvider:
     def test_disabled_returns_five_default_entries(self):
         """``enabled=False`` (modo --local-only) → 5 stages default sem kubectl."""
         from _panel_data import StageDispatchProvider
+
         with patch("_panel_data._capture_json") as fake_capture:
             entries = StageDispatchProvider(enabled=False).get_all_stages(
                 force=True,
@@ -2386,8 +2756,11 @@ class TestStageDispatchProvider:
     def test_pipeline_deployment_absent_falls_back_to_default(self):
         """Pipeline Deployment ausente → 5 stages default (não levanta)."""
         from _panel_data import StageDispatchProvider
-        with patch("_panel_data._capture_json", return_value=None), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch("_panel_data._capture_json", return_value=None),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entries = StageDispatchProvider().get_all_stages(force=True)
         assert len(entries) == 5
         for e in entries:
@@ -2400,8 +2773,11 @@ class TestClaudeWorkerStatus:
 
     def test_deployment_absent_returns_not_applied(self):
         from _panel_data import StageDispatchProvider
-        with patch("_panel_data._capture_json", return_value=None), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch("_panel_data._capture_json", return_value=None),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             status = StageDispatchProvider().get_claude_worker_status(
                 force=True,
             )
@@ -2415,6 +2791,7 @@ class TestClaudeWorkerStatus:
         import json as _json
 
         from _panel_data import StageDispatchProvider
+
         fake_deployment = {"status": {"readyReplicas": 1, "replicas": 1}}
         creds_b64 = base64.b64encode(
             _json.dumps({"email": "user@example.com"}).encode()
@@ -2428,8 +2805,10 @@ class TestClaudeWorkerStatus:
                 return fake_secret
             return None
 
-        with patch("_panel_data._capture_json", side_effect=route), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch("_panel_data._capture_json", side_effect=route),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             status = StageDispatchProvider().get_claude_worker_status(
                 force=True,
             )
@@ -2440,6 +2819,7 @@ class TestClaudeWorkerStatus:
     def test_deployment_applied_but_pod_not_ready(self):
         """Deployment aplicado mas pod ainda subindo (readyReplicas < replicas)."""
         from _panel_data import StageDispatchProvider
+
         fake_deployment = {"status": {"readyReplicas": 0, "replicas": 1}}
 
         def route(cmd, timeout=None):
@@ -2447,8 +2827,10 @@ class TestClaudeWorkerStatus:
                 return fake_deployment
             return None
 
-        with patch("_panel_data._capture_json", side_effect=route), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch("_panel_data._capture_json", side_effect=route),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             status = StageDispatchProvider().get_claude_worker_status(
                 force=True,
             )
@@ -2459,6 +2841,7 @@ class TestClaudeWorkerStatus:
     def test_secret_malformed_email_returns_none(self):
         """Secret presente mas base64/JSON malformado → email None silencioso."""
         from _panel_data import StageDispatchProvider
+
         fake_deployment = {"status": {"readyReplicas": 1, "replicas": 1}}
         # base64 inválido → ValueError dentro do helper.
         fake_secret = {"data": {"credentials.json": "not-base64-!!"}}
@@ -2470,8 +2853,10 @@ class TestClaudeWorkerStatus:
                 return fake_secret
             return None
 
-        with patch("_panel_data._capture_json", side_effect=route), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch("_panel_data._capture_json", side_effect=route),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             status = StageDispatchProvider().get_claude_worker_status(
                 force=True,
             )
@@ -2483,6 +2868,7 @@ class TestClaudeWorkerStatus:
     def test_disabled_returns_neutral_status(self):
         """``enabled=False`` → status neutro sem chamar kubectl."""
         from _panel_data import StageDispatchProvider
+
         with patch("_panel_data._capture_json") as fake_capture:
             status = StageDispatchProvider(
                 enabled=False,
@@ -2497,6 +2883,7 @@ class TestClaudeWorkerStatus:
 # Task 19 — set_pipeline_dispatch_stage (per-stage dispatcher override)
 # ===========================================================================
 
+
 class TestSetPipelineDispatchStage:
     """``set_pipeline_dispatch_stage`` espelha ``set_pipeline_dispatch_mode``
     (global flip da PR #330) para o caminho per-stage da issue #309 fase 2.
@@ -2508,113 +2895,149 @@ class TestSetPipelineDispatchStage:
 
     def test_rejects_invalid_stage(self):
         from _panel_data import set_pipeline_dispatch_stage
-        ok, msg = set_pipeline_dispatch_stage("garbage", "claude-worker",
-                                              namespace="deile")
+
+        ok, msg = set_pipeline_dispatch_stage(
+            "garbage", "claude-worker", namespace="deile"
+        )
         assert ok is False
         assert "stage" in msg.lower()
         assert "garbage" in msg or "invalid" in msg.lower()
 
     def test_rejects_invalid_dispatcher(self):
         from _panel_data import set_pipeline_dispatch_stage
-        ok, msg = set_pipeline_dispatch_stage("implement", "fake-worker",
-                                              namespace="deile")
+
+        ok, msg = set_pipeline_dispatch_stage(
+            "implement", "fake-worker", namespace="deile"
+        )
         assert ok is False
         assert "dispatcher" in msg.lower() or "invalid" in msg.lower()
 
     def test_success_issues_correct_kubectl_argv(self):
         from _panel_data import set_pipeline_dispatch_stage
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   return_value=fake_proc) as mock_run:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc) as mock_run,
+        ):
             ok, msg = set_pipeline_dispatch_stage(
-                "implement", "claude-worker", namespace="deile",
+                "implement",
+                "claude-worker",
+                namespace="deile",
             )
         assert ok is True
         argv = mock_run.call_args[0][0]
         assert argv[0] == "/fake/kubectl"
         assert "deploy/deile-pipeline" in argv
         # A env var precisa estar no formato KEY=VALUE canônico.
-        assert any("DEILE_PIPELINE_DISPATCH_IMPLEMENT=claude-worker" in a
-                   for a in argv), f"argv missing env var: {argv}"
+        assert any(
+            "DEILE_PIPELINE_DISPATCH_IMPLEMENT=claude-worker" in a for a in argv
+        ), f"argv missing env var: {argv}"
 
     def test_clear_with_none_uses_trailing_dash(self):
         """``dispatcher=None`` → ``kubectl set env … VAR-`` (clear)."""
         from _panel_data import set_pipeline_dispatch_stage
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   return_value=fake_proc) as mock_run:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc) as mock_run,
+        ):
             ok, _ = set_pipeline_dispatch_stage(
-                "implement", None, namespace="deile",
+                "implement",
+                None,
+                namespace="deile",
             )
         assert ok is True
         argv = mock_run.call_args[0][0]
         # Sintaxe kubectl `VAR-` (com hífen final) = unset.
-        assert any(a == "DEILE_PIPELINE_DISPATCH_IMPLEMENT-" for a in argv), \
-            f"argv missing trailing-dash unset: {argv}"
+        assert any(
+            a == "DEILE_PIPELINE_DISPATCH_IMPLEMENT-" for a in argv
+        ), f"argv missing trailing-dash unset: {argv}"
 
     def test_accepts_legacy_aliases(self):
         """Aliases de _DISPATCHER_ALIASES (``deile_worker``, ``claude``, etc.)
         passam pelo validador — :func:`is_valid_dispatcher` aceita todos.
         """
         from _panel_data import set_pipeline_dispatch_stage
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run", return_value=fake_proc):
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc),
+        ):
             ok, _ = set_pipeline_dispatch_stage(
-                "implement", "claude", namespace="deile",
+                "implement",
+                "claude",
+                namespace="deile",
             )
             assert ok is True
             ok, _ = set_pipeline_dispatch_stage(
-                "implement", "deile_worker", namespace="deile",
+                "implement",
+                "deile_worker",
+                namespace="deile",
             )
             assert ok is True
 
     def test_kubectl_missing_returns_clear_error(self):
         from _panel_data import set_pipeline_dispatch_stage
+
         with patch("_panel_data.kubectl_bin", return_value=None):
             ok, msg = set_pipeline_dispatch_stage(
-                "implement", "claude-worker", namespace="deile",
+                "implement",
+                "claude-worker",
+                namespace="deile",
             )
         assert ok is False
         assert "kubectl" in msg.lower()
 
     def test_nonzero_returncode_surfaces_stderr(self):
         from _panel_data import set_pipeline_dispatch_stage
-        fake_proc = MagicMock(returncode=1, stdout="",
-                              stderr="forbidden: deployments.apps")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run", return_value=fake_proc):
+
+        fake_proc = MagicMock(
+            returncode=1, stdout="", stderr="forbidden: deployments.apps"
+        )
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc),
+        ):
             ok, msg = set_pipeline_dispatch_stage(
-                "implement", "claude-worker", namespace="deile",
+                "implement",
+                "claude-worker",
+                namespace="deile",
             )
         assert ok is False
         assert "forbidden" in msg
 
     def test_subprocess_oserror_caught(self):
         from _panel_data import set_pipeline_dispatch_stage
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   side_effect=OSError("binary missing")):
+
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", side_effect=OSError("binary missing")),
+        ):
             ok, msg = set_pipeline_dispatch_stage(
-                "implement", "claude-worker", namespace="deile",
+                "implement",
+                "claude-worker",
+                namespace="deile",
             )
         assert ok is False
-        assert ("binary missing" in msg
-                or "executar" in msg.lower()
-                or "OSError" in msg)
+        assert "binary missing" in msg or "executar" in msg.lower() or "OSError" in msg
 
     def test_namespace_passed_through(self):
         """O painel TUI suporta multi-NS (PR #315). A função deve respeitar
         o ``namespace=`` kwarg em vez de hardcoded ``NS``."""
         from _panel_data import set_pipeline_dispatch_stage
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   return_value=fake_proc) as mock_run:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc) as mock_run,
+        ):
             ok, _ = set_pipeline_dispatch_stage(
-                "implement", "claude-worker", namespace="custom-ns",
+                "implement",
+                "claude-worker",
+                namespace="custom-ns",
             )
         assert ok is True
         argv = mock_run.call_args[0][0]
@@ -2646,8 +3069,10 @@ class TestClaudeWorkerInfoProvider:
         class _FakeResp:
             def read(self):
                 return _json.dumps(fake_body).encode()
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 pass
 
@@ -2655,7 +3080,8 @@ class TestClaudeWorkerInfoProvider:
         monkeypatch.setattr(_urllib_req, "urlopen", lambda req, timeout: _FakeResp())
 
         provider = pd.ClaudeWorkerInfoProvider(
-            endpoint="http://claude-worker:8767", enabled=True,
+            endpoint="http://claude-worker:8767",
+            enabled=True,
         )
         status = provider._fetch()
 
@@ -2679,7 +3105,8 @@ class TestClaudeWorkerInfoProvider:
         monkeypatch.setattr(_urllib_req, "urlopen", _raise_conn_err)
 
         provider = pd.ClaudeWorkerInfoProvider(
-            endpoint="http://claude-worker:8767", enabled=True,
+            endpoint="http://claude-worker:8767",
+            enabled=True,
         )
         result = provider.get()
 
@@ -2691,6 +3118,7 @@ class TestClaudeWorkerInfoProvider:
 
 # ===== Filtro de linhas de ruído (_is_noise_line / _HEALTH_LINE_RE) ==========
 
+
 class TestNoiseFilter:
     """Verifica que linhas de health check e bootstrap nunca chegam ao ACTIVITY."""
 
@@ -2700,15 +3128,21 @@ class TestNoiseFilter:
         assert pd._is_noise_line("GET /v1/health HTTP/1.1") is True
 
     def test_kube_probe_user_agent_is_noise(self):
-        assert pd._is_noise_line(
-            'aiohttp.access "GET /v1/health HTTP/1.1" 200 237 "-" "kube-probe/1.29"'
-        ) is True
+        assert (
+            pd._is_noise_line(
+                'aiohttp.access "GET /v1/health HTTP/1.1" 200 237 "-" "kube-probe/1.29"'
+            )
+            is True
+        )
 
     def test_aiohttp_access_kube_probe_pattern_is_noise(self):
         # Padrão completo do kube-probe na access log do aiohttp
-        assert pd._is_noise_line(
-            'aiohttp.access "GET /v1/health HTTP/1.1" 200 15 "-" "kube-probe"'
-        ) is True
+        assert (
+            pd._is_noise_line(
+                'aiohttp.access "GET /v1/health HTTP/1.1" 200 15 "-" "kube-probe"'
+            )
+            is True
+        )
 
     def test_wrapper_prefix_is_noise(self):
         assert pd._is_noise_line("wrapper(claude-worker): bearer not mounted") is True
@@ -2718,21 +3152,19 @@ class TestNoiseFilter:
         assert pd._is_noise_line("   ") is True
 
     def test_dispatch_received_is_not_noise(self):
-        assert pd._is_noise_line(
-            "dispatch.received task=abc123 stage=implement"
-        ) is False
+        assert (
+            pd._is_noise_line("dispatch.received task=abc123 stage=implement") is False
+        )
 
     def test_dispatch_completed_is_not_noise(self):
-        assert pd._is_noise_line(
-            "dispatch.completed task=abc123 ok=True"
-        ) is False
+        assert pd._is_noise_line("dispatch.completed task=abc123 ok=True") is False
 
     def test_post_dispatch_is_not_noise(self):
         # POST /v1/dispatch não é health check
-        assert pd._is_noise_line('POST /v1/dispatch HTTP/1.1 200') is False
+        assert pd._is_noise_line("POST /v1/dispatch HTTP/1.1 200") is False
 
     def test_get_v1_progress_is_not_noise(self):
-        assert pd._is_noise_line('GET /v1/progress/abc123 HTTP/1.1 200') is False
+        assert pd._is_noise_line("GET /v1/progress/abc123 HTTP/1.1 200") is False
 
     # --- _parse_log_line integrado ---
 
@@ -2792,9 +3224,7 @@ class TestNoiseFilter:
             state = prov.get(force=True)
 
         # Nenhum evento de health check deve chegar ao ACTIVITY
-        assert state.events == [], (
-            f"Esperava lista vazia; got {state.events}"
-        )
+        assert state.events == [], f"Esperava lista vazia; got {state.events}"
 
     def test_worker_health_updates_last_health_ts_but_not_activity(self):
         """Health checks atualizam last_health_ts mas NÃO criam ActivityEvent."""
@@ -2817,7 +3247,11 @@ class TestNoiseFilter:
 
         st = states["worker-health-test"]
         # last_health_ts deve ter sido atualizado (pod vivo)
-        assert st.last_health_ts is not None, "last_health_ts deve ser populado por health checks"
+        assert (
+            st.last_health_ts is not None
+        ), "last_health_ts deve ser populado por health checks"
         # Nenhuma atividade substantiva deve ter sido registrada
-        assert st.last_substantive_ts is None, "health checks não devem virar atividade substantiva"
+        assert (
+            st.last_substantive_ts is None
+        ), "health checks não devem virar atividade substantiva"
         assert st.current_task is None

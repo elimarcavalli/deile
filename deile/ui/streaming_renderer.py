@@ -64,10 +64,12 @@ _VALIDATION_GATE_TITLE = (
 # Live do streaming_renderer; o cabeçalho precisa ir pra scrollback ANTES
 # para que o painel multipanel apareça logo abaixo, sem colidir com a tag
 # "● dispatch_parallel_subagents(...)".
-_DIRECT_PRINT_TOOLS: frozenset = frozenset({
-    "bash_execute",
-    "dispatch_parallel_subagents",
-})
+_DIRECT_PRINT_TOOLS: frozenset = frozenset(
+    {
+        "bash_execute",
+        "dispatch_parallel_subagents",
+    }
+)
 
 # Mapeamento opcional de nome interno → nome amigável exibido.
 _TOOL_DISPLAY_NAME: Dict[str, str] = {
@@ -80,6 +82,7 @@ _TOOL_DISPLAY_NAME: Dict[str, str] = {
 # Alias preservado para callers internos; a fonte única de verdade vive em
 # ``deile.common.tool_args`` (compartilhada com o runner de sub-agentes).
 _TOOL_PRIMARY_ARG: Dict[str, str] = TOOL_PRIMARY_ARG_KEYS
+
 
 # Tools com renderização de args customizada. Quando o nome aparece aqui,
 # ``_render_args_inline`` delega à função associada em vez de usar o
@@ -204,7 +207,9 @@ class StreamingRenderer:
         # any reason — including ConsoleUIManager's blanket Windows-fallback
         # configuration — which silently disabled Markdown rendering on
         # macOS/Linux/modern Windows. The caller now decides explicitly.
-        self._legacy = bool(legacy_windows) or bool(getattr(console, "legacy_windows", False))
+        self._legacy = bool(legacy_windows) or bool(
+            getattr(console, "legacy_windows", False)
+        )
         self._markdown = markdown
         # Clamp to a sane range. 12 Hz is the sweet spot reported by Rich's
         # docs for streaming — high enough to feel real-time, low enough not
@@ -219,7 +224,9 @@ class StreamingRenderer:
         self._last_stage_label: Optional[str] = None
         self._min_stage_interval: float = 3.0
 
-    async def render(self, event_stream: AsyncIterator[UnifiedStreamEvent]) -> RenderResult:
+    async def render(
+        self, event_stream: AsyncIterator[UnifiedStreamEvent]
+    ) -> RenderResult:
         """Drive the stream to completion and return a summary."""
         result = RenderResult()
         blocks: List[Any] = []
@@ -232,9 +239,7 @@ class StreamingRenderer:
         else:
             await self._render_live(event_stream, blocks, result)
 
-        result.full_text = "".join(
-            b.text for b in blocks if isinstance(b, _TextBlock)
-        )
+        result.full_text = "".join(b.text for b in blocks if isinstance(b, _TextBlock))
         result.tool_invocations = sum(1 for b in blocks if isinstance(b, _ToolBlock))
         result.tool_failures = sum(
             1 for b in blocks if isinstance(b, _ToolBlock) and b.status == "error"
@@ -249,13 +254,15 @@ class StreamingRenderer:
     # change (tool block appears, status flips, error, end-of-turn) MUST
     # be visible to the user the instant it happens, regardless of the
     # rate-limit window. Mid-stream TEXT_DELTAs are batched at refresh_hz.
-    _EDGE_EVENT_TYPES = frozenset({
-        StreamEventType.TOOL_USE_START,
-        StreamEventType.TOOL_USE_END,
-        StreamEventType.TOOL_RESULT,
-        StreamEventType.USAGE_FINAL,
-        StreamEventType.ERROR,
-    })
+    _EDGE_EVENT_TYPES = frozenset(
+        {
+            StreamEventType.TOOL_USE_START,
+            StreamEventType.TOOL_USE_END,
+            StreamEventType.TOOL_RESULT,
+            StreamEventType.USAGE_FINAL,
+            StreamEventType.ERROR,
+        }
+    )
 
     async def _render_live(
         self,
@@ -324,11 +331,15 @@ class StreamingRenderer:
                     # ao retomar.
                     started = getattr(live_obj, "is_started", True)
                     if started and blocks and isinstance(blocks[-1], _StageBlock):
-                        spinner_frame_idx[0] = (spinner_frame_idx[0] + 1) % len(_SPINNER_FRAMES)
-                        live_obj.update(self._compose(
-                            blocks[committed_count:],
-                            spinner_frame=_SPINNER_FRAMES[spinner_frame_idx[0]],
-                        ))
+                        spinner_frame_idx[0] = (spinner_frame_idx[0] + 1) % len(
+                            _SPINNER_FRAMES
+                        )
+                        live_obj.update(
+                            self._compose(
+                                blocks[committed_count:],
+                                spinner_frame=_SPINNER_FRAMES[spinner_frame_idx[0]],
+                            )
+                        )
                         live_obj.refresh()
                     await asyncio.sleep(0.25)
             except asyncio.CancelledError:
@@ -343,6 +354,7 @@ class StreamingRenderer:
         # ``rule()`` consulta ``console.width`` corrente, então adapta ao
         # tamanho atual do terminal a cada renderização.
         from deile.ui.dynamic_render import turn_separator
+
         turn_separator(self._console)
 
         with Live(
@@ -395,7 +407,9 @@ class StreamingRenderer:
                     # Determine the first "active" block (the one currently
                     # being modified). Everything before it can be committed.
                     try:
-                        active_idx = self._first_active_block_idx(blocks, committed_count)
+                        active_idx = self._first_active_block_idx(
+                            blocks, committed_count
+                        )
                         if active_idx > committed_count:
                             # First, shrink the Live region so the to-be-committed
                             # blocks aren't rendered both in Live AND in scrollback
@@ -412,7 +426,8 @@ class StreamingRenderer:
                                 except Exception:
                                     logger.warning(
                                         "streaming_renderer: render do bloco %d falhou",
-                                        i, exc_info=True,
+                                        i,
+                                        exc_info=True,
                                     )
                                     renderable = None
                                 if renderable is not None:
@@ -422,7 +437,8 @@ class StreamingRenderer:
                                     except Exception:
                                         logger.warning(
                                             "streaming_renderer: console.print falhou no bloco %d",
-                                            i, exc_info=True,
+                                            i,
+                                            exc_info=True,
                                         )
                             committed_count = active_idx
                     except Exception:
@@ -465,10 +481,17 @@ class StreamingRenderer:
                 # in-progress table (no closing blank line) commits as a
                 # real Markdown table in the scrollback, instead of the
                 # dim raw-pipes placeholder used during streaming.
-                live.update(self._compose(blocks[committed_count:], force_complete=True))
+                live.update(
+                    self._compose(blocks[committed_count:], force_complete=True)
+                )
                 live.refresh()
             except KeyboardInterrupt:
-                live.update(self._compose(blocks[committed_count:], footer="[yellow]\n(interrupted)[/yellow]"))
+                live.update(
+                    self._compose(
+                        blocks[committed_count:],
+                        footer="[yellow]\n(interrupted)[/yellow]",
+                    )
+                )
                 live.refresh()
                 raise
             finally:
@@ -544,9 +567,9 @@ class StreamingRenderer:
             # Summary: imprime assim que o status sai de "running" (TOOL_RESULT).
             if b.head_committed and not b.summary_committed and b.status != "running":
                 if b.summary:
-                    self._console.print(Text.from_markup(
-                        self._tool_summary_markup(b).lstrip("\n")
-                    ))
+                    self._console.print(
+                        Text.from_markup(self._tool_summary_markup(b).lstrip("\n"))
+                    )
                 # Blank line após o summary p/ separar visualmente do próximo
                 # bloco (texto do LLM, próxima tool, etc.) — alinhado com o
                 # padrão dos blocos não-direct-print. Issue #257 round 5
@@ -831,12 +854,14 @@ class StreamingRenderer:
                 blocks[-1].progress_total = event.progress_total
                 blocks[-1].progress_label = event.progress_label
             else:
-                blocks.append(_StageBlock(
-                    text=label,
-                    progress_current=event.progress_current,
-                    progress_total=event.progress_total,
-                    progress_label=event.progress_label,
-                ))
+                blocks.append(
+                    _StageBlock(
+                        text=label,
+                        progress_current=event.progress_current,
+                        progress_total=event.progress_total,
+                        progress_label=event.progress_label,
+                    )
+                )
             return
 
         # Any non-STAGE/PROGRESS event means real content is arriving — drop
@@ -849,7 +874,11 @@ class StreamingRenderer:
             if not event.text:
                 return
             # If the most recent block is text and same source, append; else open new.
-            if blocks and isinstance(blocks[-1], _TextBlock) and blocks[-1].source == event.source:
+            if (
+                blocks
+                and isinstance(blocks[-1], _TextBlock)
+                and blocks[-1].source == event.source
+            ):
                 blocks[-1].text += event.text
             else:
                 blocks.append(_TextBlock(text=event.text, source=event.source))
@@ -896,8 +925,12 @@ class StreamingRenderer:
         elif event.type is StreamEventType.ERROR:
             result.error_message = self._error_message(event.error_envelope)
             display_msg = result.error_message
-            if isinstance(event.error_envelope, dict) and event.error_envelope.get("budget_exceeded"):
-                display_msg += "\nUse /model budget to view limits, or wait for the next window."
+            if isinstance(event.error_envelope, dict) and event.error_envelope.get(
+                "budget_exceeded"
+            ):
+                display_msg += (
+                    "\nUse /model budget to view limits, or wait for the next window."
+                )
             # Escapa colchetes do display_msg — caso a mensagem do provider
             # contenha ``[`` literal, ``Text.from_markup`` (usado em _compose
             # via source="error") levantaria MarkupError. Bug B defense.
@@ -905,7 +938,9 @@ class StreamingRenderer:
             blocks.append(_TextBlock(text=f"[red]✗[/red] {safe_msg}", source="error"))
 
     @staticmethod
-    def _find_tool_block(blocks: List[Any], tool_call_id: Optional[str]) -> Optional[_ToolBlock]:
+    def _find_tool_block(
+        blocks: List[Any], tool_call_id: Optional[str]
+    ) -> Optional[_ToolBlock]:
         if not tool_call_id:
             return None
         for b in reversed(blocks):
@@ -933,6 +968,7 @@ class StreamingRenderer:
         # is rendered as a real Markdown table in the committed scrollback
         # instead of the dim raw-pipes placeholder we use during streaming.
         from rich.console import Group
+
         rendered: List[Any] = []
 
         def _push(item: Any) -> None:
@@ -945,11 +981,13 @@ class StreamingRenderer:
                 if not b.text:
                     continue
                 if b.source == "validation_gate":
-                    _push(Panel(
-                        Text(b.text, style="yellow"),
-                        title=_VALIDATION_GATE_TITLE,
-                        border_style="yellow",
-                    ))
+                    _push(
+                        Panel(
+                            Text(b.text, style="yellow"),
+                            title=_VALIDATION_GATE_TITLE,
+                            border_style="yellow",
+                        )
+                    )
                 elif b.source == "error":
                     _push(Text.from_markup(b.text))
                 elif self._markdown:
@@ -977,7 +1015,9 @@ class StreamingRenderer:
             elif isinstance(b, _StageBlock):
                 label = b.text or "Processando"
                 if b.progress_total is not None and b.progress_total > 0:
-                    current = b.progress_current if b.progress_current is not None else 0
+                    current = (
+                        b.progress_current if b.progress_current is not None else 0
+                    )
                     if b.progress_label:
                         label = f"{b.progress_label} ({current}/{b.progress_total})"
                     else:
@@ -1002,7 +1042,9 @@ class StreamingRenderer:
         # de nome de tool com colchete, ou args com markup acidental). O
         # fallback degrada para texto plano em vez de derrubar o frame.
         try:
-            return Text.from_markup(self._tool_head_markup(block) + self._tool_summary_markup(block))
+            return Text.from_markup(
+                self._tool_head_markup(block) + self._tool_summary_markup(block)
+            )
         except Exception:
             return Text(self._tool_head_plain(block) + self._tool_summary_plain(block))
 
@@ -1095,5 +1137,7 @@ class StreamingRenderer:
         if envelope is None:
             return "stream error"
         if isinstance(envelope, dict):
-            return str(envelope.get("message") or envelope.get("error_type") or envelope)
+            return str(
+                envelope.get("message") or envelope.get("error_type") or envelope
+            )
         return str(getattr(envelope, "message", envelope))

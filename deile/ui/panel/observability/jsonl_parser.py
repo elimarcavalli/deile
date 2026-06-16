@@ -278,7 +278,9 @@ class ClaudeJsonlParser:
                 raw=obj,
                 tool_use_id=str(obj.get("id") or obj.get("tool_use_id") or ""),
                 tool_name=str(obj.get("name") or ""),
-                tool_input=obj.get("input") if isinstance(obj.get("input"), dict) else {},
+                tool_input=(
+                    obj.get("input") if isinstance(obj.get("input"), dict) else {}
+                ),
             )
         if ttype == "tool_result":
             return ToolResultTurn(

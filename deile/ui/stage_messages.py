@@ -24,6 +24,7 @@ from typing import Dict, Optional
 @dataclass(frozen=True)
 class StageMessages:
     """Immutable set of cascade messages for a single scenario."""
+
     initial: str
     after_3s: Optional[str] = None
     after_10s: Optional[str] = None

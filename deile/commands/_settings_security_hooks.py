@@ -104,9 +104,7 @@ def check_settings_write_permission(scope: str, resource_detail: str) -> bool:
             )
         )
     except Exception:  # defensive against PermissionManager bugs
-        logger.exception(
-            "settings: PermissionManager.check_permission raised; denying"
-        )
+        logger.exception("settings: PermissionManager.check_permission raised; denying")
         return False
 
 
@@ -126,13 +124,14 @@ def emit_settings_audit(
     they must never block the caller.
     """
     try:
-        from deile.security.audit_logger import (AuditEventType, SeverityLevel,
-                                                 get_audit_logger)
+        from deile.security.audit_logger import (
+            AuditEventType,
+            SeverityLevel,
+            get_audit_logger,
+        )
 
         logger_obj = get_audit_logger()
-        severity = (
-            SeverityLevel.INFO if result == "allowed" else SeverityLevel.WARNING
-        )
+        severity = SeverityLevel.INFO if result == "allowed" else SeverityLevel.WARNING
         logger_obj.log_event(
             event_type=AuditEventType.SECURITY_POLICY_CHANGED,
             severity=severity,

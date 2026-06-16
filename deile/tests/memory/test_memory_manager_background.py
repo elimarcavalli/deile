@@ -64,6 +64,7 @@ async def test_spawn_background_logs_exception(tmp_path, monkeypatch) -> None:
     mm = _new_manager(tmp_path)
 
     import deile.memory.memory_manager as mm_mod
+
     captured: list[tuple[str, tuple, dict]] = []
 
     def fake_error(msg, *args, **kwargs):

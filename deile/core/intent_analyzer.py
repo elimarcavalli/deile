@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 class IntentType(Enum):
     """Tipos de intenção detectados pelo sistema"""
+
     WORKFLOW_REQUIRED = "workflow_required"
     MULTI_STEP = "multi_step"
     SIMPLE_TASK = "simple_task"
@@ -40,6 +41,7 @@ class IntentType(Enum):
 
 class IntentCategory(Enum):
     """Categorias principais de intenção"""
+
     IMPLEMENTATION = "implementation"
     ANALYSIS = "analysis"
     MODIFICATION = "modification"
@@ -51,6 +53,7 @@ class IntentCategory(Enum):
 @dataclass
 class IntentPattern:
     """Padrão de intenção configurável"""
+
     name: str
     category: IntentCategory
     keywords: List[str]
@@ -63,6 +66,7 @@ class IntentPattern:
 @dataclass
 class IntentAnalysisResult:
     """Resultado da análise de intenção"""
+
     intent_type: IntentType
     primary_category: IntentCategory
     confidence: float
@@ -72,29 +76,50 @@ class IntentAnalysisResult:
     analysis_time: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def requires_workflow(self, confidence_threshold: float = 0.50,
-                         complexity_threshold: float = 0.35,
-                         global_settings: Optional[Dict] = None) -> bool:
+    def requires_workflow(
+        self,
+        confidence_threshold: float = 0.50,
+        complexity_threshold: float = 0.35,
+        global_settings: Optional[Dict] = None,
+    ) -> bool:
         """Determina se requer workflow baseado em thresholds OTIMIZADOS 2025"""
 
         # Usa configurações globais se disponíveis
         if global_settings:
             # Verifica se é um dicionário ou objeto Settings
-            if hasattr(global_settings, 'get') and callable(getattr(global_settings, 'get')):
+            if hasattr(global_settings, "get") and callable(
+                getattr(global_settings, "get")
+            ):
                 # É um dicionário
-                confidence_threshold = global_settings.get('default_confidence_threshold', confidence_threshold)
-                complexity_threshold = global_settings.get('default_complexity_threshold', complexity_threshold)
-            elif hasattr(global_settings, 'default_confidence_threshold'):
+                confidence_threshold = global_settings.get(
+                    "default_confidence_threshold", confidence_threshold
+                )
+                complexity_threshold = global_settings.get(
+                    "default_complexity_threshold", complexity_threshold
+                )
+            elif hasattr(global_settings, "default_confidence_threshold"):
                 # É um objeto Settings com atributos
-                confidence_threshold = getattr(global_settings, 'default_confidence_threshold', confidence_threshold)
-                complexity_threshold = getattr(global_settings, 'default_complexity_threshold', complexity_threshold)
+                confidence_threshold = getattr(
+                    global_settings,
+                    "default_confidence_threshold",
+                    confidence_threshold,
+                )
+                complexity_threshold = getattr(
+                    global_settings,
+                    "default_complexity_threshold",
+                    complexity_threshold,
+                )
             else:
                 # Fallback: converte para dict se possível
                 try:
-                    if hasattr(global_settings, '__dict__'):
+                    if hasattr(global_settings, "__dict__"):
                         settings_dict = global_settings.__dict__
-                        confidence_threshold = settings_dict.get('default_confidence_threshold', confidence_threshold)
-                        complexity_threshold = settings_dict.get('default_complexity_threshold', complexity_threshold)
+                        confidence_threshold = settings_dict.get(
+                            "default_confidence_threshold", confidence_threshold
+                        )
+                        complexity_threshold = settings_dict.get(
+                            "default_complexity_threshold", complexity_threshold
+                        )
                 except Exception:
                     # Se tudo falhar, usa valores padrão
                     pass
@@ -105,21 +130,29 @@ class IntentAnalysisResult:
 
         # Casos especiais com thresholds ainda menores
         special_patterns = [
-            'implementation_complex', 'analysis_comprehensive',
-            'test_cases_specific', 'workflow_explicit'
+            "implementation_complex",
+            "analysis_comprehensive",
+            "test_cases_specific",
+            "workflow_explicit",
         ]
 
-        has_special_pattern = any(pattern in self.detected_patterns for pattern in special_patterns)
+        has_special_pattern = any(
+            pattern in self.detected_patterns for pattern in special_patterns
+        )
 
         if has_special_pattern:
-            adjusted_confidence_threshold = max(0.25, confidence_threshold - 0.25)  # Mais agressivo
-            adjusted_complexity_threshold = max(0.15, complexity_threshold - 0.20)  # Mais agressivo
+            adjusted_confidence_threshold = max(
+                0.25, confidence_threshold - 0.25
+            )  # Mais agressivo
+            adjusted_complexity_threshold = max(
+                0.15, complexity_threshold - 0.20
+            )  # Mais agressivo
 
         # Verifica tipo de intenção E thresholds
         intent_requires = self.intent_type in [
             IntentType.WORKFLOW_REQUIRED,
             IntentType.MULTI_STEP,
-            IntentType.COMPLEX_ANALYSIS
+            IntentType.COMPLEX_ANALYSIS,
         ]
 
         confidence_ok = self.confidence >= adjusted_confidence_threshold
@@ -129,12 +162,14 @@ class IntentAnalysisResult:
         category_flexible = self.primary_category in [
             IntentCategory.IMPLEMENTATION,
             IntentCategory.ANALYSIS,
-            IntentCategory.WORKFLOW
+            IntentCategory.WORKFLOW,
         ]
 
         if category_flexible and confidence_ok:
             # Para categorias flexíveis, relaxa MUITO requirement de complexity
-            complexity_ok = self.complexity_score >= (adjusted_complexity_threshold * 0.5)  # 50% do threshold
+            complexity_ok = self.complexity_score >= (
+                adjusted_complexity_threshold * 0.5
+            )  # 50% do threshold
 
         # Para casos específicos dos testes, ainda mais flexível
         if has_special_pattern:
@@ -143,14 +178,17 @@ class IntentAnalysisResult:
         return intent_requires and confidence_ok and complexity_ok
 
     def __str__(self) -> str:
-        return (f"IntentAnalysis({self.intent_type.value}, "
-                f"confidence={self.confidence:.2f}, "
-                f"complexity={self.complexity_score:.2f})")
+        return (
+            f"IntentAnalysis({self.intent_type.value}, "
+            f"confidence={self.confidence:.2f}, "
+            f"complexity={self.complexity_score:.2f})"
+        )
 
 
 @dataclass
 class IntentCacheEntry:
     """Entrada do cache de intenções"""
+
     result: IntentAnalysisResult
     timestamp: float
     hit_count: int = 0
@@ -167,7 +205,12 @@ class IntentAnalyzer:
     - Configuração flexível
     """
 
-    def __init__(self, config_path: Optional[Path] = None, cache_size: int = 1000, enable_metrics: bool = True):
+    def __init__(
+        self,
+        config_path: Optional[Path] = None,
+        cache_size: int = 1000,
+        enable_metrics: bool = True,
+    ):
         self.config_path = config_path
         self.cache_size = cache_size
         self.enable_metrics = enable_metrics
@@ -182,12 +225,12 @@ class IntentAnalyzer:
 
         # Métricas de performance (básicas, mantidas para compatibilidade)
         self.metrics = {
-            'total_analyses': 0,
-            'cache_hits': 0,
-            'cache_misses': 0,
-            'avg_analysis_time': 0.0,
-            'pattern_matches': defaultdict(int),
-            'intent_distribution': defaultdict(int)
+            "total_analyses": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "avg_analysis_time": 0.0,
+            "pattern_matches": defaultdict(int),
+            "intent_distribution": defaultdict(int),
         }
 
         # Sistema avançado de métricas (lazy loading para evitar dependência circular)
@@ -205,15 +248,19 @@ class IntentAnalyzer:
         try:
             # Import local para evitar dependência circular
             from .intent_metrics import get_intent_metrics_collector
+
             self._metrics_collector = get_intent_metrics_collector()
             logger.debug("Advanced metrics collector initialized")
         except Exception as e:
             logger.warning(f"Failed to initialize metrics collector: {e}")
             self.enable_metrics = False
 
-    async def analyze(self, user_input: str,
-                     parse_result: Optional[ParseResult] = None,
-                     session_context: Optional[Dict] = None) -> IntentAnalysisResult:
+    async def analyze(
+        self,
+        user_input: str,
+        parse_result: Optional[ParseResult] = None,
+        session_context: Optional[Dict] = None,
+    ) -> IntentAnalysisResult:
         """Realiza análise completa de intenção"""
         start_time = time.time()
 
@@ -224,23 +271,28 @@ class IntentAnalyzer:
         cache_key = self._generate_cache_key(normalized_input, parse_result)
         cached_result = self._get_from_cache(cache_key)
         if cached_result:
-            self.metrics['cache_hits'] += 1
+            self.metrics["cache_hits"] += 1
             return cached_result
 
-        self.metrics['cache_misses'] += 1
-        self.metrics['total_analyses'] += 1
+        self.metrics["cache_misses"] += 1
+        self.metrics["total_analyses"] += 1
 
         try:
             # Análise multi-camada
             lexical_result = self._analyze_lexical(normalized_input)
             syntactic_result = self._analyze_syntactic(normalized_input)
-            semantic_result = await self._analyze_semantic(normalized_input, session_context)
+            semantic_result = await self._analyze_semantic(
+                normalized_input, session_context
+            )
             complexity_result = self._analyze_complexity(normalized_input, parse_result)
 
             # Combina resultados
             final_result = self._combine_analysis_results(
-                normalized_input, lexical_result, syntactic_result,
-                semantic_result, complexity_result
+                normalized_input,
+                lexical_result,
+                syntactic_result,
+                semantic_result,
+                complexity_result,
             )
 
             # Calcula tempo de análise
@@ -267,7 +319,7 @@ class IntentAnalyzer:
                 primary_category=IntentCategory.INFORMATION,
                 confidence=0.0,
                 complexity_score=0.0,
-                analysis_time=time.time() - start_time
+                analysis_time=time.time() - start_time,
             )
 
     def _analyze_lexical(self, user_input: str) -> Dict[str, Any]:
@@ -282,7 +334,7 @@ class IntentAnalyzer:
             keyword_matches = 0
             for keyword in pattern.keywords:
                 # Usar word boundary para match exato
-                if re.search(rf'\b{re.escape(keyword)}\b', user_input_lower):
+                if re.search(rf"\b{re.escape(keyword)}\b", user_input_lower):
                     matched_keywords.append(keyword)
                     keyword_matches += 1
 
@@ -290,13 +342,15 @@ class IntentAnalyzer:
                 matched_patterns.append(pattern_name)
                 # Score baseado na proporção de keywords encontradas
                 keyword_score = keyword_matches / len(pattern.keywords)
-                category_scores[pattern.category] += keyword_score * pattern.confidence_weight
+                category_scores[pattern.category] += (
+                    keyword_score * pattern.confidence_weight
+                )
 
         return {
-            'matched_patterns': matched_patterns,
-            'matched_keywords': matched_keywords,
-            'category_scores': dict(category_scores),
-            'total_matches': len(matched_keywords)
+            "matched_patterns": matched_patterns,
+            "matched_keywords": matched_keywords,
+            "category_scores": dict(category_scores),
+            "total_matches": len(matched_keywords),
         }
 
     def _analyze_syntactic(self, user_input: str) -> Dict[str, Any]:
@@ -317,24 +371,25 @@ class IntentAnalyzer:
                     pattern_scores[pattern_name] += match_score
 
         return {
-            'regex_matches': regex_matches,
-            'pattern_scores': dict(pattern_scores),
-            'total_regex_matches': len(regex_matches)
+            "regex_matches": regex_matches,
+            "pattern_scores": dict(pattern_scores),
+            "total_regex_matches": len(regex_matches),
         }
 
-    async def _analyze_semantic(self, user_input: str,
-                               session_context: Optional[Dict] = None) -> Dict[str, Any]:
+    async def _analyze_semantic(
+        self, user_input: str, session_context: Optional[Dict] = None
+    ) -> Dict[str, Any]:
         """Análise semântica básica (preparada para embeddings futuros)"""
 
         # Análise de complexidade semântica
-        sentences = re.split(r'[.!?]+', user_input)
+        sentences = re.split(r"[.!?]+", user_input)
         word_count = len(user_input.split())
 
         # Detecta conectivos e estruturas complexas
         complex_connectors = [
-            r'\b(e|and|também|also|além|besides|depois|after|antes|before)\b',
-            r'\b(então|so|portanto|therefore|consequentemente|consequently)\b',
-            r'\b(mas|but|porém|however|entretanto|meanwhile)\b'
+            r"\b(e|and|também|also|além|besides|depois|after|antes|before)\b",
+            r"\b(então|so|portanto|therefore|consequentemente|consequently)\b",
+            r"\b(mas|but|porém|however|entretanto|meanwhile)\b",
         ]
 
         connector_count = sum(
@@ -346,140 +401,171 @@ class IntentAnalyzer:
         session_complexity = 0.0
         if session_context:
             # Considera histórico da sessão para aumentar complexidade
-            conversation_length = session_context.get('conversation_length', 0)
-            previous_tool_usage = session_context.get('previous_tool_usage', 0)
-            session_complexity = min(0.3, (conversation_length * 0.1) + (previous_tool_usage * 0.05))
+            conversation_length = session_context.get("conversation_length", 0)
+            previous_tool_usage = session_context.get("previous_tool_usage", 0)
+            session_complexity = min(
+                0.3, (conversation_length * 0.1) + (previous_tool_usage * 0.05)
+            )
 
-        semantic_score = min(1.0, (
-            (len(sentences) * 0.1) +
-            (word_count * 0.01) +
-            (connector_count * 0.2) +
-            session_complexity
-        ))
+        semantic_score = min(
+            1.0,
+            (
+                (len(sentences) * 0.1)
+                + (word_count * 0.01)
+                + (connector_count * 0.2)
+                + session_complexity
+            ),
+        )
 
         return {
-            'semantic_score': semantic_score,
-            'sentence_count': len(sentences),
-            'word_count': word_count,
-            'connector_count': connector_count,
-            'session_complexity': session_complexity
+            "semantic_score": semantic_score,
+            "sentence_count": len(sentences),
+            "word_count": word_count,
+            "connector_count": connector_count,
+            "session_complexity": session_complexity,
         }
 
-    def _analyze_complexity(self, user_input: str,
-                           parse_result: Optional[ParseResult] = None) -> Dict[str, Any]:
+    def _analyze_complexity(
+        self, user_input: str, parse_result: Optional[ParseResult] = None
+    ) -> Dict[str, Any]:
         """Análise de complexidade da tarefa"""
 
         # Fatores base de complexidade
         word_count = len(user_input.split())
-        sentence_count = len(re.split(r'[.!?]+', user_input))
+        sentence_count = len(re.split(r"[.!?]+", user_input))
 
         # Complexidade baseada em parsing
         parsing_complexity = 0.0
         if parse_result:
-            tool_count = len(parse_result.tool_requests) if parse_result.tool_requests else 0
-            file_count = len(parse_result.file_references) if parse_result.file_references else 0
+            tool_count = (
+                len(parse_result.tool_requests) if parse_result.tool_requests else 0
+            )
+            file_count = (
+                len(parse_result.file_references) if parse_result.file_references else 0
+            )
             command_count = len(parse_result.commands) if parse_result.commands else 0
 
-            parsing_complexity = min(1.0, (
-                (tool_count * 0.3) +
-                (file_count * 0.2) +
-                (command_count * 0.1)
-            ))
+            parsing_complexity = min(
+                1.0, ((tool_count * 0.3) + (file_count * 0.2) + (command_count * 0.1))
+            )
 
         # Indicadores de multi-step
         multi_step_patterns = [
-            r'\btodos\s+os?\b|\ball\b',
-            r'\bcada\b|\bevery\b',
-            r'\bsequencialmente\b|\bsequentially\b',
-            r'\bpasso\s+a\s+passo\b|\bstep\s+by\s+step\b',
-            r'\betapas?\b|\bsteps?\b',
-            r'\bprocessos?\b|\bprocess\b'
+            r"\btodos\s+os?\b|\ball\b",
+            r"\bcada\b|\bevery\b",
+            r"\bsequencialmente\b|\bsequentially\b",
+            r"\bpasso\s+a\s+passo\b|\bstep\s+by\s+step\b",
+            r"\betapas?\b|\bsteps?\b",
+            r"\bprocessos?\b|\bprocess\b",
         ]
 
         multi_step_score = sum(
-            0.2 for pattern in multi_step_patterns
+            0.2
+            for pattern in multi_step_patterns
             if re.search(pattern, user_input.lower())
         )
 
         # Score final de complexidade
-        complexity_score = min(1.0, (
-            (word_count * 0.01) +
-            (sentence_count * 0.1) +
-            parsing_complexity +
-            min(0.6, multi_step_score)
-        ))
+        complexity_score = min(
+            1.0,
+            (
+                (word_count * 0.01)
+                + (sentence_count * 0.1)
+                + parsing_complexity
+                + min(0.6, multi_step_score)
+            ),
+        )
 
         return {
-            'complexity_score': complexity_score,
-            'word_count': word_count,
-            'sentence_count': sentence_count,
-            'parsing_complexity': parsing_complexity,
-            'multi_step_score': multi_step_score
+            "complexity_score": complexity_score,
+            "word_count": word_count,
+            "sentence_count": sentence_count,
+            "parsing_complexity": parsing_complexity,
+            "multi_step_score": multi_step_score,
         }
 
-    def _combine_analysis_results(self, user_input: str, lexical: Dict,
-                                 syntactic: Dict, semantic: Dict,
-                                 complexity: Dict) -> IntentAnalysisResult:
+    def _combine_analysis_results(
+        self,
+        user_input: str,
+        lexical: Dict,
+        syntactic: Dict,
+        semantic: Dict,
+        complexity: Dict,
+    ) -> IntentAnalysisResult:
         """Combina resultados de todas as camadas de análise"""
 
         # Determina categoria principal baseada em scores
-        category_scores = lexical.get('category_scores', {})
+        category_scores = lexical.get("category_scores", {})
         primary_category = IntentCategory.INFORMATION  # default
 
         if category_scores:
-            primary_category = max(category_scores.keys(), key=lambda k: category_scores[k])
+            primary_category = max(
+                category_scores.keys(), key=lambda k: category_scores[k]
+            )
 
         # Calcula confiança combinada - ALGORITMO ULTRA OTIMIZADO 2025
-        lexical_confidence = min(1.0, lexical.get('total_matches', 0) * 0.2)  # Aumentado novamente
-        syntactic_confidence = min(1.0, syntactic.get('total_regex_matches', 0) * 0.4)  # Muito aumentado
-        semantic_confidence = semantic.get('semantic_score', 0.0)
+        lexical_confidence = min(
+            1.0, lexical.get("total_matches", 0) * 0.2
+        )  # Aumentado novamente
+        syntactic_confidence = min(
+            1.0, syntactic.get("total_regex_matches", 0) * 0.4
+        )  # Muito aumentado
+        semantic_confidence = semantic.get("semantic_score", 0.0)
 
         # Boost baseado na categoria primária (usando configurações globais)
         category_boost = 0.0
-        if category_scores and hasattr(self, 'global_settings'):
+        if category_scores and hasattr(self, "global_settings"):
             # Acesso seguro ao global_settings
-            if hasattr(self.global_settings, 'get') and callable(getattr(self.global_settings, 'get')):
-                category_settings = self.global_settings.get('category_settings', {})
+            if hasattr(self.global_settings, "get") and callable(
+                getattr(self.global_settings, "get")
+            ):
+                category_settings = self.global_settings.get("category_settings", {})
             elif isinstance(self.global_settings, dict):
-                category_settings = self.global_settings.get('category_settings', {})
+                category_settings = self.global_settings.get("category_settings", {})
             else:
                 category_settings = {}
             primary_cat_str = primary_category.value
             if primary_cat_str in category_settings:
                 cat_config = category_settings[primary_cat_str]
-                multiplier = cat_config.get('confidence_multiplier', 1.0)
+                multiplier = cat_config.get("confidence_multiplier", 1.0)
                 max_category_score = max(category_scores.values())
-                category_boost = min(0.4, max_category_score * 0.15 * multiplier)  # Até 40% de boost
+                category_boost = min(
+                    0.4, max_category_score * 0.15 * multiplier
+                )  # Até 40% de boost
 
         # Boost MASSIVO para padrões específicos dos testes
         test_pattern_boost = 0.0
         special_pattern_detected = any(
-            pattern in lexical.get('matched_patterns', [])
-            for pattern in ['test_cases_specific', 'implementation_complex', 'analysis_comprehensive']
+            pattern in lexical.get("matched_patterns", [])
+            for pattern in [
+                "test_cases_specific",
+                "implementation_complex",
+                "analysis_comprehensive",
+            ]
         )
         if special_pattern_detected:
             test_pattern_boost = 0.5  # 50% boost GARANTIDO para casos específicos
 
         # Boost adicional se há muitas keywords matchadas
         keyword_boost = 0.0
-        matched_keywords_count = len(lexical.get('matched_keywords', []))
+        matched_keywords_count = len(lexical.get("matched_keywords", []))
         if matched_keywords_count >= 3:
             keyword_boost = min(0.3, matched_keywords_count * 0.1)
 
         combined_confidence = (
-            lexical_confidence * 0.25 +      # Reduzido para dar espaço aos boosts
-            syntactic_confidence * 0.35 +    # Mantido alto
-            semantic_confidence * 0.25 +     # Reduzido para dar espaço
-            category_boost +                 # Melhorado
-            test_pattern_boost +             # Aumentado significativamente
-            keyword_boost                    # Novo
+            lexical_confidence * 0.25  # Reduzido para dar espaço aos boosts
+            + syntactic_confidence * 0.35  # Mantido alto
+            + semantic_confidence * 0.25  # Reduzido para dar espaço
+            + category_boost  # Melhorado
+            + test_pattern_boost  # Aumentado significativamente
+            + keyword_boost  # Novo
         )
 
         # Garante que não excede 1.0 mas pode ser bem alto para casos especiais
         combined_confidence = min(1.0, combined_confidence)
 
         # Determina tipo de intenção
-        complexity_score = complexity.get('complexity_score', 0.0)
+        complexity_score = complexity.get("complexity_score", 0.0)
         intent_type = self._determine_intent_type(
             primary_category, combined_confidence, complexity_score, lexical, syntactic
         )
@@ -489,23 +575,32 @@ class IntentAnalyzer:
             primary_category=primary_category,
             confidence=combined_confidence,
             complexity_score=complexity_score,
-            detected_patterns=lexical.get('matched_patterns', []),
-            matched_keywords=lexical.get('matched_keywords', []),
+            detected_patterns=lexical.get("matched_patterns", []),
+            matched_keywords=lexical.get("matched_keywords", []),
             metadata={
-                'lexical_analysis': lexical,
-                'syntactic_analysis': syntactic,
-                'semantic_analysis': semantic,
-                'complexity_analysis': complexity
-            }
+                "lexical_analysis": lexical,
+                "syntactic_analysis": syntactic,
+                "semantic_analysis": semantic,
+                "complexity_analysis": complexity,
+            },
         )
 
-    def _determine_intent_type(self, category: IntentCategory, confidence: float,
-                              complexity: float, lexical: Dict, syntactic: Dict) -> IntentType:
+    def _determine_intent_type(
+        self,
+        category: IntentCategory,
+        confidence: float,
+        complexity: float,
+        lexical: Dict,
+        syntactic: Dict,
+    ) -> IntentType:
         """Determina o tipo de intenção baseado na análise"""
 
         # Verifica se há padrões que explicitamente requerem workflow
-        workflow_patterns = [p for p, config in self.patterns.items()
-                           if config.requires_workflow and p in lexical.get('matched_patterns', [])]
+        workflow_patterns = [
+            p
+            for p, config in self.patterns.items()
+            if config.requires_workflow and p in lexical.get("matched_patterns", [])
+        ]
 
         if workflow_patterns:
             return IntentType.WORKFLOW_REQUIRED
@@ -536,8 +631,8 @@ class IntentAnalyzer:
 
         # Localiza arquivo de configuração padrão se não especificado
         if not self.config_path:
-            config_dir = Path(__file__).parent.parent / 'config'
-            potential_config = config_dir / 'intent_patterns.yaml'
+            config_dir = Path(__file__).parent.parent / "config"
+            potential_config = config_dir / "intent_patterns.yaml"
             if potential_config.exists():
                 self.config_path = potential_config
 
@@ -546,34 +641,46 @@ class IntentAnalyzer:
         # Tenta carregar de arquivo YAML primeiro
         if self.config_path and self.config_path.exists():
             try:
-                with open(self.config_path, 'r', encoding='utf-8') as f:
+                with open(self.config_path, "r", encoding="utf-8") as f:
                     config_data = yaml.safe_load(f)
 
                 # Carrega padrões do YAML
-                if 'intent_patterns' in config_data:
-                    for pattern_name, pattern_config in config_data['intent_patterns'].items():
+                if "intent_patterns" in config_data:
+                    for pattern_name, pattern_config in config_data[
+                        "intent_patterns"
+                    ].items():
                         try:
                             # Mapeia categoria de string para enum
-                            category_str = pattern_config.get('category', 'information')
+                            category_str = pattern_config.get("category", "information")
                             category = self._map_category_string(category_str)
 
                             patterns[pattern_name] = IntentPattern(
                                 name=pattern_name,
                                 category=category,
-                                keywords=pattern_config.get('keywords', []),
-                                regex_patterns=pattern_config.get('regex_patterns', []),
-                                confidence_weight=pattern_config.get('confidence_weight', 0.7),
-                                requires_workflow=pattern_config.get('requires_workflow', False),
-                                min_complexity_threshold=pattern_config.get('min_complexity_threshold', 0.5)
+                                keywords=pattern_config.get("keywords", []),
+                                regex_patterns=pattern_config.get("regex_patterns", []),
+                                confidence_weight=pattern_config.get(
+                                    "confidence_weight", 0.7
+                                ),
+                                requires_workflow=pattern_config.get(
+                                    "requires_workflow", False
+                                ),
+                                min_complexity_threshold=pattern_config.get(
+                                    "min_complexity_threshold", 0.5
+                                ),
                             )
                         except Exception as e:
-                            logger.warning(f"Failed to load pattern '{pattern_name}': {e}")
+                            logger.warning(
+                                f"Failed to load pattern '{pattern_name}': {e}"
+                            )
 
-                logger.info(f"Loaded {len(patterns)} intent patterns from {self.config_path}")
+                logger.info(
+                    f"Loaded {len(patterns)} intent patterns from {self.config_path}"
+                )
 
                 # Carrega configurações globais também
-                if 'settings' in config_data:
-                    self.global_settings = config_data['settings']
+                if "settings" in config_data:
+                    self.global_settings = config_data["settings"]
                 else:
                     self.global_settings = {}
 
@@ -590,55 +697,81 @@ class IntentAnalyzer:
     def _map_category_string(self, category_str: str) -> IntentCategory:
         """Mapeia string de categoria para enum"""
         mapping = {
-            'implementation': IntentCategory.IMPLEMENTATION,
-            'analysis': IntentCategory.ANALYSIS,
-            'modification': IntentCategory.MODIFICATION,
-            'troubleshooting': IntentCategory.TROUBLESHOOTING,
-            'information': IntentCategory.INFORMATION,
-            'workflow': IntentCategory.WORKFLOW
+            "implementation": IntentCategory.IMPLEMENTATION,
+            "analysis": IntentCategory.ANALYSIS,
+            "modification": IntentCategory.MODIFICATION,
+            "troubleshooting": IntentCategory.TROUBLESHOOTING,
+            "information": IntentCategory.INFORMATION,
+            "workflow": IntentCategory.WORKFLOW,
         }
         return mapping.get(category_str.lower(), IntentCategory.INFORMATION)
 
     def _get_fallback_patterns(self) -> Dict[str, IntentPattern]:
         """Retorna padrões padrão como fallback"""
         return {
-            'implementation_workflow': IntentPattern(
-                name='implementation_workflow',
+            "implementation_workflow": IntentPattern(
+                name="implementation_workflow",
                 category=IntentCategory.IMPLEMENTATION,
-                keywords=['implementar', 'implement', 'criar', 'create', 'desenvolver', 'develop'],
-                regex_patterns=[
-                    r'implementar\s+.+\s+para',
-                    r'criar\s+sistema\s+de',
-                    r'desenvolver\s+.+\s+que'
+                keywords=[
+                    "implementar",
+                    "implement",
+                    "criar",
+                    "create",
+                    "desenvolver",
+                    "develop",
                 ],
-                confidence_weight=1.0,
-                requires_workflow=True
-            ),
-            'analysis_workflow': IntentPattern(
-                name='analysis_workflow',
-                category=IntentCategory.ANALYSIS,
-                keywords=['analisar', 'analyze', 'investigar', 'investigate', 'revisar', 'review'],
                 regex_patterns=[
-                    r'analisar\s+.+\s+e\s+.+',
-                    r'investigar\s+problema',
-                    r'revisar\s+código'
-                ],
-                confidence_weight=0.9,
-                requires_workflow=True
-            ),
-            'test_cases_specific': IntentPattern(
-                name='test_cases_specific',
-                category=IntentCategory.IMPLEMENTATION,
-                keywords=['implementar', 'melhorias', 'sistema', 'passo', 'analisar', 'arquivos', 'relatório', 'criar', 'autenticação', 'validação', 'completo'],
-                regex_patterns=[
-                    r'\bimplementar\b.*\bmelhorias?\b.*\bsistema\b.*\bpasso\s+a\s+passo\b',
-                    r'\banalisar\b.*\btodos?\b.*\barquivos?\b.*\be\b.*\bcriar\b.*\brelatório\b.*\bcompleto\b',
-                    r'\bcriar\b.*\bsistema\b.*\bcompleto\b.*\bde\b.*\bautenticação\b.*\bcom\b.*\bvalidação\b'
+                    r"implementar\s+.+\s+para",
+                    r"criar\s+sistema\s+de",
+                    r"desenvolver\s+.+\s+que",
                 ],
                 confidence_weight=1.0,
                 requires_workflow=True,
-                min_complexity_threshold=0.2
-            )
+            ),
+            "analysis_workflow": IntentPattern(
+                name="analysis_workflow",
+                category=IntentCategory.ANALYSIS,
+                keywords=[
+                    "analisar",
+                    "analyze",
+                    "investigar",
+                    "investigate",
+                    "revisar",
+                    "review",
+                ],
+                regex_patterns=[
+                    r"analisar\s+.+\s+e\s+.+",
+                    r"investigar\s+problema",
+                    r"revisar\s+código",
+                ],
+                confidence_weight=0.9,
+                requires_workflow=True,
+            ),
+            "test_cases_specific": IntentPattern(
+                name="test_cases_specific",
+                category=IntentCategory.IMPLEMENTATION,
+                keywords=[
+                    "implementar",
+                    "melhorias",
+                    "sistema",
+                    "passo",
+                    "analisar",
+                    "arquivos",
+                    "relatório",
+                    "criar",
+                    "autenticação",
+                    "validação",
+                    "completo",
+                ],
+                regex_patterns=[
+                    r"\bimplementar\b.*\bmelhorias?\b.*\bsistema\b.*\bpasso\s+a\s+passo\b",
+                    r"\banalisar\b.*\btodos?\b.*\barquivos?\b.*\be\b.*\bcriar\b.*\brelatório\b.*\bcompleto\b",
+                    r"\bcriar\b.*\bsistema\b.*\bcompleto\b.*\bde\b.*\bautenticação\b.*\bcom\b.*\bvalidação\b",
+                ],
+                confidence_weight=1.0,
+                requires_workflow=True,
+                min_complexity_threshold=0.2,
+            ),
         }
 
     def _compile_patterns(self) -> Dict[str, List[re.Pattern]]:
@@ -654,10 +787,12 @@ class IntentAnalyzer:
     def _normalize_input(self, user_input: str) -> str:
         """Normaliza entrada do usuário"""
         # Remove espaços extras, normaliza quebras de linha
-        normalized = re.sub(r'\s+', ' ', user_input.strip())
+        normalized = re.sub(r"\s+", " ", user_input.strip())
         return normalized
 
-    def _generate_cache_key(self, user_input: str, parse_result: Optional[ParseResult]) -> str:
+    def _generate_cache_key(
+        self, user_input: str, parse_result: Optional[ParseResult]
+    ) -> str:
         """Gera chave única para cache"""
         cache_data = user_input
         if parse_result:
@@ -685,25 +820,29 @@ class IntentAnalyzer:
             oldest_key = self._cache_access_order.popleft()
             del self._cache[oldest_key]
 
-        self._cache[cache_key] = IntentCacheEntry(
-            result=result,
-            timestamp=time.time()
-        )
+        self._cache[cache_key] = IntentCacheEntry(result=result, timestamp=time.time())
         self._cache_access_order.append(cache_key)
 
-    def _update_metrics(self, result: IntentAnalysisResult, analysis_time: float) -> None:
+    def _update_metrics(
+        self, result: IntentAnalysisResult, analysis_time: float
+    ) -> None:
         """Atualiza métricas de performance"""
-        self.metrics['avg_analysis_time'] = (
-            (self.metrics['avg_analysis_time'] * (self.metrics['total_analyses'] - 1) + analysis_time) /
-            self.metrics['total_analyses']
-        )
+        self.metrics["avg_analysis_time"] = (
+            self.metrics["avg_analysis_time"] * (self.metrics["total_analyses"] - 1)
+            + analysis_time
+        ) / self.metrics["total_analyses"]
 
-        self.metrics['intent_distribution'][result.intent_type.value] += 1
+        self.metrics["intent_distribution"][result.intent_type.value] += 1
 
         for pattern in result.detected_patterns:
-            self.metrics['pattern_matches'][pattern] += 1
+            self.metrics["pattern_matches"][pattern] += 1
 
-    def _record_analysis_event(self, user_input: str, result: IntentAnalysisResult, session_context: Optional[Dict]) -> None:
+    def _record_analysis_event(
+        self,
+        user_input: str,
+        result: IntentAnalysisResult,
+        session_context: Optional[Dict],
+    ) -> None:
         """Registra evento no sistema de métricas avançadas"""
         if not self.enable_metrics or not self._metrics_collector:
             return
@@ -717,12 +856,14 @@ class IntentAnalyzer:
                 user_input=user_input,
                 intent_result=result,
                 session_context=session_context,
-                anomalies=anomalies
+                anomalies=anomalies,
             )
         except Exception as e:
             logger.warning(f"Failed to record analysis event in metrics: {e}")
 
-    def _detect_anomalies(self, user_input: str, result: IntentAnalysisResult) -> List[str]:
+    def _detect_anomalies(
+        self, user_input: str, result: IntentAnalysisResult
+    ) -> List[str]:
         """Detecta anomalias na análise"""
         anomalies = []
 
@@ -748,16 +889,17 @@ class IntentAnalyzer:
     def get_metrics(self) -> Dict[str, Any]:
         """Retorna métricas de performance"""
         cache_hit_rate = (
-            self.metrics['cache_hits'] /
-            (self.metrics['cache_hits'] + self.metrics['cache_misses'])
-            if (self.metrics['cache_hits'] + self.metrics['cache_misses']) > 0 else 0
+            self.metrics["cache_hits"]
+            / (self.metrics["cache_hits"] + self.metrics["cache_misses"])
+            if (self.metrics["cache_hits"] + self.metrics["cache_misses"]) > 0
+            else 0
         )
 
         basic_metrics = {
             **self.metrics,
-            'cache_hit_rate': cache_hit_rate,
-            'cache_size': len(self._cache),
-            'patterns_loaded': len(self.patterns)
+            "cache_hit_rate": cache_hit_rate,
+            "cache_size": len(self._cache),
+            "patterns_loaded": len(self.patterns),
         }
 
         # Inclui métricas avançadas se disponíveis
@@ -765,17 +907,14 @@ class IntentAnalyzer:
             try:
                 advanced_metrics = self._metrics_collector.get_comprehensive_metrics()
                 return {
-                    'basic_metrics': basic_metrics,
-                    'advanced_metrics': advanced_metrics,
-                    'metrics_enabled': True
+                    "basic_metrics": basic_metrics,
+                    "advanced_metrics": advanced_metrics,
+                    "metrics_enabled": True,
                 }
             except Exception as e:
                 logger.warning(f"Failed to get advanced metrics: {e}")
 
-        return {
-            'basic_metrics': basic_metrics,
-            'metrics_enabled': False
-        }
+        return {"basic_metrics": basic_metrics, "metrics_enabled": False}
 
     def clear_cache(self) -> None:
         """Limpa cache de análises"""
@@ -787,7 +926,9 @@ class IntentAnalyzer:
         """Retorna instância do coletor de métricas para acesso direto"""
         return self._metrics_collector
 
-    def export_metrics(self, format: str = "json", file_path: Optional[Path] = None) -> Optional[str]:
+    def export_metrics(
+        self, format: str = "json", file_path: Optional[Path] = None
+    ) -> Optional[str]:
         """Exporta métricas para arquivo"""
         if self.enable_metrics and self._metrics_collector:
             return self._metrics_collector.export_metrics(format, file_path)
@@ -804,14 +945,20 @@ class IntentAnalyzer:
                 logger.warning(f"Failed to get system health: {e}")
 
         # Avaliação básica baseada em métricas simples
-        total = self.metrics['total_analyses']
+        total = self.metrics["total_analyses"]
         if total == 0:
-            return {'status': 'unknown', 'health_score': 0, 'issues': ['No analyses performed yet']}
+            return {
+                "status": "unknown",
+                "health_score": 0,
+                "issues": ["No analyses performed yet"],
+            }
 
-        avg_time = self.metrics['avg_analysis_time']
+        avg_time = self.metrics["avg_analysis_time"]
         cache_hit_rate = (
-            self.metrics['cache_hits'] / (self.metrics['cache_hits'] + self.metrics['cache_misses'])
-            if (self.metrics['cache_hits'] + self.metrics['cache_misses']) > 0 else 0
+            self.metrics["cache_hits"]
+            / (self.metrics["cache_hits"] + self.metrics["cache_misses"])
+            if (self.metrics["cache_hits"] + self.metrics["cache_misses"]) > 0
+            else 0
         )
 
         health_score = 100.0
@@ -835,10 +982,10 @@ class IntentAnalyzer:
             status = "poor"
 
         return {
-            'status': status,
-            'health_score': max(0, health_score),
-            'issues': issues,
-            'last_assessment': time.time()
+            "status": status,
+            "health_score": max(0, health_score),
+            "issues": issues,
+            "last_assessment": time.time(),
         }
 
 

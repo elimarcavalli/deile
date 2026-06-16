@@ -102,8 +102,8 @@ class TestResumeTracker:
         for _ in range(3):  # já está em 2, +3 = 5
             t.update_from_worker(1, fingerprint="x", attempt=0, budget_s=0.0)
         assert t.get(1).attempt == 5
-        assert t.cadence_ok(1, 500.0, 60) is False    # 400s passados < 960
-        assert t.cadence_ok(1, 1061.0, 60) is True    # >= 960
+        assert t.cadence_ok(1, 500.0, 60) is False  # 400s passados < 960
+        assert t.cadence_ok(1, 1061.0, 60) is True  # >= 960
 
 
 class TestFailureStreak:

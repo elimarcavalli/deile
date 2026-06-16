@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from deile.orchestration.forge import (ForgeKind, find_first_pr_url,
-                                       find_last_pr_url, parse_forge_url)
+from deile.orchestration.forge import (
+    ForgeKind,
+    find_first_pr_url,
+    find_last_pr_url,
+    parse_forge_url,
+)
 
 
 def test_parse_forge_url_github_pr():

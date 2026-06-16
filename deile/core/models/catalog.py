@@ -24,14 +24,16 @@ class ModelPricing:
 class ModelHandle:
     """Immutable descriptor for one model in the catalog."""
 
-    provider_id: str           # "anthropic" | "openai" | "deepseek" | "gemini"
-    model_id: str              # e.g. "claude-opus-4-8"
+    provider_id: str  # "anthropic" | "openai" | "deepseek" | "gemini"
+    model_id: str  # e.g. "claude-opus-4-8"
     tier: ModelTier
     pricing: ModelPricing
     context_window: int
-    capabilities: FrozenSet[str]   # {"function_calling", "vision", "streaming", "caching"}
+    capabilities: FrozenSet[
+        str
+    ]  # {"function_calling", "vision", "streaming", "caching"}
     display_name: str
-    label: str                 # "flagship" | "balanced" | "fast" | ...
+    label: str  # "flagship" | "balanced" | "fast" | ...
 
 
 class ModelCatalog:

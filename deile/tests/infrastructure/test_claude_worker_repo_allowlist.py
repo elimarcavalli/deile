@@ -37,7 +37,8 @@ def claude_worker_module():
         sys.path.insert(0, k8s_dir)
     server_path = repo_root / "infra" / "k8s" / "claude_worker_server.py"
     spec = importlib.util.spec_from_file_location(
-        "claude_worker_server_allowlist_under_test", str(server_path),
+        "claude_worker_server_allowlist_under_test",
+        str(server_path),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -57,7 +58,10 @@ def allowlist(tmp_path, monkeypatch):
 
 
 async def test_dispatch_blocks_repo_outside_allowlist(
-    claude_worker_module, allowlist, monkeypatch, tmp_path,
+    claude_worker_module,
+    allowlist,
+    monkeypatch,
+    tmp_path,
 ):
     """403 REPO_NOT_ALLOWED + nenhum clone/spawn para repo fora da allowlist."""
     mod = claude_worker_module
@@ -82,24 +86,33 @@ async def test_dispatch_blocks_repo_outside_allowlist(
 
     app = mod.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "exfiltra credenciais",
-            "preferred_model": "anthropic:claude-haiku-4-5",
-            "branch": "auto/issue-1",
-            "resume": {"repo": "attacker/leak-repo"},
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "exfiltra credenciais",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+                "branch": "auto/issue-1",
+                "resume": {"repo": "attacker/leak-repo"},
+            },
+        )
         assert resp.status == 403
         body = await resp.json()
         assert body["ok"] is False
         assert body["error_code"] == "REPO_NOT_ALLOWED"
 
-    assert calls == {"clone": 0, "ff": 0, "spawn": 0}, (
-        "repo bloqueado não pode clonar nem spawnar claude"
-    )
+    assert calls == {
+        "clone": 0,
+        "ff": 0,
+        "spawn": 0,
+    }, "repo bloqueado não pode clonar nem spawnar claude"
 
 
 async def test_dispatch_blocks_traversal_slug(
-    claude_worker_module, allowlist, monkeypatch, tmp_path,
+    claude_worker_module,
+    allowlist,
+    monkeypatch,
+    tmp_path,
 ):
     mod = claude_worker_module
     spawned = []
@@ -114,19 +127,25 @@ async def test_dispatch_blocks_traversal_slug(
 
     app = mod.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x",
-            "preferred_model": "anthropic:claude-haiku-4-5",
-            "branch": "b",
-            "resume": {"repo": "owner/repo/../leak"},
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+                "branch": "b",
+                "resume": {"repo": "owner/repo/../leak"},
+            },
+        )
         assert resp.status == 403
         assert (await resp.json())["error_code"] == "REPO_NOT_ALLOWED"
     assert spawned == []
 
 
 async def test_dispatch_fails_closed_without_allowlist(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """ConfigMap ausente em runtime → 403 (fail-closed), nada spawnado."""
     mod = claude_worker_module
@@ -140,24 +159,32 @@ async def test_dispatch_fails_closed_without_allowlist(
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
     monkeypatch.setenv(
-        "DEILE_CLAUDE_ALLOWED_REPOS_FILE", str(tmp_path / "missing.regex"),
+        "DEILE_CLAUDE_ALLOWED_REPOS_FILE",
+        str(tmp_path / "missing.regex"),
     )
 
     app = mod.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x",
-            "preferred_model": "anthropic:claude-haiku-4-5",
-            "branch": "b",
-            "resume": {"repo": "elimarcavalli/deile"},
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+                "branch": "b",
+                "resume": {"repo": "elimarcavalli/deile"},
+            },
+        )
         assert resp.status == 403
         assert (await resp.json())["error_code"] == "REPO_NOT_ALLOWED"
     assert spawned == []
 
 
 async def test_dispatch_allows_repo_in_allowlist(
-    claude_worker_module, allowlist, monkeypatch, tmp_path,
+    claude_worker_module,
+    allowlist,
+    monkeypatch,
+    tmp_path,
 ):
     """Slug permitido passa o portão → clone tentado + claude spawnado."""
     mod = claude_worker_module
@@ -170,10 +197,15 @@ async def test_dispatch_allows_repo_in_allowlist(
     async def _spy_run(args, *, cwd, task_id, timeout, lease_path=None):
         calls["spawn"] += 1
         import json as _json
-        out = _json.dumps({
-            "is_error": False, "result": "ok", "session_id": "s",
-            "total_cost_usd": 0.0,
-        })
+
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "ok",
+                "session_id": "s",
+                "total_cost_usd": 0.0,
+            }
+        )
         return mod.SubprocessResult(0, out, "", 1.0)
 
     monkeypatch.setattr(mod, "_ensure_repo_cloned", _spy_clone)
@@ -184,12 +216,16 @@ async def test_dispatch_allows_repo_in_allowlist(
 
     app = mod.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "implementa #1",
-            "preferred_model": "anthropic:claude-haiku-4-5",
-            "branch": "auto/issue-1",
-            "resume": {"repo": "elimarcavalli/deile"},
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "implementa #1",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+                "branch": "auto/issue-1",
+                "resume": {"repo": "elimarcavalli/deile"},
+            },
+        )
         assert resp.status == 200, await resp.text()
         body = await resp.json()
         assert body.get("error_code") != "REPO_NOT_ALLOWED"

@@ -14,9 +14,7 @@ import pytest
 
 # Path to the persona instruction files relative to the repo root.
 _INSTRUCTIONS_DIR = (
-    Path(__file__).parent.parent.parent  # deile/
-    / "personas"
-    / "instructions"
+    Path(__file__).parent.parent.parent / "personas" / "instructions"  # deile/
 )
 _CORE_MD = _INSTRUCTIONS_DIR / "core" / "DEILE.md"
 _FALLBACK_MD = _INSTRUCTIONS_DIR / "fallback.md"
@@ -35,6 +33,7 @@ def fallback_md_content() -> str:
 
 
 # ── Section presence: REGRA #15 ───────────────────────────────────────────
+
 
 class TestPreferencesSection:
     """Snapshot checks for the 'Preferências do Usuário' block (REGRA #15)."""
@@ -96,14 +95,17 @@ class TestPreferencesSection:
         if end == -1:
             # If no trailing separator, measure to the next ## heading
             end = core_md_content.find("\n## ", start + 1)
-        section_text = core_md_content[start:end] if end != -1 else core_md_content[start:]
-        line_count = section_text.count("\n")
-        assert line_count <= 80, (
-            f"Preferences section is {line_count} lines — must be ≤ 80"
+        section_text = (
+            core_md_content[start:end] if end != -1 else core_md_content[start:]
         )
+        line_count = section_text.count("\n")
+        assert (
+            line_count <= 80
+        ), f"Preferences section is {line_count} lines — must be ≤ 80"
 
 
 # ── Fallback reference ─────────────────────────────────────────────────────
+
 
 class TestFallbackReference:
     """Fallback persona must reference the core rule."""
@@ -113,7 +115,9 @@ class TestFallbackReference:
 
     def test_fallback_points_to_core(self, fallback_md_content):
         """Must point reader to the full rule in core/DEILE.md."""
-        assert "core/DEILE.md" in fallback_md_content or "REGRA #15" in fallback_md_content
+        assert (
+            "core/DEILE.md" in fallback_md_content or "REGRA #15" in fallback_md_content
+        )
 
     def test_fallback_mentions_remember_preference(self, fallback_md_content):
         assert "remember_preference" in fallback_md_content

@@ -51,13 +51,16 @@ from collections import defaultdict
 from typing import Dict, Optional
 
 from deile.infrastructure.deile_worker_client import (
-    MAX_DISPATCH_BUDGET_S, DeileWorkerClient, WorkerDispatchError,
-    build_dispatch_payload, summarize_dispatch_response,
-    validate_dispatch_payload)
+    MAX_DISPATCH_BUDGET_S,
+    DeileWorkerClient,
+    WorkerDispatchError,
+    build_dispatch_payload,
+    summarize_dispatch_response,
+    validate_dispatch_payload,
+)
 
 from ._dispatch_cooldown import is_in_cooldown, prune_expired, record_dispatch
-from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
-                   ToolSchema)
+from .base import SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -120,9 +123,7 @@ class DispatchDeileTaskTool(Tool):
     def category(self) -> str:
         return ToolCategory.OTHER.value
 
-    def __init__(
-        self, worker_client: Optional[DeileWorkerClient] = None
-    ) -> None:
+    def __init__(self, worker_client: Optional[DeileWorkerClient] = None) -> None:
         # Constructor injection: tests pass a stub client; production
         # falls back to the default stateless adapter.
         self._worker_client = worker_client or DeileWorkerClient()
@@ -228,8 +229,8 @@ class DispatchDeileTaskTool(Tool):
             # the worker's 🔧/✅ reaction UX without depending on persona
             # discipline. ``build_dispatch_payload`` ``str()``-ifies and
             # drops falsy values, so a single ``or`` covers both fallbacks.
-            user_message_id = (
-                args.get("user_message_id") or bot_ctx.get("user_message_id")
+            user_message_id = args.get("user_message_id") or bot_ctx.get(
+                "user_message_id"
             )
             persona = args.get("persona") or "developer"
             wait = bool(args.get("wait_for_result", True))
@@ -284,8 +285,10 @@ class DispatchDeileTaskTool(Tool):
                 now = time.monotonic()
                 self._prune_expired_dispatch_entries(now)
                 if is_in_cooldown(
-                    self._LAST_DISPATCH, channel_id,
-                    self._DISPATCH_COOLDOWN_S, now,
+                    self._LAST_DISPATCH,
+                    channel_id,
+                    self._DISPATCH_COOLDOWN_S,
+                    now,
                 ):
                     last = self._LAST_DISPATCH[channel_id]
                     remaining = self._DISPATCH_COOLDOWN_S - (now - last)
@@ -325,7 +328,9 @@ class DispatchDeileTaskTool(Tool):
                 },
                 message=short_summary or "dispatch ok",
             )
-        except Exception as exc:  # noqa: BLE001 — top-level guard required by Tool contract
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 — top-level guard required by Tool contract
             logger.exception("dispatch_deile_task failed unexpectedly")
             return ToolResult.error_result(
                 f"unexpected error: {exc}", error=exc, error_code="INTERNAL_ERROR"

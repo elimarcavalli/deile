@@ -10,6 +10,7 @@ Cobre:
 - label_applied_at retorna None quando label nunca aplicada
 - Attempt label helpers (parse, current_attempt_from_labels, make)
 """
+
 from __future__ import annotations
 
 import time
@@ -18,17 +19,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from deile.orchestration.pipeline.labels import (current_attempt_from_labels,
-                                                 is_attempt_label,
-                                                 make_attempt_label,
-                                                 parse_attempt_label)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.labels import (
+    current_attempt_from_labels,
+    is_attempt_label,
+    make_attempt_label,
+    parse_attempt_label,
+)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 from deile.orchestration.pipeline.stages import reap_orphan_claims
 
 # ---------------------------------------------------------------------------
 # Attempt label helpers
 # ---------------------------------------------------------------------------
+
 
 class TestAttemptLabel:
     def test_make_attempt_label(self):
@@ -53,12 +56,15 @@ class TestAttemptLabel:
         assert current_attempt_from_labels(["~review:em_andamento"]) == 0
         assert current_attempt_from_labels(["~attempt:2", "~review:em_andamento"]) == 2
         # Múltiplos attempt labels — pega o maior.
-        assert current_attempt_from_labels(["~attempt:1", "~attempt:3", "~attempt:2"]) == 3
+        assert (
+            current_attempt_from_labels(["~attempt:1", "~attempt:3", "~attempt:2"]) == 3
+        )
 
 
 # ---------------------------------------------------------------------------
 # Reaper
 # ---------------------------------------------------------------------------
+
 
 def _make_pr(number, *, labels, head_ref="auto/issue-1"):
     pr = MagicMock()
@@ -69,7 +75,8 @@ def _make_pr(number, *, labels, head_ref="auto/issue-1"):
     pr.url = f"https://github.com/o/r/pull/{number}"
     pr.title = f"PR #{number}"
     pr.batch_id = next(
-        (lb[len("~batch:"):] for lb in labels if lb.startswith("~batch:")), None,
+        (lb[len("~batch:") :] for lb in labels if lb.startswith("~batch:")),
+        None,
     )
     return pr
 
@@ -114,7 +121,11 @@ def _make_monitor_for_reaper(
     worktrees = MagicMock()
     claude = MagicMock()
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier,
+        cfg,
+        github=github,
+        worktrees=worktrees,
+        claude=claude,
+        notifier=notifier,
     )
     return monitor, github
 
@@ -126,9 +137,14 @@ async def test_reaper_releases_stuck_pr_review():
     adiciona ~review:pendente + ~attempt:(N+1)."""
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
-    pr = _make_pr(100, labels=[
-        "~review:em_andamento", "~batch:abc12345", own,
-    ])
+    pr = _make_pr(
+        100,
+        labels=[
+            "~review:em_andamento",
+            "~batch:abc12345",
+            own,
+        ],
+    )
     github.list_open_prs = AsyncMock(return_value=[pr])
     # Aplicada há 120s (acima do threshold de 60s).
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 120)
@@ -155,13 +171,20 @@ async def test_reaper_blocks_after_max_attempts():
     """Quando next_attempt >= reaper_max_attempts (3): marca bloqueada +
     attempt:N + comment explicativo. Não recoloca review:pendente."""
     monitor, github = _make_monitor_for_reaper(
-        reaper_stale_seconds=60, reaper_max_attempts=3,
+        reaper_stale_seconds=60,
+        reaper_max_attempts=3,
     )
     own = monitor.identity.ownership_label()
     # Já no attempt 2 — próximo (3) atinge o cap.
-    pr = _make_pr(200, labels=[
-        "~review:em_andamento", "~batch:def", own, "~attempt:2",
-    ])
+    pr = _make_pr(
+        200,
+        labels=[
+            "~review:em_andamento",
+            "~batch:def",
+            own,
+            "~attempt:2",
+        ],
+    )
     github.list_open_prs = AsyncMock(return_value=[pr])
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
 
@@ -227,8 +250,11 @@ async def test_reaper_skips_when_label_applied_at_unknown():
 @pytest.mark.asyncio
 async def test_reaper_releases_stuck_implement_issue():
     """Issue com ~workflow:em_implementacao stuck → libera pra ~workflow:revisada."""
-    from deile.orchestration.pipeline.labels import (WORKFLOW_IMPLEMENTING,
-                                                     WORKFLOW_REVIEWED)
+    from deile.orchestration.pipeline.labels import (
+        WORKFLOW_IMPLEMENTING,
+        WORKFLOW_REVIEWED,
+    )
+
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
     issue = _make_issue(600, labels=[WORKFLOW_IMPLEMENTING, own])
@@ -266,6 +292,7 @@ async def test_reaper_tolerates_forge_errors():
     """Falhas em add/remove labels durante reap NÃO derrubam o tick
     (são logged + best-effort)."""
     from deile.orchestration.forge import GhCommandError
+
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
     pr = _make_pr(800, labels=["~review:em_andamento", own])
@@ -306,13 +333,14 @@ async def test_reaper_called_in_tick():
 # G1 — reaper cobre em_revisao
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_reaper_releases_stuck_em_revisao():
     """Issue com ~workflow:em_revisao + ownership label há > threshold é
     liberada para ~workflow:nova (from_label removido, nova adicionado,
     attempt incrementado)."""
-    from deile.orchestration.pipeline.labels import (WORKFLOW_NEW,
-                                                     WORKFLOW_REVIEWING)
+    from deile.orchestration.pipeline.labels import WORKFLOW_NEW, WORKFLOW_REVIEWING
+
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
     issue = _make_issue(901, labels=[WORKFLOW_REVIEWING, own])
@@ -342,6 +370,7 @@ async def test_reaper_releases_stuck_em_revisao():
 async def test_reaper_skips_fresh_em_revisao():
     """Issue em ~workflow:em_revisao com idade < threshold NÃO é tocada."""
     from deile.orchestration.pipeline.labels import WORKFLOW_REVIEWING
+
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=2700)
     own = monitor.identity.ownership_label()
     issue = _make_issue(902, labels=[WORKFLOW_REVIEWING, own])
@@ -369,6 +398,7 @@ async def test_reaper_does_not_touch_em_arquitetura():
     atingindo o TTL curto (o TTL do descanso é 2h >> reaper_stale_seconds=60).
     """
     from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
+
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
     _make_issue(903, labels=[WORKFLOW_ARCHITECTURE, own, "refinar"])
@@ -389,6 +419,7 @@ async def test_reaper_does_not_touch_em_refinamento():
     ~workflow:em_refinamento em descanso com list_issues_with_label retornando
     [] não é tocada pelo reaper (nenhuma issue na lista = nada a reapear)."""
     from deile.orchestration.pipeline.labels import WORKFLOW_REFINING
+
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     own = monitor.identity.ownership_label()
     _make_issue(904, labels=[WORKFLOW_REFINING, own, "refinar"])
@@ -406,6 +437,7 @@ async def test_reaper_em_revisao_without_ownership_skipped():
     """Issue em ~workflow:em_revisao sem ownership label deste monitor NÃO
     é tocada."""
     from deile.orchestration.pipeline.labels import WORKFLOW_REVIEWING
+
     monitor, github = _make_monitor_for_reaper(reaper_stale_seconds=60)
     issue = _make_issue(905, labels=[WORKFLOW_REVIEWING, "~by:outro-monitor"])
     github.list_issues_with_label = AsyncMock(
@@ -423,19 +455,26 @@ async def test_reaper_em_revisao_without_ownership_skipped():
 # Issue #522 — Discord notification via deilebot when reaper blocks
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_reaper_block_sends_discord_notification():
     """Quando o reaper bloqueia um item (next_attempt >= max_attempts),
     notifier.reaper_blocked deve ser chamado com os dados corretos: número,
     url, kind, attempt/max e age_seconds."""
     monitor, github = _make_monitor_for_reaper(
-        reaper_stale_seconds=60, reaper_max_attempts=3,
+        reaper_stale_seconds=60,
+        reaper_max_attempts=3,
     )
     own = monitor.identity.ownership_label()
     # attempt:2 → next=3 >= max_attempts=3 → bloqueia
-    pr = _make_pr(1000, labels=[
-        "~review:em_andamento", own, "~attempt:2",
-    ])
+    pr = _make_pr(
+        1000,
+        labels=[
+            "~review:em_andamento",
+            own,
+            "~attempt:2",
+        ],
+    )
     github.list_open_prs = AsyncMock(return_value=[pr])
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
 
@@ -483,12 +522,18 @@ async def test_reaper_block_notification_failure_is_best_effort():
     """Se reaper_blocked lança, o bloqueio, comentário GitHub e stats já foram
     registrados — a falha na DM NÃO deve propagar nem impedir o return normal."""
     monitor, github = _make_monitor_for_reaper(
-        reaper_stale_seconds=60, reaper_max_attempts=3,
+        reaper_stale_seconds=60,
+        reaper_max_attempts=3,
     )
     own = monitor.identity.ownership_label()
-    pr = _make_pr(1002, labels=[
-        "~review:em_andamento", own, "~attempt:2",
-    ])
+    pr = _make_pr(
+        1002,
+        labels=[
+            "~review:em_andamento",
+            own,
+            "~attempt:2",
+        ],
+    )
     github.list_open_prs = AsyncMock(return_value=[pr])
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
 
@@ -513,13 +558,20 @@ async def test_reaper_block_disabled_notifier_is_noop():
     """Com notifier.enabled == False (sem user_id), a chamada a reaper_blocked
     é no-op: sem exceção, sem DM, comportamento de bloqueio normal."""
     from deile.orchestration.pipeline.notifier import DiscordNotifier
+
     monitor, github = _make_monitor_for_reaper(
-        reaper_stale_seconds=60, reaper_max_attempts=3,
+        reaper_stale_seconds=60,
+        reaper_max_attempts=3,
     )
     own = monitor.identity.ownership_label()
-    pr = _make_pr(1003, labels=[
-        "~review:em_andamento", own, "~attempt:2",
-    ])
+    pr = _make_pr(
+        1003,
+        labels=[
+            "~review:em_andamento",
+            own,
+            "~attempt:2",
+        ],
+    )
     github.list_open_prs = AsyncMock(return_value=[pr])
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
 
@@ -546,8 +598,8 @@ async def test_reaper_arch_no_refine_labels_routes_to_nova():
     """AC1 + AC2: issue em ~workflow:em_arquitetura sem ledger entry (ledger
     ausente) e sem labels ~refine:N, após arch_hard_seconds, volta para
     ~workflow:nova."""
-    from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
-                                                     WORKFLOW_NEW)
+    from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE, WORKFLOW_NEW
+
     # TTL curto para o teste; arch_hard = 100s.
     monitor, github = _make_monitor_for_reaper(
         reaper_stale_seconds=2700,
@@ -558,7 +610,9 @@ async def test_reaper_arch_no_refine_labels_routes_to_nova():
     # Nenhum ledger no implementer.
     monitor.implementer._ledger = None
     github.list_issues_with_label = AsyncMock(
-        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+        side_effect=lambda label, **_: (
+            [issue] if label == WORKFLOW_ARCHITECTURE else []
+        ),
     )
     # Aplicada há 200s > arch_hard_seconds=100.
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
@@ -577,8 +631,11 @@ async def test_reaper_arch_with_refine_labels_routes_to_revisada():
     """AC2: issue em ~workflow:em_arquitetura com ~refine:2 (já passou por ao
     menos um pass de refino), após arch_hard_seconds, volta para
     ~workflow:revisada."""
-    from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
-                                                     WORKFLOW_REVIEWED)
+    from deile.orchestration.pipeline.labels import (
+        WORKFLOW_ARCHITECTURE,
+        WORKFLOW_REVIEWED,
+    )
+
     monitor, github = _make_monitor_for_reaper(
         reaper_stale_seconds=2700,
         reaper_arch_hard_seconds=100,
@@ -587,7 +644,9 @@ async def test_reaper_arch_with_refine_labels_routes_to_revisada():
     issue = _make_issue(2002, labels=[WORKFLOW_ARCHITECTURE, own, "~refine:2"])
     monitor.implementer._ledger = None
     github.list_issues_with_label = AsyncMock(
-        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+        side_effect=lambda label, **_: (
+            [issue] if label == WORKFLOW_ARCHITECTURE else []
+        ),
     )
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
 
@@ -605,8 +664,8 @@ async def test_reaper_refining_no_ledger_routes_to_nova():
     """AC1 + AC2: issue em ~workflow:em_refinamento sem ledger entry, após
     arch_hard_seconds, sempre volta para ~workflow:nova (roteamento fixo para
     intents — heurística de refino não se aplica ao estado em_refinamento)."""
-    from deile.orchestration.pipeline.labels import (WORKFLOW_NEW,
-                                                     WORKFLOW_REFINING)
+    from deile.orchestration.pipeline.labels import WORKFLOW_NEW, WORKFLOW_REFINING
+
     monitor, github = _make_monitor_for_reaper(
         reaper_stale_seconds=2700,
         reaper_arch_hard_seconds=100,
@@ -632,8 +691,8 @@ async def test_reaper_refining_no_ledger_routes_to_nova():
 async def test_reaper_arquitetura_no_ledger_fires_when_ledger_is_none():
     """AC1: ramo sem-ledger FORA do guard `if ledger is not None` — cobre o
     caso em que ledger=None (modo sem DispatchLedger disponível)."""
-    from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
-                                                     WORKFLOW_NEW)
+    from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE, WORKFLOW_NEW
+
     monitor, github = _make_monitor_for_reaper(
         reaper_stale_seconds=2700,
         reaper_arch_hard_seconds=100,
@@ -647,7 +706,9 @@ async def test_reaper_arquitetura_no_ledger_fires_when_ledger_is_none():
         monitor.implementer._ledger = None
 
     github.list_issues_with_label = AsyncMock(
-        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+        side_effect=lambda label, **_: (
+            [issue] if label == WORKFLOW_ARCHITECTURE else []
+        ),
     )
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
 
@@ -666,6 +727,7 @@ async def test_reaper_arch_within_hard_ttl_not_reaped():
     ledger) com idade < arch_hard_seconds NÃO é tocada — invariante de
     proteção do descanso entre passes."""
     from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
+
     monitor, github = _make_monitor_for_reaper(
         reaper_stale_seconds=2700,
         reaper_arch_hard_seconds=7200,  # 2h
@@ -674,7 +736,9 @@ async def test_reaper_arch_within_hard_ttl_not_reaped():
     issue = _make_issue(2005, labels=[WORKFLOW_ARCHITECTURE, own])
     monitor.implementer._ledger = None
     github.list_issues_with_label = AsyncMock(
-        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+        side_effect=lambda label, **_: (
+            [issue] if label == WORKFLOW_ARCHITECTURE else []
+        ),
     )
     # Aplicada há 60s — muito abaixo dos 7200s de hard-TTL.
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 60)
@@ -690,6 +754,7 @@ async def test_reaper_arch_with_task_id_in_ledger_not_touched_by_no_ledger_branc
     """AC1: issue em ~workflow:em_arquitetura COM task_id no ledger (dispatch
     em voo sadio) NÃO é tratada pelo ramo sem-ledger — é do ramo com-ledger."""
     from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
+
     monitor, github = _make_monitor_for_reaper(
         reaper_stale_seconds=2700,
         reaper_arch_hard_seconds=100,  # TTL curto — dispararia se fosse zumbi
@@ -699,13 +764,16 @@ async def test_reaper_arch_with_task_id_in_ledger_not_touched_by_no_ledger_branc
 
     # Ledger com task_id — indica dispatch em voo sadio.
     from unittest.mock import MagicMock
+
     mock_ledger = MagicMock()
     mock_ledger.get.return_value = {"task_id": "task-abc-123"}
     mock_ledger.clear = MagicMock()
     monitor.implementer._ledger = mock_ledger
 
     github.list_issues_with_label = AsyncMock(
-        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+        side_effect=lambda label, **_: (
+            [issue] if label == WORKFLOW_ARCHITECTURE else []
+        ),
     )
     # Aplicada há 200s > arch_hard_seconds=100 — seria reaped se fosse zumbi.
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 200)
@@ -724,17 +792,19 @@ async def test_reaper_arch_branch_runs_when_pr_ttl_zero():
     """AC8: quando reaper_stale_seconds=0 (PR-TTL desligado), o ramo
     sem-ledger de em_arquitetura ainda deve disparar se arch_hard_seconds > 0.
     Garante que desligar o PR-TTL não silencia o ramo de arquitetura."""
-    from deile.orchestration.pipeline.labels import (WORKFLOW_ARCHITECTURE,
-                                                     WORKFLOW_NEW)
+    from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE, WORKFLOW_NEW
+
     monitor, github = _make_monitor_for_reaper(
-        reaper_stale_seconds=0,     # PR-TTL desligado
+        reaper_stale_seconds=0,  # PR-TTL desligado
         reaper_arch_hard_seconds=100,
     )
     own = monitor.identity.ownership_label()
     issue = _make_issue(2007, labels=[WORKFLOW_ARCHITECTURE, own])
     monitor.implementer._ledger = None
     github.list_issues_with_label = AsyncMock(
-        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+        side_effect=lambda label, **_: (
+            [issue] if label == WORKFLOW_ARCHITECTURE else []
+        ),
     )
     # list_open_prs retorna lista vazia (PR-TTL=0 não deve nem ser chamado,
     # mas garantimos que não há PRs para reapear de qualquer modo).
@@ -756,6 +826,7 @@ async def test_reaper_arch_hard_zero_disables_no_ledger_branch():
     """AC8 + AC3: quando reaper_arch_hard_seconds=0, o ramo sem-ledger é
     desligado — issues em em_arquitetura zumbi NÃO são reaped."""
     from deile.orchestration.pipeline.labels import WORKFLOW_ARCHITECTURE
+
     monitor, github = _make_monitor_for_reaper(
         reaper_stale_seconds=2700,
         reaper_arch_hard_seconds=0,  # ramo sem-ledger desligado
@@ -764,7 +835,9 @@ async def test_reaper_arch_hard_zero_disables_no_ledger_branch():
     issue = _make_issue(2008, labels=[WORKFLOW_ARCHITECTURE, own])
     monitor.implementer._ledger = None
     github.list_issues_with_label = AsyncMock(
-        side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],
+        side_effect=lambda label, **_: (
+            [issue] if label == WORKFLOW_ARCHITECTURE else []
+        ),
     )
     github.label_applied_at = AsyncMock(return_value=int(time.time()) - 99999)
 

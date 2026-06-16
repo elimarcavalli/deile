@@ -64,6 +64,7 @@ def collect_models_info() -> Dict[str, Any]:
     """Active model + provider snapshot from the legacy ModelRouter."""
     try:
         from deile.core.models.router import get_model_router
+
         router = get_model_router()
         providers = list(router.providers.keys())
         active_key = providers[0] if providers else None
@@ -88,6 +89,7 @@ def collect_tools_info() -> Dict[str, Any]:
     """Tool registry stats — counts by category and a flat name list."""
     try:
         from deile.tools.registry import get_tool_registry
+
         registry = get_tool_registry()
         stats = registry.get_stats()
         return {
@@ -118,9 +120,9 @@ def collect_health_info() -> Dict[str, Any]:
             health_score -= 15
             warnings.append("Memória alta")
         status = (
-            "saudável" if health_score >= 80
-            else "atenção" if health_score >= 60
-            else "crítico"
+            "saudável"
+            if health_score >= 80
+            else "atenção" if health_score >= 60 else "crítico"
         )
         return {
             "overall_status": status,
@@ -149,7 +151,7 @@ def collect_performance_info() -> Dict[str, Any]:
         return {
             "cpu_percent": cpu_percent,
             "memory_percent": memory.percent,
-            "memory_available_mb": memory.available // (1024 ** 2),
+            "memory_available_mb": memory.available // (1024**2),
         }
     except Exception as exc:
         return {"error": str(exc)}
@@ -165,6 +167,7 @@ def collect_usage_summary(session_id: str) -> Dict[str, Any]:
     """
     try:
         from deile.storage.usage_repository import get_usage_repository
+
         repo = get_usage_repository()
         records = repo.records_for_session(session_id)
         return {

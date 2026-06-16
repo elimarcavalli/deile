@@ -7,6 +7,7 @@ Valida três coisas:
   3. ``result_handler`` aceita um resultado SEM ``schema_version`` (compat
      forward) — serve com warning, não rejeita.
 """
+
 from __future__ import annotations
 
 import json
@@ -57,12 +58,20 @@ async def test_run_task_result_has_schema_version(tmp_path, monkeypatch):
     agent.process_input = AsyncMock(return_value=_Resp())
     agent.process_input_stream = None
     monkeypatch.setattr(worker_server, "_get_agent", AsyncMock(return_value=agent))
-    monkeypatch.setattr(worker_server, "_post_status_message", AsyncMock(return_value=None))
-    monkeypatch.setattr(worker_server, "_edit_status_message", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        worker_server, "_post_status_message", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        worker_server, "_edit_status_message", AsyncMock(return_value=True)
+    )
     monkeypatch.setattr(worker_server, "_react", AsyncMock(return_value=True))
 
     result = await worker_server._run_task(
-        "cccccccccccc", "faça algo", "12345", None, "developer",
+        "cccccccccccc",
+        "faça algo",
+        "12345",
+        None,
+        "developer",
     )
     assert result["schema_version"] == RESULT_SCHEMA_VERSION == 1
 
@@ -88,13 +97,17 @@ def test_schema_file_exists_and_is_valid_draft202012():
     jsonschema = pytest.importorskip(
         "jsonschema",
         reason="jsonschema não é dependência do projeto; validação completa "
-               "roda apenas quando presente (a estrutura já é checada acima)",
+        "roda apenas quando presente (a estrutura já é checada acima)",
     )
     jsonschema.Draft202012Validator.check_schema(doc)
     # E que um documento de resultado real valida contra ele.
     sample = {
-        "schema_version": 1, "task_id": "abcdef012345", "ok": True,
-        "elapsed_s": 1.5, "files": ["a.py"], "summary": "ok",
+        "schema_version": 1,
+        "task_id": "abcdef012345",
+        "ok": True,
+        "elapsed_s": 1.5,
+        "files": ["a.py"],
+        "summary": "ok",
     }
     jsonschema.Draft202012Validator(doc).validate(sample)
 
@@ -105,9 +118,7 @@ def test_schema_file_exists_and_is_valid_draft202012():
 @pytest.fixture
 async def client(_clean_tasks):
     app = worker_server.build_app(_TOKEN)
-    async with aiohttp_test_utils.TestClient(
-        aiohttp_test_utils.TestServer(app)
-    ) as cli:
+    async with aiohttp_test_utils.TestClient(aiohttp_test_utils.TestServer(app)) as cli:
         yield cli
 
 
@@ -115,7 +126,10 @@ async def test_result_handler_accepts_missing_schema_version(client, caplog):
     """Resultado legado SEM schema_version → servido com warning (não 4xx)."""
     task_id = "ddeeff001122"
     worker_server._TASKS[task_id] = {
-        "task_id": task_id, "ok": True, "elapsed_s": 1.0, "summary": "x",
+        "task_id": task_id,
+        "ok": True,
+        "elapsed_s": 1.0,
+        "summary": "x",
         # sem "schema_version"
     }
     with caplog.at_level(logging.WARNING, logger="deile.worker_server"):
@@ -132,7 +146,9 @@ async def test_result_handler_accepts_missing_schema_version(client, caplog):
 async def test_result_handler_no_warning_for_current_version(client, caplog):
     task_id = "112233445566"
     worker_server._TASKS[task_id] = {
-        "task_id": task_id, "ok": True, "elapsed_s": 1.0,
+        "task_id": task_id,
+        "ok": True,
+        "elapsed_s": 1.0,
         "schema_version": 1,
     }
     with caplog.at_level(logging.WARNING, logger="deile.worker_server"):

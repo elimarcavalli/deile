@@ -31,7 +31,9 @@ def out_of_cwd_file(tmp_path_factory):
     return f
 
 
-async def test_search_returns_matches_for_path_outside_cwd(tmp_path, monkeypatch, out_of_cwd_file):
+async def test_search_returns_matches_for_path_outside_cwd(
+    tmp_path, monkeypatch, out_of_cwd_file
+):
     """Running search from a different cwd must not lose matches."""
     monkeypatch.chdir(tmp_path)
     assert out_of_cwd_file.is_absolute()

@@ -33,7 +33,7 @@ def _parse_scope_flag(rest: str) -> tuple[str, str]:
     kept = []
     for tok in parts:
         if tok.startswith("--scope="):
-            raw = tok[len("--scope="):].strip().lower()
+            raw = tok[len("--scope=") :].strip().lower()
             scope = _SCOPE_MAP.get(raw, "global")
         else:
             kept.append(tok)
@@ -48,14 +48,14 @@ def _truncate(value: Any, max_len: int = 80) -> str:
 def _all_known_keys() -> list[str]:
     """Return sorted list of all known settings dot-paths."""
     from deile.config.settings import _JSON_ONLY_FIELD_MAP, _OVERRIDE_HANDLERS
+
     keys = set(_OVERRIDE_HANDLERS.keys()) | set(_JSON_ONLY_FIELD_MAP.keys())
     return sorted(keys)
 
 
 def _default_value(key_path: str) -> Any:
     """Return the dataclass default for *key_path*, or None if unknown."""
-    from deile.config.settings import (_JSON_ONLY_FIELD_MAP,
-                                       _OVERRIDE_HANDLERS, Settings)
+    from deile.config.settings import _JSON_ONLY_FIELD_MAP, _OVERRIDE_HANDLERS, Settings
 
     field_name = None
     if key_path in _OVERRIDE_HANDLERS:
@@ -87,8 +87,11 @@ def _resolve_dotted_in_dict(data: dict, key_path: str) -> tuple[bool, Any]:
 
 def _env_var_for_key(key_path: str) -> Optional[str]:
     """Return the env var name that overrides *key_path*, if any."""
-    from deile.config.settings import (_ENV_OVERRIDES, _JSON_ONLY_FIELD_MAP,
-                                       _OVERRIDE_HANDLERS)
+    from deile.config.settings import (
+        _ENV_OVERRIDES,
+        _JSON_ONLY_FIELD_MAP,
+        _OVERRIDE_HANDLERS,
+    )
 
     field_name = None
     if key_path in _OVERRIDE_HANDLERS:
@@ -209,7 +212,7 @@ def _check_project_trust(mgr: Any) -> Optional[str]:
         return (
             f"Project scope is not trusted for the current directory ({cwd}).\n"
             "To enable it, run:\n"
-            f"  /settings set trust.project_layer_dirs [\"{cwd}\"]"
+            f'  /settings set trust.project_layer_dirs ["{cwd}"]'
         )
     return None
 
@@ -228,14 +231,17 @@ class SettingsCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
-        super().__init__(CommandConfig(
-            name="settings",
-            description=(
-                "Read and write ~/.deile/settings.json — "
-                "set, get, list, unset, where."
-            ),
-            aliases=["settings"],
-        ))
+
+        super().__init__(
+            CommandConfig(
+                name="settings",
+                description=(
+                    "Read and write ~/.deile/settings.json — "
+                    "set, get, list, unset, where."
+                ),
+                aliases=["settings"],
+            )
+        )
         self.config.aliases = ["settings"]
 
     @property
@@ -310,7 +316,11 @@ class SettingsCommand(DirectCommand):
             return CommandResult.error_result(f"Failed to write settings: {exc}")
 
         if ok:
-            scope_label = "user (~/.deile/settings.json)" if scope == "global" else "project (.deile/settings.json)"
+            scope_label = (
+                "user (~/.deile/settings.json)"
+                if scope == "global"
+                else "project (.deile/settings.json)"
+            )
             return CommandResult.success_result(
                 f"Set {key} = {_truncate(value)} in {scope_label}",
                 "text",
@@ -346,7 +356,11 @@ class SettingsCommand(DirectCommand):
             all_keys = [k for k in all_keys if k.startswith(prefix)]
 
         if not all_keys:
-            msg = f"No settings found matching prefix {prefix!r}." if prefix else "No settings found."
+            msg = (
+                f"No settings found matching prefix {prefix!r}."
+                if prefix
+                else "No settings found."
+            )
             return CommandResult.success_result(msg, "text")
 
         table = Table(title="Settings", show_lines=False)
@@ -420,6 +434,7 @@ class SettingsCommand(DirectCommand):
         env_has_value = False
         if env_val_raw is not None and env_val_raw != "":
             from deile.config.settings import _OVERRIDE_HANDLERS
+
             env_has_value = True
             if key in _OVERRIDE_HANDLERS:
                 _field_name, converter = _OVERRIDE_HANDLERS[key]
@@ -482,6 +497,7 @@ class SettingsCommand(DirectCommand):
         )
         from rich.console import Group
         from rich.text import Text
+
         content = Group(table, Text.from_markup(summary))
         return CommandResult.success_result(content, "rich")
 

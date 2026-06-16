@@ -10,6 +10,7 @@ Esses dois comportamentos garantem que o pipeline trate o 409 do lease da
 mesma forma que já trata o CONCURRENT_DISPATCH_BLOCKED: aguardar o próximo
 tick para nova tentativa, sem multiplicar Opus na mesma issue.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,8 +21,7 @@ import pytest
 
 from deile.infrastructure.deile_worker_client import WorkerDispatchError
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
-from deile.orchestration.pipeline.implementer import (WorkerImplementer,
-                                                      WorkOutcome)
+from deile.orchestration.pipeline.implementer import WorkerImplementer, WorkOutcome
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -60,7 +60,10 @@ def _make_ledger(tmp_path: Path) -> DispatchLedger:
 
 def _issue(number: int = 42) -> SimpleNamespace:
     return SimpleNamespace(
-        number=number, title="Test issue", body="body", labels=(),
+        number=number,
+        title="Test issue",
+        body="body",
+        labels=(),
     )
 
 
@@ -107,9 +110,9 @@ class TestImplementerTaskAlreadyRunning:
         assert isinstance(outcome, WorkOutcome)
         assert outcome.ok is False
         # A mensagem de erro deve conter indicativo de skip (não é falha real).
-        assert "LEASE" in outcome.error or "skip" in outcome.error.lower(), (
-            f"erro esperado indicar skip via lease, mas foi: {outcome.error!r}"
-        )
+        assert (
+            "LEASE" in outcome.error or "skip" in outcome.error.lower()
+        ), f"erro esperado indicar skip via lease, mas foi: {outcome.error!r}"
 
     @pytest.mark.unit
     async def test_implementer_concurrent_dispatch_blocked_still_works(
@@ -191,14 +194,16 @@ class TestLedgerNotClearedOn409:
             ),
             # Simula _resolve_resume_meta retornando None (sem meta do worker)
             # para garantir que o 409 vem do dispatch, não do resume-info.
-            patch.object(impl, "_resolve_resume_meta", new=AsyncMock(return_value=None)),
+            patch.object(
+                impl, "_resolve_resume_meta", new=AsyncMock(return_value=None)
+            ),
         ):
             outcome = await impl.implement(monitor, issue, resume=False)
 
         assert outcome.ok is False
         # LEDGER DEVE ESTAR INTACTO após 409.
         remaining = ledger.get(DispatchLedger.key_for_issue(42))
-        assert remaining is not None, (
-            "ledger não deve ser limpo após 409 — a task está em andamento"
-        )
+        assert (
+            remaining is not None
+        ), "ledger não deve ser limpo após 409 — a task está em andamento"
         assert remaining.get("task_id") == "abcd1234abcd1234"

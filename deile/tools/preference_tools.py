@@ -15,8 +15,7 @@ import logging
 from typing import Any, Dict
 
 from ..preferences.store import PreferenceStore
-from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
-                   ToolSchema)
+from .base import SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +37,7 @@ def _resolve_user_id(context: ToolContext) -> str:
     return "unknown"
 
 
-def _check_write_permission(
-    context: ToolContext, tool_name: str, key: str
-) -> bool:
+def _check_write_permission(context: ToolContext, tool_name: str, key: str) -> bool:
     """Consult PermissionManager before writing. Fail-closed.
 
     *tool_name* is the invoking tool (``remember_preference`` or
@@ -212,9 +209,7 @@ class ListPreferencesTool(Tool):
         try:
             all_prefs = self._store.get_all(user_id)
         except Exception as exc:
-            return ToolResult.error_result(
-                message=f"Failed to read preferences: {exc}"
-            )
+            return ToolResult.error_result(message=f"Failed to read preferences: {exc}")
 
         if prefix and isinstance(prefix, str):
             filtered: Dict[str, Any] = {}

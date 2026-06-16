@@ -11,11 +11,8 @@ from rich.console import Console
 
 from deile.commands.base import CommandContext, DirectCommand
 from deile.commands.builtin.k8s_command import (
-    K8sCommand,
     K8S_DEPLOYMENTS,
-    _ALWAYS_DESTRUCTIVE,
-    _CONDITIONALLY_DESTRUCTIVE,
-    _INTERACTIVE_NO_VARIANT,
+    K8sCommand,
     _cmd_discovery,
     _cmd_list,
     _cmd_logs,
@@ -273,7 +270,9 @@ class TestCmdRestart:
                 return True, proc_ok.communicate.return_value[0].decode(), ""
             return True, proc_status.communicate.return_value[0].decode(), ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_restart("deile", "deile-pipeline")
 
         assert result.success is True
@@ -282,7 +281,9 @@ class TestCmdRestart:
         async def fake_run(args, timeout=30.0):
             return False, "", "Error from server"
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_restart("deile", "deile-pipeline")
 
         assert result.success is False
@@ -298,7 +299,9 @@ class TestCmdRestart:
                     called_deployments.append(dep)
             return True, "success", ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_restart("deile", "all")
 
         # Each deployment is restarted (restart + status = 2 calls each)
@@ -315,7 +318,9 @@ class TestCmdRestart:
                     return False, "", "Failed for deilebot"
             return True, "success", ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_restart("deile", "all")
 
         # Result depends on outcomes — just confirm it runs without crashing
@@ -336,7 +341,9 @@ class TestCmdRestart:
                 return True, "restarted", ""
             return True, "rolled out", ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_restart("deile", "deile-worker")
         assert result.success is True
 
@@ -350,9 +357,15 @@ class TestCmdRestart:
 class TestCmdStatus:
     async def test_success_returns_kubectl_output(self):
         async def fake_run(args, timeout=30.0):
-            return True, "NAME           READY   STATUS\npod-a         1/1     Running\n", ""
+            return (
+                True,
+                "NAME           READY   STATUS\npod-a         1/1     Running\n",
+                "",
+            )
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_status("deile")
 
         assert result.success is True
@@ -362,7 +375,9 @@ class TestCmdStatus:
         async def fake_run(args, timeout=30.0):
             return False, "", "Forbidden: User cannot list resource"
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_status("deile")
 
         assert result.success is False
@@ -381,7 +396,9 @@ class TestCmdLogs:
             assert "deployment/deile-pipeline" in args
             return True, "log line 1\nlog line 2\n", ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_logs("deile", "pipeline", 50)
 
         assert result.success is True
@@ -390,6 +407,7 @@ class TestCmdLogs:
     def _make_run(self, ok=True):
         async def fake_run(args, timeout=30.0):
             return ok, "log output\n", "" if ok else "error"
+
         return fake_run
 
     async def test_bot_target_resolves_deilebot(self):
@@ -399,7 +417,9 @@ class TestCmdLogs:
             calls.append(args)
             return True, "logs\n", ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_logs("deile", "bot", 20)
 
         assert result.success is True
@@ -412,7 +432,9 @@ class TestCmdLogs:
             calls.append(args)
             return True, "logs\n", ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_logs("deile", "worker", 50)
 
         assert result.success is True
@@ -425,7 +447,9 @@ class TestCmdLogs:
             calls.append(args)
             return True, "log line\n", ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_logs("deile", "all", 50)
 
         assert result.success is True
@@ -445,7 +469,9 @@ class TestCmdLogs:
             calls.append(args)
             return True, "log\n", ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             await _cmd_logs("deile", "pipeline", 123)
 
         assert any("--tail=123" in a for args in calls for a in args)
@@ -454,7 +480,9 @@ class TestCmdLogs:
         async def fake_run(args, timeout=30.0):
             return False, "", "RBAC denied"
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_logs("deile", "pipeline", 50)
 
         assert result.success is True  # _cmd_logs always returns content
@@ -472,7 +500,9 @@ class TestCmdList:
         async def fake_run(args, timeout=30.0):
             return True, "NAME   STATUS\ndeile  Active\n", ""
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_list("deile")
 
         assert result.success is True
@@ -482,7 +512,9 @@ class TestCmdList:
         async def fake_run(args, timeout=30.0):
             return False, "", "permission denied"
 
-        with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
+        with patch(
+            "deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run
+        ):
             result = await _cmd_list("deile")
 
         assert result.success is False
@@ -533,7 +565,9 @@ class TestK8sCommandExecute:
             patch(
                 "deile.commands.builtin.k8s_command._cmd_status",
                 new_callable=AsyncMock,
-                return_value=MagicMock(success=True, content="pods", content_type="text"),
+                return_value=MagicMock(
+                    success=True, content="pods", content_type="text"
+                ),
             ) as mock_status,
         ):
             await _cmd().execute(_ctx("status"))
@@ -550,7 +584,9 @@ class TestK8sCommandExecute:
             patch(
                 "deile.commands.builtin.k8s_command._cmd_logs",
                 new_callable=AsyncMock,
-                return_value=MagicMock(success=True, content="logs", content_type="text"),
+                return_value=MagicMock(
+                    success=True, content="logs", content_type="text"
+                ),
             ) as mock_logs,
         ):
             await _cmd().execute(_ctx("logs bot --tail 100"))
@@ -652,6 +688,7 @@ class TestK8sCommandMetadata:
 @pytest.mark.unit
 def test_k8s_command_auto_discoverable():
     from deile.commands.registry import CommandRegistry
+
     r = CommandRegistry()
     r.auto_discover_builtin_commands()
     cmd = r.get_command("k8s")
@@ -671,8 +708,11 @@ class TestRunningInPod:
             assert _running_in_pod() is True
 
     def test_not_in_pod_when_env_absent(self):
-        env = {k: v for k, v in __import__("os").environ.items()
-               if k != "KUBERNETES_SERVICE_HOST"}
+        env = {
+            k: v
+            for k, v in __import__("os").environ.items()
+            if k != "KUBERNETES_SERVICE_HOST"
+        }
         with patch.dict("os.environ", env, clear=True):
             assert _running_in_pod() is False
 
@@ -696,6 +736,7 @@ class TestFindDeployPy:
     def test_returns_none_when_not_found(self, tmp_path):
         """When __file__ is in a temp dir with no infra/k8s/deploy.py, returns None."""
         import deile.commands.builtin.k8s_command as mod
+
         original = mod.__file__
         try:
             mod.__file__ = str(tmp_path / "k8s_command.py")
@@ -713,15 +754,24 @@ class TestFindDeployPy:
 @pytest.mark.unit
 class TestCmdV2Delegate:
     async def test_in_pod_returns_error(self):
-        with patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=True):
+        with patch(
+            "deile.commands.builtin.k8s_command._running_in_pod", return_value=True
+        ):
             result = await _cmd_v2_delegate("up", "", "deile")
         assert result.success is False
-        assert "in-pod" in result.content.lower() or "KUBERNETES_SERVICE_HOST" in result.content
+        assert (
+            "in-pod" in result.content.lower()
+            or "KUBERNETES_SERVICE_HOST" in result.content
+        )
 
     async def test_missing_deploy_py_returns_error(self):
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=None),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py", return_value=None
+            ),
         ):
             result = await _cmd_v2_delegate("up", "", "deile")
         assert result.success is False
@@ -735,9 +785,17 @@ class TestCmdV2Delegate:
             return 0, ["build complete", "done"]
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
         ):
             result = await _cmd_v2_delegate("build", "", "deile")
         assert result.success is True
@@ -751,9 +809,17 @@ class TestCmdV2Delegate:
             return 1, ["something went wrong"]
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
         ):
             result = await _cmd_v2_delegate("build", "", "deile")
         assert result.success is False
@@ -767,9 +833,17 @@ class TestCmdV2Delegate:
             return -1, []
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
         ):
             result = await _cmd_v2_delegate("up", "", "deile")
         assert result.success is False
@@ -785,9 +859,17 @@ class TestCmdV2Delegate:
             return 0, []
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
         ):
             await _cmd_v2_delegate("up", "", "deile")
         assert captured["timeout"] == 1800.0
@@ -802,9 +884,17 @@ class TestCmdV2Delegate:
             return 0, []
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
         ):
             await _cmd_v2_delegate("scale", "", "deile")
         assert captured["timeout"] == 300.0
@@ -819,9 +909,17 @@ class TestCmdV2Delegate:
             return 0, []
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
         ):
             await _cmd_v2_delegate("scale", "--worker 2", "deile")
         assert "--worker" in captured["cmd"]
@@ -835,9 +933,17 @@ class TestCmdV2Delegate:
             raise OSError("binary not found")
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
         ):
             result = await _cmd_v2_delegate("start", "", "deile")
         assert result.success is False
@@ -859,15 +965,24 @@ class TestCmdPanel:
         return prime, claim, release, restore
 
     async def test_in_pod_returns_error_no_subprocess(self):
-        with patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=True):
+        with patch(
+            "deile.commands.builtin.k8s_command._running_in_pod", return_value=True
+        ):
             result = await _cmd_panel("", "deile")
         assert result.success is False
-        assert "in-pod" in result.content.lower() or "KUBERNETES_SERVICE_HOST" in result.content
+        assert (
+            "in-pod" in result.content.lower()
+            or "KUBERNETES_SERVICE_HOST" in result.content
+        )
 
     async def test_missing_deploy_py_returns_error(self):
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=None),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py", return_value=None
+            ),
         ):
             result = await _cmd_panel("", "deile")
         assert result.success is False
@@ -882,9 +997,17 @@ class TestCmdPanel:
         mock_proc.wait = AsyncMock(return_value=0)
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec",
+                return_value=mock_proc,
+            ),
             patch("deile.ui._stdin_owner.prime_termios_snapshot", prime),
             patch("deile.ui._stdin_owner.claim_stdin_for_panel", claim),
             patch("deile.ui._stdin_owner.release_stdin_for_panel", release),
@@ -904,9 +1027,17 @@ class TestCmdPanel:
         mock_proc.wait = AsyncMock(return_value=130)
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec",
+                return_value=mock_proc,
+            ),
             patch("deile.ui._stdin_owner.prime_termios_snapshot", prime),
             patch("deile.ui._stdin_owner.claim_stdin_for_panel", claim),
             patch("deile.ui._stdin_owner.release_stdin_for_panel", release),
@@ -927,9 +1058,17 @@ class TestCmdPanel:
         mock_proc.wait = AsyncMock(return_value=1)
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec",
+                return_value=mock_proc,
+            ),
             patch("deile.ui._stdin_owner.prime_termios_snapshot", prime),
             patch("deile.ui._stdin_owner.claim_stdin_for_panel", claim),
             patch("deile.ui._stdin_owner.release_stdin_for_panel", release),
@@ -947,8 +1086,13 @@ class TestCmdPanel:
         prime, claim, release, restore = self._make_stdin_mocks()
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
             patch(
                 "deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec",
                 side_effect=OSError("exec failed"),
@@ -981,11 +1125,23 @@ class TestCmdPanel:
         mock_proc.wait = AsyncMock(return_value=0)
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("deile.ui._stdin_owner.prime_termios_snapshot", side_effect=prime_side),
-            patch("deile.ui._stdin_owner.claim_stdin_for_panel", side_effect=claim_side),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec",
+                return_value=mock_proc,
+            ),
+            patch(
+                "deile.ui._stdin_owner.prime_termios_snapshot", side_effect=prime_side
+            ),
+            patch(
+                "deile.ui._stdin_owner.claim_stdin_for_panel", side_effect=claim_side
+            ),
             patch("deile.ui._stdin_owner.release_stdin_for_panel"),
             patch("deile.ui._stdin_owner.restore_termios_now"),
         ):
@@ -1009,14 +1165,25 @@ class TestCmdPanel:
             return await real_wait_for(coro, timeout=timeout, **kwargs)
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec",
+                return_value=mock_proc,
+            ),
             patch("deile.ui._stdin_owner.prime_termios_snapshot"),
             patch("deile.ui._stdin_owner.claim_stdin_for_panel"),
             patch("deile.ui._stdin_owner.release_stdin_for_panel"),
             patch("deile.ui._stdin_owner.restore_termios_now"),
-            patch("deile.commands.builtin.k8s_command.asyncio.wait_for", side_effect=tracking_wait_for),
+            patch(
+                "deile.commands.builtin.k8s_command.asyncio.wait_for",
+                side_effect=tracking_wait_for,
+            ),
         ):
             await _cmd_panel("", "deile")
 
@@ -1043,9 +1210,17 @@ class TestCmdPanel:
         mock_audit.log_event = MagicMock(side_effect=capture_log_event)
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=fake_deploy),
-            patch("deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=fake_deploy,
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command.asyncio.create_subprocess_exec",
+                return_value=mock_proc,
+            ),
             patch("deile.ui._stdin_owner.prime_termios_snapshot"),
             patch("deile.ui._stdin_owner.claim_stdin_for_panel"),
             patch("deile.ui._stdin_owner.release_stdin_for_panel"),
@@ -1149,12 +1324,15 @@ class TestRunningInPodExtended:
         token_path = tmp_path / "token"
         token_path.write_text("fake-token")
 
-        import deile.commands.builtin.k8s_command as mod
         from unittest.mock import patch as _patch
-        from pathlib import Path
 
-        env = {k: v for k, v in __import__("os").environ.items()
-               if k != "KUBERNETES_SERVICE_HOST"}
+        import deile.commands.builtin.k8s_command as mod
+
+        env = {
+            k: v
+            for k, v in __import__("os").environ.items()
+            if k != "KUBERNETES_SERVICE_HOST"
+        }
 
         with (
             _patch.dict("os.environ", env, clear=True),
@@ -1164,11 +1342,15 @@ class TestRunningInPodExtended:
 
     def test_not_in_pod_without_env_or_token(self, tmp_path):
         """Sem env nem token → não in-pod."""
-        import deile.commands.builtin.k8s_command as mod
         from unittest.mock import patch as _patch
 
-        env = {k: v for k, v in __import__("os").environ.items()
-               if k != "KUBERNETES_SERVICE_HOST"}
+        import deile.commands.builtin.k8s_command as mod
+
+        env = {
+            k: v
+            for k, v in __import__("os").environ.items()
+            if k != "KUBERNETES_SERVICE_HOST"
+        }
 
         with (
             _patch.dict("os.environ", env, clear=True),
@@ -1224,8 +1406,13 @@ class TestCmdV2DelegateNewFeatures:
 
     async def test_destructive_without_confirm_blocked(self):
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
         ):
             result = await _cmd_v2_delegate("down", "", "deile", confirmed=False)
         assert result.success is False
@@ -1241,9 +1428,17 @@ class TestCmdV2DelegateNewFeatures:
             return 0, []
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
         ):
             await _cmd_v2_delegate("down", "", "deile", confirmed=False)
 
@@ -1257,10 +1452,20 @@ class TestCmdV2DelegateNewFeatures:
         mock_audit.log_event = MagicMock()
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
-            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
+            patch(
+                "deile.security.audit_logger.get_audit_logger", return_value=mock_audit
+            ),
         ):
             result = await _cmd_v2_delegate("down", "", "deile", confirmed=True)
 
@@ -1268,10 +1473,17 @@ class TestCmdV2DelegateNewFeatures:
 
     async def test_build_restart_gated_without_confirm(self):
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
         ):
-            result = await _cmd_v2_delegate("build", "--restart", "deile", confirmed=False)
+            result = await _cmd_v2_delegate(
+                "build", "--restart", "deile", confirmed=False
+            )
         assert result.success is False
         assert "--confirm" in result.content
 
@@ -1283,18 +1495,33 @@ class TestCmdV2DelegateNewFeatures:
         mock_audit.log_event = MagicMock()
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
-            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
+            patch(
+                "deile.security.audit_logger.get_audit_logger", return_value=mock_audit
+            ),
         ):
             result = await _cmd_v2_delegate("build", "", "deile", confirmed=False)
         assert result.success is True
 
     async def test_setup_returns_error_pointing_to_create_namespace(self):
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
         ):
             result = await _cmd_v2_delegate("setup", "", "deile")
         assert result.success is False
@@ -1308,9 +1535,17 @@ class TestCmdV2DelegateNewFeatures:
             return 0, []
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
         ):
             await _cmd_v2_delegate("setup", "", "deile")
 
@@ -1326,10 +1561,20 @@ class TestCmdV2DelegateNewFeatures:
             return 0, []
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
-            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
+            patch(
+                "deile.security.audit_logger.get_audit_logger", return_value=mock_audit
+            ),
         ):
             await _cmd_v2_delegate("claude-login", "", "deile")
 
@@ -1345,10 +1590,20 @@ class TestCmdV2DelegateNewFeatures:
             return 0, []
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
-            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
+            patch(
+                "deile.security.audit_logger.get_audit_logger", return_value=mock_audit
+            ),
         ):
             await _cmd_v2_delegate("claude-login", "--no-interactive", "deile")
 
@@ -1368,24 +1623,42 @@ class TestCmdV2DelegateNewFeatures:
             return 0, []
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
-            patch("deile.commands.builtin.k8s_command._live_stream_subprocess", side_effect=fake_stream),
-            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._live_stream_subprocess",
+                side_effect=fake_stream,
+            ),
+            patch(
+                "deile.security.audit_logger.get_audit_logger", return_value=mock_audit
+            ),
         ):
             await _cmd_v2_delegate("start", "", "deile")
 
-        assert call_order.index("audit") < call_order.index("exec"), \
-            "AuditEvent must be emitted BEFORE subprocess exec"
+        assert call_order.index("audit") < call_order.index(
+            "exec"
+        ), "AuditEvent must be emitted BEFORE subprocess exec"
 
     async def test_audit_event_not_emitted_when_blocked_by_gating(self):
         mock_audit = MagicMock()
         mock_audit.log_event = MagicMock()
 
         with (
-            patch("deile.commands.builtin.k8s_command._running_in_pod", return_value=False),
-            patch("deile.commands.builtin.k8s_command._find_deploy_py", return_value=self._fake_deploy()),
-            patch("deile.security.audit_logger.get_audit_logger", return_value=mock_audit),
+            patch(
+                "deile.commands.builtin.k8s_command._running_in_pod", return_value=False
+            ),
+            patch(
+                "deile.commands.builtin.k8s_command._find_deploy_py",
+                return_value=self._fake_deploy(),
+            ),
+            patch(
+                "deile.security.audit_logger.get_audit_logger", return_value=mock_audit
+            ),
         ):
             await _cmd_v2_delegate("down", "", "deile", confirmed=False)
 
@@ -1449,7 +1722,9 @@ class TestK8sCommandConfirmAndSaveNamespace:
             patch(
                 "deile.commands.builtin.k8s_command._cmd_discovery",
                 new_callable=AsyncMock,
-                return_value=MagicMock(success=True, content="panel", content_type="rich"),
+                return_value=MagicMock(
+                    success=True, content="panel", content_type="rich"
+                ),
             ),
             patch(
                 "deile.commands.settings_manager.SettingsManager",
@@ -1474,7 +1749,9 @@ class TestK8sCommandConfirmAndSaveNamespace:
             patch(
                 "deile.commands.builtin.k8s_command._cmd_discovery",
                 new_callable=AsyncMock,
-                return_value=MagicMock(success=True, content="panel", content_type="rich"),
+                return_value=MagicMock(
+                    success=True, content="panel", content_type="rich"
+                ),
             ),
             patch(
                 "deile.commands.settings_manager.SettingsManager",
@@ -1504,7 +1781,9 @@ class TestClassAVerbsNotDelegated:
             patch(
                 "deile.commands.builtin.k8s_command._cmd_status",
                 new_callable=AsyncMock,
-                return_value=MagicMock(success=True, content="pods", content_type="text"),
+                return_value=MagicMock(
+                    success=True, content="pods", content_type="text"
+                ),
             ),
             patch(
                 "deile.commands.builtin.k8s_command._cmd_v2_delegate",
@@ -1525,7 +1804,9 @@ class TestClassAVerbsNotDelegated:
             patch(
                 "deile.commands.builtin.k8s_command._cmd_logs",
                 new_callable=AsyncMock,
-                return_value=MagicMock(success=True, content="logs", content_type="text"),
+                return_value=MagicMock(
+                    success=True, content="logs", content_type="text"
+                ),
             ),
             patch(
                 "deile.commands.builtin.k8s_command._cmd_v2_delegate",

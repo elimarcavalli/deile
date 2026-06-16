@@ -7,8 +7,12 @@ from typing import Dict, List
 from rich.console import Group
 
 from ...core.exceptions import CommandError
-from ...security.audit_logger import (AuditEvent, AuditEventType,
-                                      SeverityLevel, get_audit_logger)
+from ...security.audit_logger import (
+    AuditEvent,
+    AuditEventType,
+    SeverityLevel,
+    get_audit_logger,
+)
 from ..base import CommandContext, CommandResult, DirectCommand
 from . import _logs_views
 from ._shared import split_args, wrap_command_errors
@@ -41,6 +45,7 @@ class LogsCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="logs",
             description="Visualizar logs de auditoria de segurança e eventos do sistema.",
@@ -77,13 +82,17 @@ class LogsCommand(DirectCommand):
 
     async def _dispatch_export(self, parts: List[str]) -> CommandResult:
         if len(parts) < 2:
-            raise CommandError("logs export requer nome de arquivo: /logs export <arquivo> [formato]")
+            raise CommandError(
+                "logs export requer nome de arquivo: /logs export <arquivo> [formato]"
+            )
         safe_name = Path(parts[1]).name
         if not safe_name:
             raise CommandError("Nome de arquivo inválido")
         format_type = parts[2] if len(parts) > 2 else "json"
         if format_type not in _VALID_EXPORT_FORMATS:
-            raise CommandError(f"Formato inválido. Use: {', '.join(sorted(_VALID_EXPORT_FORMATS))}")
+            raise CommandError(
+                f"Formato inválido. Use: {', '.join(sorted(_VALID_EXPORT_FORMATS))}"
+            )
         return await self._export_logs(safe_name, format_type)
 
     async def _show_logs_overview(self) -> CommandResult:
@@ -105,7 +114,9 @@ class LogsCommand(DirectCommand):
 
         renderables: List = []
         if capped:
-            renderables.append(_logs_views.build_recent_cap_warning(limit, MAX_SAFE_LIMIT))
+            renderables.append(
+                _logs_views.build_recent_cap_warning(limit, MAX_SAFE_LIMIT)
+            )
 
         if not events:
             renderables.append(_logs_views.build_recent_empty_panel())
@@ -125,12 +136,16 @@ class LogsCommand(DirectCommand):
         all_events: List[AuditEvent] = []
         for event_type in security_event_types:
             all_events.extend(
-                self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, event_type=event_type)
+                self.audit_logger.get_recent_events(
+                    MAX_SAFE_LIMIT, event_type=event_type
+                )
             )
         all_events.sort(key=lambda e: e.timestamp, reverse=True)
 
         if not all_events:
-            return CommandResult.success_result(_logs_views.build_security_empty_panel(), "rich")
+            return CommandResult.success_result(
+                _logs_views.build_security_empty_panel(), "rich"
+            )
 
         return CommandResult.success_result(
             _logs_views.build_security_table(all_events), "rich"
@@ -148,7 +163,9 @@ class LogsCommand(DirectCommand):
         all_events.sort(key=lambda e: e.timestamp, reverse=True)
 
         if not all_events:
-            return CommandResult.success_result(_logs_views.build_permission_empty_panel(), "rich")
+            return CommandResult.success_result(
+                _logs_views.build_permission_empty_panel(), "rich"
+            )
 
         content = _logs_views.build_permission_group(
             permission_events=permission_events,
@@ -159,13 +176,20 @@ class LogsCommand(DirectCommand):
 
     async def _show_secret_logs(self, _filters: List[str]) -> CommandResult:
         secret_events: List[AuditEvent] = []
-        for event_type in (AuditEventType.SECRET_DETECTED, AuditEventType.SECRET_REDACTED):
+        for event_type in (
+            AuditEventType.SECRET_DETECTED,
+            AuditEventType.SECRET_REDACTED,
+        ):
             secret_events.extend(
-                self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, event_type=event_type)
+                self.audit_logger.get_recent_events(
+                    MAX_SAFE_LIMIT, event_type=event_type
+                )
             )
 
         if not secret_events:
-            return CommandResult.success_result(_logs_views.build_secret_empty_panel(), "rich")
+            return CommandResult.success_result(
+                _logs_views.build_secret_empty_panel(), "rich"
+            )
 
         return CommandResult.success_result(
             _logs_views.build_secret_logs_table(secret_events), "rich"
@@ -177,7 +201,9 @@ class LogsCommand(DirectCommand):
         )
 
         if not tool_events:
-            return CommandResult.success_result(_logs_views.build_tool_empty_panel(), "rich")
+            return CommandResult.success_result(
+                _logs_views.build_tool_empty_panel(), "rich"
+            )
 
         return CommandResult.success_result(
             _logs_views.build_tool_logs_table(tool_events), "rich"
@@ -197,14 +223,20 @@ class LogsCommand(DirectCommand):
         all_events.sort(key=lambda e: e.timestamp, reverse=True)
 
         if not all_events:
-            return CommandResult.success_result(_logs_views.build_plan_empty_panel(), "rich")
+            return CommandResult.success_result(
+                _logs_views.build_plan_empty_panel(), "rich"
+            )
 
         return CommandResult.success_result(
             _logs_views.build_plan_logs_table(all_events), "rich"
         )
 
     async def _show_error_logs(self, filters: List[str]) -> CommandResult:
-        all_severities = [SeverityLevel.WARNING, SeverityLevel.ERROR, SeverityLevel.CRITICAL]
+        all_severities = [
+            SeverityLevel.WARNING,
+            SeverityLevel.ERROR,
+            SeverityLevel.CRITICAL,
+        ]
 
         target_severities = all_severities
         if "--severity" in filters:
@@ -214,7 +246,9 @@ class LogsCommand(DirectCommand):
                 mapped = _SEVERITY_FILTER_MAP.get(filter_val)
                 if mapped is None:
                     valid = ", ".join(sorted(_SEVERITY_FILTER_MAP))
-                    raise CommandError(f"Severidade inválida '{filter_val}'. Use: {valid}")
+                    raise CommandError(
+                        f"Severidade inválida '{filter_val}'. Use: {valid}"
+                    )
                 target_severities = mapped
 
         error_events: List[AuditEvent] = []
@@ -225,7 +259,9 @@ class LogsCommand(DirectCommand):
         error_events.sort(key=lambda e: e.timestamp, reverse=True)
 
         if not error_events:
-            return CommandResult.success_result(_logs_views.build_errors_empty_panel(), "rich")
+            return CommandResult.success_result(
+                _logs_views.build_errors_empty_panel(), "rich"
+            )
 
         return CommandResult.success_result(
             _logs_views.build_errors_table(error_events), "rich"
@@ -260,7 +296,9 @@ class LogsCommand(DirectCommand):
     async def _clear_logs(self) -> CommandResult:
         count = self.audit_logger.clear_events()
         return CommandResult.success_result(
-            _logs_views.build_clear_panel(count=count, log_file=str(self.audit_logger.log_file)),
+            _logs_views.build_clear_panel(
+                count=count, log_file=str(self.audit_logger.log_file)
+            ),
             "rich",
         )
 

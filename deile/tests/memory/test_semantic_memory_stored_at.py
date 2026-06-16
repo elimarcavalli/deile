@@ -32,7 +32,9 @@ async def test_store_correction_preserves_stored_at(tmp_path: Path) -> None:
         await sm.shutdown()
 
 
-async def test_store_knowledge_with_extracted_at_derives_stored_at(tmp_path: Path) -> None:
+async def test_store_knowledge_with_extracted_at_derives_stored_at(
+    tmp_path: Path,
+) -> None:
     """Normal flow: a record that carries extracted_at should still derive
     stored_at from extracted_at (not lose it to the store_correction path)."""
     sm = SemanticMemory(storage_dir=tmp_path)
@@ -41,8 +43,8 @@ async def test_store_knowledge_with_extracted_at_derives_stored_at(tmp_path: Pat
         await sm.store_knowledge({"topic": "embeddings", "extracted_at": 99999})
 
         stored = sm._knowledge_base[-1]
-        assert stored["stored_at"] == 99999, (
-            f"stored_at should equal extracted_at (99999), got {stored['stored_at']!r}"
-        )
+        assert (
+            stored["stored_at"] == 99999
+        ), f"stored_at should equal extracted_at (99999), got {stored['stored_at']!r}"
     finally:
         await sm.shutdown()

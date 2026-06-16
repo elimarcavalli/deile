@@ -7,14 +7,17 @@ Bug B: legacy path marcava CONCLUDED sem checar evidência de trabalho.
 Fix: erros não-auth liberam batch + retornam (reaper retoma). Antes do
 legacy CONCLUDED, ``_assert_review_proof_of_work`` valida atividade do bot.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from deile.orchestration.pipeline.stages import (_assert_review_proof_of_work,
-                                                 _resolve_bot_login)
+from deile.orchestration.pipeline.stages import (
+    _assert_review_proof_of_work,
+    _resolve_bot_login,
+)
 
 
 @pytest.mark.asyncio
@@ -23,7 +26,11 @@ async def test_proof_of_work_returns_true_when_bot_active(monkeypatch):
     forge = MagicMock()
     forge.has_bot_activity_since = AsyncMock(return_value=True)
     result = await _assert_review_proof_of_work(
-        forge, "pr", 100, "deile-one", since_ts=1716000000,
+        forge,
+        "pr",
+        100,
+        "deile-one",
+        since_ts=1716000000,
     )
     assert result is True
     forge.has_bot_activity_since.assert_awaited_once()
@@ -35,7 +42,11 @@ async def test_proof_of_work_returns_false_when_bot_silent(monkeypatch):
     forge = MagicMock()
     forge.has_bot_activity_since = AsyncMock(return_value=False)
     result = await _assert_review_proof_of_work(
-        forge, "pr", 100, "deile-one", since_ts=1716000000,
+        forge,
+        "pr",
+        100,
+        "deile-one",
+        since_ts=1716000000,
     )
     assert result is False
 
@@ -46,7 +57,11 @@ async def test_proof_of_work_fail_open_on_forge_error(monkeypatch):
     forge = MagicMock()
     forge.has_bot_activity_since = AsyncMock(side_effect=RuntimeError("net"))
     result = await _assert_review_proof_of_work(
-        forge, "pr", 100, "deile-one", since_ts=1716000000,
+        forge,
+        "pr",
+        100,
+        "deile-one",
+        since_ts=1716000000,
     )
     assert result is True
 
@@ -54,13 +69,19 @@ async def test_proof_of_work_fail_open_on_forge_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_proof_of_work_fail_open_when_forge_missing_method(monkeypatch):
     """Forge antigo sem ``has_bot_activity_since`` → True (fail-open)."""
+
     # MagicMock auto-spec: ainda tem o atributo mesmo se não declaro,
     # mas vou simular forge sem o método.
     class FakeOldForge:
         pass
+
     forge = FakeOldForge()
     result = await _assert_review_proof_of_work(
-        forge, "pr", 100, "deile-one", since_ts=1716000000,
+        forge,
+        "pr",
+        100,
+        "deile-one",
+        since_ts=1716000000,
     )
     assert result is True
 
@@ -83,12 +104,14 @@ async def test_outcome_error_non_auth_does_not_fast_finish():
     from pathlib import Path
 
     from deile.orchestration.pipeline.implementer import WorkOutcome
-    from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                      PipelineMonitor)
+    from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
     cfg = PipelineConfig(
-        repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0,
+        repo="owner/r",
+        base_repo_path=Path("/tmp"),
+        notify_user_id="42",
+        use_pid_lock=False,
+        reaper_stale_seconds=0,
         enable_resume=False,  # garante caminho legacy
     )
     github = MagicMock()
@@ -118,7 +141,11 @@ async def test_outcome_error_non_auth_does_not_fast_finish():
     claude = MagicMock()
 
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier,
+        cfg,
+        github=github,
+        worktrees=worktrees,
+        claude=claude,
+        notifier=notifier,
     )
     # Forge expõe own_label via identity — vamos forçar batch
     monitor.identity.ownership_label()
@@ -126,18 +153,25 @@ async def test_outcome_error_non_auth_does_not_fast_finish():
 
     # Implementer retorna erro NÃO-auth (não merged, não blocked).
     monitor.implementer = MagicMock()
-    monitor.implementer.review = AsyncMock(return_value=WorkOutcome(
-        ok=False, text="", error="WORKER_TIMEOUT: deadline 100s",
-    ))
+    monitor.implementer.review = AsyncMock(
+        return_value=WorkOutcome(
+            ok=False,
+            text="",
+            error="WORKER_TIMEOUT: deadline 100s",
+        )
+    )
 
     from deile.orchestration.pipeline.stages import review_one_open_pr
+
     await review_one_open_pr(monitor)
 
     # Verifica: NÃO marcou CONCLUDED.
-    transitions = [c for c in github.transition_pr.await_args_list
-                   if "concluida" in str(c).lower()]
-    assert not transitions, \
-        "Bug A regression: pipeline marcou CONCLUDED após erro do worker"
+    transitions = [
+        c for c in github.transition_pr.await_args_list if "concluida" in str(c).lower()
+    ]
+    assert (
+        not transitions
+    ), "Bug A regression: pipeline marcou CONCLUDED após erro do worker"
     # Verifica: liberou batch.
     github.clear_batch_label.assert_awaited()
 
@@ -149,12 +183,15 @@ async def test_proof_of_work_blocks_legacy_finish_without_evidence():
     from pathlib import Path
 
     from deile.orchestration.pipeline.implementer import WorkOutcome
-    from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                      PipelineMonitor)
+    from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
     cfg = PipelineConfig(
-        repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0, enable_resume=False,
+        repo="owner/r",
+        base_repo_path=Path("/tmp"),
+        notify_user_id="42",
+        use_pid_lock=False,
+        reaper_stale_seconds=0,
+        enable_resume=False,
     )
     github = MagicMock()
     pr = MagicMock()
@@ -184,23 +221,33 @@ async def test_proof_of_work_blocks_legacy_finish_without_evidence():
     claude = MagicMock()
 
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier,
+        cfg,
+        github=github,
+        worktrees=worktrees,
+        claude=claude,
+        notifier=notifier,
     )
 
     # ok=True mas NÃO merged ("merged" não está no texto), NÃO blocked.
     monitor.implementer = MagicMock()
-    monitor.implementer.review = AsyncMock(return_value=WorkOutcome(
-        ok=True, text="something happened but no actual work",  # ✗ não merged
-    ))
+    monitor.implementer.review = AsyncMock(
+        return_value=WorkOutcome(
+            ok=True,
+            text="something happened but no actual work",  # ✗ não merged
+        )
+    )
 
     from deile.orchestration.pipeline.stages import review_one_open_pr
+
     await review_one_open_pr(monitor)
 
     # Verifica: NÃO marcou CONCLUDED.
     transitions = [
-        c for c in github.transition_pr.await_args_list
+        c
+        for c in github.transition_pr.await_args_list
         if c.kwargs.get("to_label") and "concluida" in c.kwargs["to_label"]
     ]
-    assert not transitions, \
-        "Bug B regression: pipeline marcou CONCLUDED sem proof-of-work"
+    assert (
+        not transitions
+    ), "Bug B regression: pipeline marcou CONCLUDED sem proof-of-work"
     github.clear_batch_label.assert_awaited()

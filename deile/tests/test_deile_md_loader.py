@@ -13,8 +13,12 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.core.deile_md_loader import (DEILEMDLoader, DEILEMDSource,
-                                        _read_if_exists, clear_cache)
+from deile.core.deile_md_loader import (
+    DEILEMDLoader,
+    DEILEMDSource,
+    _read_if_exists,
+    clear_cache,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +107,9 @@ def test_read_if_exists_returns_none_on_read_error(tmp_path):
 
 
 def test_source_dataclass_holds_metadata(tmp_path):
-    src = DEILEMDSource(label="CORE", path=tmp_path / "x.md", content="rules", priority=1)
+    src = DEILEMDSource(
+        label="CORE", path=tmp_path / "x.md", content="rules", priority=1
+    )
     assert src.label == "CORE"
     assert src.priority == 1
     assert src.content == "rules"
@@ -249,7 +255,9 @@ def test_merged_prompt_marks_core_as_non_negotiable(tmp_layout):
     out = loader.build_merged_prompt()
     assert "NÃO NEGOCIÁVEIS" in out
     # As camadas opcionais devem trazer aviso de subordinação
-    assert "não podem contradizer" in out.lower() or "nao podem contradizer" in out.lower()
+    assert (
+        "não podem contradizer" in out.lower() or "nao podem contradizer" in out.lower()
+    )
 
 
 def test_merged_prompt_disabled_via_settings_returns_empty(tmp_layout, monkeypatch):
@@ -342,10 +350,12 @@ def test_cache_avoids_rereads_same_mtime(tmp_path, monkeypatch):
 
 def test_cache_invalidates_when_mtime_changes(tmp_path):
     import os
+
     target = tmp_path / "x.md"
     target.write_text("v1", encoding="utf-8")
 
     from deile.core import deile_md_loader as mod
+
     assert mod._read_cached(target) == "v1"
 
     target.write_text("v2", encoding="utf-8")

@@ -3,8 +3,13 @@
 import pytest
 
 from deile.orchestration.pipeline.dispatch_resolver import (
-    BUILT_IN_MAX_RETRIES, BUILT_IN_TIMEOUT_S_CLAUDE, BUILT_IN_TIMEOUT_S_DEILE,
-    PIPELINE_STAGES, resolve_stage_max_retries, resolve_stage_timeout_s)
+    BUILT_IN_MAX_RETRIES,
+    BUILT_IN_TIMEOUT_S_CLAUDE,
+    BUILT_IN_TIMEOUT_S_DEILE,
+    PIPELINE_STAGES,
+    resolve_stage_max_retries,
+    resolve_stage_timeout_s,
+)
 
 
 def _clear_timeout_env(monkeypatch):
@@ -113,7 +118,9 @@ def test_timeout_all_stages_return_positive_int(monkeypatch):
     _clear_timeout_env(monkeypatch)
     for stage in PIPELINE_STAGES:
         result = resolve_stage_timeout_s(stage)
-        assert isinstance(result, int), f"stage {stage!r}: expected int, got {type(result)}"
+        assert isinstance(
+            result, int
+        ), f"stage {stage!r}: expected int, got {type(result)}"
         assert result > 0, f"stage {stage!r}: expected > 0, got {result}"
 
 
@@ -190,9 +197,11 @@ def test_timeout_settings_per_stage_fallback(monkeypatch):
     """pipeline_timeout_s_implement from settings wins over built-in."""
     _clear_timeout_env(monkeypatch)
     from deile.config import settings as _settings_mod
+
     monkeypatch.setattr(_settings_mod, "_settings", None)
     # Inject a mock settings with the per-stage field set
     import types
+
     mock_s = types.SimpleNamespace(
         pipeline_timeout_s_implement=750,
         pipeline_timeout_s_classify=None,
@@ -219,6 +228,7 @@ def test_retries_settings_per_stage_fallback(monkeypatch):
     import types
 
     from deile.config import settings as _settings_mod
+
     mock_s = types.SimpleNamespace(
         pipeline_retries_implement=7,
         pipeline_retries_classify=None,
@@ -251,6 +261,7 @@ def test_retries_global_default_fallback(monkeypatch):
     import types
 
     from deile.config import settings as _settings_mod
+
     mock_s = types.SimpleNamespace(
         pipeline_retries_implement=None,
         pipeline_retries_classify=None,

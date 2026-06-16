@@ -8,8 +8,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from deile.core.models.tier import ModelTier
-from deile.core.models.tier_router import (CircuitBreaker, RoutingPolicy,
-                                           TierRouter, reset_tier_router)
+from deile.core.models.tier_router import (
+    CircuitBreaker,
+    RoutingPolicy,
+    TierRouter,
+    reset_tier_router,
+)
 
 
 def _make_mock_provider(provider_id: str) -> MagicMock:
@@ -44,7 +48,9 @@ def test_router_select_1000_calls_under_50ms():
     elapsed = time.perf_counter() - start
 
     per_call_ms = (elapsed / N) * 1000
-    assert per_call_ms < 50, f"Router overhead {per_call_ms:.2f}ms/call exceeds 50ms limit"
+    assert (
+        per_call_ms < 50
+    ), f"Router overhead {per_call_ms:.2f}ms/call exceeds 50ms limit"
 
 
 def test_router_select_average_under_1ms():
@@ -92,4 +98,6 @@ def test_schema_translation_overhead():
         s.to_anthropic_tool()
     elapsed_ms = (time.perf_counter() - start) * 1000
 
-    assert elapsed_ms < 10, f"Schema translation {elapsed_ms:.2f}ms for 10 schemas too slow"
+    assert (
+        elapsed_ms < 10
+    ), f"Schema translation {elapsed_ms:.2f}ms for 10 schemas too slow"

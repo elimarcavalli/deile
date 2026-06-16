@@ -33,7 +33,8 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from cli_adapters import base, get_adapter  # noqa: E402
+from cli_adapters import base  # noqa: E402
+from cli_adapters import get_adapter  # noqa: E402
 from cli_adapters import codex as cx_mod  # noqa: E402
 
 
@@ -57,10 +58,10 @@ def brief(tmp_path):
 @pytest.mark.unit
 def test_metadata_matches_plan(adapter):
     assert adapter.kind == "codex"
-    assert adapter.default_port == 8772          # §1.13
-    assert adapter.auth_mode == "env"            # §2.2 — OPENAI_API_KEY default
-    assert adapter.supports_resume is True       # issue #445 — codex exec resume
-    assert adapter.supports_reasoning is True    # §1.10 — model_reasoning_effort
+    assert adapter.default_port == 8772  # §1.13
+    assert adapter.auth_mode == "env"  # §2.2 — OPENAI_API_KEY default
+    assert adapter.supports_resume is True  # issue #445 — codex exec resume
+    assert adapter.supports_reasoning is True  # §1.10 — model_reasoning_effort
     assert adapter.git_strategy == "brief_driven"
     assert "OPENAI_API_KEY" in adapter.auth_env_keys
     assert "api.openai.com" in adapter.egress_hosts
@@ -84,13 +85,17 @@ def test_satisfies_protocol(adapter):
 def test_build_argv_uses_exec_subcommand(adapter, brief):
     # SEMPRE `codex exec` — nunca `codex` puro (panica sem TTY).
     argv = adapter.build_argv(
-        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
+        brief_path=brief,
+        model=None,
+        reasoning=None,
+        workdir="/w",
+        resume=None,
     )
     assert argv[0] == "codex"
     assert argv[1] == "exec"
     assert argv[argv.index("--cd") + 1] == "/w"
     assert "--dangerously-bypass-approvals-and-sandbox" in argv  # §1.4
-    assert "--json" in argv                                       # §1.6
+    assert "--json" in argv  # §1.6
     assert "--skip-git-repo-check" in argv
     # Brief vira o prompt posicional (último token, conteúdo lido do arquivo).
     assert argv[-1] == "IMPLEMENTE A FEATURE X"
@@ -99,8 +104,11 @@ def test_build_argv_uses_exec_subcommand(adapter, brief):
 @pytest.mark.unit
 def test_build_argv_model_and_reasoning(adapter, brief):
     argv = adapter.build_argv(
-        brief_path=brief, model="gpt-5.5-codex", reasoning="high",
-        workdir="/w", resume=None,
+        brief_path=brief,
+        model="gpt-5.5-codex",
+        reasoning="high",
+        workdir="/w",
+        resume=None,
     )
     assert argv[argv.index("-m") + 1] == "gpt-5.5-codex"
     assert argv[argv.index("-c") + 1] == "model_reasoning_effort=high"
@@ -110,8 +118,11 @@ def test_build_argv_model_and_reasoning(adapter, brief):
 def test_build_argv_invalid_reasoning_is_ignored(adapter, brief):
     # Vocabulário fora do conjunto oficial → fail-open (não emite -c).
     argv = adapter.build_argv(
-        brief_path=brief, model=None, reasoning="ultracode",
-        workdir="/w", resume=None,
+        brief_path=brief,
+        model=None,
+        reasoning="ultracode",
+        workdir="/w",
+        resume=None,
     )
     assert "-c" not in argv
 
@@ -119,7 +130,11 @@ def test_build_argv_invalid_reasoning_is_ignored(adapter, brief):
 @pytest.mark.unit
 def test_build_argv_no_model_omits_flag(adapter, brief):
     argv = adapter.build_argv(
-        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
+        brief_path=brief,
+        model=None,
+        reasoning=None,
+        workdir="/w",
+        resume=None,
     )
     assert "-m" not in argv
 
@@ -127,7 +142,11 @@ def test_build_argv_no_model_omits_flag(adapter, brief):
 @pytest.mark.unit
 def test_build_argv_fresh_has_no_resume_subcommand(adapter, brief):
     argv = adapter.build_argv(
-        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
+        brief_path=brief,
+        model=None,
+        reasoning=None,
+        workdir="/w",
+        resume=None,
     )
     assert argv[:2] == ["codex", "exec"]
     assert "resume" not in argv
@@ -138,7 +157,11 @@ def test_build_argv_resume_uses_exec_resume(adapter, brief):
     # issue #445: resume → `codex exec resume <thread_id> ...`.
     resume = base.ResumeCtx(session_id="thr_xyz", prev_task_id="0123456789abcdef")
     argv = adapter.build_argv(
-        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=resume,
+        brief_path=brief,
+        model=None,
+        reasoning=None,
+        workdir="/w",
+        resume=resume,
     )
     assert argv[:4] == ["codex", "exec", "resume", "thr_xyz"]
     # ``codex exec resume`` NÃO aceita ``--cd`` ("error: unexpected argument
@@ -152,8 +175,11 @@ def test_build_argv_resume_uses_exec_resume(adapter, brief):
 def test_build_argv_brief_read_failure_degrades(adapter):
     # Arquivo inexistente → prompt mínimo apontando ao caminho (não estoura).
     argv = adapter.build_argv(
-        brief_path="/nao/existe/.brief.md", model=None, reasoning=None,
-        workdir="/w", resume=None,
+        brief_path="/nao/existe/.brief.md",
+        model=None,
+        reasoning=None,
+        workdir="/w",
+        resume=None,
     )
     assert "/nao/existe/.brief.md" in argv[-1]
 
@@ -183,11 +209,13 @@ def test_env_overlay_excludes_auth_keys(adapter):
 
 @pytest.mark.unit
 def test_parse_output_agent_message(adapter):
-    stdout = "\n".join([
-        json.dumps({"type": "task_started"}),
-        json.dumps({"type": "agent_message", "message": "veredito final"}),
-        json.dumps({"type": "task_complete"}),
-    ])
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "task_started"}),
+            json.dumps({"type": "agent_message", "message": "veredito final"}),
+            json.dumps({"type": "task_complete"}),
+        ]
+    )
     wr = adapter.parse_output(stdout=stdout, stderr="", rc=0)
     assert wr.ok is True
     assert wr.result_text == "veredito final"
@@ -216,7 +244,9 @@ def test_parse_output_error_event_fails(adapter):
 def test_parse_output_provider_402_is_not_clean_completion(adapter):
     # issue #445: corte por 402 NUNCA vira conclusão limpa → resumível.
     wr = adapter.parse_output(
-        stdout='{"type":"error","message":"insufficient_quota"}', stderr="", rc=0,
+        stdout='{"type":"error","message":"insufficient_quota"}',
+        stderr="",
+        rc=0,
     )
     assert wr.ok is False
     assert wr.error_code == "INSUFFICIENT_CREDIT"
@@ -224,22 +254,30 @@ def test_parse_output_provider_402_is_not_clean_completion(adapter):
 
 @pytest.mark.unit
 def test_extract_session_id_from_thread_started(adapter):
-    stdout = "\n".join([
-        json.dumps({"type": "thread.started", "thread": {"id": "thr_999"}}),
-        json.dumps({"type": "item.completed",
-                    "item": {"type": "agent_message", "text": "ok"}}),
-    ])
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread": {"id": "thr_999"}}),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "ok"},
+                }
+            ),
+        ]
+    )
     sid = adapter.extract_session_id(stdout=stdout, stderr="", task_id="t")
     assert sid == "thr_999"
 
 
 @pytest.mark.unit
 def test_parse_output_tolerates_malformed(adapter):
-    stdout = "\n".join([
-        "isto não é json",
-        "{ quebrado",
-        json.dumps({"type": "agent_message", "message": "apesar do ruído"}),
-    ])
+    stdout = "\n".join(
+        [
+            "isto não é json",
+            "{ quebrado",
+            json.dumps({"type": "agent_message", "message": "apesar do ruído"}),
+        ]
+    )
     wr = adapter.parse_output(stdout=stdout, stderr="", rc=0)
     assert wr.ok is True
     assert wr.result_text == "apesar do ruído"
@@ -247,10 +285,12 @@ def test_parse_output_tolerates_malformed(adapter):
 
 @pytest.mark.unit
 def test_parse_output_events_without_text(adapter):
-    stdout = "\n".join([
-        json.dumps({"type": "task_started"}),
-        json.dumps({"type": "exec_command_begin", "command": "ls"}),
-    ])
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "task_started"}),
+            json.dumps({"type": "exec_command_begin", "command": "ls"}),
+        ]
+    )
     wr = adapter.parse_output(stdout=stdout, stderr="", rc=0)
     assert wr.ok is True
     assert wr.error_code is None
@@ -318,12 +358,14 @@ def test_parse_output_item_completed_agent_message(adapter):
     """Regressão #25 (homolog follow_ups): codex >=0.13x emite
     ``{type:item.completed, item:{type:agent_message, text:"..."}}``; o veredito
     está em item.text. O parser deve extraí-lo (não cair no fallback)."""
-    out = "\n".join([
-        '{"type":"thread.started"}',
-        '{"type":"turn.started"}',
-        '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"HOMOLOG CODEX OK."}}',
-        '{"type":"turn.completed","usage":{"output_tokens":40}}',
-    ])
+    out = "\n".join(
+        [
+            '{"type":"thread.started"}',
+            '{"type":"turn.started"}',
+            '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"HOMOLOG CODEX OK."}}',
+            '{"type":"turn.completed","usage":{"output_tokens":40}}',
+        ]
+    )
     res = adapter.parse_output(stdout=out, stderr="", rc=0)
     assert res.ok is True
     assert "HOMOLOG CODEX OK." in res.result_text
@@ -332,6 +374,7 @@ def test_parse_output_item_completed_agent_message(adapter):
 # --------------------------------------------------------------------------- #
 # Frente 4 — provision_auth (codex dual-mode por modelo)
 # --------------------------------------------------------------------------- #
+
 
 class _FakeProc:
     def __init__(self, returncode=0, stdout="", stderr=""):
@@ -362,7 +405,10 @@ def test_provision_apikey_runs_codex_login(adapter, tmp_path):
 
     env = {"CODEX_HOME": str(tmp_path), "OPENAI_API_KEY": "sk-test-123"}
     ok, detail = adapter.provision_auth(
-        model="gpt-5.1-codex-mini", home=str(tmp_path), env=env, runner=fake_run,
+        model="gpt-5.1-codex-mini",
+        home=str(tmp_path),
+        env=env,
+        runner=fake_run,
     )
     assert ok is True
     assert len(calls) == 1
@@ -374,8 +420,10 @@ def test_provision_apikey_runs_codex_login(adapter, tmp_path):
 @pytest.mark.unit
 def test_provision_apikey_fails_without_key(adapter, tmp_path):
     ok, detail = adapter.provision_auth(
-        model="gpt-5.1-codex-mini", home=str(tmp_path),
-        env={"CODEX_HOME": str(tmp_path)}, runner=lambda *a, **k: _FakeProc(),
+        model="gpt-5.1-codex-mini",
+        home=str(tmp_path),
+        env={"CODEX_HOME": str(tmp_path)},
+        runner=lambda *a, **k: _FakeProc(),
     )
     assert ok is False
     assert "OPENAI_API_KEY" in detail
@@ -385,11 +433,14 @@ def test_provision_apikey_fails_without_key(adapter, tmp_path):
 def test_provision_apikey_backs_up_oauth(adapter, tmp_path):
     """Trocar para API key NÃO destrói o auth.json OAuth — faz backup antes."""
     auth = tmp_path / "auth.json"
-    auth.write_text(json.dumps({"tokens": {"access_token": "oauth-xyz"}}),
-                    encoding="utf-8")
+    auth.write_text(
+        json.dumps({"tokens": {"access_token": "oauth-xyz"}}), encoding="utf-8"
+    )
     env = {"CODEX_HOME": str(tmp_path), "OPENAI_API_KEY": "sk-x"}
     ok, _ = adapter.provision_auth(
-        model="gpt-5.1-codex-mini", home=str(tmp_path), env=env,
+        model="gpt-5.1-codex-mini",
+        home=str(tmp_path),
+        env=env,
         runner=lambda *a, **k: _FakeProc(returncode=0),
     )
     assert ok is True
@@ -401,10 +452,12 @@ def test_provision_apikey_backs_up_oauth(adapter, tmp_path):
 @pytest.mark.unit
 def test_provision_chatgpt_ok_when_oauth_present(adapter, tmp_path):
     auth = tmp_path / "auth.json"
-    auth.write_text(json.dumps({"tokens": {"access_token": "oauth-xyz"}}),
-                    encoding="utf-8")
+    auth.write_text(
+        json.dumps({"tokens": {"access_token": "oauth-xyz"}}), encoding="utf-8"
+    )
     ok, detail = adapter.provision_auth(
-        model="gpt-5-codex", home=str(tmp_path),
+        model="gpt-5-codex",
+        home=str(tmp_path),
         env={"CODEX_HOME": str(tmp_path)},
     )
     assert ok is True
@@ -414,7 +467,8 @@ def test_provision_chatgpt_ok_when_oauth_present(adapter, tmp_path):
 @pytest.mark.unit
 def test_provision_chatgpt_fails_when_no_credential(adapter, tmp_path):
     ok, detail = adapter.provision_auth(
-        model="gpt-5-codex", home=str(tmp_path),
+        model="gpt-5-codex",
+        home=str(tmp_path),
         env={"CODEX_HOME": str(tmp_path)},
     )
     assert ok is False
@@ -426,11 +480,14 @@ def test_provision_chatgpt_restores_oauth_from_backup(adapter, tmp_path):
     """Após usar API key, voltar a um modelo chatgpt restaura o OAuth."""
     # Estado: auth.json é de API key, backup OAuth existe.
     (tmp_path / "auth.json").write_text(
-        json.dumps({"OPENAI_API_KEY": "sk-x"}), encoding="utf-8")
+        json.dumps({"OPENAI_API_KEY": "sk-x"}), encoding="utf-8"
+    )
     (tmp_path / "auth.oauth.json.bak").write_text(
-        json.dumps({"tokens": {"access_token": "oauth-back"}}), encoding="utf-8")
+        json.dumps({"tokens": {"access_token": "oauth-back"}}), encoding="utf-8"
+    )
     ok, detail = adapter.provision_auth(
-        model="gpt-5-codex", home=str(tmp_path),
+        model="gpt-5-codex",
+        home=str(tmp_path),
         env={"CODEX_HOME": str(tmp_path)},
     )
     assert ok is True
@@ -442,9 +499,11 @@ def test_provision_chatgpt_restores_oauth_from_backup(adapter, tmp_path):
 def test_provision_chatgpt_rejects_apikey_only_auth(adapter, tmp_path):
     """auth.json de API key + sem backup + modelo chatgpt → falha clara."""
     (tmp_path / "auth.json").write_text(
-        json.dumps({"OPENAI_API_KEY": "sk-x"}), encoding="utf-8")
+        json.dumps({"OPENAI_API_KEY": "sk-x"}), encoding="utf-8"
+    )
     ok, detail = adapter.provision_auth(
-        model="gpt-5-codex", home=str(tmp_path),
+        model="gpt-5-codex",
+        home=str(tmp_path),
         env={"CODEX_HOME": str(tmp_path)},
     )
     assert ok is False
@@ -454,7 +513,10 @@ def test_provision_chatgpt_rejects_apikey_only_auth(adapter, tmp_path):
 def test_base_adapter_provision_auth_is_noop():
     """Adapters que não sobrescrevem → no-op (True, '')."""
     from cli_adapters import opencode as oc
+
     ok, detail = oc.ADAPTER.provision_auth(
-        model="openrouter/deepseek/deepseek-v4-flash", home="/tmp/x", env={},
+        model="openrouter/deepseek/deepseek-v4-flash",
+        home="/tmp/x",
+        env={},
     )
     assert ok is True and detail == ""

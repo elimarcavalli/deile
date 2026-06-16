@@ -28,7 +28,9 @@ from typing import Optional
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.config.manager import CommandConfig
 from deile.orchestration.pipeline.monitor import (
-    PipelineMonitor, build_default_pipeline_config)
+    PipelineMonitor,
+    build_default_pipeline_config,
+)
 from deile.orchestration.pipeline.reset import unlock_issue
 
 logger = logging.getLogger(__name__)
@@ -43,7 +45,9 @@ def _parse_start_flags(raw: str):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--identity", default=None)
     parser.add_argument("--schedule-file", dest="schedule_file", default=None)
-    parser.add_argument("--no-pid-lock", dest="no_pid_lock", action="store_true", default=False)
+    parser.add_argument(
+        "--no-pid-lock", dest="no_pid_lock", action="store_true", default=False
+    )
     try:
         ns, _ = parser.parse_known_args(shlex.split(raw))
     except (ValueError, SystemExit):
@@ -104,13 +108,16 @@ class PipelineCommand(DirectCommand):
         # has no monitor) said "stopped" while the real autonomous pipeline (the
         # separate ``deile-pipeline`` deployment) was running fine.
         if sub == "status" and monitor is None:
-            return CommandResult(success=True, content=(
-                "📊 Nenhum monitor de pipeline rodando NESTE processo.\n"
-                "O pipeline autônomo roda como a deployment separada "
-                "`deile-pipeline` — verifique com `kubectl -n deile get deploy "
-                "deile-pipeline` e `kubectl -n deile logs deploy/deile-pipeline`.\n"
-                "(Para iniciar um monitor local: /pipeline start.)"
-            ))
+            return CommandResult(
+                success=True,
+                content=(
+                    "📊 Nenhum monitor de pipeline rodando NESTE processo.\n"
+                    "O pipeline autônomo roda como a deployment separada "
+                    "`deile-pipeline` — verifique com `kubectl -n deile get deploy "
+                    "deile-pipeline` e `kubectl -n deile logs deploy/deile-pipeline`.\n"
+                    "(Para iniciar um monitor local: /pipeline start.)"
+                ),
+            )
 
         # ``stop`` is a control verb that does NOT operate on the target repo:
         # stopping a monitor that does not exist must short-circuit BEFORE
@@ -118,15 +125,20 @@ class PipelineCommand(DirectCommand):
         # forge repo is configured. Without this guard `/pipeline stop` would
         # error just because no repo is set — even though there is nothing to stop.
         if sub == "stop" and monitor is None:
-            return CommandResult(success=True, content=(
-                "🛑 Nenhum monitor de pipeline rodando NESTE processo — nada a parar."
-            ))
+            return CommandResult(
+                success=True,
+                content=(
+                    "🛑 Nenhum monitor de pipeline rodando NESTE processo — nada a parar."
+                ),
+            )
 
         if monitor is None:
-            from deile.orchestration.pipeline.post_merge_callback import \
-                make_post_merge_callback
-            from deile.orchestration.pipeline.review_callback import \
-                make_review_callback
+            from deile.orchestration.pipeline.post_merge_callback import (
+                make_post_merge_callback,
+            )
+            from deile.orchestration.pipeline.review_callback import (
+                make_review_callback,
+            )
 
             monitor = PipelineMonitor(
                 build_default_pipeline_config(),
@@ -147,18 +159,16 @@ class PipelineCommand(DirectCommand):
             flags = _parse_start_flags(tail)
             # Flags override the monitor's current config when supplied.
             if flags.identity or flags.schedule_file or flags.no_pid_lock:
-                from deile.orchestration.pipeline.identity import \
-                    MonitorIdentity
-                from deile.orchestration.pipeline.post_merge_callback import \
-                    make_post_merge_callback
-                from deile.orchestration.pipeline.review_callback import \
-                    make_review_callback
-                from deile.orchestration.pipeline.scheduler import \
-                    ScheduleStore
-
-                cfg = build_default_pipeline_config(
-                    use_pid_lock=not flags.no_pid_lock
+                from deile.orchestration.pipeline.identity import MonitorIdentity
+                from deile.orchestration.pipeline.post_merge_callback import (
+                    make_post_merge_callback,
                 )
+                from deile.orchestration.pipeline.review_callback import (
+                    make_review_callback,
+                )
+                from deile.orchestration.pipeline.scheduler import ScheduleStore
+
+                cfg = build_default_pipeline_config(use_pid_lock=not flags.no_pid_lock)
                 identity = (
                     MonitorIdentity(monitor_id=flags.identity)
                     if flags.identity
@@ -183,8 +193,7 @@ class PipelineCommand(DirectCommand):
             await monitor.start()
 
             # Wire CronRunner so scheduled tasks fire alongside the pipeline.
-            from deile.cron.agent_bridge import \
-                make_fire_callback as _make_cron_cb
+            from deile.cron.agent_bridge import make_fire_callback as _make_cron_cb
             from deile.cron.runner import CronRunner  # noqa: PLC0415
             from deile.cron.store import open_cron_store
 
@@ -215,7 +224,9 @@ class PipelineCommand(DirectCommand):
                 ),
             )
         if sub == "stop":
-            _cron_runner = getattr(agent, "cron_runner", None) if agent is not None else None
+            _cron_runner = (
+                getattr(agent, "cron_runner", None) if agent is not None else None
+            )
             if _cron_runner is not None and _cron_runner.is_running:
                 await _cron_runner.stop()
                 logger.info("cron runner stopped")

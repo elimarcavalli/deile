@@ -38,7 +38,7 @@ _FIELD_RANGES: List[Tuple[int, int]] = [
     (0, 23),  # hour
     (1, 31),  # day_of_month
     (1, 12),  # month
-    (0, 6),   # day_of_week (Sun=0)
+    (0, 6),  # day_of_week (Sun=0)
 ]
 
 _PREDEFINED = {
@@ -114,8 +114,7 @@ def parse(expression: str) -> List[List[int]]:
             f"expected 5 fields (m h dom mon dow), got {len(fields)}: {expression!r}"
         )
     return [
-        _parse_field(token, lo, hi)
-        for token, (lo, hi) in zip(fields, _FIELD_RANGES)
+        _parse_field(token, lo, hi) for token, (lo, hi) in zip(fields, _FIELD_RANGES)
     ]
 
 
@@ -142,7 +141,9 @@ def matches(expression: str, when: datetime) -> bool:
     )
 
 
-def next_after(expression: str, after: datetime, *, max_iterations: int = 525600) -> datetime:
+def next_after(
+    expression: str, after: datetime, *, max_iterations: int = 525600
+) -> datetime:
     """Return the next datetime *strictly after* ``after`` that matches.
 
     Search is by 1-minute increments — fast enough for short horizons,
@@ -162,7 +163,11 @@ def next_after(expression: str, after: datetime, *, max_iterations: int = 525600
         cron_dow = (candidate.weekday() + 1) % 7
         dom_match = candidate.day in dom_set
         dow_match = cron_dow in dow_set
-        date_ok = (dom_match or dow_match) if (dom_restricted and dow_restricted) else (dom_match and dow_match)
+        date_ok = (
+            (dom_match or dow_match)
+            if (dom_restricted and dow_restricted)
+            else (dom_match and dow_match)
+        )
         if (
             candidate.minute in minute_set
             and candidate.hour in hour_set

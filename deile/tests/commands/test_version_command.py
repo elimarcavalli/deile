@@ -24,8 +24,11 @@ from rich.console import Console
 
 import deile.__version__ as version_mod
 from deile.commands.base import CommandContext
-from deile.commands.builtin.version_command import (_LINKS, VersionCommand,
-                                                    _detect_install_info)
+from deile.commands.builtin.version_command import (
+    _LINKS,
+    VersionCommand,
+    _detect_install_info,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,7 +85,9 @@ class TestMetricsMatchVersionModule:
             assert total_files in rendered
 
     async def test_metrics_no_extra_hardcode(self):
-        with patch.object(version_mod, "METRICS", {"total_files": 9999, "coverage": "77%"}):
+        with patch.object(
+            version_mod, "METRICS", {"total_files": 9999, "coverage": "77%"}
+        ):
             result = await _cmd().execute(_ctx())
             rendered = _render(result.content)
             assert "9999" in rendered
@@ -121,9 +126,12 @@ class TestFeatureFlags:
 
     async def test_feature_flags_have_descriptions(self):
         from deile.commands.builtin.version_command import _FLAG_DESCRICOES
+
         active = [k for k, v in version_mod.FEATURES.items() if v]
         for flag in active:
-            assert flag in _FLAG_DESCRICOES, f"Flag '{flag}' sem descrição em _FLAG_DESCRICOES"
+            assert (
+                flag in _FLAG_DESCRICOES
+            ), f"Flag '{flag}' sem descrição em _FLAG_DESCRICOES"
 
     async def test_inactive_flags_not_shown(self):
         patched = {k: False for k in version_mod.FEATURES}
@@ -137,6 +145,7 @@ class TestFeatureFlags:
 class TestInstallInfo:
     async def test_install_info_graceful_on_failure(self):
         import importlib.metadata as im
+
         with patch.object(im, "distribution", side_effect=Exception("not found")):
             info = _detect_install_info()
             assert info["modo"] == "indisponível"
@@ -144,6 +153,7 @@ class TestInstallInfo:
 
     async def test_install_info_graceful_renders(self):
         import importlib.metadata as im
+
         with patch.object(im, "distribution", side_effect=Exception("not found")):
             result = await _cmd().execute(_ctx())
             assert result.success
@@ -151,10 +161,13 @@ class TestInstallInfo:
     async def test_install_info_malformed_direct_url_json(self):
         """Verifica graceful fallback quando direct_url.json contém JSON inválido."""
         import importlib.metadata as im
+
         mock_dist = MagicMock()
         mock_dist.metadata = {"Version": "1.0.0"}
-        mock_dist.locate_file.return_value = MagicMock(__str__=lambda self: "/fake/path")
-        mock_dist.read_text.return_value = 'invalid json {'
+        mock_dist.locate_file.return_value = MagicMock(
+            __str__=lambda self: "/fake/path"
+        )
+        mock_dist.read_text.return_value = "invalid json {"
         with patch.object(im, "distribution", return_value=mock_dist):
             info = _detect_install_info()
             assert info["modo"] == "indisponível"
@@ -235,6 +248,7 @@ class TestIssue412:
         import inspect
 
         from deile.commands.builtin import version_command
+
         source = inspect.getsource(version_command)
         assert version_mod.__version__ not in source, (
             f"Version {version_mod.__version__!r} is hardcoded in version_command.py — "
@@ -244,6 +258,7 @@ class TestIssue412:
     async def test_command_is_slash_command_subclass(self):
         """VersionCommand follows the SlashCommand/DirectCommand pattern."""
         from deile.commands.base import DirectCommand
+
         cmd = _cmd()
         assert isinstance(cmd, DirectCommand)
 

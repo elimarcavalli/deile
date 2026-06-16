@@ -23,15 +23,19 @@ def forge(github_config):
 # Malicious / invalid logins are short-circuited before subprocess execution
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("bad_login", [
-    'x") | true | select(true',      # jq injection
-    "",                               # empty string
-    "-startwithhyphen",              # invalid GitHub username (leading hyphen)
-    "endswithhyphen-",               # invalid GitHub username (trailing hyphen)
-    "a" * 40,                        # too long (>39 chars)
-    "has space",                     # space not allowed
-    "has@symbol",                    # @ not allowed
-])
+
+@pytest.mark.parametrize(
+    "bad_login",
+    [
+        'x") | true | select(true',  # jq injection
+        "",  # empty string
+        "-startwithhyphen",  # invalid GitHub username (leading hyphen)
+        "endswithhyphen-",  # invalid GitHub username (trailing hyphen)
+        "a" * 40,  # too long (>39 chars)
+        "has space",  # space not allowed
+        "has@symbol",  # @ not allowed
+    ],
+)
 async def test_invalid_login_returns_false_without_subprocess(forge, bad_login):
     """Malicious or invalid logins must return False without calling gh."""
     with patch.object(forge, "_run", new_callable=AsyncMock) as mock_run:
@@ -43,6 +47,7 @@ async def test_invalid_login_returns_false_without_subprocess(forge, bad_login):
 # ---------------------------------------------------------------------------
 # Valid login follows the normal path (subprocess IS called)
 # ---------------------------------------------------------------------------
+
 
 async def test_valid_login_calls_subprocess(forge):
     """A well-formed login must reach the subprocess layer."""
@@ -57,14 +62,18 @@ async def test_valid_login_calls_subprocess(forge):
 async def test_valid_login_with_activity_returns_true(forge):
     """A login that matches activity timestamps returns True."""
     import time
+
     since = int(time.time()) - 100  # 100 seconds ago
 
     async def _run_side_effect(*args, **kwargs):
         # Simulate a comment created NOW (after since_ts)
         import datetime
+
         now_iso = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         return (0, now_iso, "")
 
-    with patch.object(forge, "_run", new_callable=AsyncMock, side_effect=_run_side_effect):
+    with patch.object(
+        forge, "_run", new_callable=AsyncMock, side_effect=_run_side_effect
+    ):
         result = await forge._has_bot_activity_impl("issue", 42, "deile-one", since)
     assert result is True

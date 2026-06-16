@@ -11,6 +11,7 @@ Cobertura:
 - Smoke: `asyncio.to_thread` real com I/O de 50ms não bloqueia o loop.
 - Regressão: `_save_session_meta` sync interna continua atômica.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,19 +39,22 @@ pytestmark = pytest.mark.unit
 # Inspeção de código-fonte: chamadas diretas a _save_session_meta removidas
 # ---------------------------------------------------------------------------
 
+
 def test_dispatch_handler_no_direct_save_session_meta_calls():
     """dispatch_handler não deve chamar _save_session_meta() diretamente."""
     src = inspect.getsource(cws.dispatch_handler)
     lines = src.splitlines()
     direct_calls = [
-        line.strip() for line in lines
+        line.strip()
+        for line in lines
         if "_save_session_meta(task_id" in line
         and "asyncio.to_thread" not in line
         and not line.strip().startswith("#")
     ]
-    assert not direct_calls, (
-        "Chamadas diretas (sem asyncio.to_thread) encontradas:\n"
-        + "\n".join(direct_calls)
+    assert (
+        not direct_calls
+    ), "Chamadas diretas (sem asyncio.to_thread) encontradas:\n" + "\n".join(
+        direct_calls
     )
 
 
@@ -67,15 +71,17 @@ def test_dispatch_handler_uses_to_thread_for_save_meta():
 # run_subprocess_with_progress: write_text via asyncio.to_thread
 # ---------------------------------------------------------------------------
 
+
 def test_run_subprocess_source_uses_to_thread_for_write_text():
     """run_subprocess_with_progress deve usar asyncio.to_thread para write_text."""
     src = inspect.getsource(cws.run_subprocess_with_progress)
-    assert "asyncio.to_thread" in src and "write_text" in src, (
-        "run_subprocess_with_progress deve usar asyncio.to_thread + write_text"
-    )
+    assert (
+        "asyncio.to_thread" in src and "write_text" in src
+    ), "run_subprocess_with_progress deve usar asyncio.to_thread + write_text"
     lines = src.splitlines()
     direct_write = [
-        line.strip() for line in lines
+        line.strip()
+        for line in lines
         if "write_text(" in line
         and "asyncio.to_thread" not in line
         and "tmp.write_text" not in line  # writes inside sync nested funcs são OK
@@ -105,9 +111,11 @@ async def test_progress_write_text_uses_to_thread(tmp_path: Path):
     task_id = "test-task-001"
     env_patch = {"DEILE_CLAUDE_WORKER_ROOT": str(tmp_path)}
 
-    with patch("asyncio.create_subprocess_exec", return_value=mock_proc), \
-         patch("asyncio.to_thread", side_effect=spy_to_thread), \
-         patch.dict(os.environ, env_patch):
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+        patch("asyncio.to_thread", side_effect=spy_to_thread),
+        patch.dict(os.environ, env_patch),
+    ):
         await cws.run_subprocess_with_progress(
             ["echo", "hello"],
             cwd=tmp_path,
@@ -127,6 +135,7 @@ async def test_progress_write_text_uses_to_thread(tmp_path: Path):
 # Smoke: asyncio.to_thread não bloqueia o event loop
 # ---------------------------------------------------------------------------
 
+
 async def test_to_thread_does_not_block_event_loop():
     """I/O de 50ms em asyncio.to_thread não deve bloquear o event loop."""
     SLEEP_MS = 50
@@ -142,22 +151,24 @@ async def test_to_thread_does_not_block_event_loop():
     probe_t, _ = await asyncio.gather(probe(), blocker())
     elapsed_probe_ms = (probe_t - start) * 1000
 
-    assert elapsed_probe_ms < MAX_DELAY_MS, (
-        f"probe demorou {elapsed_probe_ms:.1f}ms — event loop pode estar bloqueado"
-    )
+    assert (
+        elapsed_probe_ms < MAX_DELAY_MS
+    ), f"probe demorou {elapsed_probe_ms:.1f}ms — event loop pode estar bloqueado"
 
 
 # ---------------------------------------------------------------------------
 # Regressão: _save_session_meta sync interna ainda funciona e é atômica
 # ---------------------------------------------------------------------------
 
+
 def test_save_session_meta_atomic_write(tmp_path: Path):
     """_save_session_meta escreve atomicamente via tmp + os.replace."""
     meta_dir = tmp_path / "session-meta" / "task-abc"
     meta_dir.mkdir(parents=True)
 
-    with patch.object(cws, "_session_meta_path",
-                      return_value=meta_dir / "session.json"):
+    with patch.object(
+        cws, "_session_meta_path", return_value=meta_dir / "session.json"
+    ):
         cws._save_session_meta("task-abc", {"status": "running", "attempt": 1})
 
     out = meta_dir / "session.json"
@@ -171,6 +182,9 @@ def test_save_session_meta_atomic_write(tmp_path: Path):
 
 def test_save_session_meta_ioerror_does_not_raise(tmp_path: Path):
     """Falha de I/O em _save_session_meta é best-effort — nunca lança."""
-    with patch.object(cws, "_session_meta_path",
-                      return_value=Path("/proc/fake/unwritable/session.json")):
+    with patch.object(
+        cws,
+        "_session_meta_path",
+        return_value=Path("/proc/fake/unwritable/session.json"),
+    ):
         cws._save_session_meta("task-err", {"ok": False})  # não deve levantar

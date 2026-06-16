@@ -30,9 +30,9 @@ class ConsoleUIManager(UIManager):
         import sys
 
         # Force UTF-8 stdout encoding when possible (helps emoji/box chars on Windows).
-        if hasattr(sys.stdout, 'reconfigure'):
+        if hasattr(sys.stdout, "reconfigure"):
             try:
-                sys.stdout.reconfigure(encoding='utf-8')
+                sys.stdout.reconfigure(encoding="utf-8")
             except Exception:
                 pass
 
@@ -46,12 +46,13 @@ class ConsoleUIManager(UIManager):
         # behavior when the OS is Windows AND no modern-terminal hint is
         # present.
         import os as _os
+
         _force_legacy_windows = (
-            _os.name == 'nt'
-            and not _os.environ.get('WT_SESSION')
-            and not _os.environ.get('ANSICON')
-            and not _os.environ.get('ConEmuPID')
-            and (_os.environ.get('TERM') in (None, '', 'cygwin'))
+            _os.name == "nt"
+            and not _os.environ.get("WT_SESSION")
+            and not _os.environ.get("ANSICON")
+            and not _os.environ.get("ConEmuPID")
+            and (_os.environ.get("TERM") in (None, "", "cygwin"))
         )
 
         if _force_legacy_windows:
@@ -81,16 +82,16 @@ class ConsoleUIManager(UIManager):
     def setup_file_completion(self, file_paths: List[str]) -> None:
         """Configura autocompletar (compatibilidade) - usa HybridCompleter."""
         self.setup_hybrid_completion(working_directory=self.working_directory)
-    
+
     def setup_hybrid_completion(self, working_directory: Optional[str] = None) -> None:
         """Configura o HybridCompleter para @ (arquivos) e / (comandos)."""
         if working_directory:
             self.working_directory = working_directory
-        
+
         try:
             hybrid_completer = HybridCompleter(
                 config_manager=self.config_manager,
-                working_directory=self.working_directory
+                working_directory=self.working_directory,
             )
 
             import asyncio
@@ -99,8 +100,7 @@ class ConsoleUIManager(UIManager):
             from prompt_toolkit.filters import Condition
             from prompt_toolkit.formatted_text import FormattedText
             from prompt_toolkit.key_binding import KeyBindings
-            from prompt_toolkit.layout.containers import (ConditionalContainer,
-                                                          Window)
+            from prompt_toolkit.layout.containers import ConditionalContainer, Window
             from prompt_toolkit.layout.controls import FormattedTextControl
             from prompt_toolkit.output import ColorDepth
 
@@ -108,13 +108,13 @@ class ConsoleUIManager(UIManager):
             _REWIND_SENTINEL = "\x00REWIND\x00"
 
             kb = KeyBindings()
-            _esc = {'active': False, 'task': None}
+            _esc = {"active": False, "task": None}
 
             def _hide_esc_hint(event):
-                _esc['active'] = False
-                if _esc['task']:
-                    _esc['task'].cancel()
-                    _esc['task'] = None
+                _esc["active"] = False
+                if _esc["task"]:
+                    _esc["task"].cancel()
+                    _esc["task"] = None
                 event.app.invalidate()
 
             def _insert_newline(event):
@@ -133,7 +133,7 @@ class ConsoleUIManager(UIManager):
                     # ESC on empty buffer: if hint was already active (i.e. this
                     # is the *second* ESC on an empty prompt), emit the rewind
                     # sentinel so the CLI loop opens /rewind.
-                    if _esc['active']:
+                    if _esc["active"]:
                         _hide_esc_hint(event)
                         # ``app.exit(result=...)`` faz ``prompt_async()`` retornar
                         # o sentinel SEM commitar o buffer ao scrollback —
@@ -144,37 +144,37 @@ class ConsoleUIManager(UIManager):
                         event.app.exit(result=_REWIND_SENTINEL)
                         return
                     # First ESC on empty buffer: show rewind hint.
-                    _esc['active'] = True
+                    _esc["active"] = True
                     event.app.invalidate()
 
                     async def _auto_hide_empty():
                         await asyncio.sleep(1.5)
-                        _esc['active'] = False
-                        _esc['task'] = None
+                        _esc["active"] = False
+                        _esc["task"] = None
                         event.app.invalidate()
 
-                    if _esc['task']:
-                        _esc['task'].cancel()
-                    _esc['task'] = event.app.create_background_task(_auto_hide_empty())
+                    if _esc["task"]:
+                        _esc["task"].cancel()
+                    _esc["task"] = event.app.create_background_task(_auto_hide_empty())
                     return
 
-                if _esc['active']:
+                if _esc["active"]:
                     buf.reset()
                     _hide_esc_hint(event)
                     return
 
-                _esc['active'] = True
+                _esc["active"] = True
                 event.app.invalidate()
 
                 async def _auto_hide():
                     await asyncio.sleep(1.5)
-                    _esc['active'] = False
-                    _esc['task'] = None
+                    _esc["active"] = False
+                    _esc["task"] = None
                     event.app.invalidate()
 
-                if _esc['task']:
-                    _esc['task'].cancel()
-                _esc['task'] = event.app.create_background_task(_auto_hide())
+                if _esc["task"]:
+                    _esc["task"].cancel()
+                _esc["task"] = event.app.create_background_task(_auto_hide())
 
             def _get_cols():
                 try:
@@ -187,12 +187,15 @@ class ConsoleUIManager(UIManager):
             # unambiguously distinguishable from agent output, regardless of
             # the terminal's color scheme.
             from prompt_toolkit.styles import Style as PTStyle
-            _USER_INPUT_STYLE = 'bg:#000000 #ffffff'
-            user_style = PTStyle.from_dict({
-                '': _USER_INPUT_STYLE,             # default buffer text
-                'prompt': _USER_INPUT_STYLE,
-                'separator': _USER_INPUT_STYLE,
-            })
+
+            _USER_INPUT_STYLE = "bg:#000000 #ffffff"
+            user_style = PTStyle.from_dict(
+                {
+                    "": _USER_INPUT_STYLE,  # default buffer text
+                    "prompt": _USER_INPUT_STYLE,
+                    "separator": _USER_INPUT_STYLE,
+                }
+            )
 
             # The visual divider that separates turns is intentionally NOT
             # part of the prompt's message — it would re-render on every
@@ -204,9 +207,11 @@ class ConsoleUIManager(UIManager):
             # (see ``get_user_input``); the static rule lives in scrollback
             # and is never redrawn, so resize is harmless.
             def _prompt_message():
-                return FormattedText([
-                    ('class:prompt', '> '),
-                ])
+                return FormattedText(
+                    [
+                        ("class:prompt", "> "),
+                    ]
+                )
 
             self.session = PromptSession(
                 message=_prompt_message,
@@ -241,19 +246,19 @@ class ConsoleUIManager(UIManager):
                     content=FormattedTextControl(_esc_hint_text),
                     dont_extend_height=True,
                 ),
-                filter=Condition(lambda: _esc['active']),
+                filter=Condition(lambda: _esc["active"]),
             )
             root = self.session.app.layout.container
-            if hasattr(root, 'children') and isinstance(root.children, list):
+            if hasattr(root, "children") and isinstance(root.children, list):
                 root.children.insert(1, hint_win)
 
             # sleep(0) = next event-loop tick — instant ESC flush with no perceptible delay.
             # ANSI sequences (arrows etc.) arrive as a burst in one read(), so they're safe.
             self.session.app.ttimeoutlen = 0
             self.session.app.timeoutlen = 0
-            
+
         except Exception:
-            # Fallback completo - sem prompt_toolkit 
+            # Fallback completo - sem prompt_toolkit
             self.session = None
 
     _DEILE_ASCII = r"""
@@ -319,9 +324,13 @@ class ConsoleUIManager(UIManager):
                 if default_model:
                     return "—", default_model
                 try:
-                    yaml_path = Path(__file__).parents[1] / "config" / "model_providers.yaml"
+                    yaml_path = (
+                        Path(__file__).parents[1] / "config" / "model_providers.yaml"
+                    )
                     with open(yaml_path) as f:
-                        strategy = yaml.safe_load(f).get("default_strategy", "task_optimized")
+                        strategy = yaml.safe_load(f).get(
+                            "default_strategy", "task_optimized"
+                        )
                     return "Auto", f"routing ({strategy})"
                 except Exception:
                     return "Auto", "routing"
@@ -359,10 +368,14 @@ class ConsoleUIManager(UIManager):
                 highlight=False,
             )
             self.console.print(
-                Text.from_markup(f"\n  [bold #FFD166]✦[/] [italic]{self._SLOGAN_FIXED}[/italic]")
+                Text.from_markup(
+                    f"\n  [bold #FFD166]✦[/] [italic]{self._SLOGAN_FIXED}[/italic]"
+                )
             )
             self.console.print(
-                Text.from_markup(f"  [bold #FFD166]✦[/] [italic]{slogan_random}[/italic]\n")
+                Text.from_markup(
+                    f"  [bold #FFD166]✦[/] [italic]{slogan_random}[/italic]\n"
+                )
             )
 
             # Painel COMPACTO e adaptativo. ``Panel.fit(...)`` =
@@ -373,18 +386,24 @@ class ConsoleUIManager(UIManager):
             # desconectado das verticais. O Rich ainda consulta
             # ``console.width`` no render (clamp em terminais estreitos),
             # mantendo a adaptação a resize do princípio #15.
-            prov_markup = f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
-            model_markup = f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
+            prov_markup = (
+                f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
+            )
+            model_markup = (
+                f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
+            )
             status_markup = "[bold green]●[/bold green] [bold]DEILE[/bold]   Pronto — digite [cyan]/help[/cyan] para começar"
             header = Text.from_markup(prov_markup + "\n" + model_markup)
             status = Text.from_markup(status_markup)
             body = Group(header, Rule(style="#4285F4"), status)
-            self.console.print(Panel.fit(
-                body,
-                border_style="#4285F4",
-                box=box.DOUBLE,
-                padding=(0, 1),
-            ))
+            self.console.print(
+                Panel.fit(
+                    body,
+                    border_style="#4285F4",
+                    box=box.DOUBLE,
+                    padding=(0, 1),
+                )
+            )
             self.console.print(f"  [dim]DEILE v{__version__} ULTRA[/dim]\n")
         except Exception:
             print(f"DEILE v{__version__} ULTRA")
@@ -404,7 +423,11 @@ class ConsoleUIManager(UIManager):
         import asyncio
 
         if not self.session:
-            clean_prompt = prompt.replace("[bold green]", "").replace("[/bold]", "").replace("[/]", "")
+            clean_prompt = (
+                prompt.replace("[bold green]", "")
+                .replace("[/bold]", "")
+                .replace("[/]", "")
+            )
             if not clean_prompt.startswith("\n"):
                 clean_prompt = "\n" + clean_prompt
             return await asyncio.to_thread(input, clean_prompt)
@@ -413,7 +436,7 @@ class ConsoleUIManager(UIManager):
         try:
             return await self.session.prompt_async()
         except Exception:
-            return await asyncio.to_thread(input, '> ')
+            return await asyncio.to_thread(input, "> ")
 
     def display_response(self, content, metadata: Optional[Dict] = None):
         """Exibe a resposta do agente com metadados.
@@ -428,6 +451,7 @@ class ConsoleUIManager(UIManager):
         flag no ``CommandResult.metadata``.
         """
         from deile.ui.dynamic_render import live_for, turn_separator
+
         turn_separator(self.console)
         self.console.print("[bold #4285F4]Deile >[/] ")
 
@@ -436,7 +460,7 @@ class ConsoleUIManager(UIManager):
         live_duration = float(meta.get("live_render_duration", 2.0))
 
         # Verifica se é um objeto Rich (Panel, Table, etc.)
-        is_rich = hasattr(content, '__rich__') or hasattr(content, '__rich_console__')
+        is_rich = hasattr(content, "__rich__") or hasattr(content, "__rich_console__")
         if is_rich and live_render_enabled:
             # Live: adapta a resize em tempo real durante ``live_duration``s
             live_for(content, console=self.console, duration_s=live_duration)
@@ -449,11 +473,13 @@ class ConsoleUIManager(UIManager):
         else:
             # Fallback - converte para string
             self.console.print(str(content))
-        
+
         if metadata and (exec_time := metadata.get("execution_time")) is not None:
             model_used = metadata.get("model_used") or ""
             model_suffix = f"  [dim]({model_used})[/dim]" if model_used else ""
-            self.console.print(f"\n:hourglass: [dim]{exec_time:.2f}s[/dim]{model_suffix}")
+            self.console.print(
+                f"\n:hourglass: [dim]{exec_time:.2f}s[/dim]{model_suffix}"
+            )
 
     def display_message(self, message: UIMessage):
         """Exibe uma mensagem simples com base no seu tipo."""
@@ -464,17 +490,29 @@ class ConsoleUIManager(UIManager):
         try:
             # Primeira tentativa com emoji
             error_text = Text.from_markup(f":x: [bold red]ERRO:[/bold red] {error}")
-            panel = Panel(error_text, border_style="red", title="[bold red]Ocorreu um Problema[/bold red]")
+            panel = Panel(
+                error_text,
+                border_style="red",
+                title="[bold red]Ocorreu um Problema[/bold red]",
+            )
             if details:
-                panel.renderable = Text.from_markup(f":x: [bold red]ERRO:[/bold red] {error}\n\n[dim]{details}[/dim]")
+                panel.renderable = Text.from_markup(
+                    f":x: [bold red]ERRO:[/bold red] {error}\n\n[dim]{details}[/dim]"
+                )
             self.console.print(panel)
         except (UnicodeEncodeError, Exception):
             try:
                 # Fallback sem emoji
                 error_text = Text.from_markup(f"[!] [bold red]ERRO:[/bold red] {error}")
-                panel = Panel(error_text, border_style="red", title="[bold red]Ocorreu um Problema[/bold red]")
+                panel = Panel(
+                    error_text,
+                    border_style="red",
+                    title="[bold red]Ocorreu um Problema[/bold red]",
+                )
                 if details:
-                    panel.renderable = Text.from_markup(f"[!] [bold red]ERRO:[/bold red] {error}\n\n[dim]{details}[/dim]")
+                    panel.renderable = Text.from_markup(
+                        f"[!] [bold red]ERRO:[/bold red] {error}\n\n[dim]{details}[/dim]"
+                    )
                 self.console.print(panel)
             except Exception:
                 # Fallback final - texto simples
@@ -505,6 +543,7 @@ class ConsoleUIManager(UIManager):
         ``Live``-based Markdown rendering path is used.
         """
         from .streaming_renderer import StreamingRenderer
+
         renderer = StreamingRenderer(
             console=self.console,
             legacy_windows=bool(getattr(self.console, "legacy_windows", False)),
@@ -523,7 +562,14 @@ class ConsoleUIManager(UIManager):
 
     def confirm_action(self, message: str, default: bool = False) -> bool:
         """Solicita confirmação do usuário para uma ação."""
-        return RichPrompt.ask(f"[bold yellow]{message}[/bold yellow]", choices=["s", "n"], default="n" if not default else "s").lower() == 's'
+        return (
+            RichPrompt.ask(
+                f"[bold yellow]{message}[/bold yellow]",
+                choices=["s", "n"],
+                default="n" if not default else "s",
+            ).lower()
+            == "s"
+        )
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
         """Exibe as estatísticas do sistema em uma tabela."""
@@ -535,10 +581,12 @@ class ConsoleUIManager(UIManager):
             if isinstance(value, dict):
                 table.add_row(f"[bold]{key.replace('_', ' ').title()}[/bold]", "")
                 for sub_key, sub_value in value.items():
-                    table.add_row(f"  {sub_key.replace('_', ' ').title()}", str(sub_value))
+                    table.add_row(
+                        f"  {sub_key.replace('_', ' ').title()}", str(sub_value)
+                    )
             else:
-                table.add_row(key.replace('_', ' ').title(), str(value))
-        
+                table.add_row(key.replace("_", " ").title(), str(value))
+
         self.console.print(table)
 
     def cleanup(self) -> None:

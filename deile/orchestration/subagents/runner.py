@@ -56,8 +56,7 @@ class SubAgentRunner(Protocol):
         state: SubAgentState,
         *,
         on_event: OnEvent,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 # ---------- LocalSubAgentRunner -----------------------------------------------
@@ -66,12 +65,14 @@ class SubAgentRunner(Protocol):
 # Tools cujo ``parsed_args["file_path"]`` indica que tocaram um arquivo —
 # usado para popular ``state.files_touched`` em tempo real. Lista pequena
 # e estável; outras tools de escrita aparecem via ``current_activity``.
-_FILE_TOUCHING_TOOLS = frozenset({
-    "write_file",
-    "edit_file",
-    "patch_apply",
-    "delete_file",
-})
+_FILE_TOUCHING_TOOLS = frozenset(
+    {
+        "write_file",
+        "edit_file",
+        "patch_apply",
+        "delete_file",
+    }
+)
 
 
 def _short(text: str, limit: int = 100) -> str:
@@ -115,11 +116,13 @@ class LocalSubAgentRunner:
         task = state.task
         state.status = "running"
         state.started_at = time.monotonic()
-        on_event(SubAgentEvent(
-            kind=SubAgentEventKind.STARTED,
-            index=task.index,
-            label=task.description,
-        ))
+        on_event(
+            SubAgentEvent(
+                kind=SubAgentEventKind.STARTED,
+                index=task.index,
+                label=task.description,
+            )
+        )
 
         # session_id próprio garante contexto/histórico limpos. Não usamos
         # uuid completo pra manter logs legíveis. Limpamos a sessão no
@@ -150,14 +153,14 @@ class LocalSubAgentRunner:
                     "(PersonaManager singleton — switching entre sub-DEILEs paralelos "
                     "causaria race). Use o WorkerSubAgentRunner para isolamento real."
                 )
-                logger.warning(
-                    "LocalSubAgentRunner #%d: %s", task.index, warn_msg
+                logger.warning("LocalSubAgentRunner #%d: %s", task.index, warn_msg)
+                on_event(
+                    SubAgentEvent(
+                        kind=SubAgentEventKind.PROGRESS,
+                        index=task.index,
+                        label=f"⚠ persona={task.persona} (hint apenas — local runner)",
+                    )
                 )
-                on_event(SubAgentEvent(
-                    kind=SubAgentEventKind.PROGRESS,
-                    index=task.index,
-                    label=f"⚠ persona={task.persona} (hint apenas — local runner)",
-                ))
             if task.model:
                 kwargs["forced_model"] = task.model
 
@@ -185,15 +188,21 @@ class LocalSubAgentRunner:
                 # TEXT_DELTA → atividade "modelo respondendo: <primeira linha>"
                 if event.type is StreamEventType.TEXT_DELTA and event.text:
                     response_chunks.append(event.text)
-                    first_line = event.text.lstrip().splitlines()[0] if event.text.strip() else ""
+                    first_line = (
+                        event.text.lstrip().splitlines()[0]
+                        if event.text.strip()
+                        else ""
+                    )
                     if first_line:
                         label = f"✎ {_short(first_line)}"
                         state.current_activity = label
-                        on_event(SubAgentEvent(
-                            kind=SubAgentEventKind.TEXT,
-                            index=task.index,
-                            label=label,
-                        ))
+                        on_event(
+                            SubAgentEvent(
+                                kind=SubAgentEventKind.TEXT,
+                                index=task.index,
+                                label=label,
+                            )
+                        )
 
                 # TOOL_USE_END → tool com args parseados (entrou em execução)
                 elif event.type is StreamEventType.TOOL_USE_END:
@@ -204,12 +213,14 @@ class LocalSubAgentRunner:
                     state.push_progress(label)
                     if tool_name in _FILE_TOUCHING_TOOLS:
                         state.add_file(args.get("file_path") or args.get("path"))
-                    on_event(SubAgentEvent(
-                        kind=SubAgentEventKind.TOOL,
-                        index=task.index,
-                        label=label,
-                        tool_name=tool_name,
-                    ))
+                    on_event(
+                        SubAgentEvent(
+                            kind=SubAgentEventKind.TOOL,
+                            index=task.index,
+                            label=label,
+                            tool_name=tool_name,
+                        )
+                    )
 
                 # TOOL_RESULT → flip status + summary curto
                 elif event.type is StreamEventType.TOOL_RESULT:
@@ -217,19 +228,25 @@ class LocalSubAgentRunner:
                     status = event.tool_status or "success"
                     summary = _short(event.tool_result_summary or "", 80)
                     glyph = "✓" if status == "success" else "✗"
-                    line = f"{glyph} {tool_name}: {summary}" if summary else f"{glyph} {tool_name}"
+                    line = (
+                        f"{glyph} {tool_name}: {summary}"
+                        if summary
+                        else f"{glyph} {tool_name}"
+                    )
                     state.push_progress(line)
                     # Capta file_path do metadata (write/edit gravaram lá).
                     meta = event.tool_metadata or {}
                     if isinstance(meta, dict):
                         state.add_file(meta.get("file_path"))
-                    on_event(SubAgentEvent(
-                        kind=SubAgentEventKind.TOOL_RESULT,
-                        index=task.index,
-                        label=line,
-                        tool_name=tool_name,
-                        tool_status=status,
-                    ))
+                    on_event(
+                        SubAgentEvent(
+                            kind=SubAgentEventKind.TOOL_RESULT,
+                            index=task.index,
+                            label=line,
+                            tool_name=tool_name,
+                            tool_status=status,
+                        )
+                    )
 
                 # Outros tipos (USAGE_FINAL, STAGE, PROGRESS) — ignoramos no
                 # painel; mantemos o stream consumindo até o fim.
@@ -237,11 +254,13 @@ class LocalSubAgentRunner:
             state.result_text = "".join(response_chunks).strip()
             state.status = "ok"
             state.finished_at = time.monotonic()
-            on_event(SubAgentEvent(
-                kind=SubAgentEventKind.COMPLETED,
-                index=task.index,
-                label="✅ concluído",
-            ))
+            on_event(
+                SubAgentEvent(
+                    kind=SubAgentEventKind.COMPLETED,
+                    index=task.index,
+                    label="✅ concluído",
+                )
+            )
 
         except asyncio.CancelledError:
             _mark_cancelled(state, on_event)
@@ -284,12 +303,14 @@ def _mark_cancelled(state: SubAgentState, on_event: OnEvent) -> None:
     """
     state.status = "cancelled"
     state.finished_at = time.monotonic()
-    on_event(SubAgentEvent(
-        kind=SubAgentEventKind.FAILED,
-        index=state.task.index,
-        label="⏹ cancelado",
-        error="cancelled",
-    ))
+    on_event(
+        SubAgentEvent(
+            kind=SubAgentEventKind.FAILED,
+            index=state.task.index,
+            label="⏹ cancelado",
+            error="cancelled",
+        )
+    )
 
 
 def _mark_error(state: SubAgentState, on_event: OnEvent, exc: BaseException) -> str:
@@ -301,12 +322,14 @@ def _mark_error(state: SubAgentState, on_event: OnEvent, exc: BaseException) -> 
     state.status = "error"
     state.error = err
     state.finished_at = time.monotonic()
-    on_event(SubAgentEvent(
-        kind=SubAgentEventKind.FAILED,
-        index=state.task.index,
-        label=f"✗ erro: {_short(err, 80)}",
-        error=err,
-    ))
+    on_event(
+        SubAgentEvent(
+            kind=SubAgentEventKind.FAILED,
+            index=state.task.index,
+            label=f"✗ erro: {_short(err, 80)}",
+            error=err,
+        )
+    )
     return err
 
 
@@ -368,15 +391,19 @@ class WorkerSubAgentRunner:
         task = state.task
         state.status = "running"
         state.started_at = time.monotonic()
-        on_event(SubAgentEvent(
-            kind=SubAgentEventKind.STARTED,
-            index=task.index,
-            label=task.description,
-        ))
+        on_event(
+            SubAgentEvent(
+                kind=SubAgentEventKind.STARTED,
+                index=task.index,
+                label=task.description,
+            )
+        )
 
         try:
             from deile.infrastructure.deile_worker_client import (
-                WorkerDispatchError, build_dispatch_payload)
+                WorkerDispatchError,
+                build_dispatch_payload,
+            )
 
             # Synthetic channel_id — bot integration silently no-ops when the
             # facade is unavailable (worker_server.py:_bot_facade returns None).
@@ -396,11 +423,13 @@ class WorkerSubAgentRunner:
                     error_code="WORKER_BAD_RESPONSE",
                 )
             state.task_id = task_id
-            on_event(SubAgentEvent(
-                kind=SubAgentEventKind.PROGRESS,
-                index=task.index,
-                label=f"task_id={task_id}",
-            ))
+            on_event(
+                SubAgentEvent(
+                    kind=SubAgentEventKind.PROGRESS,
+                    index=task.index,
+                    label=f"task_id={task_id}",
+                )
+            )
 
             seen_lines = 0
             while True:
@@ -424,11 +453,13 @@ class WorkerSubAgentRunner:
                     for line in lines[seen_lines:]:
                         if isinstance(line, str):
                             state.push_progress(line)
-                            on_event(SubAgentEvent(
-                                kind=SubAgentEventKind.PROGRESS,
-                                index=task.index,
-                                label=line[:120],
-                            ))
+                            on_event(
+                                SubAgentEvent(
+                                    kind=SubAgentEventKind.PROGRESS,
+                                    index=task.index,
+                                    label=line[:120],
+                                )
+                            )
                     seen_lines = len(lines)
 
                 current = snap.get("current_activity")
@@ -453,21 +484,25 @@ class WorkerSubAgentRunner:
                     if ok is True:
                         state.status = "ok"
                         state.finished_at = time.monotonic()
-                        on_event(SubAgentEvent(
-                            kind=SubAgentEventKind.COMPLETED,
-                            index=task.index,
-                            label="✅ concluído",
-                        ))
+                        on_event(
+                            SubAgentEvent(
+                                kind=SubAgentEventKind.COMPLETED,
+                                index=task.index,
+                                label="✅ concluído",
+                            )
+                        )
                     else:
                         state.status = "error"
-                        state.error = (snap.get("error") or "worker error")
+                        state.error = snap.get("error") or "worker error"
                         state.finished_at = time.monotonic()
-                        on_event(SubAgentEvent(
-                            kind=SubAgentEventKind.FAILED,
-                            index=task.index,
-                            label=f"✗ erro: {_short(state.error, 80)}",
-                            error=state.error,
-                        ))
+                        on_event(
+                            SubAgentEvent(
+                                kind=SubAgentEventKind.FAILED,
+                                index=task.index,
+                                label=f"✗ erro: {_short(state.error, 80)}",
+                                error=state.error,
+                            )
+                        )
                     return
 
         except asyncio.CancelledError:
@@ -505,7 +540,9 @@ def resolve_runner(
     from deile.config.settings import get_settings
 
     settings = get_settings()
-    kind = (runner_kind or getattr(settings, "subagent_runner", "local") or "local").lower()
+    kind = (
+        runner_kind or getattr(settings, "subagent_runner", "local") or "local"
+    ).lower()
     poll = float(
         poll_interval_s
         if poll_interval_s is not None
@@ -514,8 +551,7 @@ def resolve_runner(
 
     if kind == "worker":
         try:
-            from deile.infrastructure.deile_worker_client import \
-                DeileWorkerClient
+            from deile.infrastructure.deile_worker_client import DeileWorkerClient
 
             return WorkerSubAgentRunner(
                 DeileWorkerClient(),

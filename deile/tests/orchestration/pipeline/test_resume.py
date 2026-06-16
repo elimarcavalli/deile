@@ -22,23 +22,35 @@ from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.implementer import (
-    WorkerImplementer, _outcome_from_worker_response)
-from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
-                                                 REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING,
-                                                 WORKFLOW_BLOCKED,
-                                                 WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_PR,
-                                                 WORKFLOW_REVIEWED)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+    WorkerImplementer,
+    _outcome_from_worker_response,
+)
+from deile.orchestration.pipeline.labels import (
+    REVIEW_CONCLUDED,
+    REVIEW_IN_PROGRESS,
+    REVIEW_PENDING,
+    WORKFLOW_BLOCKED,
+    WORKFLOW_IMPLEMENTING,
+    WORKFLOW_PR,
+    WORKFLOW_REVIEWED,
+)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
 _NOTIFIER_METHODS = (
-    "issue_picked_up", "issue_reviewed", "implementation_started",
-    "implementation_finished", "implementation_parked", "implementation_resumed",
-    "implementation_blocked", "pr_picked_up", "pr_reviewed",
-    "issue_auto_classified", "follow_ups_processed", "error",
-    "pr_auto_classified", "mention_processed",
+    "issue_picked_up",
+    "issue_reviewed",
+    "implementation_started",
+    "implementation_finished",
+    "implementation_parked",
+    "implementation_resumed",
+    "implementation_blocked",
+    "pr_picked_up",
+    "pr_reviewed",
+    "issue_auto_classified",
+    "follow_ups_processed",
+    "error",
+    "pr_auto_classified",
+    "mention_processed",
 )
 
 
@@ -156,7 +168,10 @@ def _make_monitor(
     implementer = WorkerImplementer(client=client)
 
     monitor = PipelineMonitor(
-        cfg, github=github, notifier=notifier, implementer=implementer,
+        cfg,
+        github=github,
+        notifier=notifier,
+        implementer=implementer,
     )
     return monitor, notifier, client
 
@@ -165,9 +180,12 @@ def _make_monitor(
 # Implementer-level: resume briefs (no reset) + structured-result parsing
 # ===========================================================================
 
+
 class TestResumeBriefs:
     async def test_resume_implement_brief_has_no_reset(self):
-        client = _FakeWorkerClient([_worker_response(ended="incompleto", fingerprint="f1")])
+        client = _FakeWorkerClient(
+            [_worker_response(ended="incompleto", fingerprint="f1")]
+        )
         impl = WorkerImplementer(client=client)
         monitor = MagicMock()
         monitor.config = MagicMock(repo="owner/name", main_branch="main")
@@ -186,7 +204,13 @@ class TestResumeBriefs:
         assert client.payloads[0]["resume"]["mode"] == "resume"
 
     async def test_fresh_implement_brief_keeps_reset(self):
-        client = _FakeWorkerClient([_worker_response(ended="concluido", pr_url="https://github.com/owner/name/pull/1")])
+        client = _FakeWorkerClient(
+            [
+                _worker_response(
+                    ended="concluido", pr_url="https://github.com/owner/name/pull/1"
+                )
+            ]
+        )
         impl = WorkerImplementer(client=client)
         monitor = MagicMock()
         monitor.config = MagicMock(repo="owner/name", main_branch="main")
@@ -206,10 +230,16 @@ class TestResumeBriefs:
         impl = WorkerImplementer(client=client)
         monitor = MagicMock()
         monitor.config = MagicMock(
-            repo="owner/name", main_branch="main", mention_handle="@deile-one",
+            repo="owner/name",
+            main_branch="main",
+            mention_handle="@deile-one",
         )
-        pr = MagicMock(number=7, title="t", head_ref="auto/issue-1",
-                       url="https://github.com/owner/name/pull/7")
+        pr = MagicMock(
+            number=7,
+            title="t",
+            head_ref="auto/issue-1",
+            url="https://github.com/owner/name/pull/7",
+        )
         await impl.review(monitor, pr, resume=True)
         brief = client.payloads[0]["brief"]
         # O brief unificado nunca emite ``git reset --hard`` (não fala em fresh
@@ -223,9 +253,14 @@ class TestResumeBriefs:
 
 class TestStructuredResultParser:
     def test_parses_resume_block(self):
-        out = _outcome_from_worker_response(_worker_response(
-            ended="bloqueado", motivo_bloqueio="falta cred", fingerprint="fp", tentativa=4,
-        ))
+        out = _outcome_from_worker_response(
+            _worker_response(
+                ended="bloqueado",
+                motivo_bloqueio="falta cred",
+                fingerprint="fp",
+                tentativa=4,
+            )
+        )
         assert out.ended == "bloqueado"
         assert out.motivo_bloqueio == "falta cred"
         assert out.fingerprint == "fp"
@@ -246,9 +281,14 @@ class TestStructuredResultParser:
 # Stage 2: fresh implement, ground-truth driven
 # ===========================================================================
 
+
 def _reviewed(number=2):
-    return IssueRef(number=number, title="impl me", url="u",
-                    labels=(WORKFLOW_REVIEWED, "~batch:abc12345"))
+    return IssueRef(
+        number=number,
+        title="impl me",
+        url="u",
+        labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
+    )
 
 
 def _in_progress(number=2, *, blocked=False):
@@ -269,10 +309,14 @@ class TestFreshImplementGroundTruth:
         # parsed for structured outcome; reconcile handles PR detection.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
-            worker_responses=[_worker_response(
-                ended="concluido", pr_url="https://github.com/owner/name/pull/3",
-                fingerprint="f1", tentativa=1,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="concluido",
+                    pr_url="https://github.com/owner/name/pull/3",
+                    fingerprint="f1",
+                    tentativa=1,
+                )
+            ],
         )
         await monitor.tick()
         notifier.implementation_started.assert_called_once()
@@ -291,10 +335,14 @@ class TestFreshImplementGroundTruth:
         # by reconcile via reaper on stale issues.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
-            worker_responses=[_worker_response(
-                ended="bloqueado", motivo_bloqueio="falta a credencial X",
-                fingerprint="f1", tentativa=1,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="bloqueado",
+                    motivo_bloqueio="falta a credencial X",
+                    fingerprint="f1",
+                    tentativa=1,
+                )
+            ],
         )
         await monitor.tick()
         # Fire-and-forget: block flow not triggered inline.
@@ -313,9 +361,13 @@ class TestFreshImplementGroundTruth:
         # The reconcile stage handles ground truth on subsequent ticks.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
-            worker_responses=[_worker_response(
-                ended="incompleto", fingerprint="f1", tentativa=1,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="incompleto",
+                    fingerprint="f1",
+                    tentativa=1,
+                )
+            ],
         )
         await monitor.tick()
         # Fire-and-forget: no parking, no block, no finished.
@@ -333,9 +385,13 @@ class TestFreshImplementGroundTruth:
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
             enable_resume=False,
-            worker_responses=[_worker_response(
-                ended="incompleto", fingerprint="f1", tentativa=1,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="incompleto",
+                    fingerprint="f1",
+                    tentativa=1,
+                )
+            ],
         )
         await monitor.tick()
         # Fire-and-forget: no parking notification on dispatch tick.
@@ -349,7 +405,9 @@ class TestFreshImplementGroundTruth:
         # An issue carrying ~workflow:bloqueada (even with a stale revisada
         # label) must NOT be re-dispatched by the implement stage.
         blocked = IssueRef(
-            number=2, title="t", url="u",
+            number=2,
+            title="t",
+            url="u",
             labels=(WORKFLOW_REVIEWED, WORKFLOW_BLOCKED, "~batch:abc12345"),
         )
         monitor, notifier, _ = _make_monitor(issues_reviewed=[blocked])
@@ -361,13 +419,18 @@ class TestFreshImplementGroundTruth:
 # Stage 2b: resume sweep
 # ===========================================================================
 
+
 class TestResumeSweep:
     async def test_resume_redispatches_in_resume_mode(self):
         monitor, notifier, client = _make_monitor(
             issues_in_progress=[_in_progress()],
-            worker_responses=[_worker_response(
-                ended="incompleto", fingerprint="f2", tentativa=2,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="incompleto",
+                    fingerprint="f2",
+                    tentativa=2,
+                )
+            ],
         )
         await monitor.tick()
         await _drain_bg(monitor)
@@ -379,10 +442,14 @@ class TestResumeSweep:
     async def test_resume_concludes_to_em_pr(self):
         monitor, notifier, _ = _make_monitor(
             issues_in_progress=[_in_progress()],
-            worker_responses=[_worker_response(
-                ended="concluido", pr_url="https://github.com/owner/name/pull/9",
-                fingerprint="f2", tentativa=2,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="concluido",
+                    pr_url="https://github.com/owner/name/pull/9",
+                    fingerprint="f2",
+                    tentativa=2,
+                )
+            ],
         )
         await monitor.tick()
         await _drain_bg(monitor)
@@ -407,6 +474,7 @@ class TestResumeSweep:
         guard de :func:`resume_in_progress_issues` chamando-o direto (sem o
         reconcile, que noutro caminho já a teria promovido a em_pr)."""
         from deile.orchestration.pipeline import stages
+
         monitor, notifier, client = _make_monitor(
             issues_in_progress=[_in_progress()],
             worker_responses=[_worker_response(ended="incompleto")],
@@ -433,9 +501,13 @@ class TestResumeSweep:
         # one → 0 progress → block flow.
         monitor, notifier, _ = _make_monitor(
             issues_in_progress=[_in_progress()],
-            worker_responses=[_worker_response(
-                ended="incompleto", fingerprint="SAME", tentativa=2,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="incompleto",
+                    fingerprint="SAME",
+                    tentativa=2,
+                )
+            ],
         )
         monitor._resume_tracker.update_from_worker(
             2, fingerprint="SAME", attempt=1, budget_s=0.0
@@ -449,9 +521,13 @@ class TestResumeSweep:
     async def test_progress_guard_continues_on_changed_fingerprint(self):
         monitor, notifier, _ = _make_monitor(
             issues_in_progress=[_in_progress()],
-            worker_responses=[_worker_response(
-                ended="incompleto", fingerprint="NEW", tentativa=2,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="incompleto",
+                    fingerprint="NEW",
+                    tentativa=2,
+                )
+            ],
         )
         monitor._resume_tracker.update_from_worker(
             2, fingerprint="OLD", attempt=1, budget_s=0.0
@@ -498,8 +574,12 @@ class TestResumeSweep:
             issues_in_progress=[ip],
             resume_budget=600,
             worker_responses=[
-                _worker_response(ended="incompleto", fingerprint="f1",
-                                 tentativa=2, budget_acumulado_s=900.0),
+                _worker_response(
+                    ended="incompleto",
+                    fingerprint="f1",
+                    tentativa=2,
+                    budget_acumulado_s=900.0,
+                ),
             ],
         )
         await monitor.tick()  # absorbs budget=900 from the worker result
@@ -546,6 +626,7 @@ class TestResumeSweep:
         )
         # Stamp a very recent dispatch using the same clock the stage reads.
         import deile.orchestration.pipeline.stages as stages_mod
+
         now = stages_mod._monotonic()
         monitor._resume_tracker.record_dispatch(2, now)
         await monitor.tick()
@@ -558,6 +639,7 @@ class TestResumeSweep:
 # Block flow side effects
 # ===========================================================================
 
+
 class TestBlockFlowSideEffects:
     # Issue #373: fire-and-forget dispatch — block flow is NOT triggered
     # inline on fresh dispatches. The bloqueado verdict is only surfaced
@@ -568,9 +650,12 @@ class TestBlockFlowSideEffects:
         # The issue is claimed and dispatched; bloqueado verdict is ignored.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
-            worker_responses=[_worker_response(
-                ended="bloqueado", motivo_bloqueio="precisa de revisão humana de segurança",
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="bloqueado",
+                    motivo_bloqueio="precisa de revisão humana de segurança",
+                )
+            ],
         )
         await monitor.tick()
         # Fire-and-forget: no comment, no block.
@@ -591,16 +676,20 @@ class TestBlockFlowSideEffects:
         notifier.implementation_started.assert_called_once()
         # No transition removed em_implementacao.
         for call in monitor.github.transition_issue.call_args_list:
-            assert call.kwargs.get("from_label") != WORKFLOW_IMPLEMENTING or \
-                call.kwargs.get("to_label") in (None,)
+            assert call.kwargs.get(
+                "from_label"
+            ) != WORKFLOW_IMPLEMENTING or call.kwargs.get("to_label") in (None,)
         # remove_labels never called on em_implementacao.
         for call in monitor.github.remove_labels.call_args_list:
-            assert WORKFLOW_IMPLEMENTING not in (call.args[2] if len(call.args) > 2 else [])
+            assert WORKFLOW_IMPLEMENTING not in (
+                call.args[2] if len(call.args) > 2 else []
+            )
 
 
 # ===========================================================================
 # Stage 3: resume on review/merge
 # ===========================================================================
+
 
 class TestReviewResume:
     async def test_fresh_review_is_nowait_then_resume_concludes(self):
@@ -608,10 +697,20 @@ class TestReviewResume:
         # Tick 1: PR em REVIEW_PENDING → fresh dispatch nowait → PR fica em
         #         em_andamento; pr_reviewed NÃO chamada ainda.
         # Tick 2: PR em REVIEW_IN_PROGRESS → resume bloqueante → pr_reviewed.
-        pr_pending = PrRef(number=10, title="prt", url="https://x/pull/10",
-                           labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
-        pr_in_progress = PrRef(number=10, title="prt", url="https://x/pull/10",
-                               labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-2")
+        pr_pending = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_PENDING,),
+            head_ref="auto/issue-2",
+        )
+        pr_in_progress = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_IN_PROGRESS,),
+            head_ref="auto/issue-2",
+        )
 
         monitor, notifier, client = _make_monitor(
             prs=[pr_pending],
@@ -620,8 +719,11 @@ class TestReviewResume:
                 {"task_id": "rev-t1", "status": "running"},
                 # Tick 2 (resume bloqueante): worker termina e retorna resultado.
                 _worker_response(
-                    ended="concluido", pr_url="https://x/pull/10",
-                    summary="https://x/pull/10 MERGED", fingerprint="f", tentativa=2,
+                    ended="concluido",
+                    pr_url="https://x/pull/10",
+                    summary="https://x/pull/10 MERGED",
+                    fingerprint="f",
+                    tentativa=2,
                 ),
             ],
         )
@@ -648,13 +750,22 @@ class TestReviewResume:
     async def test_incomplete_review_stays_in_progress_for_resume(self):
         # A non-merged review with resume enabled keeps the PR in
         # ~review:em_andamento (NOT concluded) so the next tick resumes it.
-        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
-                   labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
+        pr = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_PENDING,),
+            head_ref="auto/issue-2",
+        )
         monitor, notifier, _ = _make_monitor(
             prs=[pr],
-            worker_responses=[_worker_response(
-                ended="incompleto", fingerprint="f1", tentativa=1,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="incompleto",
+                    fingerprint="f1",
+                    tentativa=1,
+                )
+            ],
         )
         await monitor.tick()
         # Never transitioned to concluded.
@@ -663,14 +774,24 @@ class TestReviewResume:
 
     async def test_in_progress_pr_is_resumed_in_resume_mode(self):
         # A PR already in ~review:em_andamento is a resume candidate.
-        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
-                   labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-2")
+        pr = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_IN_PROGRESS,),
+            head_ref="auto/issue-2",
+        )
         monitor, notifier, client = _make_monitor(
             prs=[pr],
-            worker_responses=[_worker_response(
-                ended="concluido", summary="https://x/pull/10 MERGED",
-                pr_url="https://x/pull/10", fingerprint="f2", tentativa=2,
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="concluido",
+                    summary="https://x/pull/10 MERGED",
+                    pr_url="https://x/pull/10",
+                    fingerprint="f2",
+                    tentativa=2,
+                )
+            ],
         )
         await monitor.tick()
         await _drain_bg(monitor)
@@ -679,8 +800,13 @@ class TestReviewResume:
         assert monitor.stats.prs_reviewed == 1
 
     async def test_blocked_pr_excluded_from_review_resume(self):
-        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
-                   labels=(REVIEW_IN_PROGRESS, WORKFLOW_BLOCKED), head_ref="auto/issue-2")
+        pr = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_IN_PROGRESS, WORKFLOW_BLOCKED),
+            head_ref="auto/issue-2",
+        )
         monitor, notifier, client = _make_monitor(
             prs=[pr],
             worker_responses=[_worker_response(ended="incompleto")],
@@ -690,13 +816,21 @@ class TestReviewResume:
         assert client.payloads == []
 
     async def test_review_block_on_agent_declaration(self):
-        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
-                   labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-2")
+        pr = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_IN_PROGRESS,),
+            head_ref="auto/issue-2",
+        )
         monitor, notifier, _ = _make_monitor(
             prs=[pr],
-            worker_responses=[_worker_response(
-                ended="bloqueado", motivo_bloqueio="conflito irreconciliável",
-            )],
+            worker_responses=[
+                _worker_response(
+                    ended="bloqueado",
+                    motivo_bloqueio="conflito irreconciliável",
+                )
+            ],
         )
         await monitor.tick()
         await _drain_bg(monitor)
@@ -749,6 +883,7 @@ class TestOutcomePreservesErrorCode:
 # Regressão #509: skip-because-still-running NÃO consome tentativa
 # ===========================================================================
 
+
 class TestSkipStillRunningDoesNotBurnAttempt:
     """Um dispatch pulado porque o anterior AINDA roda no worker não é uma
     tentativa real — nenhum trabalho novo de review/merge aconteceu no tick.
@@ -761,16 +896,26 @@ class TestSkipStillRunningDoesNotBurnAttempt:
     @staticmethod
     def _skip_outcome():
         from deile.orchestration.pipeline.implementer import WorkOutcome
+
         return WorkOutcome(
-            ok=False, text="",
-            error=("DISPATCH_SKIPPED_STILL_RUNNING: claude-worker ainda "
-                   "rodando o task anterior; skip nesse tick"),
+            ok=False,
+            text="",
+            error=(
+                "DISPATCH_SKIPPED_STILL_RUNNING: claude-worker ainda "
+                "rodando o task anterior; skip nesse tick"
+            ),
         )
 
     async def test_pr_review_skip_does_not_increment_attempt_nor_block(self):
         from deile.orchestration.pipeline import stages
-        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
-                   labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-2")
+
+        pr = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_IN_PROGRESS,),
+            head_ref="auto/issue-2",
+        )
         monitor, notifier, _ = _make_monitor(prs=[pr])
         monitor.github.branch_exists = AsyncMock(return_value=True)
         # Implementer devolve skip (review anterior ainda viva).
@@ -797,6 +942,7 @@ class TestSkipStillRunningDoesNotBurnAttempt:
 
     async def test_implement_resume_skip_does_not_increment_attempt_nor_block(self):
         from deile.orchestration.pipeline import stages
+
         monitor, notifier, _ = _make_monitor(issues_in_progress=[_in_progress()])
         monitor._resume_tracker.update_from_worker(
             2, fingerprint="f", attempt=1, budget_s=0.0
@@ -804,7 +950,10 @@ class TestSkipStillRunningDoesNotBurnAttempt:
         before = monitor._resume_tracker.get(2).attempt
 
         await stages._finalize_implement_outcome(
-            monitor, 2, self._skip_outcome(), resume=True,
+            monitor,
+            2,
+            self._skip_outcome(),
+            resume=True,
         )
 
         after = monitor._resume_tracker.get(2).attempt

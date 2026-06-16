@@ -11,12 +11,23 @@ from rich.table import Table
 from rich.text import Text
 
 from ...core.exceptions import CommandError
-from ...security.permissions import (PermissionLevel, PermissionRule,
-                                     ResourceType, get_permission_manager)
+from ...security.permissions import (
+    PermissionLevel,
+    PermissionRule,
+    ResourceType,
+    get_permission_manager,
+)
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (emit_audit_event, error_panel, raise_command_error,
-                      split_args, success_panel, truncate, warning_panel,
-                      wrap_command_errors)
+from ._shared import (
+    emit_audit_event,
+    error_panel,
+    raise_command_error,
+    split_args,
+    success_panel,
+    truncate,
+    warning_panel,
+    wrap_command_errors,
+)
 
 
 def _persist(pm) -> None:
@@ -31,6 +42,7 @@ class PermissionsCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="permissions",
             description="Manage security rules and permissions for tools and resources.",
@@ -38,7 +50,9 @@ class PermissionsCommand(DirectCommand):
         super().__init__(config)
         self.permission_manager = get_permission_manager()
 
-    @wrap_command_errors("permissions", message_template="Falha ao executar /{name}: {exc}")
+    @wrap_command_errors(
+        "permissions", message_template="Falha ao executar /{name}: {exc}"
+    )
     async def execute(self, context: CommandContext) -> CommandResult:
         parts = split_args(context)
         if not parts:
@@ -46,14 +60,46 @@ class PermissionsCommand(DirectCommand):
         action = parts[0].lower()
         dispatch = {
             "list": lambda: self._list_rules(parts[1:]),
-            "show": lambda: self._show_rule(parts[1]) if len(parts) >= 2 else raise_command_error("show requer ID: /permissions show <id>"),
-            "check": lambda: self._check_permission(parts[1], parts[2], parts[3]) if len(parts) >= 4 else raise_command_error("check requer: /permissions check <tool> <resource> <action>"),
-            "add": lambda: self._add_rule(parts[1:]) if len(parts) >= 6 else raise_command_error("add requer: /permissions add <id> <nome> <tipo> <padrão> <nível> [tools]"),
-            "enable": lambda: self._enable_rule(parts[1], True) if len(parts) >= 2 else raise_command_error("enable requer ID"),
-            "disable": lambda: self._enable_rule(parts[1], False) if len(parts) >= 2 else raise_command_error("disable requer ID"),
-            "remove": lambda: self._remove_rule(parts[1], "--confirm" in parts) if len(parts) >= 2 else raise_command_error("remove requer ID"),
+            "show": lambda: (
+                self._show_rule(parts[1])
+                if len(parts) >= 2
+                else raise_command_error("show requer ID: /permissions show <id>")
+            ),
+            "check": lambda: (
+                self._check_permission(parts[1], parts[2], parts[3])
+                if len(parts) >= 4
+                else raise_command_error(
+                    "check requer: /permissions check <tool> <resource> <action>"
+                )
+            ),
+            "add": lambda: (
+                self._add_rule(parts[1:])
+                if len(parts) >= 6
+                else raise_command_error(
+                    "add requer: /permissions add <id> <nome> <tipo> <padrão> <nível> [tools]"
+                )
+            ),
+            "enable": lambda: (
+                self._enable_rule(parts[1], True)
+                if len(parts) >= 2
+                else raise_command_error("enable requer ID")
+            ),
+            "disable": lambda: (
+                self._enable_rule(parts[1], False)
+                if len(parts) >= 2
+                else raise_command_error("disable requer ID")
+            ),
+            "remove": lambda: (
+                self._remove_rule(parts[1], "--confirm" in parts)
+                if len(parts) >= 2
+                else raise_command_error("remove requer ID")
+            ),
             "audit": lambda: self._show_audit_log(parts[1:]),
-            "sandbox": lambda: self._manage_sandbox(parts[1]) if len(parts) >= 2 else raise_command_error("sandbox requer: on|off|status"),
+            "sandbox": lambda: (
+                self._manage_sandbox(parts[1])
+                if len(parts) >= 2
+                else raise_command_error("sandbox requer: on|off|status")
+            ),
             "help": lambda: self._show_help(),
         }
         handler = dispatch.get(action)
@@ -88,17 +134,25 @@ class PermissionsCommand(DirectCommand):
         overview.add_row("Total de Regras", str(total), "Regras de segurança ativas")
         overview.add_row("Habilitadas", str(enabled), "Aplicadas atualmente")
         overview.add_row("Desabilitadas", str(disabled), "Temporariamente inativas")
-        overview.add_row("Nível Padrão", pm.default_permission.value, "Permissão de fallback")
+        overview.add_row(
+            "Nível Padrão", pm.default_permission.value, "Permissão de fallback"
+        )
         sandbox_label = "🟢 Ativo" if pm.sandbox_enabled else "🔴 Inativo"
         overview.add_row("Sandbox", sandbox_label, "Modo de isolamento")
 
-        types_table = Table(title="📁 Tipos de Recurso Protegidos", show_header=True, header_style="bold yellow")
+        types_table = Table(
+            title="📁 Tipos de Recurso Protegidos",
+            show_header=True,
+            header_style="bold yellow",
+        )
         types_table.add_column("Tipo", style="cyan")
         types_table.add_column("Regras", style="green", justify="center")
         for res_type, count in sorted(type_counts.items()):
             types_table.add_row(res_type.title(), str(count))
 
-        levels_table = Table(title="🔐 Níveis de Permissão", show_header=True, header_style="bold red")
+        levels_table = Table(
+            title="🔐 Níveis de Permissão", show_header=True, header_style="bold red"
+        )
         levels_table.add_column("Nível", style="red")
         levels_table.add_column("Regras", style="green", justify="center")
         for level, count in sorted(level_counts.items()):
@@ -120,7 +174,9 @@ class PermissionsCommand(DirectCommand):
             border_style="blue",
         )
 
-        return CommandResult.success_result(Group(overview, "", types_table, "", levels_table, "", usage), "rich")
+        return CommandResult.success_result(
+            Group(overview, "", types_table, "", levels_table, "", usage), "rich"
+        )
 
     # ------------------------------------------------------------------
     # List
@@ -135,12 +191,23 @@ class PermissionsCommand(DirectCommand):
             elif filter_type in [pl.value for pl in PermissionLevel]:
                 rules = [r for r in rules if r.permission_level.value == filter_type]
             else:
-                rules = [r for r in rules if filter_type.lower() in r.id.lower() or filter_type.lower() in r.name.lower()]
+                rules = [
+                    r
+                    for r in rules
+                    if filter_type.lower() in r.id.lower()
+                    or filter_type.lower() in r.name.lower()
+                ]
 
         if not rules:
             return CommandResult.success_result(
-                Panel(Text(f"Nenhuma regra encontrada{(' (filtro: ' + filter_type + ')') if filter_type else ''}.", style="yellow"),
-                      title="🔍 Sem Resultados", border_style="yellow"),
+                Panel(
+                    Text(
+                        f"Nenhuma regra encontrada{(' (filtro: ' + filter_type + ')') if filter_type else ''}.",
+                        style="yellow",
+                    ),
+                    title="🔍 Sem Resultados",
+                    border_style="yellow",
+                ),
                 "rich",
             )
 
@@ -160,7 +227,14 @@ class PermissionsCommand(DirectCommand):
             status = "✅ On" if rule.enabled else "❌ Off"
             rule_id = truncate(rule.id, 13, "…")
             name = truncate(rule.name, 18, "…")
-            table.add_row(rule_id, name, rule.resource_type.value, rule.permission_level.value, status, str(rule.priority))
+            table.add_row(
+                rule_id,
+                name,
+                rule.resource_type.value,
+                rule.permission_level.value,
+                status,
+                str(rule.priority),
+            )
 
         return CommandResult.success_result(table, "rich")
 
@@ -184,7 +258,9 @@ class PermissionsCommand(DirectCommand):
         table.add_row("Nível de Permissão", rule.permission_level.value)
         table.add_row("Prioridade", str(rule.priority))
         table.add_row("Status", "✅ Habilitada" if rule.enabled else "❌ Desabilitada")
-        tools_text = "* (todas)" if "*" in rule.tool_names else ", ".join(rule.tool_names)
+        tools_text = (
+            "* (todas)" if "*" in rule.tool_names else ", ".join(rule.tool_names)
+        )
         table.add_row("Tools", tools_text)
         if rule.conditions:
             table.add_row("Condições", str(rule.conditions))
@@ -195,10 +271,13 @@ class PermissionsCommand(DirectCommand):
     # Check
     # ------------------------------------------------------------------
 
-    async def _check_permission(self, tool: str, resource: str, action: str) -> CommandResult:
+    async def _check_permission(
+        self, tool: str, resource: str, action: str
+    ) -> CommandResult:
         allowed = self.permission_manager.check_permission(tool, resource, action)
         applicable = [
-            r for r in sorted(self.permission_manager.rules, key=lambda r: r.priority)
+            r
+            for r in sorted(self.permission_manager.rules, key=lambda r: r.priority)
             if r.enabled and r.applies_to_tool(tool) and r.matches_resource(resource)
         ]
         applied_rule = applicable[0] if applicable else None
@@ -207,7 +286,9 @@ class PermissionsCommand(DirectCommand):
         color = "green" if allowed else "red"
         result_text = "PERMITIDO" if allowed else "NEGADO"
 
-        table = Table(title=f"{icon} Verificação de Permissão — {result_text}", show_header=False)
+        table = Table(
+            title=f"{icon} Verificação de Permissão — {result_text}", show_header=False
+        )
         table.add_column("Propriedade", style="bold cyan")
         table.add_column("Valor", style=color)
         table.add_row("Tool", tool)
@@ -219,7 +300,9 @@ class PermissionsCommand(DirectCommand):
             table.add_row("Nível", applied_rule.permission_level.value)
         else:
             table.add_row("Regra Aplicada", "Padrão")
-            table.add_row("Nível Padrão", self.permission_manager.default_permission.value)
+            table.add_row(
+                "Nível Padrão", self.permission_manager.default_permission.value
+            )
 
         return CommandResult.success_result(table, "rich")
 
@@ -239,13 +322,17 @@ class PermissionsCommand(DirectCommand):
             resource_type = ResourceType(resource_type_str)
         except ValueError:
             valid = [rt.value for rt in ResourceType]
-            raise CommandError(f"Tipo de recurso inválido '{resource_type_str}'. Válidos: {valid}") from None
+            raise CommandError(
+                f"Tipo de recurso inválido '{resource_type_str}'. Válidos: {valid}"
+            ) from None
 
         try:
             permission_level = PermissionLevel(level_str)
         except ValueError:
             valid = [pl.value for pl in PermissionLevel]
-            raise CommandError(f"Nível de permissão inválido '{level_str}'. Válidos: {valid}") from None
+            raise CommandError(
+                f"Nível de permissão inválido '{level_str}'. Válidos: {valid}"
+            ) from None
 
         if self.permission_manager.get_rule_by_id(rule_id) is not None:
             raise CommandError(f"Regra com ID '{rule_id}' já existe. Use outro ID.")
@@ -291,20 +378,29 @@ class PermissionsCommand(DirectCommand):
         if rule.enabled == enabled:
             state = "habilitada" if enabled else "desabilitada"
             return CommandResult.success_result(
-                Panel(Text(f"Regra '{rule_id}' já está {state}.", style="dim"), title="Sem Alteração", border_style="dim"),
+                Panel(
+                    Text(f"Regra '{rule_id}' já está {state}.", style="dim"),
+                    title="Sem Alteração",
+                    border_style="dim",
+                ),
                 "rich",
             )
 
         rule.enabled = enabled
         _persist(self.permission_manager)
         action_str = "habilitada" if enabled else "desabilitada"
-        self._emit_audit_event("enable" if enabled else "disable", rule_id, f"Regra {action_str}")
+        self._emit_audit_event(
+            "enable" if enabled else "disable", rule_id, f"Regra {action_str}"
+        )
 
         color = "green" if enabled else "red"
         icon = "✅" if enabled else "❌"
         return CommandResult.success_result(
             Panel(
-                Text(f"{icon} Regra '{rule_id}' {action_str} com sucesso.\nNome: {rule.name}", style=color),
+                Text(
+                    f"{icon} Regra '{rule_id}' {action_str} com sucesso.\nNome: {rule.name}",
+                    style=color,
+                ),
                 title=f"Regra {action_str.title()}",
                 border_style=color,
             ),
@@ -345,7 +441,10 @@ class PermissionsCommand(DirectCommand):
 
         return CommandResult.success_result(
             Panel(
-                Text(f"✅ Regra '{rule_id}' ({rule.name}) removida com sucesso.", style="green"),
+                Text(
+                    f"✅ Regra '{rule_id}' ({rule.name}) removida com sucesso.",
+                    style="green",
+                ),
                 title="Regra Removida",
                 border_style="green",
             ),
@@ -358,8 +457,8 @@ class PermissionsCommand(DirectCommand):
 
     async def _show_audit_log(self, args: List[str]) -> CommandResult:
         try:
-            from ...security.audit_logger import (AuditEventType,
-                                                  get_audit_logger)
+            from ...security.audit_logger import AuditEventType, get_audit_logger
+
             limit = int(args[0]) if args and args[0].isdigit() else 50
             audit_logger = get_audit_logger()
             events = audit_logger.get_recent_events(
@@ -369,8 +468,10 @@ class PermissionsCommand(DirectCommand):
             if not events:
                 events = audit_logger.get_recent_events(limit=limit)
             events = [
-                e for e in events
-                if e.event_type in (
+                e
+                for e in events
+                if e.event_type
+                in (
                     AuditEventType.SECURITY_POLICY_CHANGED,
                     AuditEventType.PERMISSION_CHECK,
                     AuditEventType.PERMISSION_DENIED,
@@ -378,17 +479,27 @@ class PermissionsCommand(DirectCommand):
             ]
         except Exception as exc:
             return CommandResult.success_result(
-                error_panel(f"Erro ao ler log de auditoria: {exc}", title="🔍 Auditoria"),
+                error_panel(
+                    f"Erro ao ler log de auditoria: {exc}", title="🔍 Auditoria"
+                ),
                 "rich",
             )
 
         if not events:
             return CommandResult.success_result(
-                Panel(Text("Nenhum evento de permissão registrado ainda.", style="dim"), title="🔍 Auditoria", border_style="dim"),
+                Panel(
+                    Text("Nenhum evento de permissão registrado ainda.", style="dim"),
+                    title="🔍 Auditoria",
+                    border_style="dim",
+                ),
                 "rich",
             )
 
-        table = Table(title=f"🔍 Log de Auditoria de Permissões ({len(events)} eventos)", show_header=True, header_style="bold cyan")
+        table = Table(
+            title=f"🔍 Log de Auditoria de Permissões ({len(events)} eventos)",
+            show_header=True,
+            header_style="bold cyan",
+        )
         table.add_column("Timestamp", style="dim")
         table.add_column("Tipo", style="cyan")
         table.add_column("Actor", style="yellow")
@@ -396,8 +507,18 @@ class PermissionsCommand(DirectCommand):
         table.add_column("Resultado", style="green")
 
         for event in events[-limit:]:
-            ts = event.timestamp.strftime("%Y-%m-%d %H:%M:%S") if hasattr(event.timestamp, "strftime") else str(event.timestamp)[:19]
-            table.add_row(ts, event.event_type.value, event.actor, event.resource[:18], event.result)
+            ts = (
+                event.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                if hasattr(event.timestamp, "strftime")
+                else str(event.timestamp)[:19]
+            )
+            table.add_row(
+                ts,
+                event.event_type.value,
+                event.actor,
+                event.resource[:18],
+                event.result,
+            )
 
         return CommandResult.success_result(table, "rich")
 
@@ -413,8 +534,14 @@ class PermissionsCommand(DirectCommand):
             state = "ATIVO" if pm.sandbox_enabled else "INATIVO"
             icon = "🟢" if pm.sandbox_enabled else "🔴"
             return CommandResult.success_result(
-                Panel(Text(f"{icon} Sandbox: {state}", style="green" if pm.sandbox_enabled else "red"),
-                      title="Status do Sandbox", border_style="dim"),
+                Panel(
+                    Text(
+                        f"{icon} Sandbox: {state}",
+                        style="green" if pm.sandbox_enabled else "red",
+                    ),
+                    title="Status do Sandbox",
+                    border_style="dim",
+                ),
                 "rich",
             )
 
@@ -458,7 +585,11 @@ class PermissionsCommand(DirectCommand):
             "Níveis de permissão: none, read, write, execute, admin"
         )
         return CommandResult.success_result(
-            Panel(Text(help_text, style="dim"), title="📖 Ajuda — /permissions", border_style="blue"),
+            Panel(
+                Text(help_text, style="dim"),
+                title="📖 Ajuda — /permissions",
+                border_style="blue",
+            ),
             "rich",
         )
 
@@ -468,6 +599,7 @@ class PermissionsCommand(DirectCommand):
 
     def _emit_audit_event(self, action: str, resource: str, details_msg: str) -> None:
         from ...security.audit_logger import AuditEventType, SeverityLevel
+
         emit_audit_event(
             event_type=AuditEventType.SECURITY_POLICY_CHANGED,
             severity=SeverityLevel.WARNING,

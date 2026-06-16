@@ -8,10 +8,12 @@ import pytest
 from rich.console import Console
 
 from deile.commands.base import CommandContext
-from deile.commands.builtin.logs_command import (_VALID_EXPORT_FORMATS,
-                                                 MAX_SAFE_LIMIT, LogsCommand)
-from deile.security.audit_logger import (AuditEventType, AuditLogger,
-                                         SeverityLevel)
+from deile.commands.builtin.logs_command import (
+    _VALID_EXPORT_FORMATS,
+    MAX_SAFE_LIMIT,
+    LogsCommand,
+)
+from deile.security.audit_logger import AuditEventType, AuditLogger, SeverityLevel
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,6 +33,7 @@ def _ctx(args: str = "") -> CommandContext:
 
 def _fresh_audit_logger() -> AuditLogger:
     import tempfile
+
     tmp = tempfile.mkdtemp()
     return AuditLogger(log_dir=tmp)
 
@@ -39,13 +42,18 @@ def _cmd_with_logger(audit_logger: AuditLogger) -> LogsCommand:
     cmd = LogsCommand.__new__(LogsCommand)
     from deile.commands.base import DirectCommand
     from deile.config.manager import CommandConfig
+
     config = CommandConfig(name="logs", description="test")
     DirectCommand.__init__(cmd, config)
     cmd.audit_logger = audit_logger
     return cmd
 
 
-def _log(audit_logger: AuditLogger, severity: SeverityLevel, event_type: AuditEventType = AuditEventType.TOOL_EXECUTION) -> None:
+def _log(
+    audit_logger: AuditLogger,
+    severity: SeverityLevel,
+    event_type: AuditEventType = AuditEventType.TOOL_EXECUTION,
+) -> None:
     audit_logger.log_event(
         event_type=event_type,
         severity=severity,
@@ -80,17 +88,20 @@ class TestClearUsesPublicMethod:
 
         result = await cmd.execute(_ctx("clear"))
         assert result.success is True
-        assert called, "clear_events() was never called — direct attribute access detected"
+        assert (
+            called
+        ), "clear_events() was never called — direct attribute access detected"
 
     async def test_clear_does_not_access_recent_events_clear_directly(self):
         """Verify implementation uses the encapsulated method."""
         import inspect
 
         from deile.commands.builtin.logs_command import LogsCommand as LC
+
         source = inspect.getsource(LC._clear_logs)
-        assert "recent_events.clear()" not in source, (
-            "Found recent_events.clear() in _clear_logs — must use audit_logger.clear_events()"
-        )
+        assert (
+            "recent_events.clear()" not in source
+        ), "Found recent_events.clear() in _clear_logs — must use audit_logger.clear_events()"
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +122,9 @@ class TestClearReturnsRealCount:
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("clear"))
         rendered = _render(result.content)
-        assert str(expected) in rendered, f"Expected count {expected} in output: {rendered}"
+        assert (
+            str(expected) in rendered
+        ), f"Expected count {expected} in output: {rendered}"
 
     async def test_clear_count_matches_clear_events_return(self):
         al = _fresh_audit_logger()
@@ -161,9 +174,9 @@ class TestRecentLimitCappedAtMaxSafe:
 
         await cmd.execute(_ctx("recent 999"))
         assert captured_limit, "get_recent_events was not called"
-        assert captured_limit[0] <= MAX_SAFE_LIMIT, (
-            f"Limit {captured_limit[0]} exceeds MAX_SAFE_LIMIT={MAX_SAFE_LIMIT}"
-        )
+        assert (
+            captured_limit[0] <= MAX_SAFE_LIMIT
+        ), f"Limit {captured_limit[0]} exceeds MAX_SAFE_LIMIT={MAX_SAFE_LIMIT}"
 
     async def test_request_below_limit_is_not_changed(self):
         al = _fresh_audit_logger()
@@ -193,9 +206,9 @@ class TestRecentShowsWarningWhenCapped:
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx(f"recent {MAX_SAFE_LIMIT + 1}"))
         rendered = _render(result.content)
-        assert any(word in rendered.lower() for word in ("aviso", "reduzido", "limite")), (
-            f"Expected warning text in output when limit exceeds MAX_SAFE_LIMIT: {rendered[:400]}"
-        )
+        assert any(
+            word in rendered.lower() for word in ("aviso", "reduzido", "limite")
+        ), f"Expected warning text in output when limit exceeds MAX_SAFE_LIMIT: {rendered[:400]}"
 
     async def test_no_warning_when_limit_within_max(self):
         al = _fresh_audit_logger()
@@ -275,7 +288,11 @@ class TestErrorsDefaultShowsAllSeverities:
         result = await cmd.execute(_ctx("errors"))
         assert result.success is True
         rendered = _render(result.content)
-        assert "AVISO" in rendered or "WARNING" in rendered.upper() or "aviso" in rendered.lower()
+        assert (
+            "AVISO" in rendered
+            or "WARNING" in rendered.upper()
+            or "aviso" in rendered.lower()
+        )
 
     async def test_default_shows_error(self):
         al = _fresh_audit_logger()
@@ -285,7 +302,11 @@ class TestErrorsDefaultShowsAllSeverities:
         result = await cmd.execute(_ctx("errors"))
         assert result.success is True
         rendered = _render(result.content)
-        assert "ERRO" in rendered or "ERROR" in rendered.upper() or "erro" in rendered.lower()
+        assert (
+            "ERRO" in rendered
+            or "ERROR" in rendered.upper()
+            or "erro" in rendered.lower()
+        )
 
     async def test_default_shows_critical(self):
         al = _fresh_audit_logger()
@@ -295,7 +316,11 @@ class TestErrorsDefaultShowsAllSeverities:
         result = await cmd.execute(_ctx("errors"))
         assert result.success is True
         rendered = _render(result.content)
-        assert "CRÍT" in rendered or "CRITICAL" in rendered.upper() or "crít" in rendered.lower()
+        assert (
+            "CRÍT" in rendered
+            or "CRITICAL" in rendered.upper()
+            or "crít" in rendered.lower()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +394,7 @@ class TestErrorsFilteredBySeverity:
 
     async def test_unknown_severity_raises_command_error(self):
         from deile.core.exceptions import CommandError
+
         al = await self._setup_all_severities()
         cmd = _cmd_with_logger(al)
         with pytest.raises(CommandError, match="Severidade inválida"):
@@ -518,20 +544,22 @@ class TestAuditLoggerEventCount:
         import inspect
 
         from deile.commands.builtin.logs_command import LogsCommand as LC
+
         source = inspect.getsource(LC._export_logs)
-        assert "recent_events" not in source, (
-            "Found recent_events in _export_logs — must use event_count()"
-        )
+        assert (
+            "recent_events" not in source
+        ), "Found recent_events in _export_logs — must use event_count()"
 
     def test_show_summary_uses_max_safe_limit(self):
         """_show_summary must not access max_memory_events directly."""
         import inspect
 
         from deile.commands.builtin.logs_command import LogsCommand as LC
+
         source = inspect.getsource(LC._show_summary)
-        assert "max_memory_events" not in source, (
-            "Found max_memory_events in _show_summary — must use MAX_SAFE_LIMIT or max_events property"
-        )
+        assert (
+            "max_memory_events" not in source
+        ), "Found max_memory_events in _show_summary — must use MAX_SAFE_LIMIT or max_events property"
 
 
 # ---------------------------------------------------------------------------
@@ -551,8 +579,15 @@ class TestGetSecuritySummaryZeroEvents:
         al = _fresh_audit_logger()
         al.clear_events()
         summary = al.get_security_summary()
-        required = {"total_events", "session_id", "event_types", "permission_denials",
-                    "secret_detections", "recent_critical_events", "log_file"}
+        required = {
+            "total_events",
+            "session_id",
+            "event_types",
+            "permission_denials",
+            "secret_detections",
+            "recent_critical_events",
+            "log_file",
+        }
         missing = required - summary.keys()
         assert not missing, f"Missing keys in zero-events summary: {missing}"
 
@@ -615,6 +650,7 @@ class TestLogsCommandSmoke:
 
     async def test_unknown_action_raises_command_error(self):
         from deile.core.exceptions import CommandError
+
         with pytest.raises(CommandError):
             await LogsCommand().execute(_ctx("nonexistent_xyz"))
 
@@ -634,6 +670,7 @@ class TestLogsCommandSmoke:
 
     async def test_export_no_filename_raises_command_error(self):
         from deile.core.exceptions import CommandError
+
         with pytest.raises(CommandError, match="requer nome de arquivo"):
             await LogsCommand().execute(_ctx("export"))
 
@@ -789,6 +826,7 @@ class TestNonEmptyPaths:
 
     async def test_export_failure_raises_command_error(self):
         from deile.core.exceptions import CommandError
+
         al = _fresh_audit_logger()
 
         def _bad_export(*args, **kwargs):
@@ -832,6 +870,7 @@ class TestExportSecurity:
 
     async def test_invalid_format_raises_command_error(self):
         from deile.core.exceptions import CommandError
+
         al = _fresh_audit_logger()
         cmd = _cmd_with_logger(al)
         with pytest.raises(CommandError, match="Formato inválido"):
@@ -850,6 +889,7 @@ class TestExportSecurity:
         assert result.success is True
         # Confirm the file was written inside log_dir, not at the traversal path
         import os
+
         assert not os.path.exists("../../.env")
 
     async def test_absolute_path_resolved_to_log_dir(self, tmp_path, monkeypatch):
@@ -860,10 +900,12 @@ class TestExportSecurity:
         assert result.success is True
         # Confirm /etc/cron.d/pwned was NOT written
         import os
+
         assert not os.path.exists("/etc/cron.d/pwned")
 
     async def test_empty_filename_raises_command_error(self):
         from deile.core.exceptions import CommandError
+
         al = _fresh_audit_logger()
         cmd = _cmd_with_logger(al)
         # Path("/").name == "" which triggers the "Nome de arquivo inválido" guard
@@ -884,6 +926,7 @@ class TestExportSecurity:
         # Even with a path traversal string, the file lands in log_dir
         exported = al.export_audit_log("../../dangerous.json")
         from pathlib import Path
+
         result_path = Path(exported)
         assert result_path.parent == al.log_dir
         assert result_path.name == "dangerous.json"

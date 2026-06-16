@@ -31,9 +31,11 @@ if str(_INFRA_K8S) not in sys.path:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def view_demo():
     from _panel import DispatchMatrixView
+
     return DispatchMatrixView(data=None)
 
 
@@ -48,7 +50,9 @@ def view_with_data():
         for s in ("classify", "refine", "implement", "pr_review", "follow_ups")
     ]
     data.stage_dispatch.get_claude_worker_status.return_value = ClaudeWorkerStatus(
-        deployment_applied=False, pod_ready=False, logged_in_email=None,
+        deployment_applied=False,
+        pod_ready=False,
+        logged_in_email=None,
     )
     data.context = MagicMock()
     data.context.namespace = "deile"
@@ -66,19 +70,23 @@ def app_stub():
 # Render: "Max Parallel" row aparece no output
 # ---------------------------------------------------------------------------
 
+
 def test_render_contains_max_parallel_row(view_demo, app_stub):
     from rich.console import Console
+
     console = Console(width=120)
     renderable = view_demo.render(app_stub)
     with console.capture() as cap:
         console.print(renderable)
     out = cap.get()
-    assert "Max Parallel" in out, \
-        f"'Max Parallel' não encontrado na saída:\n{out[:600]}"
+    assert (
+        "Max Parallel" in out
+    ), f"'Max Parallel' não encontrado na saída:\n{out[:600]}"
 
 
 def test_render_max_parallel_after_global_default(view_demo, app_stub):
     from rich.console import Console
+
     console = Console(width=120)
     renderable = view_demo.render(app_stub)
     with console.capture() as cap:
@@ -96,6 +104,7 @@ def test_render_max_parallel_after_global_default(view_demo, app_stub):
 
 def test_render_max_parallel_shows_default(view_demo, app_stub):
     from rich.console import Console
+
     console = Console(width=120)
     renderable = view_demo.render(app_stub)
     with console.capture() as cap:
@@ -109,8 +118,10 @@ def test_render_max_parallel_shows_default(view_demo, app_stub):
 # Navegação: cursor pode atingir Max Parallel (N+2)
 # ---------------------------------------------------------------------------
 
+
 def test_navigation_down_reaches_max_parallel_row(view_demo, app_stub):
     from _panel import ActionResult
+
     n_stages = len(view_demo._stages())
     max_parallel_idx = n_stages + 1  # Frente 6: scaling row removida
 
@@ -146,6 +157,7 @@ def test_navigation_up_from_max_parallel_reaches_global(view_demo, app_stub):
 # [enter] na linha Max Parallel → abre max_parallel_prompt
 # ---------------------------------------------------------------------------
 
+
 def test_enter_on_max_parallel_row_opens_prompt(view_demo, app_stub):
     n_stages = len(view_demo._stages())
     view_demo.cursor_row = n_stages + 1
@@ -161,6 +173,7 @@ def test_enter_on_max_parallel_row_opens_prompt(view_demo, app_stub):
 # [p] abre max_parallel_prompt independente de cursor
 # ---------------------------------------------------------------------------
 
+
 def test_p_hotkey_opens_max_parallel_prompt(view_demo, app_stub):
     view_demo.cursor_row = 0  # em qualquer linha
 
@@ -174,6 +187,7 @@ def test_p_hotkey_opens_max_parallel_prompt(view_demo, app_stub):
 # ---------------------------------------------------------------------------
 # _handle_max_parallel_prompt_key
 # ---------------------------------------------------------------------------
+
 
 def test_max_parallel_prompt_digit_input(view_demo, app_stub):
     view_demo._open_max_parallel_prompt()
@@ -247,6 +261,7 @@ def test_max_parallel_prompt_enter_empty_applies_clear(view_demo, app_stub):
 # _apply_max_parallel
 # ---------------------------------------------------------------------------
 
+
 def test_apply_max_parallel_demo_mode(view_demo):
     view_demo._apply_max_parallel("3")
     assert view_demo.last_ok is False  # demo → False
@@ -275,8 +290,10 @@ def test_apply_max_parallel_success(view_with_data):
         m.stderr = ""
         return m
 
-    with patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"), \
-         patch("subprocess.run", side_effect=fake_run):
+    with (
+        patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
         view_with_data._apply_max_parallel("5")
 
     assert view_with_data.last_ok is True
@@ -291,8 +308,10 @@ def test_apply_max_parallel_auto(view_with_data):
         m.stderr = ""
         return m
 
-    with patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"), \
-         patch("subprocess.run", side_effect=fake_run):
+    with (
+        patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
         view_with_data._apply_max_parallel("auto")
 
     assert view_with_data.last_ok is True
@@ -308,8 +327,10 @@ def test_apply_max_parallel_clear(view_with_data):
         m.stderr = ""
         return m
 
-    with patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"), \
-         patch("subprocess.run", side_effect=fake_run):
+    with (
+        patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
         view_with_data._apply_max_parallel(None)
 
     assert view_with_data.last_ok is True
@@ -319,6 +340,7 @@ def test_apply_max_parallel_clear(view_with_data):
 # ---------------------------------------------------------------------------
 # Hotkey [c] — cleanup on-demand
 # ---------------------------------------------------------------------------
+
 
 def test_c_hotkey_opens_cleanup_confirm(view_demo, app_stub):
     view_demo.handle_key("c", app_stub)
@@ -365,8 +387,10 @@ def test_cleanup_confirm_default_cursor_is_no(view_demo, app_stub):
 # Render: modais aparecem no output
 # ---------------------------------------------------------------------------
 
+
 def test_render_cleanup_confirm_modal_visible(view_demo, app_stub):
     from rich.console import Console
+
     view_demo.handle_key("c", app_stub)
 
     console = Console(width=120)
@@ -379,6 +403,7 @@ def test_render_cleanup_confirm_modal_visible(view_demo, app_stub):
 
 def test_render_max_parallel_prompt_modal_visible(view_demo, app_stub):
     from rich.console import Console
+
     view_demo.handle_key("p", app_stub)
 
     console = Console(width=120)
@@ -393,6 +418,7 @@ def test_render_max_parallel_prompt_modal_visible(view_demo, app_stub):
 # Settings: DEILE_PIPELINE_MAX_PARALLEL env var registrada
 # ---------------------------------------------------------------------------
 
+
 def test_settings_has_pipeline_max_parallel_env_var(monkeypatch):
     """DEILE_PIPELINE_MAX_PARALLEL deve ser aplicado via _apply_env_overrides.
 
@@ -404,8 +430,7 @@ def test_settings_has_pipeline_max_parallel_env_var(monkeypatch):
     ordenação confirmada em #499). ``reset_settings()`` já garante uma instância
     fresca sem duplicar o módulo.
     """
-    from deile.config.settings import (_apply_env_overrides, get_settings,
-                                       reset_settings)
+    from deile.config.settings import _apply_env_overrides, get_settings, reset_settings
 
     monkeypatch.setenv("DEILE_PIPELINE_MAX_PARALLEL", "7")
     reset_settings()

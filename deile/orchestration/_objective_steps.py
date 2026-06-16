@@ -64,67 +64,79 @@ def derive_step_specs(objective: str) -> List[StepSpec]:
     objective_lower = objective.lower()
 
     if any(w in objective_lower for w in ("file", "read", "analyze", "check")):
-        specs.append(StepSpec(
-            tool_name="read_file",
-            params={"path": "README.md"},
-            description="Read target file",
-            timeout=30,
-            risk_level="low",
-        ))
+        specs.append(
+            StepSpec(
+                tool_name="read_file",
+                params={"path": "README.md"},
+                description="Read target file",
+                timeout=30,
+                risk_level="low",
+            )
+        )
 
     if any(w in objective_lower for w in ("list", "files", "directory", "explore")):
-        specs.append(StepSpec(
-            tool_name="list_files",
-            params={"path": ".", "recursive": True},
-            description="List files in directory",
-            timeout=60,
-            risk_level="low",
-        ))
+        specs.append(
+            StepSpec(
+                tool_name="list_files",
+                params={"path": ".", "recursive": True},
+                description="List files in directory",
+                timeout=60,
+                risk_level="low",
+            )
+        )
 
     if any(w in objective_lower for w in ("search", "find", "grep", "pattern")):
-        specs.append(StepSpec(
-            tool_name="find_in_files",
-            params={
-                "pattern": "TODO",
-                "path": ".",
-                "max_context_lines": 5,
-                "max_results": 50,
-            },
-            description="Search for pattern in files",
-            timeout=120,
-            risk_level="low",
-        ))
+        specs.append(
+            StepSpec(
+                tool_name="find_in_files",
+                params={
+                    "pattern": "TODO",
+                    "path": ".",
+                    "max_context_lines": 5,
+                    "max_results": 50,
+                },
+                description="Search for pattern in files",
+                timeout=120,
+                risk_level="low",
+            )
+        )
 
     if any(w in objective_lower for w in ("run", "execute", "command", "script")):
-        specs.append(StepSpec(
-            tool_name="bash_execute",
-            params={
-                "command": "echo 'Hello World'",
-                "show_cli": True,
-            },
-            description="Execute command",
-            timeout=300,
-            risk_level="medium",
-            requires_approval=True,
-            security_level="safe",
-        ))
+        specs.append(
+            StepSpec(
+                tool_name="bash_execute",
+                params={
+                    "command": "echo 'Hello World'",
+                    "show_cli": True,
+                },
+                description="Execute command",
+                timeout=300,
+                risk_level="medium",
+                requires_approval=True,
+                security_level="safe",
+            )
+        )
 
     if any(w in objective_lower for w in ("validate", "verify", "check", "test")):
-        specs.append(StepSpec(
-            tool_name="validation",
-            params={"validation_type": "general"},
-            description="Validate workflow results",
-            timeout=60,
-            risk_level="low",
-        ))
+        specs.append(
+            StepSpec(
+                tool_name="validation",
+                params={"validation_type": "general"},
+                description="Validate workflow results",
+                timeout=60,
+                risk_level="low",
+            )
+        )
 
     if not specs:
-        specs.append(StepSpec(
-            tool_name="list_files",
-            params={"path": ".", "recursive": False},
-            description=f"General analysis for: {objective}",
-            timeout=60,
-            risk_level="low",
-        ))
+        specs.append(
+            StepSpec(
+                tool_name="list_files",
+                params={"path": ".", "recursive": False},
+                description=f"General analysis for: {objective}",
+                timeout=60,
+                risk_level="low",
+            )
+        )
 
     return specs

@@ -6,12 +6,12 @@ Pin the contract of the extracted sync function-call bridge:
 * Alias lookup resolves correctly even when alias differs from real name.
 * ``_run_coro_sync`` works both outside and inside a running event loop.
 """
+
 from __future__ import annotations
 
 import asyncio
 
-from deile.tools.base import (SyncTool, Tool, ToolContext, ToolResult,
-                              ToolStatus)
+from deile.tools.base import SyncTool, Tool, ToolContext, ToolResult, ToolStatus
 from deile.tools.function_call import _run_coro_sync, execute_function_call
 from deile.tools.registry import ToolRegistry
 
@@ -32,9 +32,7 @@ class _AsyncEchoTool(Tool):
         return "other"
 
     async def execute(self, context: ToolContext) -> ToolResult:
-        return ToolResult(
-            status=ToolStatus.SUCCESS, data="async-ok", message="ok"
-        )
+        return ToolResult(status=ToolStatus.SUCCESS, data="async-ok", message="ok")
 
 
 class _SyncEchoTool(SyncTool):
@@ -53,9 +51,7 @@ class _SyncEchoTool(SyncTool):
         return "other"
 
     def execute_sync(self, context: ToolContext) -> ToolResult:
-        return ToolResult(
-            status=ToolStatus.SUCCESS, data="sync-ok", message="ok"
-        )
+        return ToolResult(status=ToolStatus.SUCCESS, data="sync-ok", message="ok")
 
 
 def test_unknown_function_returns_function_not_found():

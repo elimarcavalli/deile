@@ -7,12 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from deile.commands.base import CommandContext
 from deile.commands.builtin.pipeline_schedule_command import (
-    PipelineScheduleCommand, _parse_kv)
+    PipelineScheduleCommand,
+    _parse_kv,
+)
 from deile.tools.base import ToolContext, ToolResult
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _ctx(args: str = "") -> CommandContext:
     ctx = MagicMock(spec=CommandContext)
@@ -32,6 +35,7 @@ def _error(message: str = "fail", error_code: str = "ERR") -> ToolResult:
 # ---------------------------------------------------------------------------
 # _parse_kv unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestParseKv:
     def test_single_key(self):
@@ -55,6 +59,7 @@ class TestParseKv:
 # sub-command: list
 # ---------------------------------------------------------------------------
 
+
 class TestListSubCommand:
     async def test_list_calls_tool_with_action_list(self):
         cmd = PipelineScheduleCommand()
@@ -66,7 +71,9 @@ class TestListSubCommand:
             },
             message="0 recurring + 0 oneshot entries",
         )
-        with patch.object(cmd._tool, "execute", new=AsyncMock(return_value=tool_result)):
+        with patch.object(
+            cmd._tool, "execute", new=AsyncMock(return_value=tool_result)
+        ):
             result = await cmd.execute(_ctx("list"))
 
         assert result.success
@@ -77,12 +84,27 @@ class TestListSubCommand:
         tool_result = _success(
             data={
                 "monitor_id": "default",
-                "recurring": [{"id": "r1", "action": "review", "cron": "*/5 * * * *", "enabled": True}],
-                "oneshot": [{"id": "o1", "action": "implement", "run_at": "2026-05-06T18:00:00+00:00"}],
+                "recurring": [
+                    {
+                        "id": "r1",
+                        "action": "review",
+                        "cron": "*/5 * * * *",
+                        "enabled": True,
+                    }
+                ],
+                "oneshot": [
+                    {
+                        "id": "o1",
+                        "action": "implement",
+                        "run_at": "2026-05-06T18:00:00+00:00",
+                    }
+                ],
             },
             message="1 recurring + 1 oneshot entries",
         )
-        with patch.object(cmd._tool, "execute", new=AsyncMock(return_value=tool_result)):
+        with patch.object(
+            cmd._tool, "execute", new=AsyncMock(return_value=tool_result)
+        ):
             result = await cmd.execute(_ctx("list"))
 
         assert result.success
@@ -93,6 +115,7 @@ class TestListSubCommand:
 # ---------------------------------------------------------------------------
 # sub-command: add-recurring
 # ---------------------------------------------------------------------------
+
 
 class TestAddRecurringSubCommand:
     async def test_add_recurring_delegates_to_tool(self):
@@ -108,7 +131,9 @@ class TestAddRecurringSubCommand:
             return tool_result
 
         with patch.object(cmd._tool, "execute", side_effect=fake_execute):
-            result = await cmd.execute(_ctx("add-recurring trigger:review cron:*/5 * * * *"))
+            result = await cmd.execute(
+                _ctx("add-recurring trigger:review cron:*/5 * * * *")
+            )
 
         assert result.success
         assert captured[0]["action"] == "add_recurring"
@@ -132,11 +157,16 @@ class TestAddRecurringSubCommand:
 # sub-command: add-oneshot
 # ---------------------------------------------------------------------------
 
+
 class TestAddOneshotSubCommand:
     async def test_add_oneshot_delegates_to_tool(self):
         cmd = PipelineScheduleCommand()
         tool_result = _success(
-            data={"id": "o1", "run_at": "2026-05-06T18:00:00+00:00", "action": "implement"},
+            data={
+                "id": "o1",
+                "run_at": "2026-05-06T18:00:00+00:00",
+                "action": "implement",
+            },
             message="added oneshot",
         )
         captured: list[dict] = []
@@ -166,6 +196,7 @@ class TestAddOneshotSubCommand:
 # sub-command: remove
 # ---------------------------------------------------------------------------
 
+
 class TestRemoveSubCommand:
     async def test_remove_delegates_to_tool(self):
         cmd = PipelineScheduleCommand()
@@ -193,6 +224,7 @@ class TestRemoveSubCommand:
 # sub-command: enable / disable
 # ---------------------------------------------------------------------------
 
+
 class TestEnableDisableSubCommand:
     async def test_enable_delegates_to_tool(self):
         cmd = PipelineScheduleCommand()
@@ -211,7 +243,9 @@ class TestEnableDisableSubCommand:
 
     async def test_disable_delegates_to_tool(self):
         cmd = PipelineScheduleCommand()
-        tool_result = _success(data={"id": "r1", "enabled": False}, message="r1 disabled")
+        tool_result = _success(
+            data={"id": "r1", "enabled": False}, message="r1 disabled"
+        )
         captured: list[dict] = []
 
         async def fake_execute(ctx: ToolContext) -> ToolResult:
@@ -235,6 +269,7 @@ class TestEnableDisableSubCommand:
 # invalid sub-command
 # ---------------------------------------------------------------------------
 
+
 class TestInvalidSubCommand:
     async def test_unknown_subcommand_returns_error(self):
         cmd = PipelineScheduleCommand()
@@ -249,7 +284,9 @@ class TestInvalidSubCommand:
             data={"monitor_id": "default", "recurring": [], "oneshot": []},
             message="0 recurring + 0 oneshot entries",
         )
-        with patch.object(cmd._tool, "execute", new=AsyncMock(return_value=tool_result)):
+        with patch.object(
+            cmd._tool, "execute", new=AsyncMock(return_value=tool_result)
+        ):
             result = await cmd.execute(_ctx(""))
         assert result.success
 
@@ -258,11 +295,14 @@ class TestInvalidSubCommand:
 # tool error propagation
 # ---------------------------------------------------------------------------
 
+
 class TestToolErrorPropagation:
     async def test_tool_error_becomes_command_error(self):
         cmd = PipelineScheduleCommand()
         tool_result = _error(message="no entry with id='x'", error_code="NOT_FOUND")
-        with patch.object(cmd._tool, "execute", new=AsyncMock(return_value=tool_result)):
+        with patch.object(
+            cmd._tool, "execute", new=AsyncMock(return_value=tool_result)
+        ):
             result = await cmd.execute(_ctx("remove id:x"))
         assert not result.success
         assert "no entry" in result.content.lower()

@@ -9,22 +9,31 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import anthropic
 
-from deile.core.loop_guard import (check_tool_call, make_guard,
-                                   record_tool_outcome)
-from deile.core.models.base import (DEFAULT_MAX_OUTPUT_TOKENS,
-                                    DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage,
-                                    ModelProvider, ModelResponse, ModelSize,
-                                    ModelType, ModelUsage)
+from deile.core.loop_guard import check_tool_call, make_guard, record_tool_outcome
+from deile.core.models.base import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MAX_TOOL_ITERATIONS,
+    ModelMessage,
+    ModelProvider,
+    ModelResponse,
+    ModelSize,
+    ModelType,
+    ModelUsage,
+)
 from deile.core.models.catalog import ModelHandle
 from deile.core.models.error_mapping import make_envelope_builder
 from deile.core.models.errors import ProviderInvocationError
 from deile.core.models.provider_config import ProviderConfig
-from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                             StreamEventType,
-                                             UnifiedStreamEvent)
-from deile.core.models.tool_execution import (build_tool_result_payload,
-                                              payload_to_text,
-                                              resolve_and_execute_tool)
+from deile.core.models.stream_events import (
+    ModelUsageSnapshot,
+    StreamEventType,
+    UnifiedStreamEvent,
+)
+from deile.core.models.tool_execution import (
+    build_tool_result_payload,
+    payload_to_text,
+    resolve_and_execute_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +166,10 @@ class AnthropicProvider(ModelProvider):
         # gerar colisão de keyword caso o caller já tenha passado extra_body.
         _extra_reasoning = self._pop_reasoning_extra_body(kwargs)
         if _extra_reasoning:
-            kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), **_extra_reasoning}
+            kwargs["extra_body"] = {
+                **(kwargs.get("extra_body") or {}),
+                **_extra_reasoning,
+            }
 
         # Issue #303 fase 4 — span deile.llm.call. CM cai em no-op quando OTLP off.
         with self._llm_span() as _span:
@@ -165,19 +177,24 @@ class AnthropicProvider(ModelProvider):
                 response = await self._client.messages.create(**create_kwargs, **kwargs)
             except anthropic.APIError as exc:
                 self._set_llm_span_error(_span, exc)
-                raise ProviderInvocationError(_make_envelope(exc, self.provider_id, self.model_name)) from exc
+                raise ProviderInvocationError(
+                    _make_envelope(exc, self.provider_id, self.model_name)
+                ) from exc
 
             text = "".join(b.text for b in response.content if hasattr(b, "text"))
             usage = ModelUsage(
                 prompt_tokens=response.usage.input_tokens,
                 completion_tokens=response.usage.output_tokens,
                 total_tokens=response.usage.input_tokens + response.usage.output_tokens,
-                cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0)
+                or 0,
                 request_time=time.time() - start,
             )
             usage.cost_estimate = self.estimate_cost(usage)
             self._update_stats(usage)
-            self._set_llm_span_usage(_span, usage, latency_ms=int((time.time() - start) * 1000))
+            self._set_llm_span_usage(
+                _span, usage, latency_ms=int((time.time() - start) * 1000)
+            )
             return ModelResponse(
                 content=text,
                 model_name=self.model_name,
@@ -247,9 +264,9 @@ class AnthropicProvider(ModelProvider):
                 # Métricas no span: tokens da iteração (não cumulativos).
                 _iter_in = response.usage.input_tokens
                 _iter_out = response.usage.output_tokens
-                _iter_cached = (getattr(response.usage, "cache_read_input_tokens", 0) or 0) + (
-                    getattr(response.usage, "cache_creation_input_tokens", 0) or 0
-                )
+                _iter_cached = (
+                    getattr(response.usage, "cache_read_input_tokens", 0) or 0
+                ) + (getattr(response.usage, "cache_creation_input_tokens", 0) or 0)
                 _iter_usage = ModelUsage(
                     prompt_tokens=_iter_in,
                     completion_tokens=_iter_out,
@@ -258,14 +275,17 @@ class AnthropicProvider(ModelProvider):
                 )
                 _iter_usage.cost_estimate = self.estimate_cost(_iter_usage)
                 self._set_llm_span_usage(
-                    _it_span, _iter_usage,
+                    _it_span,
+                    _iter_usage,
                     latency_ms=int((time.time() - _it_start) * 1000),
                 )
 
             total_input += response.usage.input_tokens
             total_output += response.usage.output_tokens
             total_cached += getattr(response.usage, "cache_read_input_tokens", 0) or 0
-            total_cached += getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            total_cached += (
+                getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            )
 
             # Accumulate text blocks (only type=="text" blocks carry text)
             for block in response.content:
@@ -298,13 +318,14 @@ class AnthropicProvider(ModelProvider):
                         {
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": [{"type": "text", "text": json.dumps(brk.payload)}],
+                            "content": [
+                                {"type": "text", "text": json.dumps(brk.payload)}
+                            ],
                         }
                     )
                     final_text = (
-                        (final_text + "\n\n" if final_text else "")
-                        + brk.message
-                    )
+                        final_text + "\n\n" if final_text else ""
+                    ) + brk.message
                     loop_aborted = True
                     continue
                 tr, payload = await self._execute_tool(block.name, block.input)
@@ -322,7 +343,10 @@ class AnthropicProvider(ModelProvider):
             if loop_aborted:
                 break
         else:
-            logger.warning("AnthropicProvider: tool loop hit max_iterations=%d", DEFAULT_MAX_TOOL_ITERATIONS)
+            logger.warning(
+                "AnthropicProvider: tool loop hit max_iterations=%d",
+                DEFAULT_MAX_TOOL_ITERATIONS,
+            )
 
         usage = ModelUsage(
             prompt_tokens=total_input,
@@ -381,7 +405,10 @@ class AnthropicProvider(ModelProvider):
 
                     if etype == "content_block_start":
                         block = getattr(event, "content_block", None)
-                        if block is not None and getattr(block, "type", None) == "tool_use":
+                        if (
+                            block is not None
+                            and getattr(block, "type", None) == "tool_use"
+                        ):
                             idx = getattr(event, "index", 0)
                             pending_tool_uses[idx] = {
                                 "id": getattr(block, "id", ""),
@@ -412,7 +439,9 @@ class AnthropicProvider(ModelProvider):
                         if entry is not None:
                             try:
                                 parsed_args = (
-                                    json.loads(entry["args_text"]) if entry["args_text"] else {}
+                                    json.loads(entry["args_text"])
+                                    if entry["args_text"]
+                                    else {}
                                 )
                             except json.JSONDecodeError:
                                 parsed_args = {"_raw": entry["args_text"]}
@@ -434,9 +463,8 @@ class AnthropicProvider(ModelProvider):
                     elif etype == "message_stop":
                         final = await stream.get_final_message()
                         usage = final.usage
-                        cached = (
-                            (getattr(usage, "cache_read_input_tokens", 0) or 0)
-                            + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+                        cached = (getattr(usage, "cache_read_input_tokens", 0) or 0) + (
+                            getattr(usage, "cache_creation_input_tokens", 0) or 0
                         )
                         snap = ModelUsageSnapshot(
                             input_tokens=usage.input_tokens,
@@ -451,10 +479,14 @@ class AnthropicProvider(ModelProvider):
                             ),
                             model=f"{self.provider_id}:{self.model_name}",
                         )
-                        yield UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL, usage=snap)
+                        yield UnifiedStreamEvent(
+                            type=StreamEventType.USAGE_FINAL, usage=snap
+                        )
         except anthropic.APIError as exc:
             envelope = _make_envelope(exc, self.provider_id, self.model_name)
-            yield UnifiedStreamEvent(type=StreamEventType.ERROR, error_envelope=envelope)
+            yield UnifiedStreamEvent(
+                type=StreamEventType.ERROR, error_envelope=envelope
+            )
 
     # ------------------------------------------------------------------
     # Tool-loop adapters

@@ -26,18 +26,26 @@ from datetime import datetime
 from typing import Iterable, List, Literal, Optional, Tuple
 from urllib.parse import quote
 
-from deile.orchestration.forge.base import (ForgeClient, ForgeCommandError,
-                                            ForgeConfig, ForgeKind,
-                                            MergeBlocked, WorkItemDetails,
-                                            discover_cli)
+from deile.orchestration.forge.base import (
+    ForgeClient,
+    ForgeCommandError,
+    ForgeConfig,
+    ForgeKind,
+    MergeBlocked,
+    WorkItemDetails,
+    discover_cli,
+)
 from deile.orchestration.forge.refs import CommentRef, IssueRef, PrRef
 from deile.orchestration.pipeline._time_utils import format_iso_utc
-from deile.orchestration.pipeline.labels import (LABEL_COLORS,
-                                                 LABEL_DESCRIPTIONS,
-                                                 MENTION_LABELS,
-                                                 PRIORITY_LABELS,
-                                                 REFINE_LABELS, REVIEW_LABELS,
-                                                 WORKFLOW_LABELS)
+from deile.orchestration.pipeline.labels import (
+    LABEL_COLORS,
+    LABEL_DESCRIPTIONS,
+    MENTION_LABELS,
+    PRIORITY_LABELS,
+    REFINE_LABELS,
+    REVIEW_LABELS,
+    WORKFLOW_LABELS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +60,22 @@ _GH_LOGIN_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 # misses a field when one list helper diverges from another (the shape feeds
 # ``IssueRef.from_gh_json`` / ``PrRef.from_gh_json``).
 _ISSUE_JSON_FIELDS = "number,title,url,labels,body,state,author"
-_PR_JSON_FIELDS = "number,title,url,labels,headRefName,baseRefName,state,isDraft,headRefOid"
+_PR_JSON_FIELDS = (
+    "number,title,url,labels,headRefName,baseRefName,state,isDraft,headRefOid"
+)
 
 
 # Flags passed to ``gh api`` that consume the *next* argument as their value.
 # Used by :func:`_rewrite_gh_api_args` to locate the endpoint positional arg.
-_GH_API_VALUE_FLAGS = frozenset({
-    "-X", "--method", "--jq", "--template", "--input",
-})
+_GH_API_VALUE_FLAGS = frozenset(
+    {
+        "-X",
+        "--method",
+        "--jq",
+        "--template",
+        "--input",
+    }
+)
 
 
 def _rewrite_gh_api_args(host: str, prefix: str, args: tuple) -> tuple:
@@ -125,7 +141,9 @@ def _parse_gh_jq_output(out: Optional[str], *, log_label: str) -> List[dict]:
         except json.JSONDecodeError as exc:
             logger.warning(
                 "%s: skipping malformed JSON at char %d: %s",
-                log_label, idx, exc,
+                log_label,
+                idx,
+                exc,
             )
             return items
         if isinstance(obj, list):
@@ -204,6 +222,7 @@ class GitHubForge(ForgeClient):
         the operator-supplied prefix.
         """
         from deile.config.settings import get_settings
+
         prefix = get_settings().forge_github_api_prefix
         host = self._config.host
         if host != "github.com" and prefix != "api" and args and args[0] == "api":
@@ -215,47 +234,74 @@ class GitHubForge(ForgeClient):
     # ------------------------------------------------------------------
 
     async def list_issues_with_label(
-        self, label: str, *, limit: int = 50,
+        self,
+        label: str,
+        *,
+        limit: int = 50,
     ) -> List[IssueRef]:
         return await self._list_refs(
-            "issue", "list",
-            "--repo", self.repo,
-            "--state", "open",
-            "--label", label,
-            "--limit", str(limit),
-            "--json", _ISSUE_JSON_FIELDS,
+            "issue",
+            "list",
+            "--repo",
+            self.repo,
+            "--state",
+            "open",
+            "--label",
+            label,
+            "--limit",
+            str(limit),
+            "--json",
+            _ISSUE_JSON_FIELDS,
             factory=IssueRef.from_gh_json,
         )
 
     async def get_issue(self, number: int) -> IssueRef:
         out = await self._run_checked(
-            "issue", "view", str(number),
-            "--repo", self.repo,
-            "--json", _ISSUE_JSON_FIELDS,
+            "issue",
+            "view",
+            str(number),
+            "--repo",
+            self.repo,
+            "--json",
+            _ISSUE_JSON_FIELDS,
         )
         return IssueRef.from_gh_json(json.loads(out))
 
     async def list_issues_assigned_to(
-        self, login: str, *, limit: int = 100,
+        self,
+        login: str,
+        *,
+        limit: int = 100,
     ) -> List[IssueRef]:
         return await self._list_refs(
-            "issue", "list",
-            "--repo", self.repo,
-            "--state", "open",
-            "--assignee", login,
-            "--limit", str(limit),
-            "--json", _ISSUE_JSON_FIELDS,
+            "issue",
+            "list",
+            "--repo",
+            self.repo,
+            "--state",
+            "open",
+            "--assignee",
+            login,
+            "--limit",
+            str(limit),
+            "--json",
+            _ISSUE_JSON_FIELDS,
             factory=IssueRef.from_gh_json,
             log_label="list_issues_assigned_to",
         )
 
     async def list_open_issues(self, *, limit: int = 1000) -> List[IssueRef]:
         return await self._list_refs(
-            "issue", "list",
-            "--repo", self.repo,
-            "--state", "open",
-            "--limit", str(limit),
-            "--json", _ISSUE_JSON_FIELDS,
+            "issue",
+            "list",
+            "--repo",
+            self.repo,
+            "--state",
+            "open",
+            "--limit",
+            str(limit),
+            "--json",
+            _ISSUE_JSON_FIELDS,
             factory=IssueRef.from_gh_json,
             log_label="list_open_issues",
         )
@@ -275,17 +321,24 @@ class GitHubForge(ForgeClient):
             # Usa --include para capturar headers de rate-limit junto com o corpo.
             _, rl_headers = await self._api_get_json_with_headers(
                 f"repos/{self.repo}/issues",
-                "--field", "state=open",
-                "--field", f"per_page={batch_limit}",
+                "--field",
+                "state=open",
+                "--field",
+                f"per_page={batch_limit}",
             )
             await self._maybe_sleep_for_rate_limit(rl_headers)
 
             out = await self._run_checked(
-                "issue", "list",
-                "--repo", self.repo,
-                "--state", "open",
-                "--limit", str(batch_limit),
-                "--json", _ISSUE_JSON_FIELDS,
+                "issue",
+                "list",
+                "--repo",
+                self.repo,
+                "--state",
+                "open",
+                "--limit",
+                str(batch_limit),
+                "--json",
+                _ISSUE_JSON_FIELDS,
             )
             data = json.loads(out or "[]")
             for item in data:
@@ -305,7 +358,8 @@ class GitHubForge(ForgeClient):
             offset = batch_limit
             logger.debug(
                 "list_unclassified_issues: fetched %d so far, extending to %d",
-                len(seen), offset + page_size,
+                len(seen),
+                offset + page_size,
             )
         return result
 
@@ -317,10 +371,14 @@ class GitHubForge(ForgeClient):
         labels: Optional[List[str]] = None,
     ) -> int:
         cmd = [
-            "issue", "create",
-            "--repo", self.repo,
-            "--title", title,
-            "--body", body,
+            "issue",
+            "create",
+            "--repo",
+            self.repo,
+            "--title",
+            title,
+            "--body",
+            body,
         ]
         if labels:
             cmd.extend(["--label", ",".join(labels)])
@@ -334,9 +392,13 @@ class GitHubForge(ForgeClient):
 
     async def comment_on_issue(self, number: int, text: str) -> None:
         await self._run_checked(
-            "issue", "comment", str(number),
-            "--repo", self.repo,
-            "--body", text,
+            "issue",
+            "comment",
+            str(number),
+            "--repo",
+            self.repo,
+            "--body",
+            text,
         )
 
     async def assign_issue(self, number: int, login: str) -> None:
@@ -356,12 +418,18 @@ class GitHubForge(ForgeClient):
         if not _GH_LOGIN_RE.fullmatch(login):
             logger.warning(
                 "assign_issue #%d: login %r não é um GitHub username válido "
-                "(alnum/hyphen, 1-39 chars) — rejeitando", number, login,
+                "(alnum/hyphen, 1-39 chars) — rejeitando",
+                number,
+                login,
             )
             return
         rc, _, err = await self._run(
-            "api", "-X", "POST", f"repos/{self.repo}/issues/{number}/assignees",
-            "-f", f"assignees[]={login}",
+            "api",
+            "-X",
+            "POST",
+            f"repos/{self.repo}/issues/{number}/assignees",
+            "-f",
+            f"assignees[]={login}",
         )
         if rc != 0:
             logger.warning(
@@ -375,9 +443,13 @@ class GitHubForge(ForgeClient):
     async def get_pr(self, number: int) -> Optional[PrRef]:
         try:
             out = await self._run_checked(
-                "pr", "view", str(number),
-                "--repo", self.repo,
-                "--json", _PR_JSON_FIELDS,
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                self.repo,
+                "--json",
+                _PR_JSON_FIELDS,
             )
         except ForgeCommandError:
             return None
@@ -389,20 +461,30 @@ class GitHubForge(ForgeClient):
     async def has_open_pr_for_issue(self, number: int) -> bool:
         try:
             out = await self._run_checked(
-                "pr", "list", "--repo", self.repo, "--state", "open",
-                "--search", str(number), "--limit", "30",
-                "--json", "number,body,headRefName",
+                "pr",
+                "list",
+                "--repo",
+                self.repo,
+                "--state",
+                "open",
+                "--search",
+                str(number),
+                "--limit",
+                "30",
+                "--json",
+                "number,body,headRefName",
             )
             prs = json.loads(out)
         except (ForgeCommandError, json.JSONDecodeError) as exc:
             logger.warning("has_open_pr_for_issue #%d failed: %s", number, exc)
             return False
         closes = re.compile(
-            rf"\b(?:clos\w*|fix\w*|resolv\w*)\s+#{number}\b", re.IGNORECASE,
+            rf"\b(?:clos\w*|fix\w*|resolv\w*)\s+#{number}\b",
+            re.IGNORECASE,
         )
         needle = f"issue-{number}"
         for pr in prs:
-            head = (pr.get("headRefName") or "")
+            head = pr.get("headRefName") or ""
             if needle in head or head.endswith(f"-{number}"):
                 return True
             if closes.search(pr.get("body") or ""):
@@ -411,24 +493,38 @@ class GitHubForge(ForgeClient):
 
     async def list_open_prs(self, *, limit: int = 50) -> List[PrRef]:
         return await self._list_refs(
-            "pr", "list",
-            "--repo", self.repo,
-            "--state", "open",
-            "--limit", str(limit),
-            "--json", _PR_JSON_FIELDS,
+            "pr",
+            "list",
+            "--repo",
+            self.repo,
+            "--state",
+            "open",
+            "--limit",
+            str(limit),
+            "--json",
+            _PR_JSON_FIELDS,
             factory=PrRef.from_gh_json,
         )
 
     async def list_prs_assigned_to(
-        self, login: str, *, limit: int = 100,
+        self,
+        login: str,
+        *,
+        limit: int = 100,
     ) -> List[PrRef]:
         return await self._list_refs(
-            "pr", "list",
-            "--repo", self.repo,
-            "--state", "open",
-            "--assignee", login,
-            "--limit", str(limit),
-            "--json", _PR_JSON_FIELDS,
+            "pr",
+            "list",
+            "--repo",
+            self.repo,
+            "--state",
+            "open",
+            "--assignee",
+            login,
+            "--limit",
+            str(limit),
+            "--json",
+            _PR_JSON_FIELDS,
             factory=PrRef.from_gh_json,
             log_label="list_prs_assigned_to",
         )
@@ -436,24 +532,32 @@ class GitHubForge(ForgeClient):
     async def list_unclassified_prs(self) -> List[PrRef]:
         prs = await self.list_open_prs()
         return [
-            pr for pr in prs
-            if not pr.is_draft
-            and not any(lb.startswith("~") for lb in pr.labels)
+            pr
+            for pr in prs
+            if not pr.is_draft and not any(lb.startswith("~") for lb in pr.labels)
         ]
 
     async def list_recently_merged_prs(self, *, limit: int = 20) -> List[PrRef]:
         return await self._list_refs(
-            "pr", "list",
-            "--repo", self.repo,
-            "--state", "merged",
-            "--limit", str(limit),
-            "--json", _PR_JSON_FIELDS,
+            "pr",
+            "list",
+            "--repo",
+            self.repo,
+            "--state",
+            "merged",
+            "--limit",
+            str(limit),
+            "--json",
+            _PR_JSON_FIELDS,
             factory=lambda item: PrRef.from_gh_json(item, default_state="merged"),
             log_label="list_recently_merged_prs",
         )
 
     async def list_prs_updated_since(
-        self, since_iso: str, *, limit: int = 100,
+        self,
+        since_iso: str,
+        *,
+        limit: int = 100,
     ) -> List[dict]:
         """Return PRs updated since *since_iso* (ISO-8601 UTC) — any state.
 
@@ -464,18 +568,27 @@ class GitHubForge(ForgeClient):
         wrapper. ``[]`` is returned on any ``gh`` failure (logged at WARNING).
         """
         return await self._list_refs(
-            "pr", "list",
-            "--repo", self.repo,
-            "--state", "all",
-            "--search", f"updated:>={since_iso}",
-            "--limit", str(limit),
-            "--json", "number,title,state,author,url,updatedAt",
+            "pr",
+            "list",
+            "--repo",
+            self.repo,
+            "--state",
+            "all",
+            "--search",
+            f"updated:>={since_iso}",
+            "--limit",
+            str(limit),
+            "--json",
+            "number,title,state,author,url,updatedAt",
             factory=_standup_item_from_gh_json,
             log_label="list_prs_updated_since",
         )
 
     async def list_issues_updated_since(
-        self, since_iso: str, *, limit: int = 100,
+        self,
+        since_iso: str,
+        *,
+        limit: int = 100,
     ) -> List[dict]:
         """Return issues updated since *since_iso* (ISO-8601 UTC) — any state.
 
@@ -483,12 +596,18 @@ class GitHubForge(ForgeClient):
         Returns plain dicts with the same shape; ``[]`` on any ``gh`` failure.
         """
         return await self._list_refs(
-            "issue", "list",
-            "--repo", self.repo,
-            "--state", "all",
-            "--search", f"updated:>={since_iso}",
-            "--limit", str(limit),
-            "--json", "number,title,state,author,url,updatedAt",
+            "issue",
+            "list",
+            "--repo",
+            self.repo,
+            "--state",
+            "all",
+            "--search",
+            f"updated:>={since_iso}",
+            "--limit",
+            str(limit),
+            "--json",
+            "number,title,state,author,url,updatedAt",
             factory=_standup_item_from_gh_json,
             log_label="list_issues_updated_since",
         )
@@ -501,14 +620,19 @@ class GitHubForge(ForgeClient):
         """
         try:
             out = await self._run_checked(
-                "api", "-X", "GET",
+                "api",
+                "-X",
+                "GET",
                 f"repos/{self.repo}/pulls/{number}",
-                "--jq", ".requested_reviewers[].login",
+                "--jq",
+                ".requested_reviewers[].login",
             )
         except ForgeCommandError as exc:
             logger.warning(
                 "pr_reviewer_still_requested(#%d, %s) failed: %s — fail-open=False",
-                number, login, exc,
+                number,
+                login,
+                exc,
             )
             return False
         for line in (out or "").splitlines():
@@ -533,14 +657,20 @@ class GitHubForge(ForgeClient):
             return []
         try:
             out = await self._run_checked(
-                "api", "-X", "GET", f"repos/{self.repo}/pulls",
-                "--field", "state=open",
-                "--field", "per_page=100",
-                "--jq", (
-                    f'.[] | select(.requested_reviewers != null) | '
+                "api",
+                "-X",
+                "GET",
+                f"repos/{self.repo}/pulls",
+                "--field",
+                "state=open",
+                "--field",
+                "per_page=100",
+                "--jq",
+                (
+                    f".[] | select(.requested_reviewers != null) | "
                     f'select(any(.requested_reviewers[]; .login == "{login}")) | '
-                    f'{{number, title, url, labels, headRefName: .head.ref, '
-                    f'baseRefName: .base.ref, state, isDraft: .draft, headRefOid: .head.sha}}'
+                    f"{{number, title, url, labels, headRefName: .head.ref, "
+                    f"baseRefName: .base.ref, state, isDraft: .draft, headRefOid: .head.sha}}"
                 ),
             )
         except ForgeCommandError as exc:
@@ -561,17 +691,25 @@ class GitHubForge(ForgeClient):
 
     async def comment_on_pr(self, number: int, text: str) -> None:
         await self._run_checked(
-            "pr", "comment", str(number),
-            "--repo", self.repo,
-            "--body", text,
+            "pr",
+            "comment",
+            str(number),
+            "--repo",
+            self.repo,
+            "--body",
+            text,
         )
 
     async def get_pr_body(self, number: int) -> str:
         try:
             out = await self._run_checked(
-                "pr", "view", str(number),
-                "--repo", self.repo,
-                "--json", "body",
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                self.repo,
+                "--json",
+                "body",
             )
             return json.loads(out).get("body", "") or ""
         except ForgeCommandError as exc:
@@ -581,12 +719,18 @@ class GitHubForge(ForgeClient):
     async def list_pr_comments(self, number: int) -> List[str]:
         try:
             out = await self._run_checked(
-                "pr", "view", str(number),
-                "--repo", self.repo,
-                "--json", "comments",
+                "pr",
+                "view",
+                str(number),
+                "--repo",
+                self.repo,
+                "--json",
+                "comments",
             )
             data = json.loads(out)
-            return [c.get("body", "") for c in data.get("comments", []) if c.get("body")]
+            return [
+                c.get("body", "") for c in data.get("comments", []) if c.get("body")
+            ]
         except ForgeCommandError as exc:
             logger.warning("list_pr_comments #%s failed: %s", number, exc)
             return []
@@ -602,7 +746,10 @@ class GitHubForge(ForgeClient):
         rc, _, err = await self._run(*args)
         if rc != 0:
             logger.warning(
-                "set_draft #%d draft=%s failed: %s", number, draft, err.strip()[:200],
+                "set_draft #%d draft=%s failed: %s",
+                number,
+                draft,
+                err.strip()[:200],
             )
 
     async def merge_pr(self, number: int, *, merge_method: str = "merge") -> None:
@@ -613,20 +760,29 @@ class GitHubForge(ForgeClient):
         so the caller gets a typed impediment.
         """
         rc, out, err = await self._run(
-            "api", "-X", "PUT",
+            "api",
+            "-X",
+            "PUT",
             f"repos/{self.repo}/pulls/{number}/merge",
-            "-f", f"merge_method={merge_method}",
+            "-f",
+            f"merge_method={merge_method}",
         )
         if rc == 0:
             return
         combined = f"{err}{out}".lower()
-        if "405" in combined or "method not allowed" in combined or "not mergeable" in combined:
+        if (
+            "405" in combined
+            or "method not allowed" in combined
+            or "not mergeable" in combined
+        ):
             raise MergeBlocked(
                 f"GitHub refused merge of PR #{number}: {err.strip()[:200] or 'merge not allowed'}"
             )
         raise ForgeCommandError(
             ("gh", "api", "-X", "PUT", f"repos/{self.repo}/pulls/{number}/merge"),
-            rc, out, err,
+            rc,
+            out,
+            err,
         )
 
     async def get_pr_commits_since(self, number: int, since_ts: float) -> list[dict]:
@@ -643,9 +799,9 @@ class GitHubForge(ForgeClient):
             f"repos/{self.repo}/pulls/{number}/commits",
             "-q",
             (
-                '[.[] | {sha: .sha, message: .commit.message, '
-                'date: .commit.committer.date, '
-                'files: [.files[]?.filename]}]'
+                "[.[] | {sha: .sha, message: .commit.message, "
+                "date: .commit.committer.date, "
+                "files: [.files[]?.filename]}]"
             ),
         )
         if rc != 0 or not out.strip():
@@ -668,7 +824,8 @@ class GitHubForge(ForgeClient):
         return result
 
     async def get_ci_status(
-        self, number: int,
+        self,
+        number: int,
     ) -> Literal["passing", "failing", "pending", "none"]:
         """Run ``gh pr checks --json`` and collapse the result to one status.
 
@@ -679,8 +836,13 @@ class GitHubForge(ForgeClient):
         ``pass|fail|pending|cancel|skipping``.
         """
         rc, out, _ = await self._run(
-            "pr", "checks", str(number), "--repo", self.repo,
-            "--json", "bucket,state,conclusion",
+            "pr",
+            "checks",
+            str(number),
+            "--repo",
+            self.repo,
+            "--json",
+            "bucket,state,conclusion",
         )
         if rc != 0 or not out.strip():
             return "none"
@@ -702,7 +864,9 @@ class GitHubForge(ForgeClient):
         return "none"
 
     async def get_work_item_details(
-        self, kind: Literal["issue", "pr"], number: int,
+        self,
+        kind: Literal["issue", "pr"],
+        number: int,
     ) -> WorkItemDetails:
         """Fetch a rich snapshot for a single GitHub issue or PR.
 
@@ -720,15 +884,22 @@ class GitHubForge(ForgeClient):
 
         def _links(body: str) -> list:
             return [
-                ("closes" if m.group(0).lower().startswith(("clos", "fix", "resolv")) else "refs",
-                 int(m.group("issue") or "0"))
+                (
+                    (
+                        "closes"
+                        if m.group(0).lower().startswith(("clos", "fix", "resolv"))
+                        else "refs"
+                    ),
+                    int(m.group("issue") or "0"),
+                )
                 for m in _LINKED_RE.finditer(body or "")
                 if m.group("issue")
             ]
 
         # ------ Item detail ------
         rc_i, out_i, _ = await self._run(
-            "api", f"repos/{self.repo}/issues/{number}",
+            "api",
+            f"repos/{self.repo}/issues/{number}",
         )
         item: dict = {}
         if rc_i == 0:
@@ -747,13 +918,16 @@ class GitHubForge(ForgeClient):
         # PR-specific enrichment
         ci_status: Literal["passing", "failing", "pending", "none"] = "none"
         ci_summary: Tuple[int, int] = (0, 0)
-        mergeability: Literal["clean", "conflict", "draft", "blocked", "unknown"] = "unknown"
+        mergeability: Literal["clean", "conflict", "draft", "blocked", "unknown"] = (
+            "unknown"
+        )
         reviewers: List[Tuple[str, str]] = []
 
         if kind == "pr":
             # PR detail for draft/mergeable/reviewers
             rc_p, out_p, _ = await self._run(
-                "api", f"repos/{self.repo}/pulls/{number}",
+                "api",
+                f"repos/{self.repo}/pulls/{number}",
             )
             pr_payload: dict = {}
             if rc_p == 0:
@@ -775,15 +949,20 @@ class GitHubForge(ForgeClient):
                     mergeability = "blocked"
                 elif mgbl is False:
                     mergeability = "conflict"
-                for rv in (pr_payload.get("requested_reviewers") or []):
+                for rv in pr_payload.get("requested_reviewers") or []:
                     login = (rv or {}).get("login", "")
                     if login:
                         reviewers.append((login, "pending"))
 
             # CI checks summary
             rc_c, out_c, _ = await self._run(
-                "pr", "checks", str(number), "--repo", self.repo,
-                "--json", "bucket,state,conclusion",
+                "pr",
+                "checks",
+                str(number),
+                "--repo",
+                self.repo,
+                "--json",
+                "bucket,state,conclusion",
             )
             checks: list = []
             if rc_c == 0:
@@ -793,8 +972,11 @@ class GitHubForge(ForgeClient):
                     pass
             if isinstance(checks, list) and checks:
                 total = len(checks)
-                passed = sum(1 for c in checks
-                             if str((c or {}).get("bucket") or "").lower() == "pass")
+                passed = sum(
+                    1
+                    for c in checks
+                    if str((c or {}).get("bucket") or "").lower() == "pass"
+                )
                 ci_summary = (passed, total)
                 buckets = {str((c or {}).get("bucket") or "").lower() for c in checks}
                 if "fail" in buckets:
@@ -851,58 +1033,71 @@ class GitHubForge(ForgeClient):
         """
         try:
             return await self._has_bot_activity_impl(
-                kind, number, bot_login, since_ts,
+                kind,
+                number,
+                bot_login,
+                since_ts,
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "has_bot_activity_since #%d failed (fail-open): %s",
-                number, exc,
+                number,
+                exc,
             )
             return True
 
     async def _has_bot_activity_impl(
-        self, kind: str, number: int, bot_login: str, since_ts: int,
+        self,
+        kind: str,
+        number: int,
+        bot_login: str,
+        since_ts: int,
     ) -> bool:
         # Defense-in-depth: validate before interpolating into the jq filter,
         # matching the invariant held by every other login surface in the forge.
         if not _GH_LOGIN_RE.fullmatch(bot_login or ""):
             logger.warning(
                 "_has_bot_activity_impl #%d: bot_login %r rejected by _GH_LOGIN_RE",
-                number, bot_login,
+                number,
+                bot_login,
             )
             return False
         # Comments — issues + PRs compartilham endpoint.
         rc_c, out_c, _ = await self._run(
-            "api", "--paginate",
+            "api",
+            "--paginate",
             f"repos/{self.repo}/issues/{number}/comments",
-            "-q", (
-                f'[.[] | select(.user.login=="{bot_login}") | .created_at] | last'
-            ),
+            "-q",
+            (f'[.[] | select(.user.login=="{bot_login}") | .created_at] | last'),
         )
         if rc_c == 0 and self._iso_after(out_c, since_ts):
             return True
         if kind == "pr":
             # Reviews (formal) — só pra PRs.
             rc_r, out_r, _ = await self._run(
-                "api", "--paginate",
+                "api",
+                "--paginate",
                 f"repos/{self.repo}/pulls/{number}/reviews",
-                "-q", (
-                    f'[.[] | select(.user.login=="{bot_login}") | .submitted_at] | last'
-                ),
+                "-q",
+                (f'[.[] | select(.user.login=="{bot_login}") | .submitted_at] | last'),
             )
             if rc_r == 0 and self._iso_after(out_r, since_ts):
                 return True
             # Merge status — se merged depois do since_ts, conta como atividade.
             rc_m, out_m, _ = await self._run(
-                "api", f"repos/{self.repo}/pulls/{number}",
-                "-q", ".merged_at",
+                "api",
+                f"repos/{self.repo}/pulls/{number}",
+                "-q",
+                ".merged_at",
             )
             if rc_m == 0 and self._iso_after(out_m, since_ts):
                 return True
             # Novo commit no branch (último commit timestamp).
             rc_p, out_p, _ = await self._run(
-                "api", f"repos/{self.repo}/pulls/{number}/commits",
-                "-q", "[.[].commit.committer.date] | last",
+                "api",
+                f"repos/{self.repo}/pulls/{number}/commits",
+                "-q",
+                "[.[].commit.committer.date] | last",
             )
             if rc_p == 0 and self._iso_after(out_p, since_ts):
                 return True
@@ -921,7 +1116,10 @@ class GitHubForge(ForgeClient):
             return False
 
     async def label_applied_at(
-        self, kind: str, number: int, label: str,
+        self,
+        kind: str,
+        number: int,
+        label: str,
     ) -> Optional[int]:
         """GitHub events API → ISO timestamp do último ``labeled`` event do
         ``label`` no ``kind/number``. Suporta paginação automática via
@@ -934,9 +1132,11 @@ class GitHubForge(ForgeClient):
         suporta sufixo ``Z`` nativamente; pra anterior, normalizamos).
         """
         rc, out, err = await self._run(
-            "api", "--paginate",
+            "api",
+            "--paginate",
             f"repos/{self.repo}/issues/{number}/events",
-            "-q", (
+            "-q",
+            (
                 '[.[] | select(.event=="labeled" and .label.name=='
                 f'"{label}") | .created_at] | last'
             ),
@@ -944,7 +1144,9 @@ class GitHubForge(ForgeClient):
         if rc != 0:
             logger.debug(
                 "label_applied_at #%d label=%r: gh api failed: %s",
-                number, label, err[:100],
+                number,
+                label,
+                err[:100],
             )
             return None
         ts_str = (out or "").strip().strip('"')
@@ -954,17 +1156,24 @@ class GitHubForge(ForgeClient):
             # GitHub usa ISO 8601 com 'Z' (Python 3.11+ aceita nativamente;
             # 3.9-3.10 requer replace).
             from datetime import datetime
+
             iso = ts_str.replace("Z", "+00:00")
             return int(datetime.fromisoformat(iso).timestamp())
         except (ValueError, TypeError) as exc:
             logger.debug(
                 "label_applied_at #%d label=%r: ts parse failed (%r): %s",
-                number, label, ts_str, exc,
+                number,
+                label,
+                ts_str,
+                exc,
             )
             return None
 
     async def remove_labels(
-        self, kind: str, number: int, labels: Iterable[str],
+        self,
+        kind: str,
+        number: int,
+        labels: Iterable[str],
     ) -> None:
         labels_list = list(labels)
         if not labels_list:
@@ -975,10 +1184,15 @@ class GitHubForge(ForgeClient):
             if rc != 0:
                 low = err.lower()
                 if "404" in err or "not found" in low or "does not exist" in low:
-                    logger.debug("remove_labels: %r absent on #%d (ignored)", lb, number)
+                    logger.debug(
+                        "remove_labels: %r absent on #%d (ignored)", lb, number
+                    )
                     continue
                 raise ForgeCommandError(
-                    ("gh", "api", "-X", "DELETE", path), rc, out, err,
+                    ("gh", "api", "-X", "DELETE", path),
+                    rc,
+                    out,
+                    err,
                 )
         if self.on_label_change is not None:
             try:
@@ -988,10 +1202,15 @@ class GitHubForge(ForgeClient):
 
     async def _ensure_label(self, name: str, *, color: str, description: str) -> None:
         rc, _, err = await self._run(
-            "label", "create", name,
-            "--repo", self.repo,
-            "--color", color,
-            "--description", description,
+            "label",
+            "create",
+            name,
+            "--repo",
+            self.repo,
+            "--color",
+            color,
+            "--description",
+            description,
         )
         if rc != 0 and "already exists" not in err.lower():
             logger.debug("ensure_label %s: rc=%d err=%s", name, rc, err.strip()[:200])
@@ -1001,18 +1220,31 @@ class GitHubForge(ForgeClient):
             color = LABEL_COLORS.get(label, "ededed")
             description = LABEL_DESCRIPTIONS.get(label, "Pipeline-managed label")
             rc, _, _ = await self._run(
-                "label", "create", label,
-                "--repo", self.repo,
-                "--color", color,
-                "--description", description,
+                "label",
+                "create",
+                label,
+                "--repo",
+                self.repo,
+                "--color",
+                color,
+                "--description",
+                description,
             )
             if rc != 0:
                 logger.debug("label %s already exists or could not be created", label)
 
-        await asyncio.gather(*[
-            _create_one(label)
-            for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS, *REFINE_LABELS, *PRIORITY_LABELS)
-        ])
+        await asyncio.gather(
+            *[
+                _create_one(label)
+                for label in (
+                    *WORKFLOW_LABELS,
+                    *REVIEW_LABELS,
+                    *MENTION_LABELS,
+                    *REFINE_LABELS,
+                    *PRIORITY_LABELS,
+                )
+            ]
+        )
 
     # ------------------------------------------------------------------
     # Priority inheritance (issue #369)
@@ -1037,15 +1269,16 @@ class GitHubForge(ForgeClient):
         # (case-insensitive, with optional colon).
         linked = re.findall(
             r"\b(?:clos\w*|fix\w*|resolv\w*)\s*:?\s*#(\d+)\b",
-            body, re.IGNORECASE,
+            body,
+            re.IGNORECASE,
         )
         if not linked:
             return None
         # Deduplicate linked issue numbers.
         unique_numbers = set(int(n) for n in linked)
         best: Optional[int] = None
-        from deile.orchestration.pipeline.labels import \
-            parse_priority_from_labels
+        from deile.orchestration.pipeline.labels import parse_priority_from_labels
+
         for n in unique_numbers:
             try:
                 issue = await self.get_issue(n)
@@ -1077,9 +1310,14 @@ class GitHubForge(ForgeClient):
         since_iso = format_iso_utc(since)
         try:
             out = await self._run_checked(
-                "api", "-X", "GET", endpoint,
-                "--field", f"since={since_iso}",
-                "--field", "per_page=100",
+                "api",
+                "-X",
+                "GET",
+                endpoint,
+                "--field",
+                f"since={since_iso}",
+                "--field",
+                "per_page=100",
             )
         except ForgeCommandError as exc:
             logger.warning("%s failed: %s", log_label, exc)
@@ -1101,19 +1339,19 @@ class GitHubForge(ForgeClient):
                 # consistência: qualquer comment em PR pode ser identificado
                 # apenas via este flag, sem inspecionar ``kind``.
                 is_pr_comment = (
-                    kind == "pr_review"
-                    or "/pull/" in html_url
-                    or "/pulls/" in html_url
+                    kind == "pr_review" or "/pull/" in html_url or "/pulls/" in html_url
                 )
-                result.append(CommentRef(
-                    comment_id=int(item["id"]),
-                    body=str(item.get("body") or ""),
-                    html_url=html_url,
-                    issue_url=str(item.get(url_field, "")),
-                    author=str((item.get("user") or {}).get("login", "")),
-                    kind=kind,
-                    is_pr_comment=is_pr_comment,
-                ))
+                result.append(
+                    CommentRef(
+                        comment_id=int(item["id"]),
+                        body=str(item.get("body") or ""),
+                        html_url=html_url,
+                        issue_url=str(item.get(url_field, "")),
+                        author=str((item.get("user") or {}).get("login", "")),
+                        kind=kind,
+                        is_pr_comment=is_pr_comment,
+                    )
+                )
             except (KeyError, TypeError, ValueError) as exc:
                 logger.warning("skipping malformed %s comment payload: %s", kind, exc)
         return result
@@ -1137,7 +1375,10 @@ class GitHubForge(ForgeClient):
         )
 
     async def search_items_mentioning(
-        self, query: str, *, limit: int = 50,
+        self,
+        query: str,
+        *,
+        limit: int = 50,
     ) -> Tuple[List[IssueRef], List[PrRef]]:
         issues: List[IssueRef] = []
         prs: List[PrRef] = []
@@ -1148,8 +1389,10 @@ class GitHubForge(ForgeClient):
             login = query.lstrip("@")
             q = quote(f"mentions:{login} repo:{self.repo} state:open", safe="")
             out = await self._run_checked(
-                "api", f"search/issues?q={q}&per_page={limit}",
-                "--jq", (
+                "api",
+                f"search/issues?q={q}&per_page={limit}",
+                "--jq",
+                (
                     ".items | map({"
                     "number, title, url: .html_url, labels, body, state,"
                     " author: {login: .user.login}"
@@ -1180,12 +1423,19 @@ class GitHubForge(ForgeClient):
             return self._config.default_branch
         try:
             out = await self._run_checked(
-                "repo", "view", self.repo,
-                "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name",
+                "repo",
+                "view",
+                self.repo,
+                "--json",
+                "defaultBranchRef",
+                "-q",
+                ".defaultBranchRef.name",
             )
             name = (out or "").strip() or "main"
         except ForgeCommandError as exc:
-            logger.warning("default_branch lookup failed: %s — defaulting to 'main'", exc)
+            logger.warning(
+                "default_branch lookup failed: %s — defaulting to 'main'", exc
+            )
             name = "main"
         self._config.default_branch = name
         return name
@@ -1203,7 +1453,8 @@ class GitHubForge(ForgeClient):
         # URL-encode '/' in branch names like 'auto/issue-448' (gh api needs
         # literal slashes in the path, but the rest of the segment is opaque).
         rc, _, _ = await self._run(
-            "api", f"repos/{self.repo}/git/refs/heads/{name}",
+            "api",
+            f"repos/{self.repo}/git/refs/heads/{name}",
             "--silent",
         )
         if rc == 0:
@@ -1211,7 +1462,8 @@ class GitHubForge(ForgeClient):
         # gh exits non-zero on 4xx; 404 is the only response that authoritatively
         # means "branch deleted". Any other rc (network, auth) is fail-open.
         rc2, body, _ = await self._run(
-            "api", f"repos/{self.repo}/git/refs/heads/{name}",
+            "api",
+            f"repos/{self.repo}/git/refs/heads/{name}",
             "-i",
         )
         return "HTTP/2 404" not in body and "HTTP/1.1 404" not in body

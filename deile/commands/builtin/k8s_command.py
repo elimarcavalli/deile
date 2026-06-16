@@ -37,8 +37,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ..base import CommandContext, CommandResult, DirectCommand
 from ...config.manager import CommandConfig
+from ..base import CommandContext, CommandResult, DirectCommand
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +52,23 @@ _DEFAULT_TAIL = 50
 _DEFAULT_DEPLOYMENT = "deile-pipeline"
 _KUBECTL_TIMEOUT = 30.0
 
-_K8S_DELEGATE_TIMEOUT_SHORT = 300.0   # seconds for non-long verbs
+_K8S_DELEGATE_TIMEOUT_SHORT = 300.0  # seconds for non-long verbs
 _K8S_DELEGATE_TIMEOUT_LONG = 1800.0  # seconds for up/build/down
 
 _V2_LONG_VERBS = frozenset({"up", "build", "down"})
-_V2_SHORT_VERBS = frozenset({
-    "scale", "start", "stop", "setup", "create-namespace",
-    "claude-login", "claude-renew", "test", "clone",
-})
+_V2_SHORT_VERBS = frozenset(
+    {
+        "scale",
+        "start",
+        "stop",
+        "setup",
+        "create-namespace",
+        "claude-login",
+        "claude-renew",
+        "test",
+        "clone",
+    }
+)
 
 # Verbs that are always destructive (no extra flags needed)
 _ALWAYS_DESTRUCTIVE = frozenset({"down"})
@@ -95,8 +104,19 @@ _V1_VERBS = [
 ]
 
 _V2_VERBS = [
-    "up", "build", "down", "scale", "start", "stop", "setup",
-    "create-namespace", "claude-login", "claude-renew", "test", "clone", "panel",
+    "up",
+    "build",
+    "down",
+    "scale",
+    "start",
+    "stop",
+    "setup",
+    "create-namespace",
+    "claude-login",
+    "claude-renew",
+    "test",
+    "clone",
+    "panel",
 ]
 
 # ---------------------------------------------------------------------------
@@ -141,12 +161,16 @@ async def _detect_namespace() -> str:
     Returns the first matching namespace, or 'deile' as fallback.
     """
     import shutil
+
     kubectl = shutil.which("kubectl") or _KUBECTL
     cmd = [
         kubectl,
-        "get", "namespaces",
-        "-l", "app.kubernetes.io/managed-by=deile",
-        "-o", "jsonpath={.items[*].metadata.name}",
+        "get",
+        "namespaces",
+        "-l",
+        "app.kubernetes.io/managed-by=deile",
+        "-o",
+        "jsonpath={.items[*].metadata.name}",
     ]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -155,7 +179,9 @@ async def _detect_namespace() -> str:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=_KUBECTL_TIMEOUT)
+            stdout_b, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_KUBECTL_TIMEOUT
+            )
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
@@ -180,6 +206,7 @@ async def _run_kubectl(
 ) -> Tuple[bool, str, str]:
     """Run kubectl with the given args. Returns (ok, stdout, stderr)."""
     import shutil
+
     kubectl = shutil.which("kubectl") or _KUBECTL
     cmd = [kubectl] + args
     try:
@@ -189,7 +216,9 @@ async def _run_kubectl(
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
@@ -254,6 +283,7 @@ async def _live_stream_subprocess(
             auto_refresh=False,
             transient=False,
         ) as live:
+
             async def _stream_live() -> None:
                 assert proc.stdout is not None
                 async for raw in proc.stdout:
@@ -383,18 +413,34 @@ async def _cmd_restart(namespace: str, deployment: str) -> CommandResult:
             ["-n", namespace, "rollout", "restart", f"deployment/{dep}"]
         )
         if not ok:
-            lines.append(Text(f"[✗] rollout restart {dep}: {stderr.strip()[:200]}", style="red"))
+            lines.append(
+                Text(f"[✗] rollout restart {dep}: {stderr.strip()[:200]}", style="red")
+            )
             all_ok = False
             continue
 
-        lines.append(Text(f"[~] kubectl -n {namespace} rollout restart deployment/{dep}", style="dim"))
+        lines.append(
+            Text(
+                f"[~] kubectl -n {namespace} rollout restart deployment/{dep}",
+                style="dim",
+            )
+        )
 
         ok2, out2, err2 = await _run_kubectl(
-            ["-n", namespace, "rollout", "status", f"deployment/{dep}", "--timeout=180s"],
+            [
+                "-n",
+                namespace,
+                "rollout",
+                "status",
+                f"deployment/{dep}",
+                "--timeout=180s",
+            ],
             timeout=200.0,
         )
         if ok2:
-            lines.append(Text(f"[OK] deployment \"{dep}\" rollout concluído", style="green"))
+            lines.append(
+                Text(f'[OK] deployment "{dep}" rollout concluído', style="green")
+            )
         else:
             msg = (err2 or out2).strip()[:200]
             lines.append(Text(f"[✗] rollout status {dep} falhou: {msg}", style="red"))
@@ -403,7 +449,9 @@ async def _cmd_restart(namespace: str, deployment: str) -> CommandResult:
     lines.append(Text(""))
     n = len(targets)
     if all_ok:
-        lines.append(Text(f"[OK] {n}/{n} deployments concluíram rollout", style="green"))
+        lines.append(
+            Text(f"[OK] {n}/{n} deployments concluíram rollout", style="green")
+        )
     else:
         lines.append(Text("Alguns rollouts falharam (ver detalhes acima)", style="red"))
 
@@ -420,9 +468,7 @@ async def _cmd_status(namespace: str) -> CommandResult:
         ["-n", namespace, "get", "pods,deployments,services"]
     )
     if not ok:
-        return CommandResult.error_result(
-            f"kubectl get failed:\n{stderr.strip()}"
-        )
+        return CommandResult.error_result(f"kubectl get failed:\n{stderr.strip()}")
     return CommandResult.success_result(stdout or "(empty output)", "text")
 
 
@@ -503,8 +549,13 @@ async def _cmd_v2_delegate(
     erro apontando ``create-namespace`` como alternativa scriptável.
     ``claude-login`` recebe ``--no-interactive`` automaticamente.
     """
-    from deile.security.audit_logger import AuditEventType, SeverityLevel, get_audit_logger
     from rich.console import Console
+
+    from deile.security.audit_logger import (
+        AuditEventType,
+        SeverityLevel,
+        get_audit_logger,
+    )
 
     audit = get_audit_logger()
 
@@ -530,8 +581,12 @@ async def _cmd_v2_delegate(
 
     # Destructive gating — must re-emit with --confirm
     if _is_destructive(verb, extra) and not confirmed:
-        flag_hint = f"--confirm"
-        reissue = f"/k8s {verb} {extra} {flag_hint}".strip() if extra.strip() else f"/k8s {verb} {flag_hint}"
+        flag_hint = "--confirm"
+        reissue = (
+            f"/k8s {verb} {extra} {flag_hint}".strip()
+            if extra.strip()
+            else f"/k8s {verb} {flag_hint}"
+        )
         return CommandResult.error_result(
             f"[!] `{verb}` APAGA dados de forma irreversível. "
             f"Para confirmar, re-execute:\n  {reissue}"
@@ -539,29 +594,48 @@ async def _cmd_v2_delegate(
 
     # claude-login: inject --no-interactive to avoid blocking on stdin
     extra_tokens = shlex.split(extra) if extra.strip() else []
-    if verb == "claude-login" and "--no-interactive" not in extra_tokens and "--from-env-only" not in extra_tokens:
+    if (
+        verb == "claude-login"
+        and "--no-interactive" not in extra_tokens
+        and "--from-env-only" not in extra_tokens
+    ):
         extra_tokens = ["--no-interactive"] + extra_tokens
 
-    timeout = _K8S_DELEGATE_TIMEOUT_LONG if verb in _V2_LONG_VERBS else _K8S_DELEGATE_TIMEOUT_SHORT
+    timeout = (
+        _K8S_DELEGATE_TIMEOUT_LONG
+        if verb in _V2_LONG_VERBS
+        else _K8S_DELEGATE_TIMEOUT_SHORT
+    )
 
     argv = ["python3", str(deploy), "k8s", verb, *extra_tokens]
 
     # AuditEvent BEFORE exec (order: audit-antes-de-exec per spec)
     audit.log_event(
         event_type=AuditEventType.COMMAND_EXECUTED,
-        severity=SeverityLevel.WARNING if _is_destructive(verb, extra) else SeverityLevel.INFO,
+        severity=(
+            SeverityLevel.WARNING
+            if _is_destructive(verb, extra)
+            else SeverityLevel.INFO
+        ),
         actor="user",
         resource="k8s",
         action=f"v2_{verb}",
         result="started",
-        details={"verb": verb, "namespace": namespace, "extra": extra, "confirmed": confirmed},
+        details={
+            "verb": verb,
+            "namespace": namespace,
+            "extra": extra,
+            "confirmed": confirmed,
+        },
     )
 
     console = Console()
     logger.info("k8s V2 delegate: %s", " ".join(argv))
 
     try:
-        rc, all_lines = await _live_stream_subprocess(argv, timeout=timeout, console=console)
+        rc, all_lines = await _live_stream_subprocess(
+            argv, timeout=timeout, console=console
+        )
     except OSError as exc:
         return CommandResult.error_result(f"Falha ao iniciar `{verb}`: {exc}")
 
@@ -574,9 +648,7 @@ async def _cmd_v2_delegate(
         return CommandResult.error_result(
             f"verbo `{verb}` excedeu timeout de {timeout:.0f}s\n{output}"
         )
-    return CommandResult.error_result(
-        f"verbo `{verb}` encerrado com rc={rc}\n{output}"
-    )
+    return CommandResult.error_result(f"verbo `{verb}` encerrado com rc={rc}\n{output}")
 
 
 async def _cmd_panel(extra: str, namespace: str) -> CommandResult:
@@ -585,7 +657,11 @@ async def _cmd_panel(extra: str, namespace: str) -> CommandResult:
     Host-only. Sem timeout — painel TUI interativo. Captura termios ANTES
     de claim_stdin_for_panel e restaura no finally.
     """
-    from deile.security.audit_logger import AuditEventType, SeverityLevel, get_audit_logger
+    from deile.security.audit_logger import (
+        AuditEventType,
+        SeverityLevel,
+        get_audit_logger,
+    )
     from deile.ui._stdin_owner import (
         claim_stdin_for_panel,
         prime_termios_snapshot,
@@ -653,7 +729,9 @@ async def _cmd_panel(extra: str, namespace: str) -> CommandResult:
     )
 
     if rc == 0:
-        return CommandResult.success_result("painel encerrado (rc=0) · terminal restaurado", "text")
+        return CommandResult.success_result(
+            "painel encerrado (rc=0) · terminal restaurado", "text"
+        )
     return CommandResult.error_result(f"painel encerrado com rc={rc}")
 
 
@@ -676,8 +754,7 @@ class K8sCommand(DirectCommand):
             CommandConfig(
                 name="k8s",
                 description=(
-                    "Operacoes kubectl no cluster DEILE "
-                    "(restart|status|logs|list)"
+                    "Operacoes kubectl no cluster DEILE " "(restart|status|logs|list)"
                 ),
                 action="k8s",
             )
@@ -691,7 +768,9 @@ class K8sCommand(DirectCommand):
         confirmed = "--confirm" in args
         save_namespace = "--save-namespace" in args
         # Strip these meta-flags before further parsing
-        clean_args = args.replace("--confirm", "").replace("--save-namespace", "").strip()
+        clean_args = (
+            args.replace("--confirm", "").replace("--save-namespace", "").strip()
+        )
 
         parts = clean_args.split(None, 1)
         sub = parts[0].lower() if parts else ""
@@ -702,6 +781,7 @@ class K8sCommand(DirectCommand):
         if save_namespace:
             try:
                 from deile.commands.settings_manager import SettingsManager
+
                 mgr = SettingsManager()
                 mgr.set_setting("k8s.namespace", namespace)
             except Exception as exc:  # noqa: BLE001
@@ -731,7 +811,11 @@ class K8sCommand(DirectCommand):
             return await _cmd_list(namespace)
 
         # Unknown subcommand — show discovery panel with a hint
-        valid = "restart, status, logs, list, " + ", ".join(sorted(_V2_LONG_VERBS | _V2_SHORT_VERBS)) + ", panel"
+        valid = (
+            "restart, status, logs, list, "
+            + ", ".join(sorted(_V2_LONG_VERBS | _V2_SHORT_VERBS))
+            + ", panel"
+        )
         return CommandResult.error_result(
             f"Unknown subcommand '{sub}'. Valid: {valid}. Run /k8s for help."
         )

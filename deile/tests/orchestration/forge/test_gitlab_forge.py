@@ -16,9 +16,12 @@ from typing import Tuple
 import pytest
 
 from deile.orchestration.forge import GitLabForge
-from deile.orchestration.forge.base import (ForgeConfig, ForgeKind,
-                                            MergeBlocked,
-                                            MergeBlockedByPipeline)
+from deile.orchestration.forge.base import (
+    ForgeConfig,
+    ForgeKind,
+    MergeBlocked,
+    MergeBlockedByPipeline,
+)
 
 
 @pytest.fixture
@@ -53,10 +56,23 @@ def fake_glab(monkeypatch):
 
 async def test_get_issue_uses_iid_endpoint(fake_glab):
     forge, responses, calls = fake_glab
-    responses.append((0, json.dumps({
-        "iid": 7, "title": "x", "web_url": "u", "labels": [],
-        "description": "d", "state": "opened", "author": {"username": "alice"},
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 7,
+                    "title": "x",
+                    "web_url": "u",
+                    "labels": [],
+                    "description": "d",
+                    "state": "opened",
+                    "author": {"username": "alice"},
+                }
+            ),
+            "",
+        )
+    )
     issue = await forge.get_issue(7)
     assert issue.number == 7
     assert calls[0] == ("api", "projects/group%2Fproject/issues/7")
@@ -64,19 +80,45 @@ async def test_get_issue_uses_iid_endpoint(fake_glab):
 
 async def test_get_pr_filters_out_closed_mrs(fake_glab):
     forge, responses, _ = fake_glab
-    responses.append((0, json.dumps({
-        "iid": 5, "title": "x", "web_url": "u", "labels": [],
-        "source_branch": "b", "target_branch": "main", "state": "closed",
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 5,
+                    "title": "x",
+                    "web_url": "u",
+                    "labels": [],
+                    "source_branch": "b",
+                    "target_branch": "main",
+                    "state": "closed",
+                }
+            ),
+            "",
+        )
+    )
     assert await forge.get_pr(5) is None
 
 
 async def test_get_pr_open_returns_mr(fake_glab):
     forge, responses, _ = fake_glab
-    responses.append((0, json.dumps({
-        "iid": 5, "title": "x", "web_url": "u", "labels": [],
-        "source_branch": "b", "target_branch": "main", "state": "opened",
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 5,
+                    "title": "x",
+                    "web_url": "u",
+                    "labels": [],
+                    "source_branch": "b",
+                    "target_branch": "main",
+                    "state": "opened",
+                }
+            ),
+            "",
+        )
+    )
     pr = await forge.get_pr(5)
     assert pr is not None
     assert pr.state == "open"
@@ -87,13 +129,27 @@ async def test_list_open_prs_paginated(fake_glab):
     forge, responses, _ = fake_glab
     # First page: 100 items (full page) → triggers pagination.
     full_page = [
-        {"iid": i, "title": f"mr{i}", "web_url": "u", "labels": [],
-         "source_branch": "b", "target_branch": "main", "state": "opened"}
+        {
+            "iid": i,
+            "title": f"mr{i}",
+            "web_url": "u",
+            "labels": [],
+            "source_branch": "b",
+            "target_branch": "main",
+            "state": "opened",
+        }
         for i in range(100)
     ]
     short_page = [
-        {"iid": 100, "title": "mr100", "web_url": "u", "labels": [],
-         "source_branch": "b", "target_branch": "main", "state": "opened"},
+        {
+            "iid": 100,
+            "title": "mr100",
+            "web_url": "u",
+            "labels": [],
+            "source_branch": "b",
+            "target_branch": "main",
+            "state": "opened",
+        },
     ]
     responses.append((0, json.dumps(full_page), ""))
     responses.append((0, json.dumps(short_page), ""))
@@ -145,9 +201,9 @@ async def test_assign_issue_resolves_username_to_user_id(fake_glab):
     put_call = calls[1]
     assert put_call[:3] == ("api", "-X", "PUT")
     url_segment = put_call[3]
-    assert "assignee_ids%5B%5D=123" in url_segment, (
-        f"esperado 'assignee_ids%5B%5D=123' na URL, got {url_segment!r}"
-    )
+    assert (
+        "assignee_ids%5B%5D=123" in url_segment
+    ), f"esperado 'assignee_ids%5B%5D=123' na URL, got {url_segment!r}"
     # Garante que NÃO usamos -f para esse campo (esse é o bug que estamos prevenindo).
     assert "-f" not in put_call, "PUT assignee_ids deve usar query string, não -f"
 
@@ -202,11 +258,19 @@ async def test_merge_pr_blocked_by_unmergeable_status(fake_glab):
     """detailed_merge_status=conflict deve levantar MergeBlocked."""
     forge, responses, _ = fake_glab
     # Payload com detailed_merge_status preenchido (GitLab >= 15.6).
-    responses.append((0, json.dumps({
-        "iid": 5,
-        "detailed_merge_status": "conflict",
-        "merge_status": "cannot_be_merged",  # legado presente mas não deve ser lido
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 5,
+                    "detailed_merge_status": "conflict",
+                    "merge_status": "cannot_be_merged",  # legado presente mas não deve ser lido
+                }
+            ),
+            "",
+        )
+    )
     with pytest.raises(MergeBlocked) as exc_info:
         await forge.merge_pr(5)
     assert "detailed_merge_status=conflict" in str(exc_info.value)
@@ -216,10 +280,18 @@ async def test_merge_pr_blocked_fallback_to_merge_status(fake_glab):
     """Instâncias GitLab antigas sem detailed_merge_status usam merge_status como fallback."""
     forge, responses, _ = fake_glab
     # Sem detailed_merge_status — somente campo legado.
-    responses.append((0, json.dumps({
-        "iid": 5,
-        "merge_status": "cannot_be_merged",
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 5,
+                    "merge_status": "cannot_be_merged",
+                }
+            ),
+            "",
+        )
+    )
     with pytest.raises(MergeBlocked) as exc_info:
         await forge.merge_pr(5)
     assert "merge_status=cannot_be_merged" in str(exc_info.value)
@@ -229,10 +301,18 @@ async def test_merge_pr_unchecked_does_NOT_block(fake_glab):
     """detailed_merge_status=unchecked é neutro — não bloqueia no pre-check."""
     forge, responses, _ = fake_glab
     # Pre-check: unchecked (GitLab ainda está computando).
-    responses.append((0, json.dumps({
-        "iid": 5,
-        "detailed_merge_status": "unchecked",
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 5,
+                    "detailed_merge_status": "unchecked",
+                }
+            ),
+            "",
+        )
+    )
     # Merge PUT: sucesso.
     responses.append((0, "{}", ""))
     # Não deve levantar MergeBlocked.
@@ -243,48 +323,77 @@ async def test_merge_pr_unchecked_legacy_does_NOT_block(fake_glab):
     """merge_status=unchecked no campo legado também não bloqueia."""
     forge, responses, _ = fake_glab
     # Sem detailed_merge_status; merge_status=unchecked no campo legado.
-    responses.append((0, json.dumps({
-        "iid": 5,
-        "merge_status": "unchecked",
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 5,
+                    "merge_status": "unchecked",
+                }
+            ),
+            "",
+        )
+    )
     # Merge PUT: sucesso.
     responses.append((0, "{}", ""))
     await forge.merge_pr(5)
 
 
-@pytest.mark.parametrize("dms,exc_type,fragment", [
-    ("conflict",                   MergeBlocked,           "conflict"),
-    ("not_approved",               MergeBlocked,           "not_approved"),
-    ("requested_changes",          MergeBlocked,           "requested_changes"),
-    ("discussions_not_resolved",   MergeBlocked,           "discussions_not_resolved"),
-    ("need_rebase",                MergeBlocked,           "need_rebase"),
-    ("not_open",                   MergeBlocked,           "not_open"),
-    ("cannot_be_merged",           MergeBlocked,           "cannot_be_merged"),
-    # ci_must_pass levanta MergeBlockedByPipeline — requer respostas extras para get_ci_status
-    # (testado em test_merge_pr_blocked_by_pipeline_succeed_rule acima)
-    # Valores neutros — não devem levantar (testados individualmente):
-    # unchecked, checking, mergeable, preparing, approvals_syncing
-])
+@pytest.mark.parametrize(
+    "dms,exc_type,fragment",
+    [
+        ("conflict", MergeBlocked, "conflict"),
+        ("not_approved", MergeBlocked, "not_approved"),
+        ("requested_changes", MergeBlocked, "requested_changes"),
+        ("discussions_not_resolved", MergeBlocked, "discussions_not_resolved"),
+        ("need_rebase", MergeBlocked, "need_rebase"),
+        ("not_open", MergeBlocked, "not_open"),
+        ("cannot_be_merged", MergeBlocked, "cannot_be_merged"),
+        # ci_must_pass levanta MergeBlockedByPipeline — requer respostas extras para get_ci_status
+        # (testado em test_merge_pr_blocked_by_pipeline_succeed_rule acima)
+        # Valores neutros — não devem levantar (testados individualmente):
+        # unchecked, checking, mergeable, preparing, approvals_syncing
+    ],
+)
 async def test_merge_pr_detailed_status_variants(fake_glab, dms, exc_type, fragment):
     """Cada detailed_merge_status bloqueante leva ao tipo de exceção correto."""
     forge, responses, _ = fake_glab
-    responses.append((0, json.dumps({
-        "iid": 5,
-        "detailed_merge_status": dms,
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 5,
+                    "detailed_merge_status": dms,
+                }
+            ),
+            "",
+        )
+    )
     with pytest.raises(exc_type) as exc_info:
         await forge.merge_pr(5)
     assert fragment in str(exc_info.value)
 
 
-@pytest.mark.parametrize("dms", ["unchecked", "checking", "mergeable", "preparing", "approvals_syncing"])
+@pytest.mark.parametrize(
+    "dms", ["unchecked", "checking", "mergeable", "preparing", "approvals_syncing"]
+)
 async def test_merge_pr_neutral_detailed_status_does_not_block(fake_glab, dms):
     """Valores neutros de detailed_merge_status não devem levantar no pre-check."""
     forge, responses, _ = fake_glab
-    responses.append((0, json.dumps({
-        "iid": 5,
-        "detailed_merge_status": dms,
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 5,
+                    "detailed_merge_status": dms,
+                }
+            ),
+            "",
+        )
+    )
     # PUT merge bem-sucedido.
     responses.append((0, "{}", ""))
     await forge.merge_pr(5)
@@ -295,16 +404,23 @@ async def test_merge_pr_blocked_by_pipeline_succeed_rule(fake_glab):
     # 1) precheck: OK.
     responses.append((0, json.dumps({"iid": 5, "merge_status": "can_be_merged"}), ""))
     # 2) actual merge: 405 with pipeline-related message.
-    responses.append((
-        1, "", "405 Method Not Allowed: Pipeline must succeed.",
-    ))
+    responses.append(
+        (
+            1,
+            "",
+            "405 Method Not Allowed: Pipeline must succeed.",
+        )
+    )
     # 3) get_ci_status: MR with pipeline id.
     responses.append((0, json.dumps({"iid": 5, "head_pipeline": {"id": 99}}), ""))
     # 4) get_ci_status: pipeline running.
     responses.append((0, json.dumps({"status": "running"}), ""))
     with pytest.raises(MergeBlockedByPipeline) as exc_info:
         await forge.merge_pr(5)
-    assert "pending" in str(exc_info.value).lower() or "running" in str(exc_info.value).lower()
+    assert (
+        "pending" in str(exc_info.value).lower()
+        or "running" in str(exc_info.value).lower()
+    )
 
 
 async def test_merge_pr_success(fake_glab):
@@ -323,15 +439,18 @@ async def test_get_ci_status_returns_none_when_no_pipeline(fake_glab):
     assert await forge.get_ci_status(5) == "none"
 
 
-@pytest.mark.parametrize("status, expected", [
-    ("success", "passing"),
-    ("failed", "failing"),
-    ("canceled", "failing"),
-    ("running", "pending"),
-    ("pending", "pending"),
-    ("manual", "pending"),
-    ("skipped", "none"),
-])
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        ("success", "passing"),
+        ("failed", "failing"),
+        ("canceled", "failing"),
+        ("running", "pending"),
+        ("pending", "pending"),
+        ("manual", "pending"),
+        ("skipped", "none"),
+    ],
+)
 async def test_get_ci_status_normalises_gitlab_statuses(fake_glab, status, expected):
     forge, responses, _ = fake_glab
     responses.append((0, json.dumps({"iid": 5, "head_pipeline": {"id": 1}}), ""))
@@ -364,9 +483,18 @@ async def test_ensure_label_normalises_color_with_hash(fake_glab):
 
 async def test_pr_reviewer_still_requested_reads_reviewers_array(fake_glab):
     forge, responses, _ = fake_glab
-    responses.append((0, json.dumps({
-        "iid": 5, "reviewers": [{"username": "alice"}, {"username": "deile-one"}],
-    }), ""))
+    responses.append(
+        (
+            0,
+            json.dumps(
+                {
+                    "iid": 5,
+                    "reviewers": [{"username": "alice"}, {"username": "deile-one"}],
+                }
+            ),
+            "",
+        )
+    )
     assert await forge.pr_reviewer_still_requested(5, "deile-one") is True
 
 
@@ -392,6 +520,7 @@ async def test_invalid_project_path_raises():
 
 async def test_path_traversal_rejected():
     from deile.orchestration.forge.base import ForgeConfigError
+
     with pytest.raises(ForgeConfigError):
         ForgeConfig(
             kind=ForgeKind.GITLAB,
@@ -453,8 +582,10 @@ async def test_event_to_comment_prefers_noteable_url(fake_glab):
     forge, _, _ = fake_glab
     canonical = "https://gitlab.example.com/grp/prj/-/issues/42"
     note = {
-        "id": 30, "body": "x",
-        "noteable_iid": 42, "noteable_url": canonical,
+        "id": 30,
+        "body": "x",
+        "noteable_iid": 42,
+        "noteable_url": canonical,
     }
     event = {"author": {"username": "carol"}}
     ref = forge._event_to_comment(event, note, kind="issue")
@@ -481,9 +612,10 @@ async def test_api_get_json_forces_X_GET_when_params_present(fake_glab):
     call = calls[0]
     # Sequência esperada: ("api", "-X", "GET", "projects/1/issues", "-f", "state=opened")
     assert call[0] == "api"
-    assert call[1:3] == ("-X", "GET"), (
-        f"esperado ('-X', 'GET') antes do endpoint, got {call[1:3]}"
-    )
+    assert call[1:3] == (
+        "-X",
+        "GET",
+    ), f"esperado ('-X', 'GET') antes do endpoint, got {call[1:3]}"
     assert call[3] == "projects/1/issues"
 
 
@@ -493,9 +625,10 @@ async def test_api_get_json_no_method_flag_when_no_params(fake_glab):
     responses.append((0, "{}", ""))
     await forge._api_get_json("projects/1")
     call = calls[0]
-    assert call == ("api", "projects/1"), (
-        f"sem params não deve injetar -X GET, got {call}"
-    )
+    assert call == (
+        "api",
+        "projects/1",
+    ), f"sem params não deve injetar -X GET, got {call}"
 
 
 async def test_list_open_prs_uses_X_GET(fake_glab):
@@ -504,9 +637,10 @@ async def test_list_open_prs_uses_X_GET(fake_glab):
     responses.append((0, "[]", ""))
     await forge.list_open_prs(limit=10)
     call = calls[0]
-    assert call[1:3] == ("-X", "GET"), (
-        f"list_open_prs deve usar -X GET, got {call[1:3]}"
-    )
+    assert call[1:3] == (
+        "-X",
+        "GET",
+    ), f"list_open_prs deve usar -X GET, got {call[1:3]}"
 
 
 async def test_create_issue_parses_work_items_url(fake_glab):
@@ -531,8 +665,7 @@ async def test_create_issue_still_parses_legacy_issues_url(fake_glab):
     """Output legado (``/-/issues/N``) continua sendo parseado corretamente."""
     forge, responses, _ = fake_glab
     legacy_out = (
-        "- Creating issue in owner/repo\n"
-        "https://gitlab.com/owner/repo/-/issues/17\n"
+        "- Creating issue in owner/repo\n" "https://gitlab.com/owner/repo/-/issues/17\n"
     )
     responses.append((0, legacy_out, ""))
     iid = await forge.create_issue("title", "body")

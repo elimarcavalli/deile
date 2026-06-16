@@ -9,22 +9,26 @@ Seguimos o estilo do repo (espelhando ``test_deile_worker_client.py``):
 env/arquivo/token. ``respx`` está disponível, mas nenhum teste do repo o usa
 — manter o padrão ``MockTransport`` evita introduzir uma segunda convenção.
 """
+
 from __future__ import annotations
 
 import httpx
 import pytest
 
 from deile.infrastructure import deile_monitor_client as mc
-from deile.infrastructure.deile_monitor_client import (MonitorClient,
-                                                       MonitorClientError,
-                                                       _read_token,
-                                                       _resolve_endpoint,
-                                                       _validate_token_charset)
+from deile.infrastructure.deile_monitor_client import (
+    MonitorClient,
+    MonitorClientError,
+    _read_token,
+    _resolve_endpoint,
+    _validate_token_charset,
+)
 
 pytestmark = pytest.mark.unit
 
 
 # ----- endpoint resolution -----
+
 
 def test_resolve_endpoint_default(monkeypatch):
     monkeypatch.delenv("DEILE_MONITOR_ENDPOINT", raising=False)
@@ -42,6 +46,7 @@ def test_resolve_endpoint_strips_trailing_slash(monkeypatch):
 
 
 # ----- token resolution -----
+
 
 def test_read_token_from_env(monkeypatch):
     monkeypatch.setenv("DEILE_MONITOR_AUTH_TOKEN", " env-token-value ")
@@ -73,16 +78,17 @@ def test_read_token_all_empty(monkeypatch):
 
 # ----- token charset validation -----
 
+
 @pytest.mark.parametrize(
     "tok,ok",
     [
         ("ABCdef0123456789", True),
         ("token._-+/=:~with.special", True),
         ("abc\ndef-injection", False),  # LF -> header injection vector
-        ("abc\rdef", False),            # CR
-        ("abc\x00def", False),          # NUL
-        ("short", False),               # below 16 char floor
-        ("a" * 16, True),               # exact floor
+        ("abc\rdef", False),  # CR
+        ("abc\x00def", False),  # NUL
+        ("short", False),  # below 16 char floor
+        ("a" * 16, True),  # exact floor
     ],
 )
 def test_validate_token_charset(tok: str, ok: bool):
@@ -90,6 +96,7 @@ def test_validate_token_charset(tok: str, ok: bool):
 
 
 # ----- shared transport harness -----
+
 
 def _install_mock_transport(monkeypatch, handler) -> MonitorClient:
     """Instala MockTransport + token + endpoint e devolve um cliente fresco."""
@@ -108,6 +115,7 @@ def _install_mock_transport(monkeypatch, handler) -> MonitorClient:
 
 # ----- auth missing -----
 
+
 async def test_get_status_auth_missing(monkeypatch):
     monkeypatch.setattr(mc, "_read_token", lambda: "")
     monkeypatch.setattr(mc, "_resolve_endpoint", lambda: "http://mock.invalid")
@@ -118,6 +126,7 @@ async def test_get_status_auth_missing(monkeypatch):
 
 
 # ----- get_status -----
+
 
 async def test_get_status_happy_path(monkeypatch):
     expected = {
@@ -145,11 +154,13 @@ async def test_get_status_happy_path(monkeypatch):
 
 # ----- post_command -----
 
+
 async def test_post_command_happy_path(monkeypatch):
     captured = {}
 
     def handler(request):
         import json as _json
+
         captured["body"] = _json.loads(request.content)
         return httpx.Response(
             200,
@@ -178,15 +189,15 @@ async def test_post_command_400_unpacks_server_code(monkeypatch):
 
 # ----- ask -----
 
+
 async def test_ask_returns_request_id_on_202(monkeypatch):
     captured = {}
 
     def handler(request):
         import json as _json
+
         captured["body"] = _json.loads(request.content)
-        return httpx.Response(
-            202, json={"request_id": "abcd1234", "status": "running"}
-        )
+        return httpx.Response(202, json={"request_id": "abcd1234", "status": "running"})
 
     cli = _install_mock_transport(monkeypatch, handler)
     request_id = await cli.ask("qual o estado do pipeline?")
@@ -205,6 +216,7 @@ async def test_ask_missing_request_id_raises_bad_response(monkeypatch):
 
 
 # ----- get_ask_result -----
+
 
 async def test_get_ask_result_happy_path(monkeypatch):
     expected = {"status": "done", "answer": "tudo verde"}
@@ -231,6 +243,7 @@ async def test_get_ask_result_404_raises_not_found(monkeypatch):
 
 
 # ----- error mapping -----
+
 
 async def test_get_status_401_raises_auth_error(monkeypatch):
     def handler(request):

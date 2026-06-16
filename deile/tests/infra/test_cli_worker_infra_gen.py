@@ -61,8 +61,12 @@ class TestKsUpNeverReferencesCliWorkers:
         profile = deploy.DeploymentProfile(profile_name)
         for dep in profile.deployments:
             assert dep in (
-                "deilebot", "deile-worker", "deile-shell",
-                "deile-pipeline", "claude-worker", "deile-monitor",
+                "deilebot",
+                "deile-worker",
+                "deile-shell",
+                "deile-pipeline",
+                "claude-worker",
+                "deile-monitor",
             ), f"perfil {profile_name!r} sobe deployment inesperado: {dep!r}"
             for kind in _FLEET_KINDS:
                 assert dep != f"{kind}-worker"
@@ -83,9 +87,9 @@ class TestKsUpNeverReferencesCliWorkers:
         assert rc == 0
         out = capsys.readouterr().out
         for kind in _FLEET_KINDS:
-            assert f"{kind}-worker" not in out, (
-                f"k8s up dry-run mencionou {kind}-worker — frota não é opt-in"
-            )
+            assert (
+                f"{kind}-worker" not in out
+            ), f"k8s up dry-run mencionou {kind}-worker — frota não é opt-in"
 
 
 # ===== gen-worker — manifest derivado do template + metadados do adapter ======
@@ -110,26 +114,39 @@ class TestGenWorkerRender:
         rendered = gen.render_manifests(kind, namespace="deile")
         kinds = [d["kind"] for d in yaml.safe_load_all(rendered) if d]
         assert kinds[:5] == [
-            "Deployment", "Service", "Secret", "NetworkPolicy", "NetworkPolicy",
+            "Deployment",
+            "Service",
+            "Secret",
+            "NetworkPolicy",
+            "NetworkPolicy",
         ]
         adapter = cli_adapters.ADAPTERS[kind]
         if _needs_pvc(adapter):
             assert kinds == [
-                "Deployment", "Service", "Secret", "NetworkPolicy", "NetworkPolicy",
-                "PersistentVolumeClaim", "CronJob",
+                "Deployment",
+                "Service",
+                "Secret",
+                "NetworkPolicy",
+                "NetworkPolicy",
+                "PersistentVolumeClaim",
+                "CronJob",
             ]
         else:
             assert kinds == [
-                "Deployment", "Service", "Secret", "NetworkPolicy", "NetworkPolicy",
+                "Deployment",
+                "Service",
+                "Secret",
+                "NetworkPolicy",
+                "NetworkPolicy",
             ]
 
     @pytest.mark.parametrize("kind", _FLEET_KINDS)
     def test_deployment_is_scale_to_zero(self, kind):
         docs = list(yaml.safe_load_all(gen.render_manifests(kind)))
         dep = next(d for d in docs if d and d["kind"] == "Deployment")
-        assert dep["spec"]["replicas"] == 0, (
-            "CLI worker deve nascer scale-to-zero (opt-in, custo zero ocioso)"
-        )
+        assert (
+            dep["spec"]["replicas"] == 0
+        ), "CLI worker deve nascer scale-to-zero (opt-in, custo zero ocioso)"
 
     @pytest.mark.parametrize("kind", _FLEET_KINDS)
     def test_port_and_image_derived_from_adapter(self, kind):
@@ -203,7 +220,9 @@ class TestPvcWorkerGeneratesPvcAndCron:
 
         kind = "pvcprobe"
         cli_adapters.ADAPTERS[kind] = _PvcAdapter(
-            kind=kind, default_port=8798, auth_mode="oauth_file",
+            kind=kind,
+            default_port=8798,
+            auth_mode="oauth_file",
             supports_resume=True,
         )
         try:
@@ -215,14 +234,15 @@ class TestPvcWorkerGeneratesPvcAndCron:
         docs = [d for d in yaml.safe_load_all(gen.render_manifests(pvc_kind)) if d]
         dep = next(d for d in docs if d["kind"] == "Deployment")
         home = next(
-            v for v in dep["spec"]["template"]["spec"]["volumes"]
+            v
+            for v in dep["spec"]["template"]["spec"]["volumes"]
             if v["name"] == "worker-home"
         )
         claim = home["persistentVolumeClaim"]["claimName"]
         pvc = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
-        assert pvc["metadata"]["name"] == claim, (
-            "o claimName referenciado no Deployment deve ter um objeto PVC gerado"
-        )
+        assert (
+            pvc["metadata"]["name"] == claim
+        ), "o claimName referenciado no Deployment deve ter um objeto PVC gerado"
         assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
 
     def test_cleanup_cronjob_emitted_for_pvc_worker(self, pvc_kind):
@@ -255,8 +275,11 @@ class TestPvcWorkerGeneratesPvcAndCron:
 
         kind = "envonlyprobe"
         cli_adapters.ADAPTERS[kind] = _EnvOnlyAdapter(
-            kind=kind, default_port=8796, auth_mode="env",
-            supports_resume=False, auth_env_keys=["X_KEY"],
+            kind=kind,
+            default_port=8796,
+            auth_mode="env",
+            supports_resume=False,
+            auth_env_keys=["X_KEY"],
         )
         try:
             kinds = [
@@ -281,8 +304,7 @@ class TestOauthInitContainerGeneration:
 
     @pytest.fixture
     def oauth_kind(self):
-        from cli_adapters.base import (BaseCliAdapter, ModelInfo, OAuthSpec,
-                                       WorkResult)
+        from cli_adapters.base import BaseCliAdapter, ModelInfo, OAuthSpec, WorkResult
 
         class _OauthAdapter(BaseCliAdapter):
             def build_argv(self, **_kw):
@@ -296,7 +318,9 @@ class TestOauthInitContainerGeneration:
 
         kind = "oauthprobe"
         cli_adapters.ADAPTERS[kind] = _OauthAdapter(
-            kind=kind, default_port=8799, auth_mode="oauth_file",
+            kind=kind,
+            default_port=8799,
+            auth_mode="oauth_file",
             oauth=OAuthSpec(
                 cred_path="~/.oauthprobe/auth.json",
                 login_cmd=["oauthprobe", "login", "--device-auth"],
@@ -328,7 +352,8 @@ class TestOauthInitContainerGeneration:
         docs = [d for d in yaml.safe_load_all(gen.render_manifests(oauth_kind)) if d]
         dep = next(d for d in docs if d["kind"] == "Deployment")
         ic = next(
-            c for c in dep["spec"]["template"]["spec"]["initContainers"]
+            c
+            for c in dep["spec"]["template"]["spec"]["initContainers"]
             if c["name"] == "bootstrap-creds"
         )
         mounts = {m["name"]: m["mountPath"] for m in ic["volumeMounts"]}
@@ -338,9 +363,7 @@ class TestOauthInitContainerGeneration:
     def test_oauth_cred_secret_volume_present(self, oauth_kind):
         docs = [d for d in yaml.safe_load_all(gen.render_manifests(oauth_kind)) if d]
         dep = next(d for d in docs if d["kind"] == "Deployment")
-        vols = {
-            v["name"]: v for v in dep["spec"]["template"]["spec"]["volumes"]
-        }
+        vols = {v["name"]: v for v in dep["spec"]["template"]["spec"]["volumes"]}
         assert "oauth-cred" in vols
         # O nome do Secret vem do OAuthSpec.secret_name do adapter.
         assert vols["oauth-cred"]["secret"]["secretName"] == "oauthprobe-credentials"
@@ -357,10 +380,13 @@ class TestOauthInitContainerGeneration:
             pass
 
         adapter = _A(
-            kind="nosecret", default_port=1, auth_mode="oauth_file",
+            kind="nosecret",
+            default_port=1,
+            auth_mode="oauth_file",
             oauth=OAuthSpec(
                 cred_path="~/.nosecret/auth.json",
-                login_cmd=["x"], secret_name="",
+                login_cmd=["x"],
+                secret_name="",
             ),
         )
         assert gen.cred_secret_name(adapter, kind="nosecret") == (
@@ -444,16 +470,13 @@ class TestOauthModeOverride:
     def test_codex_oauth_mode_yaml_is_valid(self):
         # safe_load_all estoura se o block-scalar do initContainer ficar mal
         # indentado; este teste prova que o YAML do modo OAuth é parseável.
-        docs = self._docs(
-            gen.render_manifests("codex", oauth_mode=True)
-        )
+        docs = self._docs(gen.render_manifests("codex", oauth_mode=True))
         assert any(d["kind"] == "Deployment" for d in docs)
 
     def test_oauth_file_adapter_renders_oauth_without_flag(self):
         # Sanity: um adapter auth_mode=oauth_file renderiza OAuth mesmo SEM o flag
         # (oauth_mode default False) — o override não regride o caminho estático.
-        from cli_adapters.base import (BaseCliAdapter, ModelInfo, OAuthSpec,
-                                       WorkResult)
+        from cli_adapters.base import BaseCliAdapter, ModelInfo, OAuthSpec, WorkResult
 
         class _A(BaseCliAdapter):
             def build_argv(self, **_kw):
@@ -467,10 +490,13 @@ class TestOauthModeOverride:
 
         kind = "staticoauth"
         cli_adapters.ADAPTERS[kind] = _A(
-            kind=kind, default_port=8797, auth_mode="oauth_file",
+            kind=kind,
+            default_port=8797,
+            auth_mode="oauth_file",
             oauth=OAuthSpec(
                 cred_path="~/.staticoauth/auth.json",
-                login_cmd=["x", "login"], secret_name="staticoauth-credentials",
+                login_cmd=["x", "login"],
+                secret_name="staticoauth-credentials",
             ),
         )
         try:
@@ -536,9 +562,9 @@ class TestNetworkPolicyGeneration:
             (d for d in nps if d["metadata"]["name"] == f"pipeline-egress-to-{worker}"),
             None,
         )
-        assert egress_np is not None, (
-            f"faltou a netpol pipeline-egress-to-{worker} — pipeline não alcança o worker"
-        )
+        assert (
+            egress_np is not None
+        ), f"faltou a netpol pipeline-egress-to-{worker} — pipeline não alcança o worker"
         spec = egress_np["spec"]
         assert spec["podSelector"]["matchLabels"]["app"] == "deile-pipeline"
         assert spec["policyTypes"] == ["Egress"]
@@ -559,9 +585,9 @@ class TestBuildCliWorkers:
         assert "ARG WORKER_KIND" in text
         # Cada kind registrado tem um bloco de install gated por WORKER_KIND.
         for kind in _FLEET_KINDS:
-            assert f'WORKER_KIND" = "{kind}"' in text, (
-                f"Dockerfile.cli-worker sem bloco de install para {kind!r}"
-            )
+            assert (
+                f'WORKER_KIND" = "{kind}"' in text
+            ), f"Dockerfile.cli-worker sem bloco de install para {kind!r}"
 
     def test_build_cmd_targets_per_kind_image(self):
         kind = _FLEET_KINDS[0]
@@ -624,7 +650,8 @@ class TestCliWorkerTestToolchainBaked:
         documentam o que cada stage faz (citam WORKER_KIND/requirements.txt em
         prosa) — só RUN/COPY/FROM/ARG/ENV importam para cache/dedup e DRY."""
         return "\n".join(
-            ln for ln in text.splitlines()
+            ln
+            for ln in text.splitlines()
             if ln.strip() and not ln.lstrip().startswith("#")
         )
 
@@ -643,9 +670,7 @@ class TestCliWorkerTestToolchainBaked:
             import tomllib  # py311+
         except ModuleNotFoundError:  # pragma: no cover - py<3.11
             import tomli as tomllib  # type: ignore
-        return tomllib.loads(
-            (_REPO / "pyproject.toml").read_text(encoding="utf-8")
-        )
+        return tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
 
     def test_dockerfile_has_single_multistage_no_external_base(self):
         """Dockerfile ÚNICO multi-stage; SEM ``FROM`` de imagem externa local
@@ -667,15 +692,15 @@ class TestCliWorkerTestToolchainBaked:
         ``deps``/``base`` (senão suas instruções divergem por kind e o buildkit
         não cacheia/reusa entre os 5 builds). Só no/depois do stage ``final``."""
         pre_final, final = self._stage_split()
-        assert "WORKER_KIND" not in self._instructions_only(pre_final), (
-            "WORKER_KIND vazou para instrução de deps/base — quebra cache/dedup"
-        )
+        assert "WORKER_KIND" not in self._instructions_only(
+            pre_final
+        ), "WORKER_KIND vazou para instrução de deps/base — quebra cache/dedup"
         assert "ARG WORKER_KIND" in final
         # Cada kind registrado tem um bloco de install gated por WORKER_KIND no final.
         for kind in _FLEET_KINDS:
-            assert f'WORKER_KIND" = "{kind}"' in final, (
-                f"stage final sem bloco de install para {kind!r}"
-            )
+            assert (
+                f'WORKER_KIND" = "{kind}"' in final
+            ), f"stage final sem bloco de install para {kind!r}"
 
     def test_deps_stage_installs_toolchain_before_final(self):
         """O stage ``deps`` instala pytest + requirements + ``.[test]`` ANTES do
@@ -688,8 +713,9 @@ class TestCliWorkerTestToolchainBaked:
         assert "COPY pyproject.toml requirements.txt README.md" in pre_final
         # O stage deps vem ANTES do stage base, e o base copia o /venv do deps.
         text = self._dockerfile_text()
-        assert text.index("FROM python:${PYTHON_VERSION}-slim AS deps") < \
-            text.index("COPY --from=deps /venv /venv")
+        assert text.index("FROM python:${PYTHON_VERSION}-slim AS deps") < text.index(
+            "COPY --from=deps /venv /venv"
+        )
 
     def test_test_extra_installed_dry_from_pyproject(self):
         """O conjunto de plugins de teste vem do extra ``[test]`` (fonte única),
@@ -698,19 +724,20 @@ class TestCliWorkerTestToolchainBaked:
         # O extra [test] precisa existir e resolver (princípio 14).
         extras = self._pyproject()["project"]["optional-dependencies"]
         assert "test" in extras
-        names = {
-            re.split(r"[<>=!~\[ ]", dep, 1)[0].lower()
-            for dep in extras["test"]
-        }
+        names = {re.split(r"[<>=!~\[ ]", dep, 1)[0].lower() for dep in extras["test"]}
         # O conjunto exigido pelo pytest.ini do projeto: runner + plugins que os
         # addopts/markers/asyncio_mode/timeout dependem.
         for required in {
-            "pytest", "pytest-asyncio", "pytest-cov",
-            "pytest-randomly", "pytest-timeout", "aiohttp",
+            "pytest",
+            "pytest-asyncio",
+            "pytest-cov",
+            "pytest-randomly",
+            "pytest-timeout",
+            "aiohttp",
         }:
-            assert required in names, (
-                f"extra [test] sem {required!r} — pytest.ini do projeto o exige"
-            )
+            assert (
+                required in names
+            ), f"extra [test] sem {required!r} — pytest.ini do projeto o exige"
 
     def test_deps_installed_once_not_reinstalled_in_final(self):
         """DRY: as deps do deile (requirements.txt / ``.[test]``) são instaladas
@@ -739,12 +766,17 @@ class TestCliWorkerTestToolchainBaked:
         stage ``base`` (COPY uma vez), não no stage ``final`` per-kind."""
         pre_final, final = self._stage_split()
         for fname in (
-            "cli_worker_server.py", "_worker_core.py", "_worker_resume.py",
-            "dispatch_logger.py", "jsonl_cost.py", "cli_adapters", "wrapper.py",
+            "cli_worker_server.py",
+            "_worker_core.py",
+            "_worker_resume.py",
+            "dispatch_logger.py",
+            "jsonl_cost.py",
+            "cli_adapters",
+            "wrapper.py",
         ):
-            assert f"COPY infra/k8s/{fname}" in pre_final, (
-                f"stage base não copia {fname!r}"
-            )
+            assert (
+                f"COPY infra/k8s/{fname}" in pre_final
+            ), f"stage base não copia {fname!r}"
         # O stage final não recopia esses artefatos (vêm do stage base).
         assert "COPY infra/k8s/cli_worker_server.py" not in final
 
@@ -788,9 +820,9 @@ class TestPanelCliWorkerModels:
         adapter = cli_adapters.ADAPTERS[kind]
         catalog_ids = {m.id for m in adapter.list_models()}
         # Ao menos um model-id do catálogo do adapter aparece no picker.
-        assert catalog_ids & set(opts[1:]), (
-            f"picker de {worker} não derivou modelos do registro de adapters"
-        )
+        assert catalog_ids & set(
+            opts[1:]
+        ), f"picker de {worker} não derivou modelos do registro de adapters"
 
     def test_cli_worker_model_ids_empty_for_core_workers(self):
         from _panel import DispatchMatrixView  # noqa: PLC0415
@@ -815,8 +847,7 @@ def _qwen_env_doc(rendered: str) -> dict:
     docs = [d for d in yaml.safe_load_all(rendered) if d]
     dep = next(d for d in docs if d["kind"] == "Deployment")
     return {
-        e["name"]: e
-        for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
+        e["name"]: e for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
     }
 
 
@@ -842,10 +873,10 @@ class TestProviderEnvOverride:
 
     def test_non_sensitive_var_becomes_literal_env(self, monkeypatch):
         monkeypatch.setattr(
-            gen, "read_env_sources",
+            gen,
+            "read_env_sources",
             lambda: {
-                "DEILE_CLI_QWEN_ENV_OPENAI_BASE_URL":
-                    "https://openrouter.ai/api/v1",
+                "DEILE_CLI_QWEN_ENV_OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
                 "DEILE_CLI_QWEN_ENV_OPENAI_MODEL": "qwen/qwen3-coder",
             },
         )
@@ -860,7 +891,8 @@ class TestProviderEnvOverride:
     def test_sensitive_var_becomes_secret_ref_not_literal(self, monkeypatch):
         secret_value = "sk-super-secret-do-not-leak"
         monkeypatch.setattr(
-            gen, "read_env_sources",
+            gen,
+            "read_env_sources",
             lambda: {
                 "DEILE_CLI_QWEN_ENV_OPENAI_API_KEY": secret_value,
                 "DEILE_CLI_QWEN_ENV_OPENROUTER_TOKEN": secret_value,
@@ -879,8 +911,7 @@ class TestProviderEnvOverride:
         docs = [d for d in yaml.safe_load_all(rendered) if d]
         dep = next(d for d in docs if d["kind"] == "Deployment")
         all_names = [
-            e["name"]
-            for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
+            e["name"] for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
         ]
         assert all_names.count("OPENAI_API_KEY") == 1
 
@@ -923,11 +954,13 @@ class TestProviderEnvOverride:
         # auth_env_key plain ausente; só a var sensível da convenção existe.
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setattr(
-            gen, "read_env_sources",
+            gen,
+            "read_env_sources",
             lambda: {"DEILE_CLI_QWEN_ENV_OPENAI_API_KEY": secret_value},
         )
         resolved = inst._resolve_auth_keys(
-            cli_adapters.ADAPTERS["qwen"], kind="qwen",
+            cli_adapters.ADAPTERS["qwen"],
+            kind="qwen",
         )
         assert resolved.get("OPENAI_API_KEY") == secret_value
 
@@ -1001,7 +1034,8 @@ class TestInstallCliWorker:
             monkeypatch.delenv(k, raising=False)
         monkeypatch.setattr(inst, "_read_env_file", lambda: {})
         monkeypatch.setattr(
-            inst.subprocess, "run",
+            inst.subprocess,
+            "run",
             lambda cmd, *a, **kw: _FakeCompleted(0, stdout="dG9r"),
         )
         res = inst.install_cli_worker(kind, namespace="deile")

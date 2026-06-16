@@ -24,12 +24,16 @@ from rich.console import Console
 from deile.commands.base import CommandContext, CommandResult
 from deile.commands.builtin import _git_helpers as gh
 from deile.commands.builtin import standup_command as sc
-from deile.commands.builtin.standup_command import (StandupCommand,
-                                                    StandupData, build_prompt,
-                                                    collect_commits,
-                                                    collect_issues,
-                                                    collect_prs, parse_args,
-                                                    parse_since)
+from deile.commands.builtin.standup_command import (
+    StandupCommand,
+    StandupData,
+    build_prompt,
+    collect_commits,
+    collect_issues,
+    collect_prs,
+    parse_args,
+    parse_since,
+)
 from deile.core.exceptions import CommandError
 
 # ---------------------------------------------------------------------------
@@ -98,18 +102,27 @@ class _FakeGitHubClient:
     para preservar a regra de shape ``owner/name``.
     """
 
-    def __init__(self, repo: str, prs: Optional[List[dict]] = None, issues: Optional[List[dict]] = None):
+    def __init__(
+        self,
+        repo: str,
+        prs: Optional[List[dict]] = None,
+        issues: Optional[List[dict]] = None,
+    ):
         self.repo = repo
         self._prs = list(prs or [])
         self._issues = list(issues or [])
         self.pr_calls: List[str] = []
         self.issue_calls: List[str] = []
 
-    async def list_prs_updated_since(self, since_iso: str, *, limit: int = 100) -> List[dict]:
+    async def list_prs_updated_since(
+        self, since_iso: str, *, limit: int = 100
+    ) -> List[dict]:
         self.pr_calls.append(since_iso)
         return self._prs
 
-    async def list_issues_updated_since(self, since_iso: str, *, limit: int = 100) -> List[dict]:
+    async def list_issues_updated_since(
+        self, since_iso: str, *, limit: int = 100
+    ) -> List[dict]:
         self.issue_calls.append(since_iso)
         return self._issues
 
@@ -306,14 +319,20 @@ class TestCollectCommits:
         monkeypatch.setattr(sc.subprocess, "run", fake_run)
         commits = collect_commits("2025-05-22T05:00:00Z")
         assert len(commits) == 2
-        assert commits[0] == {"hash": "abc1234", "author": "alice", "title": "fix pipeline retry"}
+        assert commits[0] == {
+            "hash": "abc1234",
+            "author": "alice",
+            "title": "fix pipeline retry",
+        }
         assert commits[1]["author"] == "bob"
         # Sanity: usamos git log com --since
         assert calls[0][0:2] == ["git", "log"]
         assert any("--since=2025-05-22T05:00:00Z" in tok for tok in calls[0])
 
     def test_empty_output(self, monkeypatch):
-        monkeypatch.setattr(sc.subprocess, "run", lambda *a, **kw: _FakeCompleted(0, ""))
+        monkeypatch.setattr(
+            sc.subprocess, "run", lambda *a, **kw: _FakeCompleted(0, "")
+        )
         assert collect_commits("2025-05-22T05:00:00Z") == []
 
     def test_failure_returns_empty(self, monkeypatch):
@@ -454,21 +473,31 @@ class TestEnsureChecks:
         assert "git" in str(exc_info.value).lower()
 
     def test_gh_not_installed(self, monkeypatch):
-        monkeypatch.setattr(gh.shutil, "which", lambda exe: None if exe == "gh" else f"/usr/bin/{exe}")
+        monkeypatch.setattr(
+            gh.shutil, "which", lambda exe: None if exe == "gh" else f"/usr/bin/{exe}"
+        )
         with pytest.raises(CommandError) as exc_info:
             sc.ensure_gh_authenticated()
-        assert "gh" in str(exc_info.value).lower() or "github cli" in str(exc_info.value).lower()
+        assert (
+            "gh" in str(exc_info.value).lower()
+            or "github cli" in str(exc_info.value).lower()
+        )
 
     def test_gh_not_authenticated(self, monkeypatch):
         monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
         monkeypatch.setattr(
             gh.subprocess,
             "run",
-            lambda *a, **kw: _FakeCompleted(1, "", "You are not logged into any GitHub hosts."),
+            lambda *a, **kw: _FakeCompleted(
+                1, "", "You are not logged into any GitHub hosts."
+            ),
         )
         with pytest.raises(CommandError) as exc_info:
             sc.ensure_gh_authenticated()
-        assert "auten" in str(exc_info.value).lower() or "auth" in str(exc_info.value).lower()
+        assert (
+            "auten" in str(exc_info.value).lower()
+            or "auth" in str(exc_info.value).lower()
+        )
 
     def test_gh_auth_timeout_raises_command_error(self, monkeypatch):
         # gh auth status sem timeout podia travar indefinidamente (issue #655).
@@ -561,7 +590,9 @@ class TestExecute:
         rendered = _render(result.content)
         assert "Resumo gerado pelo LLM" in rendered
 
-    async def test_calls_real_router_via_generate_narrative(self, monkeypatch, fake_data):
+    async def test_calls_real_router_via_generate_narrative(
+        self, monkeypatch, fake_data
+    ):
         """Garante que generate_narrative() de fato bate em router/provider."""
 
         async def fake_collect(spec, **kw):
@@ -604,7 +635,9 @@ class TestExecute:
 
     async def test_invalid_since_returns_error(self, monkeypatch):
         # Nem chega a coletar (falha no parse_since dentro de collect_standup_data)
-        monkeypatch.setattr(sc.subprocess, "run", lambda *a, **kw: _FakeCompleted(0, ""))
+        monkeypatch.setattr(
+            sc.subprocess, "run", lambda *a, **kw: _FakeCompleted(0, "")
+        )
         # Stub das checagens para garantir que o parse_since falhe primeiro.
         monkeypatch.setattr(sc, "ensure_git_repo", lambda *a, **kw: Path("/tmp"))
         monkeypatch.setattr(sc, "ensure_gh_authenticated", lambda: None)

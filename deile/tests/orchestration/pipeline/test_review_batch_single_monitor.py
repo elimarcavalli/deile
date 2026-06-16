@@ -9,6 +9,7 @@ Garante que:
 2. shard_count>1 + PR fresh → chama claim_with_batch (comportamento antigo preservado).
 3. shard_count==1 + batch None (simulando race) → impossível neste path (não chama).
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -20,15 +21,23 @@ from deile.orchestration.pipeline.github_client import PrRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.implementer import WorkerImplementer
 from deile.orchestration.pipeline.labels import REVIEW_PENDING
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
 _NOTIFIER_METHODS = (
-    "issue_picked_up", "issue_reviewed", "implementation_started",
-    "implementation_finished", "implementation_parked", "implementation_resumed",
-    "implementation_blocked", "pr_picked_up", "pr_reviewed",
-    "issue_auto_classified", "follow_ups_processed", "error",
-    "pr_auto_classified", "mention_processed",
+    "issue_picked_up",
+    "issue_reviewed",
+    "implementation_started",
+    "implementation_finished",
+    "implementation_parked",
+    "implementation_resumed",
+    "implementation_blocked",
+    "pr_picked_up",
+    "pr_reviewed",
+    "issue_auto_classified",
+    "follow_ups_processed",
+    "error",
+    "pr_auto_classified",
+    "mention_processed",
 )
 
 
@@ -51,8 +60,13 @@ def _pr(number: int, labels: tuple = ()) -> PrRef:
     )
 
 
-def _make(*, shard_count: int = 1, prs=None, claim_returns="abc123",
-          review_human_prs: bool = False):
+def _make(
+    *,
+    shard_count: int = 1,
+    prs=None,
+    claim_returns="abc123",
+    review_human_prs: bool = False,
+):
     cfg = PipelineConfig(
         repo="owner/name",
         base_repo_path=Path("/tmp/fake"),
@@ -89,11 +103,17 @@ def _make(*, shard_count: int = 1, prs=None, claim_returns="abc123",
     implementer = WorkerImplementer(client=client, ledger=ledger)
 
     monitor = PipelineMonitor(
-        cfg, github=github, notifier=notifier, implementer=implementer,
-        worktrees=MagicMock(), claude=MagicMock(),
+        cfg,
+        github=github,
+        notifier=notifier,
+        implementer=implementer,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
     )
     monitor.identity = MonitorIdentity(
-        monitor_id="default", shard_index=0, shard_count=shard_count,
+        monitor_id="default",
+        shard_index=0,
+        shard_count=shard_count,
     )
     return monitor, github
 
@@ -142,7 +162,9 @@ class TestReviewBatchGuardSingleMonitor:
     async def test_multi_monitor_claim_none_skips_review(self):
         """shard_count>1 + claim retorna None: PR já foi reclamada por outro monitor → skip."""
         pr = _pr(30, labels=(REVIEW_PENDING,))
-        monitor, github = _make(shard_count=2, prs=[pr], claim_returns=None, review_human_prs=True)
+        monitor, github = _make(
+            shard_count=2, prs=[pr], claim_returns=None, review_human_prs=True
+        )
 
         await monitor._review_one_open_pr()
 

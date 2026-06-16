@@ -74,7 +74,10 @@ def test_synthetic_excluded(audit):
 
 def test_identity_no_slug(audit):
     """AC7/AC2: ``None`` e ``""`` retornam a lista intacta (mesmos objetos, mesma ordem)."""
-    sessions = [_sess(["claude-opus-4-8-20250514"]), _sess(["claude-sonnet-4-6-20250101"])]
+    sessions = [
+        _sess(["claude-opus-4-8-20250514"]),
+        _sess(["claude-sonnet-4-6-20250101"]),
+    ]
     for slug in (None, ""):
         out = audit.filter_sessions_by_model(sessions, slug)
         assert out is sessions or out == sessions
@@ -95,13 +98,19 @@ def test_filter_precedes_top(audit):
 
 def test_zero_match_exit(audit, monkeypatch):
     """AC6: no caminho não-interativo, filtro vazio chama ``sys.exit`` com code 1."""
-    monkeypatch.setattr(sys, "argv", ["session_tokens_audit.py", "--model", "gpt", "--no-interactive"])
+    monkeypatch.setattr(
+        sys, "argv", ["session_tokens_audit.py", "--model", "gpt", "--no-interactive"]
+    )
     monkeypatch.setattr(audit, "find_kubectl", lambda: "kubectl")
     monkeypatch.setattr(audit, "resolve_pod", lambda *a, **k: "pod-x")
     monkeypatch.setattr(audit, "resolve_pvc", lambda *a, **k: "pvc-x")
     monkeypatch.setattr(audit, "_console", lambda *a, **k: None)
-    monkeypatch.setattr(audit, "fetch_sessions", lambda *a, **k: [_sess(["claude-opus-4-8-20250514"])])
+    monkeypatch.setattr(
+        audit, "fetch_sessions", lambda *a, **k: [_sess(["claude-opus-4-8-20250514"])]
+    )
     monkeypatch.setattr(audit, "enrich", lambda sessions, pvc: sessions)
     with pytest.raises(SystemExit) as exc:
         audit.main()
-    assert exc.value.code == 1 or "Nenhuma sessão com modelo contendo 'gpt'." in str(exc.value.code)
+    assert exc.value.code == 1 or "Nenhuma sessão com modelo contendo 'gpt'." in str(
+        exc.value.code
+    )

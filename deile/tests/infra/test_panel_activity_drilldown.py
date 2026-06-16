@@ -42,11 +42,17 @@ def _ts() -> datetime:
     return datetime(2026, 1, 1, 16, 0, 0, tzinfo=_UTC)
 
 
-def _event(actor: str = "pipeline", source_pod: str = "",
-           task_id=None) -> pd.ActivityEvent:
+def _event(
+    actor: str = "pipeline", source_pod: str = "", task_id=None
+) -> pd.ActivityEvent:
     return pd.ActivityEvent(
-        ts=_ts(), actor=actor, action="dispatch",
-        target="#1", detail="", source_pod=source_pod, task_id=task_id,
+        ts=_ts(),
+        actor=actor,
+        action="dispatch",
+        target="#1",
+        detail="",
+        source_pod=source_pod,
+        task_id=task_id,
     )
 
 
@@ -57,6 +63,7 @@ def _mock_app() -> MagicMock:
 # ---------------------------------------------------------------------------
 # 1-3: ActivityEvent new fields
 # ---------------------------------------------------------------------------
+
 
 class TestActivityEventNewFields:
     def test_source_pod_default(self):
@@ -69,8 +76,12 @@ class TestActivityEventNewFields:
 
     def test_fields_settable(self):
         ev = pd.ActivityEvent(
-            ts=_ts(), actor="claude-worker", action="dispatch",
-            target="#5", detail="x", source_pod="claude-worker-abc-xyz",
+            ts=_ts(),
+            actor="claude-worker",
+            action="dispatch",
+            target="#5",
+            detail="x",
+            source_pod="claude-worker-abc-xyz",
             task_id="task-123",
         )
         assert ev.source_pod == "claude-worker-abc-xyz"
@@ -80,6 +91,7 @@ class TestActivityEventNewFields:
 # ---------------------------------------------------------------------------
 # 4: Initial state
 # ---------------------------------------------------------------------------
+
 
 class TestDashboardViewInitialState:
     def test_activity_focused_false(self):
@@ -94,6 +106,7 @@ class TestDashboardViewInitialState:
 # ---------------------------------------------------------------------------
 # 5-6: Entering / exiting focus mode
 # ---------------------------------------------------------------------------
+
 
 class TestDashboardViewFocusToggle:
     def test_a_key_enters_focus(self):
@@ -125,6 +138,7 @@ class TestDashboardViewFocusToggle:
 # ---------------------------------------------------------------------------
 # 7-9: Cursor navigation
 # ---------------------------------------------------------------------------
+
 
 class TestDashboardViewCursorNavigation:
     def _view_with_events(self, n: int = 3) -> panel.DashboardView:
@@ -172,6 +186,7 @@ class TestDashboardViewCursorNavigation:
 # 10-13: Drill-down dispatch on [enter]
 # ---------------------------------------------------------------------------
 
+
 class TestDashboardViewDrillDown:
     def _view_with(self, ev: pd.ActivityEvent) -> panel.DashboardView:
         v = panel.DashboardView()
@@ -181,7 +196,9 @@ class TestDashboardViewDrillDown:
         return v
 
     def test_enter_claude_worker_with_task_id_navs_live_session(self):
-        ev = _event(actor="claude-worker", source_pod="claude-worker-xyz", task_id="task-abc")
+        ev = _event(
+            actor="claude-worker", source_pod="claude-worker-xyz", task_id="task-abc"
+        )
         v = self._view_with(ev)
         result = v.handle_key("\r", _mock_app())
         assert result.kind == panel.Action.NAV
@@ -231,6 +248,7 @@ class TestDashboardViewDrillDown:
 # ---------------------------------------------------------------------------
 # 14-16: intercepts_key
 # ---------------------------------------------------------------------------
+
 
 class TestDashboardViewInterceptsKey:
     def test_intercepts_esc_when_focused(self):
@@ -292,6 +310,7 @@ class TestDashboardViewInterceptsKey:
 # 17: LiveSessionView registered
 # ---------------------------------------------------------------------------
 
+
 class TestLiveSessionViewRegistered:
     def test_live_session_in_build_views(self):
         views = panel._build_views()
@@ -303,6 +322,7 @@ class TestLiveSessionViewRegistered:
 # Regressão: [A] reabilita a ActionsView (que ficou órfã ao [a] ser
 # repurposed para a Activity em #436/#446).
 # ---------------------------------------------------------------------------
+
 
 class TestActionsViewHotkey:
     def test_uppercase_A_navs_to_actions(self):
@@ -342,6 +362,7 @@ class TestActionsViewHotkey:
 # Com o token correto do KeyReader ("ESC"/"UP"/"DOWN"), entrar→mover→sair
 # devolve o controle global.
 # ---------------------------------------------------------------------------
+
 
 class TestActivityFocusCycle:
     def test_enter_move_esc_releases_global(self):
@@ -416,6 +437,7 @@ class TestActivityFocusCycle:
 # Render: cursor obsoleto é clampado à janela corrente do feed.
 # ---------------------------------------------------------------------------
 
+
 class TestActivityCursorClamp:
     def test_render_clamps_stale_cursor(self):
         # cursor obsoleto (999) deve ser clampado à janela de linhas visível
@@ -441,6 +463,7 @@ class TestActivityCursorClamp:
 # Footer HOTKEYS reflete [a]ctivity + [A]ctions e o modo focused.
 # ---------------------------------------------------------------------------
 
+
 class TestActivityHotkeysFooter:
     def test_normal_footer_lists_activity_and_actions(self):
         v = panel.DashboardView()
@@ -461,6 +484,7 @@ class TestActivityHotkeysFooter:
 # End-to-end via PanelApp: o despacho real (intercepts_key + _handle_global
 # + handle_key) prova que o focus-trap sumiu com os tokens corretos.
 # ---------------------------------------------------------------------------
+
 
 class TestPanelAppActivityDispatch:
     def _app(self) -> panel.PanelApp:

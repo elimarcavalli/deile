@@ -3,6 +3,7 @@
 Verifica que ``pipeline.cost_cap_usd`` em settings.json é lido como fallback
 global pelo resolver quando não há cap por-estágio nem env var global.
 """
+
 from __future__ import annotations
 
 import logging
@@ -12,12 +13,16 @@ import pytest
 
 from deile.config.settings import get_settings, reset_settings
 from deile.orchestration.pipeline.dispatch_resolver import (
-    PIPELINE_STAGES, resolve_stage_cost_cap_usd)
+    PIPELINE_STAGES,
+    resolve_stage_cost_cap_usd,
+)
 
 
 def _clear_env(monkeypatch):
     for stage in PIPELINE_STAGES:
-        monkeypatch.delenv(f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}", raising=False)
+        monkeypatch.delenv(
+            f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}", raising=False
+        )
     monkeypatch.delenv("DEILE_PIPELINE_COST_CAP_USD", raising=False)
 
 
@@ -38,9 +43,9 @@ class TestLevel4GlobalSettings:
         """Level 4: pipeline_cost_cap_usd in settings is the fallback for all stages."""
         get_settings().pipeline_cost_cap_usd = Decimal("3.50")
         for stage in PIPELINE_STAGES:
-            assert resolve_stage_cost_cap_usd(stage) == Decimal("3.50"), (
-                f"stage {stage!r} did not pick up global settings cap"
-            )
+            assert resolve_stage_cost_cap_usd(stage) == Decimal(
+                "3.50"
+            ), f"stage {stage!r} did not pick up global settings cap"
 
     def test_global_settings_beaten_by_env_global(self, monkeypatch):
         """Level 3 (env global) beats level 4 (global settings)."""
@@ -72,6 +77,8 @@ class TestLevel4GlobalSettings:
         settings = get_settings()
         # Bypass the validator by directly setting an invalid value
         object.__setattr__(settings, "pipeline_cost_cap_usd", Decimal("-1"))
-        with caplog.at_level(logging.WARNING, logger="deile.orchestration.pipeline.dispatch_resolver"):
+        with caplog.at_level(
+            logging.WARNING, logger="deile.orchestration.pipeline.dispatch_resolver"
+        ):
             result = resolve_stage_cost_cap_usd("implement")
         assert result is None

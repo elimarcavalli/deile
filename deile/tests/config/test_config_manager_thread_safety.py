@@ -3,6 +3,7 @@
 Verifica que get_config_manager() usa double-checked locking e não cria
 múltiplas instâncias em init concorrente, espelhando get_settings().
 """
+
 from __future__ import annotations
 
 import threading
@@ -16,6 +17,7 @@ from deile.config.manager import ConfigManager, get_config_manager
 def _reset_singleton():
     """Reset the singleton before and after each test."""
     import deile.config.manager as mgr_mod
+
     mgr_mod._config_manager = None
     yield
     mgr_mod._config_manager = None
@@ -33,6 +35,7 @@ def test_get_config_manager_returns_same_instance():
 def test_get_config_manager_concurrent_init_single_instance():
     """Concurrent first-time calls must produce exactly one ConfigManager instance."""
     import deile.config.manager as mgr_mod
+
     mgr_mod._config_manager = None
 
     instances: list[ConfigManager] = []
@@ -58,18 +61,19 @@ def test_get_config_manager_concurrent_init_single_instance():
     assert len(instances) == 20
     # All threads must have received the same instance
     first = instances[0]
-    assert all(inst is first for inst in instances), (
-        "get_config_manager() returned different instances under concurrent init"
-    )
+    assert all(
+        inst is first for inst in instances
+    ), "get_config_manager() returned different instances under concurrent init"
 
 
 @pytest.mark.unit
 def test_get_config_manager_lock_exists():
     """_config_manager_lock must be a threading.Lock (mirrors _settings_lock)."""
     import deile.config.manager as mgr_mod
-    assert hasattr(mgr_mod, "_config_manager_lock"), (
-        "_config_manager_lock not found in deile.config.manager"
-    )
-    assert isinstance(mgr_mod._config_manager_lock, type(threading.Lock())), (
-        "_config_manager_lock is not a threading.Lock instance"
-    )
+
+    assert hasattr(
+        mgr_mod, "_config_manager_lock"
+    ), "_config_manager_lock not found in deile.config.manager"
+    assert isinstance(
+        mgr_mod._config_manager_lock, type(threading.Lock())
+    ), "_config_manager_lock is not a threading.Lock instance"

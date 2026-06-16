@@ -26,6 +26,7 @@ import deploy  # noqa: E402
 
 # ===== ScaleConfig defaults =================================================
 
+
 def test_scale_config_defaults():
     cfg = deploy.ScaleConfig()
     # namespace vazio resolve para NS_DEFAULT via __post_init__
@@ -48,6 +49,7 @@ def test_scale_config_custom():
 
 
 # ===== _parse_scale_flags ===================================================
+
 
 def _make_args(namespace="deile"):
     args = deploy.parse_args(["k8s", "scale"])
@@ -105,6 +107,7 @@ def test_parse_scale_invalid_int_warns(capsys):
 
 # ===== k8s_scale registration ===============================================
 
+
 def test_k8s_scale_registered_in_k8s_dict():
     assert "scale" in deploy._K8S
     assert deploy._K8S["scale"] is deploy.k8s_scale
@@ -116,6 +119,7 @@ def test_k8s_scale_in_actions_list():
 
 
 # ===== do_scale — mockando kubectl ==========================================
+
 
 def _mock_run_ok(*args, **kw):
     """Simula subprocess.run retornando 0 (sucesso)."""
@@ -165,8 +169,9 @@ def test_do_scale_worker_only_success(kubectl_present):
 
     assert rc == 0
     # Verifica que houve uma chamada com --replicas=3
-    assert any("--replicas=3" in " ".join(c) for c in run_calls), \
-        f"Esperava --replicas=3 mas encontrei: {run_calls}"
+    assert any(
+        "--replicas=3" in " ".join(c) for c in run_calls
+    ), f"Esperava --replicas=3 mas encontrei: {run_calls}"
 
 
 def test_do_scale_claude_worker_only_success(kubectl_present):
@@ -254,6 +259,7 @@ def test_do_scale_no_kubectl_returns_1(kubectl_absent, capsys):
 
 
 # ===== k8s_scale CLI entrypoint =============================================
+
 
 def test_k8s_scale_delegates_to_do_scale():
     """k8s_scale chama do_scale com o ScaleConfig correto."""

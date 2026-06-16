@@ -29,32 +29,39 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.forge import ForgeClient, IssueRef, build_forge
-from deile.orchestration.pipeline import stages
+from deile.orchestration.pipeline import pipeline_logger, stages
 from deile.orchestration.pipeline._time_utils import now_utc, parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
-    PIPELINE_STOP_TIMEOUT_SECONDS, pipeline_poll_interval_seconds)
+    PIPELINE_STOP_TIMEOUT_SECONDS,
+    pipeline_poll_interval_seconds,
+)
+
 # Import path preserved for callers that still type-hint ``GitHubClient`` —
 # resolved through the shim so legacy attribute usage stays compatible.
-from deile.orchestration.pipeline.github_client import \
-    GitHubClient  # noqa: F401
+from deile.orchestration.pipeline.github_client import GitHubClient  # noqa: F401
 from deile.orchestration.pipeline.identity import MonitorIdentity
-from deile.orchestration.pipeline.implementer import (PipelineImplementer,
-                                                      build_implementer,
-                                                      is_claude_mode)
-from deile.orchestration.pipeline.labels import (WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW,
-                                                 WORKFLOW_REVIEWED)
+from deile.orchestration.pipeline.implementer import (
+    PipelineImplementer,
+    build_implementer,
+    is_claude_mode,
+)
+from deile.orchestration.pipeline.labels import (
+    WORKFLOW_IMPLEMENTING,
+    WORKFLOW_NEW,
+    WORKFLOW_REVIEWED,
+)
 from deile.orchestration.pipeline.lockfile import LockHeldError
 from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
 from deile.orchestration.pipeline.lockfile import release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
-from deile.orchestration.pipeline import pipeline_logger
 from deile.orchestration.pipeline.resume_state import ResumeTracker
 from deile.orchestration.pipeline.scheduler import PendingRun, ScheduleStore
-from deile.orchestration.pipeline.stages import (_extract_pr_url,
-                                                 _render_follow_up_report)
+from deile.orchestration.pipeline.stages import (
+    _extract_pr_url,
+    _render_follow_up_report,
+)
 from deile.orchestration.pipeline.worktree_manager import WorktreeManager
 
 logger = logging.getLogger(__name__)
@@ -62,8 +69,12 @@ logger = logging.getLogger(__name__)
 # Re-exported from ``stages`` for backwards compatibility: existing tests and
 # callers import ``_extract_pr_url``/``_render_follow_up_report`` from this
 # module. The canonical definitions now live in ``stages.py``.
-__all__ = ["PipelineConfig", "PipelineMonitor", "_extract_pr_url",
-           "_render_follow_up_report"]
+__all__ = [
+    "PipelineConfig",
+    "PipelineMonitor",
+    "_extract_pr_url",
+    "_render_follow_up_report",
+]
 
 
 @dataclass
@@ -196,15 +207,24 @@ def _resolve_auto_max_parallel(namespace: str = "deile") -> Optional[int]:
         return None
     try:
         proc = subprocess.run(
-            [kubectl, "-n", namespace, "get",
-             "deployment/claude-worker",
-             "-o", "jsonpath={.spec.replicas}"],
-            capture_output=True, text=True, timeout=10,
+            [
+                kubectl,
+                "-n",
+                namespace,
+                "get",
+                "deployment/claude-worker",
+                "-o",
+                "jsonpath={.spec.replicas}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if proc.returncode != 0:
             logger.warning(
                 "max_parallel=auto: kubectl exited %d; falling back to default. stderr=%r",
-                proc.returncode, proc.stderr[:200],
+                proc.returncode,
+                proc.stderr[:200],
             )
             return None
         raw = proc.stdout.strip()
@@ -215,10 +235,14 @@ def _resolve_auto_max_parallel(namespace: str = "deile") -> Optional[int]:
             )
             return None
         replicas = int(raw)
-        logger.info("max_parallel=auto: derived %d from claude-worker replicas", replicas)
+        logger.info(
+            "max_parallel=auto: derived %d from claude-worker replicas", replicas
+        )
         return replicas
     except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("max_parallel=auto: kubectl call failed (%s); falling back to default", exc)
+        logger.warning(
+            "max_parallel=auto: kubectl call failed (%s); falling back to default", exc
+        )
         return None
 
 
@@ -351,7 +375,9 @@ class PipelineMonitor:
         claude: Optional[ClaudeDispatcher] = None,
         notifier: Optional[DiscordNotifier] = None,
         review_callback: Optional[Callable[[IssueRef], Awaitable[str]]] = None,
-        post_merge_callback: Optional[Callable[[int, str, str], Awaitable[None]]] = None,
+        post_merge_callback: Optional[
+            Callable[[int, str, str], Awaitable[None]]
+        ] = None,
         identity: Optional[MonitorIdentity] = None,
         schedule_store: Optional[ScheduleStore] = None,
         implementer: Optional[PipelineImplementer] = None,
@@ -369,9 +395,14 @@ class PipelineMonitor:
             raise ValueError(
                 "PipelineMonitor: pass only one of forge=/github= (github= is deprecated)"
             )
-        self.forge: ForgeClient = forge or github or build_forge(project_path=config.repo)
-        self.forge.on_label_change = lambda kind, num, rem, add: \
-            pipeline_logger.log_label_change(target_kind=kind, target=num, removed=rem, added=add)
+        self.forge: ForgeClient = (
+            forge or github or build_forge(project_path=config.repo)
+        )
+        self.forge.on_label_change = (
+            lambda kind, num, rem, add: pipeline_logger.log_label_change(
+                target_kind=kind, target=num, removed=rem, added=add
+            )
+        )
         # WorktreeManager validates that base_repo_path is a git repo at
         # construction. The deile_worker strategy never creates local
         # worktrees (the worker Pod owns its own clone) and runs where
@@ -400,7 +431,9 @@ class PipelineMonitor:
         self._task: Optional[asyncio.Task] = None
         self._held_lock: Optional[Path] = None
         self._post_merge_cb = post_merge_callback
-        self._mention_cursor_path = Path(config.base_repo_path) / "data" / "mention_cursor.txt"
+        self._mention_cursor_path = (
+            Path(config.base_repo_path) / "data" / "mention_cursor.txt"
+        )
         self._mention_cursor: Optional[datetime] = None
         # Pipeline-side resume bookkeeping (issue #254): cadence timestamps,
         # last substantive fingerprint (progress guard) and attempt/budget as
@@ -547,7 +580,8 @@ class PipelineMonitor:
             except LockHeldError as exc:
                 logger.error(
                     "another monitor with id=%s is already running (PID %d); refusing start",
-                    self.identity.monitor_id, exc.holder_pid,
+                    self.identity.monitor_id,
+                    exc.holder_pid,
                 )
                 raise
         await self.forge.ensure_pipeline_labels()
@@ -605,7 +639,8 @@ class PipelineMonitor:
             return
         logger.info(
             "monitor %s catching up on %d missed runs",
-            self.identity.monitor_id, len(pending),
+            self.identity.monitor_id,
+            len(pending),
         )
         for run in pending:
             await self._run_scheduled(run)
@@ -631,7 +666,9 @@ class PipelineMonitor:
             logger.warning(
                 "scheduled action %r is disabled (%s is not True); "
                 "skipping run at %s. Remove the schedule entry or re-enable the flag.",
-                run.action, action_def.enable_attr, run.when.isoformat(),
+                run.action,
+                action_def.enable_attr,
+                run.when.isoformat(),
             )
             self._stats.skipped_runs += 1
             return
@@ -644,7 +681,9 @@ class PipelineMonitor:
             t.cancel()
         if self._task is not None:
             try:
-                await asyncio.wait_for(self._task, timeout=PIPELINE_STOP_TIMEOUT_SECONDS)
+                await asyncio.wait_for(
+                    self._task, timeout=PIPELINE_STOP_TIMEOUT_SECONDS
+                )
             except asyncio.TimeoutError:
                 self._task.cancel()
                 # ``CancelledError`` é o resultado esperado de ``cancel()`` —
@@ -688,6 +727,7 @@ class PipelineMonitor:
 
     async def tick(self) -> None:
         import time as _time
+
         tick_started = _time.monotonic()
         self._stats.ticks += 1
         logger.debug("pipeline tick #%d", self._stats.ticks)
@@ -728,7 +768,9 @@ class PipelineMonitor:
         try:
             schedule = self.schedule_store.load()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("schedule load failed on tick; falling back to legacy mode: %s", exc)
+            logger.warning(
+                "schedule load failed on tick; falling back to legacy mode: %s", exc
+            )
             schedule = None
 
         if schedule and (schedule.recurring or schedule.oneshot):
@@ -775,6 +817,7 @@ class PipelineMonitor:
         if state is None:
             return
         import time as _time
+
         try:
             elapsed = _time.monotonic() - tick_started
             if hasattr(state, "record_tick"):
@@ -802,12 +845,12 @@ class PipelineMonitor:
         no-op.  Backlog counts are best-effort (forge errors are swallowed).
         """
         import time as _time
+
         elapsed = _time.monotonic() - tick_started
         s = self._stats
 
-        classified_n = (
-            (s.issues_classified - snap["issues_classified"])
-            + (s.prs_classified - snap["prs_classified"])
+        classified_n = (s.issues_classified - snap["issues_classified"]) + (
+            s.prs_classified - snap["prs_classified"]
         )
         reviewed_n = s.issues_reviewed - snap["issues_reviewed"]
         implemented_n = s.issues_implemented - snap["issues_implemented"]
@@ -819,7 +862,9 @@ class PipelineMonitor:
         backlog_prs = -1
         try:
             active_labels = (
-                WORKFLOW_NEW, WORKFLOW_REVIEWED, WORKFLOW_IMPLEMENTING,
+                WORKFLOW_NEW,
+                WORKFLOW_REVIEWED,
+                WORKFLOW_IMPLEMENTING,
             )
             seen: set[int] = set()
             for label in active_labels:
@@ -830,12 +875,14 @@ class PipelineMonitor:
                 except Exception as _inner_exc:  # noqa: BLE001
                     logger.debug(
                         "_log_tick_summary: list_issues(%s) failed: %s",
-                        label, _inner_exc,
+                        label,
+                        _inner_exc,
                     )
             backlog_issues = len(seen)
         except Exception as _outer_exc:  # noqa: BLE001
             logger.debug(
-                "_log_tick_summary: backlog issues query failed: %s", _outer_exc,
+                "_log_tick_summary: backlog issues query failed: %s",
+                _outer_exc,
             )
         try:
             prs = await self.forge.list_open_prs(limit=200)
@@ -848,15 +895,25 @@ class PipelineMonitor:
                 "tick #%d done in %.2fs: classified=%d reviewed=%d "
                 "implemented=%d dispatched=%d "
                 "backlog={issues:%d prs:%d}",
-                s.ticks, elapsed, classified_n, reviewed_n,
-                implemented_n, dispatched_n, backlog_issues, backlog_prs,
+                s.ticks,
+                elapsed,
+                classified_n,
+                reviewed_n,
+                implemented_n,
+                dispatched_n,
+                backlog_issues,
+                backlog_prs,
             )
         else:
             logger.info(
                 "tick #%d done in %.2fs: classified=%d reviewed=%d "
                 "implemented=%d dispatched=%d backlog=unavailable",
-                s.ticks, elapsed, classified_n, reviewed_n,
-                implemented_n, dispatched_n,
+                s.ticks,
+                elapsed,
+                classified_n,
+                reviewed_n,
+                implemented_n,
+                dispatched_n,
             )
 
     async def _dispatch_stages(self, skip: set[str] | None = None) -> None:
@@ -929,10 +986,15 @@ class PipelineMonitor:
         # mode; when run via the scheduler it is invoked by name with no args and
         # fetches its own (unchanged).
         reviewed_pre = reviewed_post = None
-        if (cfg.enable_implement and "implement" not in skip) or cfg.enable_refinement_gate:
-            reviewed_pre, reviewed_post = await stages.fetch_reviewed_and_ensure_ownership(self)
+        if (
+            cfg.enable_implement and "implement" not in skip
+        ) or cfg.enable_refinement_gate:
+            reviewed_pre, reviewed_post = (
+                await stages.fetch_reviewed_and_ensure_ownership(self)
+            )
         await _scheduled(
-            cfg.enable_implement, "implement",
+            cfg.enable_implement,
+            "implement",
             lambda: self._implement_one_reviewed_issue(reviewed_pre),
         )
         # Decompose CLEAR intents into derived issues (issue #257).
@@ -1005,7 +1067,9 @@ class PipelineMonitor:
     async def _review_one_open_pr(self) -> None:
         return await stages.review_one_open_pr(self)
 
-    async def _stage4_follow_ups(self, pr_number: int, pr_title: str, pr_url: str) -> None:
+    async def _stage4_follow_ups(
+        self, pr_number: int, pr_title: str, pr_url: str
+    ) -> None:
         return await stages.stage4_follow_ups(self, pr_number, pr_title, pr_url)
 
     async def _standalone_follow_ups(self) -> None:

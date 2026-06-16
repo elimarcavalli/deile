@@ -1,6 +1,5 @@
 """Tests: Settings.get_api_key covers all four multi-provider keys."""
 
-
 from deile.config.settings import Settings
 
 

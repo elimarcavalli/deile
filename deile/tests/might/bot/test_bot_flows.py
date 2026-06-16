@@ -59,6 +59,7 @@ DEPLOY = "deilebot"
 # kubectl helpers
 # ──────────────────────────────────────────────────────────────────────
 
+
 def _kubectl(args: List[str], *, check: bool = True, timeout: int = 60) -> str:
     """Run ``kubectl`` and return stdout. Surfaces stderr on failure."""
     cmd = ["kubectl", "-n", NAMESPACE, *args]
@@ -72,16 +73,23 @@ def _kubectl(args: List[str], *, check: bool = True, timeout: int = 60) -> str:
 
 
 def _get_cp_token() -> str:
-    raw = _kubectl([
-        "get", "secret", "bot-secrets",
-        "-o", "jsonpath={.data.DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN}",
-    ])
+    raw = _kubectl(
+        [
+            "get",
+            "secret",
+            "bot-secrets",
+            "-o",
+            "jsonpath={.data.DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN}",
+        ]
+    )
     import base64
+
     return base64.b64decode(raw).decode().strip()
 
 
-def _exec_in_pod(script: str, *, env: Optional[Dict[str, str]] = None,
-                 timeout: int = 180) -> Tuple[int, str, str]:
+def _exec_in_pod(
+    script: str, *, env: Optional[Dict[str, str]] = None, timeout: int = 180
+) -> Tuple[int, str, str]:
     """Run a Python script inside the bot pod, returning (rc, stdout, stderr).
 
     ``kubectl exec`` (1.28+) does not support ``--env`` flag, so we
@@ -89,12 +97,23 @@ def _exec_in_pod(script: str, *, env: Optional[Dict[str, str]] = None,
     script. Strings are passed via ``repr()`` to safely escape.
     """
     if env:
-        prelude = "import os\n" + "\n".join(
-            f"os.environ[{k!r}] = {v!r}" for k, v in env.items()
-        ) + "\n"
+        prelude = (
+            "import os\n"
+            + "\n".join(f"os.environ[{k!r}] = {v!r}" for k, v in env.items())
+            + "\n"
+        )
         script = prelude + script
-    cmd = ["kubectl", "-n", NAMESPACE, "exec", f"deploy/{DEPLOY}", "--",
-           "python3", "-c", script]
+    cmd = [
+        "kubectl",
+        "-n",
+        NAMESPACE,
+        "exec",
+        f"deploy/{DEPLOY}",
+        "--",
+        "python3",
+        "-c",
+        script,
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -102,6 +121,7 @@ def _exec_in_pod(script: str, *, env: Optional[Dict[str, str]] = None,
 # ──────────────────────────────────────────────────────────────────────
 # /v1/test/simulate driver
 # ──────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class SimulateResult:
@@ -124,14 +144,16 @@ def simulate(
     timeout: int = 180,
 ) -> SimulateResult:
     """POST to /v1/test/simulate via kubectl exec, returns parsed response."""
-    body = json.dumps({
-        "prompt": prompt,
-        "source": source,
-        "user_id": user_id,
-        "channel_id": channel_id,
-        "display_name": display_name,
-        "channel_scope": channel_scope,
-    })
+    body = json.dumps(
+        {
+            "prompt": prompt,
+            "source": source,
+            "user_id": user_id,
+            "channel_id": channel_id,
+            "display_name": display_name,
+            "channel_scope": channel_scope,
+        }
+    )
     # Single-line python script for kubectl exec.
     # We embed the body as a literal (escaped) string to avoid env-var
     # collision with the secret token.
@@ -152,7 +174,9 @@ def simulate(
         "    print(e.code); print(e.read().decode())\n"
     )
     rc, out, err = _exec_in_pod(
-        script, env={"CP_TOKEN": token}, timeout=timeout,
+        script,
+        env={"CP_TOKEN": token},
+        timeout=timeout,
     )
     if rc != 0:
         raise RuntimeError(f"kubectl exec failed: {err.strip()}")
@@ -171,6 +195,7 @@ def simulate(
 # ──────────────────────────────────────────────────────────────────────
 # Inspectors (post-conditions)
 # ──────────────────────────────────────────────────────────────────────
+
 
 def inspect_db(query: str, *, timeout: int = 30) -> List[Tuple[Any, ...]]:
     """Run a SQL query inside the pod against deilebot.sqlite."""
@@ -194,10 +219,15 @@ def latest_outbound_text(channel_id: str = DEFAULT_CHANNEL_ID) -> Optional[str]:
     return rows[0][0] if rows else None
 
 
-def find_log_lines(pattern: str, since_minutes: int = 5,
-                   limit: int = 10) -> List[str]:
-    cmd = ["kubectl", "-n", NAMESPACE, "logs",
-           f"deploy/{DEPLOY}", f"--since={since_minutes}m"]
+def find_log_lines(pattern: str, since_minutes: int = 5, limit: int = 10) -> List[str]:
+    cmd = [
+        "kubectl",
+        "-n",
+        NAMESPACE,
+        "logs",
+        f"deploy/{DEPLOY}",
+        f"--since={since_minutes}m",
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     matched = [ln for ln in proc.stdout.splitlines() if pattern in ln]
     return matched[-limit:]
@@ -206,6 +236,7 @@ def find_log_lines(pattern: str, since_minutes: int = 5,
 # ──────────────────────────────────────────────────────────────────────
 # Test cases
 # ──────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class TestResult:
@@ -222,8 +253,9 @@ def _test(name: str, fn) -> TestResult:
         ok, details = fn()
         return TestResult(name, ok, details, time.monotonic() - t0)
     except Exception as exc:
-        return TestResult(name, False, f"{type(exc).__name__}: {exc}",
-                          time.monotonic() - t0)
+        return TestResult(
+            name, False, f"{type(exc).__name__}: {exc}", time.monotonic() - t0
+        )
 
 
 def run_all(token: str) -> List[TestResult]:
@@ -239,6 +271,7 @@ def run_all(token: str) -> List[TestResult]:
         if not last:
             return False, "nenhum outbound persistido"
         return True, f"elapsed={r.elapsed_ms}ms last={last[:50]!r}"
+
     results.append(_test("dm_simple", t1))
 
     # 2. DM com worker — espera que dispatch_deile_task seja chamado e
@@ -249,13 +282,15 @@ def run_all(token: str) -> List[TestResult]:
             return False, f"simulate falhou: {r.error}"
         # /v1/dispatch deveria ter sido chamado — confere via log do worker.
         worker_logs = subprocess.run(
-            ["kubectl", "-n", NAMESPACE, "logs",
-             "deploy/deile-worker", "--since=5m"],
-            capture_output=True, text=True, timeout=20,
+            ["kubectl", "-n", NAMESPACE, "logs", "deploy/deile-worker", "--since=5m"],
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
         if "POST /v1/dispatch" not in worker_logs.stdout:
             return False, "worker não recebeu dispatch nos últimos 5min"
         return True, f"elapsed={r.elapsed_ms}ms (worker dispatched)"
+
     results.append(_test("dm_worker_dispatch", t2))
 
     # 3. /deile passthrough simples — espera dispatch SEM M3 do bot LLM.
@@ -264,21 +299,26 @@ def run_all(token: str) -> List[TestResult]:
     #    DEFAULT_CHANNEL_ID and would still be in cooldown).
     def t3():
         test_channel = f"99996{int(time.time()) % 1000000:06d}"
-        before = inspect_db(
-            "SELECT COUNT(*) FROM message WHERE direction='inbound'"
-        )[0][0]
-        r = simulate(token, prompt="echo 'passthrough test'", source="slash",
-                     channel_id=test_channel)
+        before = inspect_db("SELECT COUNT(*) FROM message WHERE direction='inbound'")[
+            0
+        ][0]
+        r = simulate(
+            token,
+            prompt="echo 'passthrough test'",
+            source="slash",
+            channel_id=test_channel,
+        )
         if not r.ok:
             return False, f"simulate falhou: {r.error}"
         if r.raw.get("kind") != "dispatched":
             return False, f"kind={r.raw.get('kind')!r} reason={r.raw.get('reason')!r}"
-        after = inspect_db(
-            "SELECT COUNT(*) FROM message WHERE direction='inbound'"
-        )[0][0]
+        after = inspect_db("SELECT COUNT(*) FROM message WHERE direction='inbound'")[0][
+            0
+        ]
         if after != before + 1:
             return False, f"inbound não persistiu: antes={before} depois={after}"
         return True, f"dispatched, inbound +1, elapsed={r.elapsed_ms}ms"
+
     results.append(_test("slash_passthrough", t3))
 
     # 4. /deile safety BLOCK — rm -rf /
@@ -291,6 +331,7 @@ def run_all(token: str) -> List[TestResult]:
         if kind == "blocked":
             return True, f"blocked: {reason[:60]}"
         return False, f"NÃO bloqueou — kind={kind!r} reason={reason[:80]!r}"
+
     results.append(_test("slash_safety_rm", t4))
 
     # 5. /deile safety BLOCK — hack senha
@@ -303,6 +344,7 @@ def run_all(token: str) -> List[TestResult]:
         if kind == "blocked":
             return True, f"blocked: {reason[:60]}"
         return False, f"NÃO bloqueou — kind={kind!r} reason={reason[:80]!r}"
+
     results.append(_test("slash_safety_hack", t5))
 
     # 6. Anti-loop guard — 2 dispatches em sequência rápida no mesmo canal.
@@ -310,8 +352,9 @@ def run_all(token: str) -> List[TestResult]:
     #    from prior runs of other tests touching DEFAULT_CHANNEL_ID.
     def t6():
         loop_channel = f"99999{int(time.time())%1000000:06d}"
-        r1 = simulate(token, prompt="echo loop test 1", source="slash",
-                      channel_id=loop_channel)
+        r1 = simulate(
+            token, prompt="echo loop test 1", source="slash", channel_id=loop_channel
+        )
         if not r1.ok:
             return False, f"1st dispatch falhou: {r1.error}"
         if r1.raw.get("kind") != "dispatched":
@@ -319,8 +362,9 @@ def run_all(token: str) -> List[TestResult]:
         # 2nd within cooldown window (immediate). The 2nd call is EXPECTED
         # to come back with ok=False + kind="error" + reason containing
         # DISPATCH_COOLDOWN — that's the guard working as intended.
-        r2 = simulate(token, prompt="echo loop test 2", source="slash",
-                      channel_id=loop_channel)
+        r2 = simulate(
+            token, prompt="echo loop test 2", source="slash", channel_id=loop_channel
+        )
         kind2 = r2.raw.get("kind")
         reason2 = r2.raw.get("reason") or ""
         if kind2 == "error" and "DISPATCH_COOLDOWN" in reason2:
@@ -329,6 +373,7 @@ def run_all(token: str) -> List[TestResult]:
             f"cooldown NÃO acionou — r2.ok={r2.ok} kind={kind2!r} "
             f"reason={reason2[:80]!r}"
         )
+
     results.append(_test("anti_loop_guard", t6))
 
     # 7. /historico vê o input do /deile (FK não pode falhar).
@@ -336,8 +381,7 @@ def run_all(token: str) -> List[TestResult]:
     def t7():
         test_channel = f"99997{int(time.time()) % 1000000:06d}"
         unique = f"historico-test-{int(time.time())}"
-        r = simulate(token, prompt=unique, source="slash",
-                     channel_id=test_channel)
+        r = simulate(token, prompt=unique, source="slash", channel_id=test_channel)
         if not r.ok:
             return False, f"simulate erro: {r.error}"
         rows = inspect_db(
@@ -347,6 +391,7 @@ def run_all(token: str) -> List[TestResult]:
         if not rows:
             return False, "inbound não apareceu no DB"
         return True, "inbound persistido com FK OK"
+
     results.append(_test("historico_fk_persist", t7))
 
     # 8. /forget_me — apaga transcript + sessão do agente, idempotente.
@@ -366,15 +411,21 @@ def run_all(token: str) -> List[TestResult]:
         fchan = f"88887{int(time.time()) % 1000000:06d}"
         # Semeia: um DM cria 1 inbound no conversation_store + a
         # AgentSession (viva em RAM e persistida em disco).
-        seed = simulate(token, prompt="lembre: meu animal favorito é capivara",
-                        source="dm", user_id=fuser, channel_id=fchan)
+        seed = simulate(
+            token,
+            prompt="lembre: meu animal favorito é capivara",
+            source="dm",
+            user_id=fuser,
+            channel_id=fchan,
+        )
         if not seed.ok:
             return False, f"seed dm falhou: {seed.error}"
         # 1º forget — deve apagar o transcript E a sessão do agente
         # (RAM + persistida). A sessão é o que o bug original NUNCA
         # limpava — esta é a checagem de regressão central.
-        f1 = simulate(token, prompt="-", source="forget", user_id=fuser,
-                      channel_id=fchan)
+        f1 = simulate(
+            token, prompt="-", source="forget", user_id=fuser, channel_id=fchan
+        )
         if not f1.ok:
             return False, f"forget#1 erro: {f1.error}"
         md = f1.raw.get("messages_deleted", 0)
@@ -390,8 +441,9 @@ def run_all(token: str) -> List[TestResult]:
         if sdb is not True:
             return False, f"forget#1 NÃO apagou a sessão persistida (sdb={sdb!r})"
         # 2º forget — idempotente: nada deve sobrar.
-        f2 = simulate(token, prompt="-", source="forget", user_id=fuser,
-                      channel_id=fchan)
+        f2 = simulate(
+            token, prompt="-", source="forget", user_id=fuser, channel_id=fchan
+        )
         if not f2.ok:
             return False, f"forget#2 erro: {f2.error}"
         if f2.raw.get("messages_deleted", -1) != 0:
@@ -405,6 +457,7 @@ def run_all(token: str) -> List[TestResult]:
             f"wipe ok: {md} msg + sessão (RAM+disco) apagadas; "
             f"2º forget idempotente"
         )
+
     results.append(_test("forget_memory", t8))
 
     return results
@@ -414,9 +467,12 @@ def run_all(token: str) -> List[TestResult]:
 # Entry point
 # ──────────────────────────────────────────────────────────────────────
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--filter", help="run only tests whose name contains this substring")
+    parser.add_argument(
+        "--filter", help="run only tests whose name contains this substring"
+    )
     parser.add_argument("--list", action="store_true", help="list test names and exit")
     args = parser.parse_args()
 

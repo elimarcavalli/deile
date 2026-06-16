@@ -42,9 +42,9 @@ _last_scale_at: Dict[str, float] = {}  # monotonic ts do último scale por alvo
 class ScaleResult(Enum):
     """Resultado do ensure-replica de um dispatcher CLI."""
 
-    READY = "ready"            # já tinha ≥1 réplica; nada a fazer
-    SCALED = "scaled"          # estava em 0 → escalado para 1
-    COOLDOWN = "cooldown"      # estava em 0 mas escalamos há pouco → aguarda
+    READY = "ready"  # já tinha ≥1 réplica; nada a fazer
+    SCALED = "scaled"  # estava em 0 → escalado para 1
+    COOLDOWN = "cooldown"  # estava em 0 mas escalamos há pouco → aguarda
     SCALE_FAILED = "scale_failed"  # kubectl scale falhou (RBAC/erro)
     NO_KUBECTL = "no_kubectl"  # kubectl ausente no PATH
     NOT_APPLICABLE = "not_applicable"  # dispatcher núcleo — não escalável aqui
@@ -65,7 +65,9 @@ class EnsureReplicaOutcome:
         Service. Falhas (SCALE_FAILED/NO_KUBECTL) bloqueiam.
         """
         return self.result in (
-            ScaleResult.READY, ScaleResult.SCALED, ScaleResult.COOLDOWN,
+            ScaleResult.READY,
+            ScaleResult.SCALED,
+            ScaleResult.COOLDOWN,
             ScaleResult.NOT_APPLICABLE,
         )
 
@@ -75,7 +77,9 @@ def _kubectl_bin() -> Optional[str]:
 
     explicit = os.environ.get("KUBECTL_BIN", "").strip()
     if explicit:
-        return explicit if (shutil.which(explicit) or os.path.isfile(explicit)) else None
+        return (
+            explicit if (shutil.which(explicit) or os.path.isfile(explicit)) else None
+        )
     return shutil.which("kubectl")
 
 
@@ -91,7 +95,10 @@ async def _kubectl(*args: str, timeout_s: float) -> tuple:
     ns = _namespace()
     try:
         proc = await asyncio.create_subprocess_exec(
-            binary, "-n", ns, *args,
+            binary,
+            "-n",
+            ns,
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -132,8 +139,11 @@ async def ensure_replica(dispatcher: str) -> EnsureReplicaOutcome:
 
     deploy = _deployment_for(dispatcher)
     rc, out, err = await _kubectl(
-        "get", "deployment", deploy,
-        "-o", "jsonpath={.spec.replicas}",
+        "get",
+        "deployment",
+        deploy,
+        "-o",
+        "jsonpath={.spec.replicas}",
         timeout_s=_GET_TIMEOUT_S,
     )
     if rc != 0:
@@ -146,7 +156,9 @@ async def ensure_replica(dispatcher: str) -> EnsureReplicaOutcome:
     except ValueError:
         replicas = 0
     if replicas >= 1:
-        return EnsureReplicaOutcome(ScaleResult.READY, f"{deploy} já com {replicas} réplica(s)")
+        return EnsureReplicaOutcome(
+            ScaleResult.READY, f"{deploy} já com {replicas} réplica(s)"
+        )
 
     now = time.monotonic()
     last = _last_scale_at.get(deploy, 0.0)
@@ -158,7 +170,9 @@ async def ensure_replica(dispatcher: str) -> EnsureReplicaOutcome:
         )
 
     rc, _out, err = await _kubectl(
-        "scale", f"deployment/{deploy}", "--replicas=1",
+        "scale",
+        f"deployment/{deploy}",
+        "--replicas=1",
         timeout_s=_SCALE_TIMEOUT_S,
     )
     if rc != 0:

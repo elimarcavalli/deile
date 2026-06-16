@@ -127,6 +127,7 @@ async def test_cleanup_loop_sleeps_on_error_to_avoid_hot_loop() -> None:
         await original_sleep(0)
 
     import deile.memory.working_memory as wm_mod
+
     saved = wm_mod.asyncio.sleep
     wm_mod.asyncio.sleep = fast_sleep
     try:

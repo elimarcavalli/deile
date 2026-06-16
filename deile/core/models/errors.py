@@ -13,7 +13,7 @@ class ProviderErrorEnvelope:
 
     provider_id: str
     model_id: str
-    error_type: str          # "auth" | "rate_limit" | "invalid_request" | "context_length_exceeded" | "server" | "unknown"
+    error_type: str  # "auth" | "rate_limit" | "invalid_request" | "context_length_exceeded" | "server" | "unknown"
     message: str
     http_status: Optional[int] = None
     raw_json: Dict[str, Any] = field(default_factory=dict)

@@ -15,9 +15,16 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (ArgSpec, export_timestamp, get_agent, get_session,
-                      get_session_id, parse_flag_args,
-                      promote_positional_format, split_args)
+from ._shared import (
+    ArgSpec,
+    export_timestamp,
+    get_agent,
+    get_session,
+    get_session_id,
+    parse_flag_args,
+    promote_positional_format,
+    split_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +40,13 @@ class ExportCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
-        super().__init__(CommandConfig(
-            name="export",
-            description="Exporta histórico de conversa, planos e dados da sessão em vários formatos.",
-        ))
+
+        super().__init__(
+            CommandConfig(
+                name="export",
+                description="Exporta histórico de conversa, planos e dados da sessão em vários formatos.",
+            )
+        )
 
     async def execute(self, context: CommandContext) -> CommandResult:
         try:
@@ -60,7 +70,10 @@ class ExportCommand(DirectCommand):
             # Positionals: first known format word promotes to format (only if still
             # default); otherwise it sets export_path (last wins, matching prior).
             format_type, leftover_positionals = promote_positional_format(
-                positionals, format_type, "md", ("txt", "md", "json", "zip"),
+                positionals,
+                format_type,
+                "md",
+                ("txt", "md", "json", "zip"),
             )
             for token in leftover_positionals:
                 export_path = token
@@ -72,14 +85,21 @@ class ExportCommand(DirectCommand):
                 export_path = f"./EXPORTS/deile_export_{export_timestamp()}"
 
             panel = await self._perform_export(
-                format_type, export_path, include_artifacts, include_plans, include_session, context
+                format_type,
+                export_path,
+                include_artifacts,
+                include_plans,
+                include_session,
+                context,
             )
             return CommandResult.success_result(panel, "rich")
 
         except CommandError:
             raise
         except Exception as exc:
-            return CommandResult.error_result(f"Falha ao exportar dados: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao exportar dados: {exc}", error=exc
+            )
 
     async def _perform_export(
         self,
@@ -97,7 +117,9 @@ class ExportCommand(DirectCommand):
         export_dir.mkdir(parents=True, exist_ok=True)
 
         if format_type == "zip":
-            exported_files = [str(await self._create_zip_export(export_data, export_dir))]
+            exported_files = [
+                str(await self._create_zip_export(export_data, export_dir))
+            ]
         else:
             exported_files = await self._create_individual_exports(
                 export_data, export_dir, format_type
@@ -117,17 +139,21 @@ class ExportCommand(DirectCommand):
 
         # --- Sessão e histórico ---
         session_id = get_session_id(context)
-        history: List[Dict[str, Any]] = getattr(session, "conversation_history", []) if session else []
+        history: List[Dict[str, Any]] = (
+            getattr(session, "conversation_history", []) if session else []
+        )
         created_at = getattr(session, "created_at", None) if session else None
 
         messages: List[Dict[str, Any]] = []
         for idx, msg in enumerate(history):
-            messages.append({
-                "id": idx + 1,
-                "role": msg.get("role", "unknown"),
-                "content": msg.get("content", ""),
-                "timestamp": msg.get("timestamp", None),
-            })
+            messages.append(
+                {
+                    "id": idx + 1,
+                    "role": msg.get("role", "unknown"),
+                    "content": msg.get("content", ""),
+                    "timestamp": msg.get("timestamp", None),
+                }
+            )
 
         data: Dict[str, Any] = {
             "export_metadata": {
@@ -156,8 +182,12 @@ class ExportCommand(DirectCommand):
                 mr = getattr(agent, "model_router", None)
                 if mr:
                     providers = getattr(mr, "providers", {})
-                    model_name = ", ".join(providers.keys()) if providers else "indisponível"
-            except Exception as exc:  # model_router é best-effort — falha não aborta o export
+                    model_name = (
+                        ", ".join(providers.keys()) if providers else "indisponível"
+                    )
+            except (
+                Exception
+            ) as exc:  # model_router é best-effort — falha não aborta o export
                 logger.debug("export: falha ao ler model_router: %s", exc)
 
             # Persona ativa
@@ -168,7 +198,9 @@ class ExportCommand(DirectCommand):
                     persona = pm.get_active_persona()
                     if persona:
                         persona_name = getattr(persona, "name", "indisponível")
-            except Exception as exc:  # persona_manager é best-effort — falha não aborta o export
+            except (
+                Exception
+            ) as exc:  # persona_manager é best-effort — falha não aborta o export
                 logger.debug("export: falha ao ler persona_manager: %s", exc)
 
             # Memória
@@ -177,7 +209,9 @@ class ExportCommand(DirectCommand):
                 mm = getattr(agent, "memory_manager", None)
                 if mm:
                     memory_stats = await mm.get_memory_usage()
-            except Exception as exc:  # memory_manager é best-effort — falha não aborta o export
+            except (
+                Exception
+            ) as exc:  # memory_manager é best-effort — falha não aborta o export
                 logger.debug("export: falha ao ler memory_manager: %s", exc)
 
             data["session_info"] = {
@@ -196,9 +230,13 @@ class ExportCommand(DirectCommand):
                     for run_dir in sorted(artifacts_dir.iterdir()):
                         if run_dir.is_dir():
                             for af in run_dir.glob("*.json"):
-                                artifacts.append({"path": str(af), "size": af.stat().st_size})
+                                artifacts.append(
+                                    {"path": str(af), "size": af.stat().st_size}
+                                )
                 data["export_metadata"]["data_sources"].append("ArtifactManager")
-            except Exception as exc:  # leitura de artifacts é best-effort — falha não aborta o export
+            except (
+                Exception
+            ) as exc:  # leitura de artifacts é best-effort — falha não aborta o export
                 logger.debug("export: falha ao coletar artifacts: %s", exc)
             data["artifacts"] = {
                 "count": len(artifacts),
@@ -210,11 +248,14 @@ class ExportCommand(DirectCommand):
             plans: List[Dict[str, Any]] = []
             try:
                 from deile.orchestration.plan_manager import get_plan_manager
+
                 pm_inst = get_plan_manager()
                 raw_plans = await pm_inst.list_plans()
                 plans = raw_plans if raw_plans else []
                 data["export_metadata"]["data_sources"].append("PlanManager")
-            except Exception as exc:  # plan_manager é best-effort — falha não aborta o export
+            except (
+                Exception
+            ) as exc:  # plan_manager é best-effort — falha não aborta o export
                 logger.debug("export: falha ao coletar planos: %s", exc)
             data["plans"] = {
                 "count": len(plans),
@@ -358,7 +399,11 @@ class ExportCommand(DirectCommand):
         model = session_info.get("model", "indisponível")
         persona = session_info.get("persona", {}).get("name", "indisponível")
         memory = session_info.get("memory", {})
-        total_mb = memory.get("total_memory_mb", "indisponível") if isinstance(memory, dict) else "indisponível"
+        total_mb = (
+            memory.get("total_memory_mb", "indisponível")
+            if isinstance(memory, dict)
+            else "indisponível"
+        )
 
         if fmt == "md":
             return (
@@ -378,7 +423,11 @@ class ExportCommand(DirectCommand):
     def _format_artifacts(self, artifacts: Dict[str, Any], fmt: str) -> str:
         count = artifacts.get("count", 0)
         items = artifacts.get("items", [])
-        header = "# Manifesto de Artifacts\n\n" if fmt == "md" else "MANIFESTO DE ARTIFACTS\n=====================\n\n"
+        header = (
+            "# Manifesto de Artifacts\n\n"
+            if fmt == "md"
+            else "MANIFESTO DE ARTIFACTS\n=====================\n\n"
+        )
         content = header + f"Total: {count}\n\n"
         for af in items:
             path = af.get("path", "—")
@@ -392,7 +441,11 @@ class ExportCommand(DirectCommand):
     def _format_plans(self, plans: Dict[str, Any], fmt: str) -> str:
         count = plans.get("count", 0)
         items = plans.get("items", [])
-        header = "# Manifesto de Planos\n\n" if fmt == "md" else "MANIFESTO DE PLANOS\n===================\n\n"
+        header = (
+            "# Manifesto de Planos\n\n"
+            if fmt == "md"
+            else "MANIFESTO DE PLANOS\n===================\n\n"
+        )
         content = header + f"Total: {count}\n\n"
         for plan in items:
             name = plan.get("name", plan.get("id", "—"))
@@ -429,7 +482,9 @@ class ExportCommand(DirectCommand):
             try:
                 size = Path(fp).stat().st_size
                 lines.append(f"  • {fname} ({size:,} bytes)")
-            except Exception as exc:  # stat é best-effort no sumário — exibe sem tamanho
+            except (
+                Exception
+            ) as exc:  # stat é best-effort no sumário — exibe sem tamanho
                 logger.debug("export: falha ao ler tamanho de %s: %s", fname, exc)
                 lines.append(f"  • {fname}")
 

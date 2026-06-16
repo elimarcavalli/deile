@@ -22,18 +22,23 @@ import pytest
 from rich.console import Console
 
 from deile.commands.base import CommandContext, CommandStatus
-from deile.commands.builtin._backlog_collectors import (_SEM_REVIEW,
-                                                        _SEM_WORKFLOW,
-                                                        ISSUE_BUCKETS,
-                                                        PR_BUCKETS,
-                                                        BacklogData,
-                                                        _bucket_issue,
-                                                        _bucket_pr,
-                                                        bucketize_issues,
-                                                        bucketize_prs,
-                                                        collect_backlog_data)
-from deile.commands.builtin.backlog_command import (BacklogCommand,
-                                                    _build_tables, _parse_args)
+from deile.commands.builtin._backlog_collectors import (
+    _SEM_REVIEW,
+    _SEM_WORKFLOW,
+    ISSUE_BUCKETS,
+    PR_BUCKETS,
+    BacklogData,
+    _bucket_issue,
+    _bucket_pr,
+    bucketize_issues,
+    bucketize_prs,
+    collect_backlog_data,
+)
+from deile.commands.builtin.backlog_command import (
+    BacklogCommand,
+    _build_tables,
+    _parse_args,
+)
 from deile.core.exceptions import CommandError
 from deile.orchestration.forge.refs import IssueRef, PrRef
 
@@ -125,7 +130,8 @@ def test_issue_buckets_derived_from_workflow_labels():
     """ISSUE_BUCKETS é derivado de WORKFLOW_LABELS — mudança em labels.py
     deve propagar automaticamente para /backlog (critério explícito da issue)."""
     from deile.orchestration.pipeline.labels import WORKFLOW_LABELS
-    expected = tuple(lb[len("~workflow:"):] for lb in WORKFLOW_LABELS)
+
+    expected = tuple(lb[len("~workflow:") :] for lb in WORKFLOW_LABELS)
     assert ISSUE_BUCKETS == expected
 
 
@@ -133,7 +139,8 @@ def test_issue_buckets_derived_from_workflow_labels():
 def test_pr_buckets_derived_from_review_labels_plus_bloqueada():
     """PR_BUCKETS = REVIEW_LABELS (sem prefixo) + ``bloqueada`` (do WORKFLOW_BLOCKED)."""
     from deile.orchestration.pipeline.labels import REVIEW_LABELS
-    review_buckets = tuple(lb[len("~review:"):] for lb in REVIEW_LABELS)
+
+    review_buckets = tuple(lb[len("~review:") :] for lb in REVIEW_LABELS)
     assert PR_BUCKETS == review_buckets + ("bloqueada",)
 
 
@@ -165,7 +172,10 @@ def test_bucket_issue_each_canonical_bucket(state: str):
 
 @pytest.mark.unit
 def test_bucket_issue_bloqueada_wins_over_any_other():
-    assert _bucket_issue(("~workflow:em_implementacao", "~workflow:bloqueada")) == "bloqueada"
+    assert (
+        _bucket_issue(("~workflow:em_implementacao", "~workflow:bloqueada"))
+        == "bloqueada"
+    )
 
 
 @pytest.mark.unit
@@ -176,22 +186,27 @@ def test_bucket_issue_bloqueada_alone():
 @pytest.mark.unit
 def test_bucket_issue_aguardando_wins_over_regular_state():
     # aguardando_stakeholder is an overlay that takes priority over the refine-state
-    assert _bucket_issue(
-        ("~workflow:em_arquitetura", "~workflow:aguardando_stakeholder")
-    ) == "aguardando_stakeholder"
+    assert (
+        _bucket_issue(("~workflow:em_arquitetura", "~workflow:aguardando_stakeholder"))
+        == "aguardando_stakeholder"
+    )
 
 
 @pytest.mark.unit
 def test_bucket_issue_bloqueada_beats_aguardando():
-    assert _bucket_issue(
-        ("~workflow:aguardando_stakeholder", "~workflow:bloqueada")
-    ) == "bloqueada"
+    assert (
+        _bucket_issue(("~workflow:aguardando_stakeholder", "~workflow:bloqueada"))
+        == "bloqueada"
+    )
 
 
 @pytest.mark.unit
 def test_bucket_issue_first_canonical_order_wins():
     # em_revisao appears before em_implementacao in WORKFLOW_LABELS
-    assert _bucket_issue(("~workflow:em_implementacao", "~workflow:em_revisao")) == "em_revisao"
+    assert (
+        _bucket_issue(("~workflow:em_implementacao", "~workflow:em_revisao"))
+        == "em_revisao"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -251,12 +266,14 @@ def test_bucketize_issues_empty_input():
 
 @pytest.mark.unit
 def test_bucketize_issues_basic():
-    counts = bucketize_issues([
-        _issue(1, "~workflow:nova"),
-        _issue(2, "~workflow:nova"),
-        _issue(3, "~workflow:em_revisao"),
-        _issue(4, "~workflow:bloqueada"),
-    ])
+    counts = bucketize_issues(
+        [
+            _issue(1, "~workflow:nova"),
+            _issue(2, "~workflow:nova"),
+            _issue(3, "~workflow:em_revisao"),
+            _issue(4, "~workflow:bloqueada"),
+        ]
+    )
     assert counts["nova"] == 2
     assert counts["em_revisao"] == 1
     assert counts["bloqueada"] == 1
@@ -264,20 +281,24 @@ def test_bucketize_issues_basic():
 
 @pytest.mark.unit
 def test_bucketize_issues_sem_workflow_collected():
-    counts = bucketize_issues([
-        _issue(1, "~type:feature"),
-        _issue(2),
-    ])
+    counts = bucketize_issues(
+        [
+            _issue(1, "~type:feature"),
+            _issue(2),
+        ]
+    )
     assert counts.get(_SEM_WORKFLOW, 0) == 2
 
 
 @pytest.mark.unit
 def test_bucketize_prs_basic():
-    counts = bucketize_prs([
-        _pr(1, "~review:pendente"),
-        _pr(2, "~review:em_andamento"),
-        _pr(3, "~workflow:bloqueada"),
-    ])
+    counts = bucketize_prs(
+        [
+            _pr(1, "~review:pendente"),
+            _pr(2, "~review:em_andamento"),
+            _pr(3, "~workflow:bloqueada"),
+        ]
+    )
     assert counts["pendente"] == 1
     assert counts["em_andamento"] == 1
     assert counts["bloqueada"] == 1
@@ -384,6 +405,7 @@ async def test_collect_backlog_data_forge_error_propagates():
     """A ForgeCommandError from the adapter propagates so the command
     decorator can map it to an error panel (no silent swallow)."""
     from deile.orchestration.forge.base import ForgeCommandError
+
     forge = MagicMock()
     forge.list_open_issues = AsyncMock(
         side_effect=ForgeCommandError(("gh",), 1, "", "auth error")
@@ -514,13 +536,19 @@ async def test_execute_success():
     cmd = BacklogCommand()
     ctx = _ctx("")
 
-    with patch("deile.commands.builtin.backlog_command.ensure_git_repo"), \
-         patch("deile.commands.builtin.backlog_command.ensure_gh_authenticated"), \
-         patch("deile.commands.builtin.backlog_command._resolve_repo_from_git",
-               return_value="owner/repo"), \
-         patch("deile.commands.builtin.backlog_command.collect_backlog_data",
-               new=AsyncMock(return_value=data)), \
-         patch("deile.commands.builtin.backlog_command.emit_audit_event"):
+    with (
+        patch("deile.commands.builtin.backlog_command.ensure_git_repo"),
+        patch("deile.commands.builtin.backlog_command.ensure_gh_authenticated"),
+        patch(
+            "deile.commands.builtin.backlog_command._resolve_repo_from_git",
+            return_value="owner/repo",
+        ),
+        patch(
+            "deile.commands.builtin.backlog_command.collect_backlog_data",
+            new=AsyncMock(return_value=data),
+        ),
+        patch("deile.commands.builtin.backlog_command.emit_audit_event"),
+    ):
         result = await cmd.execute(ctx)
 
     assert result.status == CommandStatus.SUCCESS
@@ -543,13 +571,19 @@ async def test_execute_repo_override():
     ctx = _ctx("--repo other/project")
     mock_collect = AsyncMock(return_value=data)
 
-    with patch("deile.commands.builtin.backlog_command.ensure_git_repo"), \
-         patch("deile.commands.builtin.backlog_command.ensure_gh_authenticated"), \
-         patch("deile.commands.builtin.backlog_command._resolve_repo_from_git",
-               return_value="should/not-be-used"), \
-         patch("deile.commands.builtin.backlog_command.collect_backlog_data",
-               new=mock_collect), \
-         patch("deile.commands.builtin.backlog_command.emit_audit_event"):
+    with (
+        patch("deile.commands.builtin.backlog_command.ensure_git_repo"),
+        patch("deile.commands.builtin.backlog_command.ensure_gh_authenticated"),
+        patch(
+            "deile.commands.builtin.backlog_command._resolve_repo_from_git",
+            return_value="should/not-be-used",
+        ),
+        patch(
+            "deile.commands.builtin.backlog_command.collect_backlog_data",
+            new=mock_collect,
+        ),
+        patch("deile.commands.builtin.backlog_command.emit_audit_event"),
+    ):
         result = await cmd.execute(ctx)
 
     mock_collect.assert_called_once_with("other/project")
@@ -561,9 +595,13 @@ async def test_execute_not_git_repo_raises():
     # CommandError propagates untouched through wrap_command_errors
     cmd = BacklogCommand()
     ctx = _ctx("")
-    with patch("deile.commands.builtin.backlog_command.ensure_git_repo",
-               side_effect=CommandError("não é um repositório git")), \
-         patch("deile.commands.builtin.backlog_command.emit_audit_event"):
+    with (
+        patch(
+            "deile.commands.builtin.backlog_command.ensure_git_repo",
+            side_effect=CommandError("não é um repositório git"),
+        ),
+        patch("deile.commands.builtin.backlog_command.emit_audit_event"),
+    ):
         with pytest.raises(CommandError, match="não é um repositório git"):
             await cmd.execute(ctx)
 
@@ -573,8 +611,10 @@ async def test_execute_bad_flag_raises():
     # CommandError from _parse_args propagates untouched
     cmd = BacklogCommand()
     ctx = _ctx("--invalid-flag")
-    with patch("deile.commands.builtin.backlog_command.ensure_git_repo"), \
-         patch("deile.commands.builtin.backlog_command.emit_audit_event"):
+    with (
+        patch("deile.commands.builtin.backlog_command.ensure_git_repo"),
+        patch("deile.commands.builtin.backlog_command.emit_audit_event"),
+    ):
         with pytest.raises(CommandError, match="desconhecida"):
             await cmd.execute(ctx)
 
@@ -593,6 +633,7 @@ def test_command_module_has_no_subprocess_import():
     import inspect
 
     from deile.commands.builtin import backlog_command
+
     src = inspect.getsource(backlog_command)
     assert "import subprocess" not in src, (
         "backlog_command.py reintroduziu 'import subprocess' — Pilar 03 §2 "
@@ -611,6 +652,7 @@ def test_collectors_module_has_no_subprocess_call():
     import inspect
 
     from deile.commands.builtin import _backlog_collectors
+
     src = inspect.getsource(_backlog_collectors)
     assert "subprocess.run" not in src
     assert "subprocess.Popen" not in src
@@ -631,8 +673,12 @@ def _runtime_string_constants(module) -> list:
 
     def _mark_doc(node):
         body = getattr(node, "body", None)
-        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
-                and isinstance(body[0].value.value, str):
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
             docstring_nodes.add(id(body[0].value))
 
     _mark_doc(tree)
@@ -642,8 +688,11 @@ def _runtime_string_constants(module) -> list:
 
     out = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
-                and id(node) not in docstring_nodes:
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstring_nodes
+        ):
             out.append(node.value)
     return out
 
@@ -658,6 +707,7 @@ def test_no_workflow_label_literals_in_command_runtime():
     import re
 
     from deile.commands.builtin import backlog_command
+
     runtime_strings = _runtime_string_constants(backlog_command)
     state_pattern = re.compile(r"~(?:workflow|review):[a-z_]+")
     offenders = [s for s in runtime_strings if state_pattern.search(s)]
@@ -674,10 +724,12 @@ def test_no_workflow_label_literals_in_collectors_runtime():
     ``~workflow:`` / ``~review:`` (sem nome de estado) são permitidos como
     constantes de stripping."""
     from deile.commands.builtin import _backlog_collectors
+
     runtime_strings = _runtime_string_constants(_backlog_collectors)
     # Allowed: bare prefixes used by `_strip_prefix`. Forbidden: any string
     # that pairs the prefix with a *state name*.
     import re
+
     state_pattern = re.compile(r"~(?:workflow|review):[a-z_]+")
     offenders = [s for s in runtime_strings if state_pattern.search(s)]
     assert not offenders, (

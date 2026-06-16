@@ -5,30 +5,34 @@ reconcile_review_prs sees a merged PR, and when reconcile_closed_issues sees a
 closed issue. This is the integration gap left by #587, which only tested the
 function in isolation.
 """
+
 from __future__ import annotations
 
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from deile.orchestration.forge.refs import IssueRef, PrRef
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
 from deile.orchestration.pipeline.implementer import WorkerImplementer
-from deile.orchestration.pipeline.labels import (
-    REVIEW_IN_PROGRESS,
-    WORKFLOW_PR,
-)
+from deile.orchestration.pipeline.labels import REVIEW_IN_PROGRESS, WORKFLOW_PR
 from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
-
 _NOTIFIER_METHODS = (
-    "issue_picked_up", "issue_reviewed", "implementation_started",
-    "implementation_finished", "implementation_parked", "implementation_resumed",
-    "implementation_blocked", "pr_picked_up", "pr_reviewed",
-    "issue_auto_classified", "follow_ups_processed", "error",
-    "pr_auto_classified", "mention_processed",
+    "issue_picked_up",
+    "issue_reviewed",
+    "implementation_started",
+    "implementation_finished",
+    "implementation_parked",
+    "implementation_resumed",
+    "implementation_blocked",
+    "pr_picked_up",
+    "pr_reviewed",
+    "issue_auto_classified",
+    "follow_ups_processed",
+    "error",
+    "pr_auto_classified",
+    "mention_processed",
 )
 
 
@@ -38,17 +42,24 @@ def _ledger_path() -> Path:
 
 def _issue(number: int, *labels: str, state: str = "open") -> IssueRef:
     return IssueRef(
-        number=number, title="t",
+        number=number,
+        title="t",
         url=f"https://github.com/owner/repo/issues/{number}",
-        labels=tuple(labels), state=state,
+        labels=tuple(labels),
+        state=state,
     )
 
 
-def _pr(number: int, *labels: str, state: str = "open", head_ref: str = "auto/issue-1") -> PrRef:
+def _pr(
+    number: int, *labels: str, state: str = "open", head_ref: str = "auto/issue-1"
+) -> PrRef:
     return PrRef(
-        number=number, title="t",
+        number=number,
+        title="t",
         url=f"https://github.com/owner/repo/pull/{number}",
-        labels=tuple(labels), state=state, head_ref=head_ref,
+        labels=tuple(labels),
+        state=state,
+        head_ref=head_ref,
     )
 
 
@@ -88,14 +99,21 @@ def _make_monitor(*, prs=None, issues_by_label=None):
         setattr(notifier, attr, AsyncMock())
 
     client = MagicMock()
-    client.get_resume_info = AsyncMock(return_value={
-        "last_completed_at": None, "last_is_error": None,
-        "last_result_full": "", "last_result_summary": "",
-        "claude_alive": True, "workdir_exists": True,
-    })
+    client.get_resume_info = AsyncMock(
+        return_value={
+            "last_completed_at": None,
+            "last_is_error": None,
+            "last_result_full": "",
+            "last_result_summary": "",
+            "claude_alive": True,
+            "workdir_exists": True,
+        }
+    )
     ledger = DispatchLedger(path=_ledger_path())
     monitor = PipelineMonitor(
-        cfg, github=forge, notifier=notifier,
+        cfg,
+        github=forge,
+        notifier=notifier,
         implementer=WorkerImplementer(client=client, ledger=ledger),
     )
     return monitor, forge
@@ -108,16 +126,20 @@ class TestReconcileReviewPrsCallsGC:
         monitor, forge = _make_monitor(prs=[pr])
 
         ledger = monitor.implementer._ledger
-        ledger.record(DispatchLedger.key_for_pr(99), task_id="t-001", session_id="s-001")
+        ledger.record(
+            DispatchLedger.key_for_pr(99), task_id="t-001", session_id="s-001"
+        )
 
-        monitor.implementer._client.get_resume_info = AsyncMock(return_value={
-            "last_completed_at": 1_700_000_000,
-            "last_is_error": False,
-            "last_result_full": "reviewed",
-            "last_result_summary": "reviewed",
-            "claude_alive": False,
-            "workdir_exists": True,
-        })
+        monitor.implementer._client.get_resume_info = AsyncMock(
+            return_value={
+                "last_completed_at": 1_700_000_000,
+                "last_is_error": False,
+                "last_result_full": "reviewed",
+                "last_result_summary": "reviewed",
+                "claude_alive": False,
+                "workdir_exists": True,
+            }
+        )
         forge.get_pr = AsyncMock(return_value=None)
 
         with patch(
@@ -135,16 +157,20 @@ class TestReconcileReviewPrsCallsGC:
         monitor, forge = _make_monitor(prs=[pr])
 
         ledger = monitor.implementer._ledger
-        ledger.record(DispatchLedger.key_for_pr(77), task_id="t-gc-fail", session_id="s-002")
+        ledger.record(
+            DispatchLedger.key_for_pr(77), task_id="t-gc-fail", session_id="s-002"
+        )
 
-        monitor.implementer._client.get_resume_info = AsyncMock(return_value={
-            "last_completed_at": 1_700_000_000,
-            "last_is_error": False,
-            "last_result_full": "done",
-            "last_result_summary": "done",
-            "claude_alive": False,
-            "workdir_exists": True,
-        })
+        monitor.implementer._client.get_resume_info = AsyncMock(
+            return_value={
+                "last_completed_at": 1_700_000_000,
+                "last_is_error": False,
+                "last_result_full": "done",
+                "last_result_summary": "done",
+                "claude_alive": False,
+                "workdir_exists": True,
+            }
+        )
         forge.get_pr = AsyncMock(return_value=None)
 
         with patch(
@@ -202,9 +228,13 @@ class TestReconcileClosedIssues:
 
         def _get_issue(number):
             return IssueRef(
-                number=number, title="t", url="u",
-                labels=(WORKFLOW_PR,), state="closed",
+                number=number,
+                title="t",
+                url="u",
+                labels=(WORKFLOW_PR,),
+                state="closed",
             )
+
         forge.get_issue = AsyncMock(side_effect=_get_issue)
 
         gc_calls = []
@@ -227,6 +257,7 @@ class TestReconcileClosedIssues:
     async def test_forge_list_failure_does_not_break_tick(self):
         """If list_issues_with_label raises, reconcile_closed_issues returns silently."""
         from deile.orchestration.forge import GhCommandError
+
         monitor, forge = _make_monitor()
         forge.list_issues_with_label = AsyncMock(
             side_effect=GhCommandError(["gh", "issue", "list"], 1, "", "list failed")
@@ -247,7 +278,9 @@ class TestGCWiredIntoTick:
         monitor, forge = _make_monitor()
         forge.list_issues_with_label = AsyncMock(return_value=[])
 
-        with patch.object(monitor, "_reconcile_closed_issues", new_callable=AsyncMock) as mock_reconcile:
+        with patch.object(
+            monitor, "_reconcile_closed_issues", new_callable=AsyncMock
+        ) as mock_reconcile:
             await monitor._dispatch_stages()
 
         mock_reconcile.assert_awaited_once()

@@ -22,8 +22,12 @@ class TestCommentRefIsPrCommentFlag:
 
     def test_default_is_false(self):
         ref = CommentRef(
-            comment_id=1, body="oi", html_url="https://x/issues/1",
-            issue_url="https://x/api/issues/1", author="u", kind="issue",
+            comment_id=1,
+            body="oi",
+            html_url="https://x/issues/1",
+            issue_url="https://x/api/issues/1",
+            author="u",
+            kind="issue",
         )
         assert ref.is_pr_comment is False
 
@@ -31,8 +35,12 @@ class TestCommentRefIsPrCommentFlag:
         """``kind="pr_review"`` é independente — o builder do forge decide.
         Conferimos que o dataclass não infere implicitamente."""
         ref = CommentRef(
-            comment_id=2, body="oi", html_url="https://x/pull/1",
-            issue_url="https://x/api/pulls/1", author="u", kind="pr_review",
+            comment_id=2,
+            body="oi",
+            html_url="https://x/pull/1",
+            issue_url="https://x/api/pulls/1",
+            author="u",
+            kind="pr_review",
         )
         assert ref.is_pr_comment is False  # builder forge é quem seta
 
@@ -40,8 +48,12 @@ class TestCommentRefIsPrCommentFlag:
         """Conversation comments em PR: kind="issue" + is_pr_comment=True.
         Esse é exatamente o caso que falhava antes da Decisão #46."""
         ref = CommentRef(
-            comment_id=3, body="oi", html_url="https://x/pull/1#issuecomment-99",
-            issue_url="https://x/api/issues/1", author="u", kind="issue",
+            comment_id=3,
+            body="oi",
+            html_url="https://x/pull/1#issuecomment-99",
+            issue_url="https://x/api/issues/1",
+            author="u",
+            kind="issue",
             is_pr_comment=True,
         )
         assert ref.is_pr_comment is True
@@ -54,8 +66,12 @@ class TestMentionTriggerTargetKindHonorsIsPrComment:
 
     def test_issue_kind_with_pr_flag_routes_to_pr(self):
         ref = CommentRef(
-            comment_id=1, body="@deile", html_url="https://x/pull/5#c",
-            issue_url="https://x/api/issues/5", author="u", kind="issue",
+            comment_id=1,
+            body="@deile",
+            html_url="https://x/pull/5#c",
+            issue_url="https://x/api/issues/5",
+            author="u",
+            kind="issue",
             is_pr_comment=True,
         )
         trigger = MentionTrigger(trigger_type="comment", comment=ref)
@@ -63,8 +79,12 @@ class TestMentionTriggerTargetKindHonorsIsPrComment:
 
     def test_issue_kind_without_pr_flag_routes_to_issue(self):
         ref = CommentRef(
-            comment_id=1, body="@deile", html_url="https://x/issues/5#c",
-            issue_url="https://x/api/issues/5", author="u", kind="issue",
+            comment_id=1,
+            body="@deile",
+            html_url="https://x/issues/5#c",
+            issue_url="https://x/api/issues/5",
+            author="u",
+            kind="issue",
             is_pr_comment=False,
         )
         trigger = MentionTrigger(trigger_type="comment", comment=ref)
@@ -74,8 +94,12 @@ class TestMentionTriggerTargetKindHonorsIsPrComment:
         """Compat: ``kind="pr_review"`` continua roteando para pr mesmo
         sem o flag (caminho legacy)."""
         ref = CommentRef(
-            comment_id=1, body="@deile", html_url="https://x/pull/5#c",
-            issue_url="https://x/api/pulls/5", author="u", kind="pr_review",
+            comment_id=1,
+            body="@deile",
+            html_url="https://x/pull/5#c",
+            issue_url="https://x/api/pulls/5",
+            author="u",
+            kind="pr_review",
         )
         trigger = MentionTrigger(trigger_type="comment", comment=ref)
         assert trigger.target_kind == "pr"
@@ -88,8 +112,7 @@ class TestPrCommentDetectionFromGitHubUrl:
     """
 
     def test_url_with_pull_segment_sets_flag(self):
-        from deile.orchestration.forge.github_forge import \
-            GitHubForge  # noqa: F401
+        from deile.orchestration.forge.github_forge import GitHubForge  # noqa: F401
 
         # O detector vive inline em _list_comments_since, mas a heurística é
         # simples: ``"/pull/" in html_url``. Validamos o invariante.

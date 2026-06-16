@@ -25,8 +25,10 @@ def _make_executor():
     task_mgr = MagicMock()
     task_mgr.create_task = AsyncMock(return_value=MagicMock(id="t1"))
     task_mgr.update_task = AsyncMock()
-    with patch("deile.orchestration.workflow_executor.get_tool_registry",
-               return_value=mock_registry):
+    with patch(
+        "deile.orchestration.workflow_executor.get_tool_registry",
+        return_value=mock_registry,
+    ):
         executor = WorkflowExecutor(task_manager=task_mgr)
     executor._mock_registry = mock_registry
     return executor

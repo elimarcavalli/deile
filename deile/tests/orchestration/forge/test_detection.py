@@ -6,8 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deile.orchestration.forge import (ForgeDetectionError, ForgeKind,
-                                       declared_hosts, detect_forge_kind)
+from deile.orchestration.forge import (
+    ForgeDetectionError,
+    ForgeKind,
+    declared_hosts,
+    detect_forge_kind,
+)
 from deile.orchestration.forge.detection import _probe_cache, _probe_host
 
 
@@ -38,18 +42,24 @@ def test_detect_from_url_gitlab_cloud():
 
 def test_detect_from_env_custom_github_host():
     env = {"DEILE_GITHUB_HOST": "ghe.empresa.com"}
-    assert detect_forge_kind(
-        url="https://ghe.empresa.com/team/svc/pull/1",
-        env=env,
-    ) is ForgeKind.GITHUB
+    assert (
+        detect_forge_kind(
+            url="https://ghe.empresa.com/team/svc/pull/1",
+            env=env,
+        )
+        is ForgeKind.GITHUB
+    )
 
 
 def test_detect_from_env_custom_gitlab_host():
     env = {"DEILE_GITLAB_HOST": "gitlab.empresa.com"}
-    assert detect_forge_kind(
-        url="https://gitlab.empresa.com/team/svc/-/issues/1",
-        env=env,
-    ) is ForgeKind.GITLAB
+    assert (
+        detect_forge_kind(
+            url="https://gitlab.empresa.com/team/svc/-/issues/1",
+            env=env,
+        )
+        is ForgeKind.GITLAB
+    )
 
 
 def test_detect_nested_path_resolves_to_gitlab():
@@ -78,6 +88,7 @@ def test_detect_unknown_explicit_kind_raises():
     subclass (``ForgeConfigError`` or ``ForgeDetectionError``) is an
     implementation detail; both subclass :class:`ForgeError`."""
     from deile.orchestration.forge import ForgeError
+
     with pytest.raises(ForgeError):
         detect_forge_kind(env={"DEILE_FORGE_KIND": "bitbucket"})
 
@@ -85,9 +96,13 @@ def test_detect_unknown_explicit_kind_raises():
 def test_detect_auto_value_treated_as_unset():
     # The CLI default is ``auto`` (declared in settings); detection must
     # honour it as "use the heuristic" rather than parse it as a kind.
-    assert detect_forge_kind(
-        url="https://github.com/o/r", env={"DEILE_FORGE_KIND": "auto"},
-    ) is ForgeKind.GITHUB
+    assert (
+        detect_forge_kind(
+            url="https://github.com/o/r",
+            env={"DEILE_FORGE_KIND": "auto"},
+        )
+        is ForgeKind.GITHUB
+    )
 
 
 def test_declared_hosts_default():
@@ -98,10 +113,12 @@ def test_declared_hosts_default():
 
 
 def test_declared_hosts_csv():
-    result = declared_hosts({
-        "DEILE_GITHUB_HOST": "ghe-a.empresa.com, ghe-b.empresa.com",
-        "DEILE_GITLAB_HOST": "gitlab.empresa.com",
-    })
+    result = declared_hosts(
+        {
+            "DEILE_GITHUB_HOST": "ghe-a.empresa.com, ghe-b.empresa.com",
+            "DEILE_GITLAB_HOST": "gitlab.empresa.com",
+        }
+    )
     assert "ghe-a.empresa.com" in result["github_hosts"]
     assert "ghe-b.empresa.com" in result["github_hosts"]
     assert result["gitlab_hosts"] == ("gitlab.empresa.com",)
@@ -168,9 +185,7 @@ async def test_probe_disabled_when_env_var_not_set() -> None:
     """detect_forge_kind NÃO deve chamar probe quando DEILE_FORGE_PROBE não é '1'."""
     _probe_cache.pop("mystery.host.com", None)
 
-    with patch(
-        "deile.orchestration.forge.detection._probe_host_sync"
-    ) as mock_probe:
+    with patch("deile.orchestration.forge.detection._probe_host_sync") as mock_probe:
         with pytest.raises(ForgeDetectionError):
             detect_forge_kind(
                 url="https://mystery.host.com/group/repo",

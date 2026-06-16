@@ -1,7 +1,15 @@
 """Sistema de configuração do DEILE"""
 
-from .manager import (AgentConfig, CommandConfig, ConfigManager, DeileConfig,
-                      GeminiConfig, SystemConfig, UIConfig, get_config_manager)
+from .manager import (
+    AgentConfig,
+    CommandConfig,
+    ConfigManager,
+    DeileConfig,
+    GeminiConfig,
+    SystemConfig,
+    UIConfig,
+    get_config_manager,
+)
 from .settings import Settings, get_settings
 
 __all__ = [
@@ -9,12 +17,12 @@ __all__ = [
     "Settings",
     "get_settings",
     # Novo sistema
-    "ConfigManager", 
-    "DeileConfig", 
-    "GeminiConfig", 
+    "ConfigManager",
+    "DeileConfig",
+    "GeminiConfig",
     "SystemConfig",
     "UIConfig",
-    "AgentConfig", 
+    "AgentConfig",
     "CommandConfig",
-    "get_config_manager"
+    "get_config_manager",
 ]

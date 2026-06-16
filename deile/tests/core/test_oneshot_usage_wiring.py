@@ -8,6 +8,7 @@ The test mocks at the boundary points that are expensive (agent.process_input,
 provider bootstrap) so no real LLM call is made, while allowing the AC2 block
 inside _run_oneshot to execute with real logic from deile.core.usage_envelope.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,6 +21,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_fake_response(status_value: str = "idle") -> object:
     """Return a minimal object that _run_oneshot expects from agent.process_input."""
     return SimpleNamespace(
@@ -29,8 +31,12 @@ def _make_fake_response(status_value: str = "idle") -> object:
     )
 
 
-def _make_records(n: int = 2, cost_per_record: float = 0.05,
-                  prompt_tokens: int = 100, completion_tokens: int = 50) -> list:
+def _make_records(
+    n: int = 2,
+    cost_per_record: float = 0.05,
+    prompt_tokens: int = 100,
+    completion_tokens: int = 50,
+) -> list:
     """Return plain-dict UsageRecord stubs understood by build_usage_envelope."""
     return [
         {
@@ -55,8 +61,9 @@ async def test_metadata_usage_is_non_zero_when_records_exist(tmp_path, monkeypat
     is ever reintroduced, records_for_session() will return [] for the real session_id
     and this test will catch it by seeing all-zero usage.
     """
-    records = _make_records(n=2, cost_per_record=0.05, prompt_tokens=100,
-                            completion_tokens=50)
+    records = _make_records(
+        n=2, cost_per_record=0.05, prompt_tokens=100, completion_tokens=50
+    )
 
     # Patch _get_usage_records so build_usage_envelope returns non-zero data
     # for whatever session_id _run_oneshot generates (the patched function
@@ -77,8 +84,10 @@ async def test_metadata_usage_is_non_zero_when_records_exist(tmp_path, monkeypat
 
     # Patch all the infrastructure that _run_oneshot calls before the AC2 block
     with (
-        patch("deile.cli._bootstrap_provider_router_or_print_error",
-              return_value=MagicMock()),
+        patch(
+            "deile.cli._bootstrap_provider_router_or_print_error",
+            return_value=MagicMock(),
+        ),
         patch("deile.cli._construct_agent", new_callable=AsyncMock) as mock_construct,
     ):
         # Build a minimal fake agent that creates a real-ish session object
@@ -97,7 +106,9 @@ async def test_metadata_usage_is_non_zero_when_records_exist(tmp_path, monkeypat
 
         async def _process_input_side_effect(**kw):
             return await fake_process_input(
-                fake_agent, kw.get("user_input", ""), session_id=kw.get("session_id", "")
+                fake_agent,
+                kw.get("user_input", ""),
+                session_id=kw.get("session_id", ""),
             )
 
         fake_agent.process_input = AsyncMock(side_effect=_process_input_side_effect)
@@ -109,27 +120,31 @@ async def test_metadata_usage_is_non_zero_when_records_exist(tmp_path, monkeypat
             preferred_model=None,
             reasoning_effort=None,
         )
-        monkeypatch.setattr("deile.config.settings.get_settings",
-                            lambda: fake_settings, raising=True)
+        monkeypatch.setattr(
+            "deile.config.settings.get_settings", lambda: fake_settings, raising=True
+        )
 
         # Stub out ConfigManager at its source module (locally imported in _run_oneshot)
         with patch("deile.config.manager.ConfigManager") as mock_cm_cls:
             mock_cm_cls.return_value = MagicMock()
 
             from deile.cli import _run_oneshot
+
             await _run_oneshot("hello world")
 
     # Assert: metadata["usage"] on the response object is non-zero
-    assert fake_response.metadata is not None, (
-        "response.metadata must be populated by the AC2 block"
-    )
+    assert (
+        fake_response.metadata is not None
+    ), "response.metadata must be populated by the AC2 block"
     usage = fake_response.metadata.get("usage")
     assert usage is not None, "response.metadata['usage'] key must be present"
 
     assert usage["schema_version"] == 1
 
     # At least one numeric field must be non-zero — proves records were matched
-    total_signal = usage["cost_usd"] + usage["tokens_in"] + usage["tokens_out"] + usage["turns"]
+    total_signal = (
+        usage["cost_usd"] + usage["tokens_in"] + usage["tokens_out"] + usage["turns"]
+    )
     assert total_signal > 0, (
         "metadata['usage'] is all zeros — session_id used in build_usage_envelope "
         "did not match the session_id under which UsageRecords were stored. "
@@ -153,8 +168,10 @@ async def test_metadata_usage_turns_matches_record_count(tmp_path, monkeypatch):
     fake_response = _make_fake_response()
 
     with (
-        patch("deile.cli._bootstrap_provider_router_or_print_error",
-              return_value=MagicMock()),
+        patch(
+            "deile.cli._bootstrap_provider_router_or_print_error",
+            return_value=MagicMock(),
+        ),
         patch("deile.cli._construct_agent", new_callable=AsyncMock) as mock_construct,
     ):
         fake_session = SimpleNamespace(session_id=None, context_data={})
@@ -173,13 +190,15 @@ async def test_metadata_usage_turns_matches_record_count(tmp_path, monkeypatch):
             preferred_model=None,
             reasoning_effort=None,
         )
-        monkeypatch.setattr("deile.config.settings.get_settings",
-                            lambda: fake_settings, raising=True)
+        monkeypatch.setattr(
+            "deile.config.settings.get_settings", lambda: fake_settings, raising=True
+        )
 
         with patch("deile.config.manager.ConfigManager") as mock_cm_cls:
             mock_cm_cls.return_value = MagicMock()
 
             from deile.cli import _run_oneshot
+
             await _run_oneshot("hello")
 
     assert fake_response.metadata["usage"]["turns"] == n_records
@@ -195,8 +214,9 @@ async def test_sidecar_written_with_correct_session_id(tmp_path, monkeypatch):
     sidecar_path = tmp_path / "usage.json"
     monkeypatch.setenv("DEILE_USAGE_SIDECAR", str(sidecar_path))
 
-    records = _make_records(n=1, cost_per_record=0.10, prompt_tokens=200,
-                            completion_tokens=80)
+    records = _make_records(
+        n=1, cost_per_record=0.10, prompt_tokens=200, completion_tokens=80
+    )
     monkeypatch.setattr(
         "deile.core.usage_envelope._get_usage_records",
         lambda sid: records,
@@ -206,8 +226,10 @@ async def test_sidecar_written_with_correct_session_id(tmp_path, monkeypatch):
     fake_response = _make_fake_response()
 
     with (
-        patch("deile.cli._bootstrap_provider_router_or_print_error",
-              return_value=MagicMock()),
+        patch(
+            "deile.cli._bootstrap_provider_router_or_print_error",
+            return_value=MagicMock(),
+        ),
         patch("deile.cli._construct_agent", new_callable=AsyncMock) as mock_construct,
     ):
         fake_session = SimpleNamespace(session_id=None, context_data={})
@@ -226,13 +248,15 @@ async def test_sidecar_written_with_correct_session_id(tmp_path, monkeypatch):
             preferred_model=None,
             reasoning_effort=None,
         )
-        monkeypatch.setattr("deile.config.settings.get_settings",
-                            lambda: fake_settings, raising=True)
+        monkeypatch.setattr(
+            "deile.config.settings.get_settings", lambda: fake_settings, raising=True
+        )
 
         with patch("deile.config.manager.ConfigManager") as mock_cm_cls:
             mock_cm_cls.return_value = MagicMock()
 
             from deile.cli import _run_oneshot
+
             await _run_oneshot("test sidecar")
 
     # The sidecar must exist and contain non-zero data
@@ -277,8 +301,10 @@ async def test_no_duplicate_sidecar_write(tmp_path, monkeypatch):
         pass  # already removed from cli.py (expected)
 
     with (
-        patch("deile.cli._bootstrap_provider_router_or_print_error",
-              return_value=MagicMock()),
+        patch(
+            "deile.cli._bootstrap_provider_router_or_print_error",
+            return_value=MagicMock(),
+        ),
         patch("deile.cli._construct_agent", new_callable=AsyncMock) as mock_construct,
     ):
         fake_session = SimpleNamespace(session_id=None, context_data={})
@@ -297,13 +323,15 @@ async def test_no_duplicate_sidecar_write(tmp_path, monkeypatch):
             preferred_model=None,
             reasoning_effort=None,
         )
-        monkeypatch.setattr("deile.config.settings.get_settings",
-                            lambda: fake_settings, raising=True)
+        monkeypatch.setattr(
+            "deile.config.settings.get_settings", lambda: fake_settings, raising=True
+        )
 
         with patch("deile.config.manager.ConfigManager") as mock_cm_cls:
             mock_cm_cls.return_value = MagicMock()
 
             from deile.cli import _run_oneshot
+
             await _run_oneshot("test no duplicate")
 
     assert collect_calls == [], (

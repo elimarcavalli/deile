@@ -11,10 +11,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from deile.core.models.error_mapping import (classify_gemini_error,
-                                             make_gemini_envelope)
-from deile.core.models.errors import (ProviderErrorEnvelope,
-                                      ProviderInvocationError)
+from deile.core.models.error_mapping import classify_gemini_error, make_gemini_envelope
+from deile.core.models.errors import ProviderErrorEnvelope, ProviderInvocationError
 
 
 class _FakeAPIError(Exception):
@@ -60,14 +58,23 @@ def gemini_provider(monkeypatch):
 # classify_gemini_error
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("code,status,message,expected", [
-    (429, "RESOURCE_EXHAUSTED", "", "rate_limit"),
-    (401, "UNAUTHENTICATED", "", "auth"),
-    (400, "INVALID_ARGUMENT", "", "invalid_request"),
-    (400, "", "input token count exceeds the maximum context length", "context_length_exceeded"),
-    (503, "UNAVAILABLE", "", "server"),
-    (None, "", "weird transport failure", "unknown"),
-])
+
+@pytest.mark.parametrize(
+    "code,status,message,expected",
+    [
+        (429, "RESOURCE_EXHAUSTED", "", "rate_limit"),
+        (401, "UNAUTHENTICATED", "", "auth"),
+        (400, "INVALID_ARGUMENT", "", "invalid_request"),
+        (
+            400,
+            "",
+            "input token count exceeds the maximum context length",
+            "context_length_exceeded",
+        ),
+        (503, "UNAVAILABLE", "", "server"),
+        (None, "", "weird transport failure", "unknown"),
+    ],
+)
 def test_classify_gemini_error(code, status, message, expected):
     exc = _FakeAPIError(code=code, status=status, message=message)
     assert classify_gemini_error(exc) == expected
@@ -82,9 +89,14 @@ def test_classify_gemini_error_non_int_code_is_unknown():
 # make_gemini_envelope
 # ---------------------------------------------------------------------------
 
+
 def test_make_gemini_envelope_basic():
-    exc = _FakeAPIError(code=429, status="RESOURCE_EXHAUSTED",
-                        message="quota exceeded", details={"reason": "quota"})
+    exc = _FakeAPIError(
+        code=429,
+        status="RESOURCE_EXHAUSTED",
+        message="quota exceeded",
+        details={"reason": "quota"},
+    )
     env = make_gemini_envelope(exc, "gemini", "gemini-2.5-pro")
 
     assert isinstance(env, ProviderErrorEnvelope)
@@ -113,6 +125,7 @@ def test_make_gemini_envelope_message_falls_back_to_str():
 # ---------------------------------------------------------------------------
 # generate() — wraps failures into the typed ProviderInvocationError contract
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_generate_wraps_api_error_into_typed_envelope(gemini_provider):

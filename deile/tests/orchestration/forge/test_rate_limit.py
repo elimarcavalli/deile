@@ -11,8 +11,11 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.orchestration.forge.base import (ForgeClient, ForgeConfig,
-                                            _parse_headers_and_body)
+from deile.orchestration.forge.base import (
+    ForgeClient,
+    ForgeConfig,
+    _parse_headers_and_body,
+)
 
 # ---------------------------------------------------------------------------
 # Implementação mínima de ForgeClient para testes

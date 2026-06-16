@@ -16,8 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 def _make_command(skill: Skill):
-    from ..commands.base import (CommandContext, CommandResult, CommandStatus,
-                                 SlashCommand)
+    from ..commands.base import (
+        CommandContext,
+        CommandResult,
+        CommandStatus,
+        SlashCommand,
+    )
     from ..config.manager import CommandConfig
 
     class _SkillCommand(SlashCommand):
@@ -60,19 +64,24 @@ def register_skills_as_commands(skills: Iterable[Skill], command_registry: Any) 
                 collisions.append(skill.name)
                 logger.warning(
                     "Skill %r (from %s) collides with existing command /%s — skipping",
-                    skill.name, skill.source_path, existing.name,
+                    skill.name,
+                    skill.source_path,
+                    existing.name,
                 )
             continue
         try:
             command_registry.register_command(_make_command(skill))
             registered += 1
         except Exception as exc:
-            logger.warning("Failed to register skill %r as command: %s", skill.name, exc)
+            logger.warning(
+                "Failed to register skill %r as command: %s", skill.name, exc
+            )
 
     if collisions:
         logger.warning(
             "Skipped %d skill(s) due to name collision with existing commands: %s",
-            len(collisions), ", ".join(sorted(collisions)),
+            len(collisions),
+            ", ".join(sorted(collisions)),
         )
     return registered
 

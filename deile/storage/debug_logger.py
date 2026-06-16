@@ -57,7 +57,9 @@ class _DebugLogger:
             execution_time,
         )
 
-    async def log_error(self, error: Exception, context: Optional[Dict[str, Any]] = None) -> None:
+    async def log_error(
+        self, error: Exception, context: Optional[Dict[str, Any]] = None
+    ) -> None:
         self._logger.debug("error=%s context=%s", error, context)
 
     async def log_router_event(self, event_type: str, payload: Dict[str, Any]) -> None:

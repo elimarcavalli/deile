@@ -8,7 +8,8 @@ from deile.plugins.dependency_resolver import DependencyNode, DependencyResolver
 def _build(edges: list[tuple[str, list[str]]]) -> DependencyResolver:
     """Build a DependencyResolver with an explicit edge list, bypassing the
     add_plugin guard that prevents updating already-created nodes.
-    This lets us construct cycles directly, which is what check_circular_dependencies must handle."""
+    This lets us construct cycles directly, which is what check_circular_dependencies must handle.
+    """
     resolver = DependencyResolver()
     # First pass: ensure all nodes exist
     all_nodes = set()
@@ -57,10 +58,14 @@ def test_acyclic_returns_empty():
 @pytest.mark.unit
 def test_two_independent_cycles():
     """Dois ciclos independentes no mesmo grafo retornam ambos."""
-    resolver = _build([
-        ("A", ["B"]), ("B", ["A"]),
-        ("X", ["Y"]), ("Y", ["X"]),
-    ])
+    resolver = _build(
+        [
+            ("A", ["B"]),
+            ("B", ["A"]),
+            ("X", ["Y"]),
+            ("Y", ["X"]),
+        ]
+    )
     cycles = resolver.check_circular_dependencies()
     assert len(cycles) == 2
     nodes_in_cycles = {node for cycle in cycles for node in cycle}

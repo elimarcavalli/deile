@@ -12,8 +12,13 @@ de agentes AI enterprise-grade de 2025, incluindo:
 
 # Set alias for backward compatibility
 from . import config
-from .base import (AgentCapability, AgentContext, BaseAutonomousPersona,
-                   BasePersona, PersonaConfig)
+from .base import (
+    AgentCapability,
+    AgentContext,
+    BaseAutonomousPersona,
+    BasePersona,
+    PersonaConfig,
+)
 from .builder import PersonaBuilder
 from .context import PersonaContext
 from .loader import PersonaLoader
@@ -32,7 +37,7 @@ __all__ = [
     "PersonaBuilder",
     "PersonaLoader",
     "PersonaContext",
-    "PersonaMemoryLayer"
+    "PersonaMemoryLayer",
 ]
 
 __version__ = "2.0.0"

@@ -73,8 +73,9 @@ class _BaseHTTPClient:
         # exercise client logic via fake_aiohttp can skip the import).
         self._session = session
 
-    async def _request(self, method: str, path: str,
-                       *, json_body: Optional[dict] = None) -> Reply:
+    async def _request(
+        self, method: str, path: str, *, json_body: Optional[dict] = None
+    ) -> Reply:
         url = f"{self.base_url}{path}"
         try:
             import aiohttp  # local import keeps module import cheap
@@ -90,7 +91,10 @@ class _BaseHTTPClient:
         session = self._session or aiohttp.ClientSession(timeout=timeout)
         try:
             async with session.request(
-                method, url, headers=headers, json=json_body,
+                method,
+                url,
+                headers=headers,
+                json=json_body,
             ) as resp:
                 try:
                     body = await resp.json()
@@ -166,7 +170,8 @@ class ClaudeWorkerSessionsClient(_BaseHTTPClient):
     async def kill(self, task_id: str) -> Reply:
         confirm = f"yes-task-{task_id[:8]}"
         return await self.post(
-            f"/v1/sessions/{task_id}/kill", json_body={"confirm": confirm},
+            f"/v1/sessions/{task_id}/kill",
+            json_body={"confirm": confirm},
         )
 
     async def cleanup(self, task_id: str) -> Reply:
@@ -203,11 +208,13 @@ class ClusterObservabilityClient:
     ) -> "ClusterObservabilityClient":
         return cls(
             pipeline=PipelineStatusClient(
-                pipeline_url, bearer_token=pipeline_token,
+                pipeline_url,
+                bearer_token=pipeline_token,
                 timeout_seconds=timeout_seconds,
             ),
             claude_worker=ClaudeWorkerSessionsClient(
-                claude_worker_url, bearer_token=claude_worker_token,
+                claude_worker_url,
+                bearer_token=claude_worker_token,
                 timeout_seconds=timeout_seconds,
             ),
         )

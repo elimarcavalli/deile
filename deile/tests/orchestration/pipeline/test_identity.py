@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile.orchestration.pipeline.identity import (IdentityError,
-                                                   MonitorIdentity)
+from deile.orchestration.pipeline.identity import IdentityError, MonitorIdentity
 
 
 class TestConstruction:
@@ -40,8 +39,11 @@ class TestConstruction:
 
 class TestFromEnv:
     def test_defaults_when_no_env(self, monkeypatch):
-        for k in ("DEILE_PIPELINE_MONITOR_ID", "DEILE_PIPELINE_SHARD_INDEX",
-                  "DEILE_PIPELINE_SHARD_COUNT"):
+        for k in (
+            "DEILE_PIPELINE_MONITOR_ID",
+            "DEILE_PIPELINE_SHARD_INDEX",
+            "DEILE_PIPELINE_SHARD_COUNT",
+        ):
             monkeypatch.delenv(k, raising=False)
         i = MonitorIdentity.from_env()
         assert i.is_default

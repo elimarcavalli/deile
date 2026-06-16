@@ -15,10 +15,18 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from deile.orchestration.pipeline.monitor import (
-    PipelineMonitor, build_default_pipeline_config)
+    PipelineMonitor,
+    build_default_pipeline_config,
+)
 from deile.orchestration.pipeline.reset import unlock_issue
-from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
-                              ToolResult, ToolSchema)
+from deile.tools.base import (
+    SecurityLevel,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 
 
 class PipelineTool(Tool):
@@ -145,8 +153,12 @@ class PipelineTool(Tool):
                     )
                 ok, msg = await self._reset_issue(monitor, issue_number)
                 if not ok:
-                    return ToolResult.error_result(message=msg, error_code="RESET_FAILED")
-                return ToolResult.success_result(data={"issue": issue_number}, message=msg)
+                    return ToolResult.error_result(
+                        message=msg, error_code="RESET_FAILED"
+                    )
+                return ToolResult.success_result(
+                    data={"issue": issue_number}, message=msg
+                )
             # ``status`` is handled before _get_or_create_monitor (above).
             return ToolResult.error_result(
                 message=f"unhandled action {action!r}", error_code="INVALID_ACTION"
@@ -179,8 +191,7 @@ class PipelineTool(Tool):
     def _get_or_create_monitor(agent: Optional[Any]) -> PipelineMonitor:
         if agent is not None and getattr(agent, "pipeline_monitor", None) is not None:
             return agent.pipeline_monitor
-        from deile.orchestration.pipeline.review_callback import \
-            make_review_callback
+        from deile.orchestration.pipeline.review_callback import make_review_callback
 
         monitor = PipelineMonitor(
             build_default_pipeline_config(),
@@ -226,4 +237,7 @@ class PipelineTool(Tool):
             return False, f"issue #{issue_number}: {result.error or 'reset failed'}"
         if not result.removed:
             return True, f"issue #{issue_number} has no lock labels to remove"
-        return True, f"issue #{issue_number} unlocked — removed: {', '.join(result.removed)}"
+        return (
+            True,
+            f"issue #{issue_number} unlocked — removed: {', '.join(result.removed)}",
+        )

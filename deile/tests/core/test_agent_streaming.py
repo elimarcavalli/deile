@@ -14,9 +14,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from deile.core.models.base import ModelMessage
-from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                             StreamEventType,
-                                             UnifiedStreamEvent)
+from deile.core.models.stream_events import (
+    ModelUsageSnapshot,
+    StreamEventType,
+    UnifiedStreamEvent,
+)
 
 
 @dataclass
@@ -77,10 +79,12 @@ def configured_agent(tmp_path: Path):
     agent.command_registry = MagicMock()
 
     from deile.config.settings import get_settings
+
     agent.settings = get_settings()
     agent.logger = MagicMock()
 
     from deile.core.agent import AgentStatus
+
     agent._status = AgentStatus.IDLE
     agent._sessions = {}
     agent._request_count = 0
@@ -101,6 +105,7 @@ def configured_agent(tmp_path: Path):
     # No-op validation gate (return content unchanged)
     async def _noop_gate(*, user_input, parse_result, session, content, tool_results):
         return content, tool_results
+
     agent._apply_validation_gate = _noop_gate
 
     # working_directory must exist
@@ -110,7 +115,9 @@ def configured_agent(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_text_segments_around_tool_calls_get_paragraph_separator(configured_agent, tmp_path: Path):
+async def test_text_segments_around_tool_calls_get_paragraph_separator(
+    configured_agent, tmp_path: Path
+):
     """Issue #257 round 5: TEXT_DELTAs ANTES e DEPOIS de TOOL_USE_END devem
     ser separados por ``\\n\\n`` no histórico — sem isso, frases ficavam
     coladas em ``/resume`` (`"Vou ler.Pronto."` em vez de
@@ -119,19 +126,27 @@ async def test_text_segments_around_tool_calls_get_paragraph_separator(configure
     Patch direto em ``_stream_chat_with_tools`` para evitar invocar o
     tool_loop_executor real (que exige tool registry funcional).
     """
+
     async def _fake_stream(*args, **kwargs):
-        yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Vou ler o arquivo.")
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TEXT_DELTA, text="Vou ler o arquivo."
+        )
         yield UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_END,
-            tool_call_id="t1", tool_name="read_file",
+            tool_call_id="t1",
+            tool_name="read_file",
             arguments={"file_path": "x.py"},
         )
         yield UnifiedStreamEvent(
             type=StreamEventType.TOOL_RESULT,
-            tool_call_id="t1", tool_name="read_file",
-            tool_status="success", tool_result_summary="ok",
+            tool_call_id="t1",
+            tool_name="read_file",
+            tool_status="success",
+            tool_result_summary="ok",
         )
-        yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Pronto, conferido.")
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TEXT_DELTA, text="Pronto, conferido."
+        )
         yield UnifiedStreamEvent(
             type=StreamEventType.USAGE_FINAL,
             usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
@@ -187,7 +202,9 @@ async def test_streaming_turn_yields_text_and_usage(configured_agent, tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_stage_events_emitted_before_first_content(configured_agent, tmp_path: Path):
+async def test_stage_events_emitted_before_first_content(
+    configured_agent, tmp_path: Path
+):
     """The agent must emit STAGE events for each pre-stream phase BEFORE the
     first content event from the provider. This is what gives the user
     visibility into what the agent is doing during the "aguardando…" period
@@ -206,7 +223,9 @@ async def test_stage_events_emitted_before_first_content(configured_agent, tmp_p
     )
     configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
 
-    session = configured_agent.create_session("s_stage", working_directory=str(tmp_path))
+    session = configured_agent.create_session(
+        "s_stage", working_directory=str(tmp_path)
+    )
     events = []
     async for evt in configured_agent.process_input_stream(
         user_input="oi", session_id=session.session_id
@@ -218,13 +237,13 @@ async def test_stage_events_emitted_before_first_content(configured_agent, tmp_p
     first_content_idx = next(
         (i for i, t in enumerate(types) if t is not StreamEventType.STAGE), None
     )
-    assert first_content_idx is not None and first_content_idx > 0, (
-        "expected at least one STAGE event before the first content event"
-    )
+    assert (
+        first_content_idx is not None and first_content_idx > 0
+    ), "expected at least one STAGE event before the first content event"
     pre_content_types = types[:first_content_idx]
-    assert all(t is StreamEventType.STAGE for t in pre_content_types), (
-        f"non-STAGE events found before first content: {pre_content_types}"
-    )
+    assert all(
+        t is StreamEventType.STAGE for t in pre_content_types
+    ), f"non-STAGE events found before first content: {pre_content_types}"
 
     # Stage labels are non-empty and human-readable.
     stage_labels = [e.stage for e in events if e.type is StreamEventType.STAGE]
@@ -237,7 +256,9 @@ async def test_slash_command_yields_single_text(configured_agent, tmp_path: Path
     from deile.core.agent import AgentResponse, AgentStatus
 
     response = AgentResponse(
-        content="help text", status=AgentStatus.IDLE, execution_time=0.01,
+        content="help text",
+        status=AgentStatus.IDLE,
+        execution_time=0.01,
     )
     configured_agent._process_slash_command = AsyncMock(return_value=response)
     session = configured_agent.create_session("s2", working_directory=str(tmp_path))
@@ -248,12 +269,18 @@ async def test_slash_command_yields_single_text(configured_agent, tmp_path: Path
     ):
         events.append(evt)
     types = [e.type for e in events]
-    assert types == [StreamEventType.STAGE, StreamEventType.TEXT_DELTA, StreamEventType.USAGE_FINAL]
+    assert types == [
+        StreamEventType.STAGE,
+        StreamEventType.TEXT_DELTA,
+        StreamEventType.USAGE_FINAL,
+    ]
     assert events[1].text == "help text"
 
 
 @pytest.mark.asyncio
-async def test_slash_command_with_rich_renderable_content(configured_agent, tmp_path: Path):
+async def test_slash_command_with_rich_renderable_content(
+    configured_agent, tmp_path: Path
+):
     """When a slash command returns a Rich renderable (e.g. ``/model list``
     returns a ``Table``), the streaming pipeline must forward the
     renderable verbatim through a RICH_RENDERABLE event so the renderer
@@ -273,7 +300,9 @@ async def test_slash_command_with_rich_renderable_content(configured_agent, tmp_
     table.add_row("anthropic", "claude-opus-4-8")
 
     response = AgentResponse(
-        content=table, status=AgentStatus.IDLE, execution_time=0.01,
+        content=table,
+        status=AgentStatus.IDLE,
+        execution_time=0.01,
     )
     configured_agent._process_slash_command = AsyncMock(return_value=response)
     session = configured_agent.create_session("s_rich", working_directory=str(tmp_path))
@@ -284,7 +313,11 @@ async def test_slash_command_with_rich_renderable_content(configured_agent, tmp_
     ):
         events.append(evt)
     types = [e.type for e in events]
-    assert types == [StreamEventType.STAGE, StreamEventType.RICH_RENDERABLE, StreamEventType.USAGE_FINAL]
+    assert types == [
+        StreamEventType.STAGE,
+        StreamEventType.RICH_RENDERABLE,
+        StreamEventType.USAGE_FINAL,
+    ]
     # The original Table must arrive verbatim — same identity, no text
     # round-trip — so Rich can re-flow columns at the actual terminal width.
     assert events[1].renderable is table
@@ -293,7 +326,9 @@ async def test_slash_command_with_rich_renderable_content(configured_agent, tmp_
 
 @pytest.mark.asyncio
 async def test_autonomous_path_yields_single_text(configured_agent, tmp_path: Path):
-    configured_agent.process_autonomous_request = AsyncMock(return_value="autonomous reply")
+    configured_agent.process_autonomous_request = AsyncMock(
+        return_value="autonomous reply"
+    )
     session = configured_agent.create_session("s3", working_directory=str(tmp_path))
 
     events = [
@@ -303,12 +338,18 @@ async def test_autonomous_path_yields_single_text(configured_agent, tmp_path: Pa
         )
     ]
     types = [e.type for e in events]
-    assert types == [StreamEventType.STAGE, StreamEventType.TEXT_DELTA, StreamEventType.USAGE_FINAL]
+    assert types == [
+        StreamEventType.STAGE,
+        StreamEventType.TEXT_DELTA,
+        StreamEventType.USAGE_FINAL,
+    ]
     assert events[1].text == "autonomous reply"
 
 
 @pytest.mark.asyncio
-async def test_skip_autonomous_kwarg_also_skips_workflow_path(configured_agent, tmp_path: Path):
+async def test_skip_autonomous_kwarg_also_skips_workflow_path(
+    configured_agent, tmp_path: Path
+):
     """Issue #257 round 4: ``_skip_autonomous=True`` deve pular tanto o
     autonomous path quanto o workflow path. O workflow path executa tools
     OPACAMENTE (yieldando só TEXT_DELTA agregado), deixando o painel
@@ -322,55 +363,75 @@ async def test_skip_autonomous_kwarg_also_skips_workflow_path(configured_agent, 
     configured_agent._should_create_workflow = AsyncMock(return_value=True)
     configured_agent.process_autonomous_request = AsyncMock(return_value=None)
     fake = _FakeProvider(
-        iterations=[[
-            UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="tool path used"),
-            UnifiedStreamEvent(
-                type=StreamEventType.USAGE_FINAL,
-                usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
-            ),
-        ]]
+        iterations=[
+            [
+                UnifiedStreamEvent(
+                    type=StreamEventType.TEXT_DELTA, text="tool path used"
+                ),
+                UnifiedStreamEvent(
+                    type=StreamEventType.USAGE_FINAL,
+                    usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ]
     )
     configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
-    session = configured_agent.create_session("skip_wf", working_directory=str(tmp_path))
+    session = configured_agent.create_session(
+        "skip_wf", working_directory=str(tmp_path)
+    )
 
     # Consome o stream sem inspecionar eventos — só importa que
     # ``_should_create_workflow`` NÃO seja invocado quando ``_skip_autonomous``.
     async for _ in configured_agent.process_input_stream(
-        user_input="multi-step task", session_id=session.session_id, _skip_autonomous=True,
+        user_input="multi-step task",
+        session_id=session.session_id,
+        _skip_autonomous=True,
     ):
         pass
     configured_agent._should_create_workflow.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_skip_autonomous_kwarg_bypasses_autonomous_path(configured_agent, tmp_path: Path):
+async def test_skip_autonomous_kwarg_bypasses_autonomous_path(
+    configured_agent, tmp_path: Path
+):
     """Issue #257 round 4: ``_skip_autonomous=True`` deve fazer
     ``process_input_stream`` pular o caminho ``process_autonomous_request``
     para ir direto ao tool-loop. Necessário para sub-DEILEs alimentarem o
     painel multipanel com eventos TOOL_USE_END/TOOL_RESULT."""
     # Configura autonomous para retornar resposta — mas o skip deve ignorar.
-    configured_agent.process_autonomous_request = AsyncMock(return_value="should NOT be used")
+    configured_agent.process_autonomous_request = AsyncMock(
+        return_value="should NOT be used"
+    )
     # Fake provider para a chat-with-tools path
     fake = _FakeProvider(
-        iterations=[[
-            UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="tool path"),
-            UnifiedStreamEvent(
-                type=StreamEventType.USAGE_FINAL,
-                usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
-            ),
-        ]]
+        iterations=[
+            [
+                UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="tool path"),
+                UnifiedStreamEvent(
+                    type=StreamEventType.USAGE_FINAL,
+                    usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+                ),
+            ]
+        ]
     )
     configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
-    session = configured_agent.create_session("skip_auto", working_directory=str(tmp_path))
+    session = configured_agent.create_session(
+        "skip_auto", working_directory=str(tmp_path)
+    )
 
     events = [
-        e async for e in configured_agent.process_input_stream(
-            user_input="hi", session_id=session.session_id, _skip_autonomous=True,
+        e
+        async for e in configured_agent.process_input_stream(
+            user_input="hi",
+            session_id=session.session_id,
+            _skip_autonomous=True,
         )
     ]
     texts = [e.text for e in events if e.type is StreamEventType.TEXT_DELTA and e.text]
-    assert "should NOT be used" not in "".join(texts), \
-        "autonomous result leaked into stream despite _skip_autonomous=True"
+    assert "should NOT be used" not in "".join(
+        texts
+    ), "autonomous result leaked into stream despite _skip_autonomous=True"
     # process_autonomous_request NÃO deve ter sido chamado
     configured_agent.process_autonomous_request.assert_not_called()
 
@@ -382,7 +443,9 @@ async def test_error_in_setup_emits_error_event(configured_agent, tmp_path: Path
     async def _boom(*a, **kw):
         raise RuntimeError("setup failed")
 
-    configured_agent.context_manager.build_context = AsyncMock(side_effect=RuntimeError("setup failed"))
+    configured_agent.context_manager.build_context = AsyncMock(
+        side_effect=RuntimeError("setup failed")
+    )
     session = configured_agent.create_session("s4", working_directory=str(tmp_path))
 
     events = [
@@ -417,7 +480,9 @@ async def test_streaming_preserves_tool_result_metadata_through_gate(
 
     captured: Dict[str, Any] = {}
 
-    async def _capturing_gate(*, user_input, parse_result, session, content, tool_results):
+    async def _capturing_gate(
+        *, user_input, parse_result, session, content, tool_results
+    ):
         captured["tool_results"] = list(tool_results)
         return content, tool_results
 
@@ -463,9 +528,7 @@ async def test_streaming_preserves_tool_result_metadata_through_gate(
     )
     configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
 
-    session = configured_agent.create_session(
-        "s_meta", working_directory=str(tmp_path)
-    )
+    session = configured_agent.create_session("s_meta", working_directory=str(tmp_path))
     async for _ in configured_agent.process_input_stream(
         user_input="write main.py", session_id=session.session_id
     ):
@@ -473,7 +536,9 @@ async def test_streaming_preserves_tool_result_metadata_through_gate(
 
     assert "tool_results" in captured, "validation gate was never invoked"
     tool_results = captured["tool_results"]
-    assert len(tool_results) == 1, f"expected 1 collected tool result, got {len(tool_results)}"
+    assert (
+        len(tool_results) == 1
+    ), f"expected 1 collected tool result, got {len(tool_results)}"
     md = tool_results[0].metadata
     assert md.get("post_write_validation_required") is True, (
         "BG-001 regression: post_write_validation_required lost on the "
@@ -513,6 +578,7 @@ async def test_streaming_gate_fires_on_unvalidated_write(
     # Use the REAL gate (drop the no-op stub from the fixture) and stub only
     # the retry path — that's what the gate calls when it fires.
     from deile.core.agent import DeileAgent
+
     configured_agent._apply_validation_gate = DeileAgent._apply_validation_gate.__get__(
         configured_agent, type(configured_agent)
     )
@@ -540,9 +606,7 @@ async def test_streaming_gate_fires_on_unvalidated_write(
     )
     configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
 
-    session = configured_agent.create_session(
-        "s_gate", working_directory=str(tmp_path)
-    )
+    session = configured_agent.create_session("s_gate", working_directory=str(tmp_path))
 
     events = [
         e
@@ -563,9 +627,9 @@ async def test_streaming_gate_fires_on_unvalidated_write(
         for e in events
         if e.type is StreamEventType.TEXT_DELTA and e.source == "validation_gate"
     ]
-    assert len(gate_deltas) == 1, (
-        f"expected exactly one validation_gate TEXT_DELTA, got {len(gate_deltas)}"
-    )
+    assert (
+        len(gate_deltas) == 1
+    ), f"expected exactly one validation_gate TEXT_DELTA, got {len(gate_deltas)}"
     # The delta carries a one-line marker (rendered inside the yellow panel)
     # making it explicit that the corrected reply REPLACES the prior streamed
     # response, followed by the gate's standalone retry reply. We assert on
@@ -588,7 +652,9 @@ async def test_streaming_gate_does_not_see_proactive_results(
 
     captured: Dict[str, Any] = {}
 
-    async def _capturing_gate(*, user_input, parse_result, session, content, tool_results):
+    async def _capturing_gate(
+        *, user_input, parse_result, session, content, tool_results
+    ):
         captured["tool_results"] = list(tool_results)
         return content, tool_results
 
@@ -614,7 +680,10 @@ async def test_streaming_gate_does_not_see_proactive_results(
             tool_name="proactive:bash_execute",
             tool_status="success",
             tool_result_summary="ok",
-            tool_metadata={"function_name": "bash_execute", "proactive_execution": True},
+            tool_metadata={
+                "function_name": "bash_execute",
+                "proactive_execution": True,
+            },
         )
         yield ("results", [proactive_tr])
 
@@ -673,13 +742,19 @@ async def test_proactive_tool_events_are_yielded_to_caller(
             tool_result_summary="ok",
             tool_metadata={"function_name": "read_file", "proactive_execution": True},
         )
-        yield ("results", [
-            ToolResult(
-                status=ToolStatus.SUCCESS,
-                message="ok",
-                metadata={"function_name": "read_file", "proactive_execution": True},
-            )
-        ])
+        yield (
+            "results",
+            [
+                ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    message="ok",
+                    metadata={
+                        "function_name": "read_file",
+                        "proactive_execution": True,
+                    },
+                )
+            ],
+        )
 
     configured_agent._execute_proactive_tools_stream = _fake_proactive_stream
 
@@ -704,22 +779,27 @@ async def test_proactive_tool_events_are_yielded_to_caller(
     # TEXT_DELTA — i.e. the user actually sees them while they execute.
     types_and_names = [(e.type, e.tool_name) for e in collected]
     pr_start_idx = next(
-        i for i, (t, n) in enumerate(types_and_names)
+        i
+        for i, (t, n) in enumerate(types_and_names)
         if t is StreamEventType.TOOL_USE_START and n == "proactive:read_file"
     )
     pr_result_idx = next(
-        i for i, (t, n) in enumerate(types_and_names)
+        i
+        for i, (t, n) in enumerate(types_and_names)
         if t is StreamEventType.TOOL_RESULT and n == "proactive:read_file"
     )
     first_text_idx = next(
-        (i for i, e in enumerate(collected)
-         if e.type is StreamEventType.TEXT_DELTA and e.text == "ok"),
+        (
+            i
+            for i, e in enumerate(collected)
+            if e.type is StreamEventType.TEXT_DELTA and e.text == "ok"
+        ),
         None,
     )
     assert pr_start_idx < pr_result_idx, "TOOL_RESULT before TOOL_USE_START"
-    assert first_text_idx is None or pr_result_idx < first_text_idx, (
-        "proactive events must surface BEFORE the LLM's first text delta"
-    )
+    assert (
+        first_text_idx is None or pr_result_idx < first_text_idx
+    ), "proactive events must surface BEFORE the LLM's first text delta"
 
 
 @pytest.mark.asyncio

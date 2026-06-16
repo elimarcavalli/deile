@@ -19,8 +19,7 @@ from pathlib import Path
 import pytest
 
 from deile.runtime.instance_state import InstanceState
-from deile.runtime.status_server import (MAX_LINE_BYTES, StatusClient,
-                                         format_metrics)
+from deile.runtime.status_server import MAX_LINE_BYTES, StatusClient, format_metrics
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -28,7 +27,9 @@ from deile.runtime.status_server import (MAX_LINE_BYTES, StatusClient,
 async def _make_running_server(role: str = "cli") -> tuple[InstanceState, asyncio.Task]:
     """Cria InstanceState + StatusServer + serve_forever() task. Caller fecha."""
     state = InstanceState(
-        role=role, enable_registry=False, enable_status_server=True,
+        role=role,
+        enable_registry=False,
+        enable_status_server=True,
     )
     assert state.status_server is not None
     await state.status_server.start()
@@ -53,8 +54,9 @@ async def _stop_server(state: InstanceState, task: asyncio.Task) -> None:
         state.close()
 
 
-async def _client_send(socket_path: Path, command: bytes,
-                       timeout_s: float = 1.0) -> bytes:
+async def _client_send(
+    socket_path: Path, command: bytes, timeout_s: float = 1.0
+) -> bytes:
     """Cliente cru em executor — evita bloquear o loop async com socket sync."""
     loop = asyncio.get_event_loop()
 
@@ -94,7 +96,9 @@ async def test_status_server_start_creates_socket_with_0600_perm():
 
 async def test_status_server_start_is_idempotent():
     state = InstanceState(
-        role="cli", enable_registry=False, enable_status_server=True,
+        role="cli",
+        enable_registry=False,
+        enable_status_server=True,
     )
     try:
         server = state.status_server
@@ -138,7 +142,9 @@ async def test_serve_forever_reraises_cancelled_error():
 async def test_serve_forever_returns_when_not_started():
     """Sem ``start()``, ``serve_forever`` deve sair limpo (no-op)."""
     state = InstanceState(
-        role="cli", enable_registry=False, enable_status_server=True,
+        role="cli",
+        enable_registry=False,
+        enable_status_server=True,
     )
     try:
         # Não chamamos start — apenas serve_forever.
@@ -227,15 +233,16 @@ async def test_metrics_emits_prometheus_text_format():
 async def test_metrics_marks_busy_when_action_active():
     state, task = await _make_running_server()
     try:
-        state.update_action("llm_call", detail="generate_stream",
-                            model="deepseek:v4-pro")
+        state.update_action(
+            "llm_call", detail="generate_stream", model="deepseek:v4-pro"
+        )
         raw = await _client_send(state.status_server.socket_path, b"METRICS\n")
         text = raw.decode("utf-8")
         # ``deile_busy{...kind="llm_call"} 1`` deve aparecer.
-        assert 'deile_busy' in text
+        assert "deile_busy" in text
         assert 'kind="llm_call"' in text
         # Última coluna do gauge é o valor 1.
-        assert ' 1\n' in text or text.rstrip().endswith(' 1')
+        assert " 1\n" in text or text.rstrip().endswith(" 1")
     finally:
         await _stop_server(state, task)
 

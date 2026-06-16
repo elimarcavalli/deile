@@ -3,6 +3,7 @@
 Issue #415: pipeline should emit a WARNING when neither GITHUB_TOKEN nor
 GITLAB_TOKEN is present, without interrupting execution.
 """
+
 from __future__ import annotations
 
 import logging
@@ -13,6 +14,7 @@ from deile.orchestration.pipeline.runner import _warn_if_no_forge_token
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _capture_warnings(caplog, env, monkeypatch):
     """Run _warn_if_no_forge_token with the given env overrides."""
@@ -30,6 +32,7 @@ def _capture_warnings(caplog, env, monkeypatch):
 # ---------------------------------------------------------------------------
 # tests
 # ---------------------------------------------------------------------------
+
 
 def test_warns_when_no_tokens(caplog, monkeypatch):
     """WARNING is emitted if neither GITHUB_TOKEN nor GITLAB_TOKEN is set."""

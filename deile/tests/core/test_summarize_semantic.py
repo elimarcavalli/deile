@@ -7,8 +7,11 @@ operator's ability to see what tools just did.
 
 from __future__ import annotations
 
-from deile.core.tool_result_summary import (SUMMARY_MAX_CHARS,
-                                            semantic_summary, summarize)
+from deile.core.tool_result_summary import (
+    SUMMARY_MAX_CHARS,
+    semantic_summary,
+    summarize,
+)
 from deile.tools.base import ToolResult, ToolStatus
 
 
@@ -45,7 +48,12 @@ def test_bash_execute_dict_data_renders_exit_and_time():
 def test_bash_execute_failure_shows_stderr_first_line():
     result = ToolResult(
         status=ToolStatus.ERROR,
-        data={"exit_code": 1, "stdout": "", "stderr": "fatal: bad path\nmore details", "execution_time": 0.05},
+        data={
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "fatal: bad path\nmore details",
+            "execution_time": 0.05,
+        },
         message="exited 1",
         metadata={"function_name": "bash_execute", "exit_code": 1},
     )

@@ -11,9 +11,14 @@ Cobre:
 import pytest
 
 from deile.orchestration.pipeline.dispatch_resolver import (
-    PIPELINE_STAGES, VALID_DISPATCHERS, get_endpoint_for, is_valid_dispatcher,
-    resolve_stage_dispatcher, resolve_stage_max_retries,
-    resolve_stage_timeout_s)
+    PIPELINE_STAGES,
+    VALID_DISPATCHERS,
+    get_endpoint_for,
+    is_valid_dispatcher,
+    resolve_stage_dispatcher,
+    resolve_stage_max_retries,
+    resolve_stage_timeout_s,
+)
 
 
 def _clear_env(monkeypatch):
@@ -26,7 +31,13 @@ def _clear_env(monkeypatch):
 
 def test_stages_canonical_order():
     """Stage tuple keeps operational lifecycle order."""
-    assert PIPELINE_STAGES == ("classify", "refine", "implement", "pr_review", "follow_ups")
+    assert PIPELINE_STAGES == (
+        "classify",
+        "refine",
+        "implement",
+        "pr_review",
+        "follow_ups",
+    )
 
 
 def test_valid_dispatchers_frozen():
@@ -123,8 +134,9 @@ def test_resolve_accepts_legacy_worker_aliases(monkeypatch):
     _clear_env(monkeypatch)
     for legacy in ("deile_worker", "worker", "deile"):
         monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_MODE", legacy)
-        assert resolve_stage_dispatcher("implement") == "deile-worker", \
-            f"alias {legacy!r} should canonicalize to 'deile-worker'"
+        assert (
+            resolve_stage_dispatcher("implement") == "deile-worker"
+        ), f"alias {legacy!r} should canonicalize to 'deile-worker'"
 
 
 def test_resolve_accepts_legacy_claude_aliases(monkeypatch):
@@ -133,20 +145,30 @@ def test_resolve_accepts_legacy_claude_aliases(monkeypatch):
     _clear_env(monkeypatch)
     for legacy in ("claude", "claude_code", "claude-code"):
         monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_MODE", legacy)
-        assert resolve_stage_dispatcher("implement") == "claude-worker", \
-            f"alias {legacy!r} should canonicalize to 'claude-worker'"
+        assert (
+            resolve_stage_dispatcher("implement") == "claude-worker"
+        ), f"alias {legacy!r} should canonicalize to 'claude-worker'"
 
 
 def test_is_valid_dispatcher_accepts_legacy_aliases():
     """is_valid_dispatcher também aceita legacy aliases (case-insensitive)."""
-    for legacy in ("deile_worker", "worker", "deile", "claude", "claude_code", "claude-code"):
-        assert is_valid_dispatcher(legacy) is True, \
-            f"legacy alias {legacy!r} should validate"
+    for legacy in (
+        "deile_worker",
+        "worker",
+        "deile",
+        "claude",
+        "claude_code",
+        "claude-code",
+    ):
+        assert (
+            is_valid_dispatcher(legacy) is True
+        ), f"legacy alias {legacy!r} should validate"
     # Sanity: garbage still rejected
     assert is_valid_dispatcher("garbage") is False
 
 
 # ===== resolve_stage_timeout_s (issue #391) ==================================
+
 
 def _clear_timeout_env(monkeypatch):
     for stage in PIPELINE_STAGES:
@@ -171,6 +193,7 @@ def test_timeout_default_for_claude_stages(monkeypatch):
     monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_IMPLEMENT", "claude-worker")
     monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_PR_REVIEW", "claude-worker")
     from deile.config.settings import reset_settings
+
     reset_settings()
     assert resolve_stage_timeout_s("implement") == 1800
     assert resolve_stage_timeout_s("pr_review") == 1800
@@ -180,6 +203,7 @@ def test_timeout_default_for_deile_stages(monkeypatch):
     """Sem override, stages deile (classify/refine/follow_ups) retornam 900."""
     _clear_timeout_env(monkeypatch)
     from deile.config.settings import reset_settings
+
     reset_settings()
     assert resolve_stage_timeout_s("classify") == 900
     assert resolve_stage_timeout_s("refine") == 900
@@ -191,6 +215,7 @@ def test_timeout_env_var_per_stage(monkeypatch):
     _clear_timeout_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT", "600")
     from deile.config.settings import reset_settings
+
     reset_settings()
     assert resolve_stage_timeout_s("implement") == 600
     # Other stages unaffected
@@ -202,6 +227,7 @@ def test_timeout_env_var_invalid_raises(monkeypatch):
     _clear_timeout_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT", "not_a_number")
     from deile.config.settings import reset_settings
+
     reset_settings()
     with pytest.raises(ValueError):
         resolve_stage_timeout_s("implement")
@@ -212,6 +238,7 @@ def test_timeout_env_var_zero_raises(monkeypatch):
     _clear_timeout_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_CLASSIFY", "0")
     from deile.config.settings import reset_settings
+
     reset_settings()
     with pytest.raises(ValueError):
         resolve_stage_timeout_s("classify")
@@ -221,6 +248,7 @@ def test_timeout_settings_per_stage(monkeypatch):
     """pipeline_timeout_s_<stage> via settings sobrescreve o default."""
     _clear_timeout_env(monkeypatch)
     from deile.config.settings import get_settings, reset_settings
+
     reset_settings()
     s = get_settings()
     s.pipeline_timeout_s_classify = 300
@@ -230,6 +258,7 @@ def test_timeout_settings_per_stage(monkeypatch):
 
 
 # ===== resolve_stage_max_retries (issue #391) ================================
+
 
 def _clear_retries_env(monkeypatch):
     for stage in PIPELINE_STAGES:
@@ -247,10 +276,12 @@ def test_retries_default_is_three(monkeypatch):
     """Sem override, todos os stages retornam 3 (built-in)."""
     _clear_retries_env(monkeypatch)
     from deile.config.settings import reset_settings
+
     reset_settings()
     for stage in PIPELINE_STAGES:
-        assert resolve_stage_max_retries(stage) == 3, \
-            f"stage {stage!r} should default to 3 retries"
+        assert (
+            resolve_stage_max_retries(stage) == 3
+        ), f"stage {stage!r} should default to 3 retries"
 
 
 def test_retries_env_var_per_stage(monkeypatch):
@@ -258,6 +289,7 @@ def test_retries_env_var_per_stage(monkeypatch):
     _clear_retries_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_RETRIES_IMPLEMENT", "1")
     from deile.config.settings import reset_settings
+
     reset_settings()
     assert resolve_stage_max_retries("implement") == 1
     # Other stages unaffected
@@ -269,6 +301,7 @@ def test_retries_env_zero_allowed(monkeypatch):
     _clear_retries_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_RETRIES_IMPLEMENT", "0")
     from deile.config.settings import reset_settings
+
     reset_settings()
     assert resolve_stage_max_retries("implement") == 0
 
@@ -278,6 +311,7 @@ def test_retries_env_invalid_raises(monkeypatch):
     _clear_retries_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_RETRIES_CLASSIFY", "not_a_number")
     from deile.config.settings import reset_settings
+
     reset_settings()
     with pytest.raises(ValueError):
         resolve_stage_max_retries("classify")
@@ -287,6 +321,7 @@ def test_retries_settings_per_stage(monkeypatch):
     """pipeline_retries_<stage> via settings sobrescreve o default."""
     _clear_retries_env(monkeypatch)
     from deile.config.settings import get_settings, reset_settings
+
     reset_settings()
     s = get_settings()
     s.pipeline_retries_implement = 5
@@ -297,11 +332,13 @@ def test_retries_settings_per_stage(monkeypatch):
 
 # ===== Error message context (issue #478 finding #5) =========================
 
+
 def test_timeout_env_invalid_message_contains_env_var_name(monkeypatch):
     """ValueError message must include the env var name for traceability."""
     _clear_timeout_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW", "foo")
     from deile.config.settings import reset_settings
+
     reset_settings()
     with pytest.raises(ValueError, match="DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW"):
         resolve_stage_timeout_s("pr_review")
@@ -312,6 +349,7 @@ def test_timeout_env_invalid_message_contains_raw_value(monkeypatch):
     _clear_timeout_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_CLASSIFY", "foo")
     from deile.config.settings import reset_settings
+
     reset_settings()
     with pytest.raises(ValueError, match="foo"):
         resolve_stage_timeout_s("classify")
@@ -322,6 +360,7 @@ def test_retries_env_invalid_message_contains_env_var_name(monkeypatch):
     _clear_retries_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_RETRIES_IMPLEMENT", "bar")
     from deile.config.settings import reset_settings
+
     reset_settings()
     with pytest.raises(ValueError, match="DEILE_PIPELINE_RETRIES_IMPLEMENT"):
         resolve_stage_max_retries("implement")
@@ -332,6 +371,7 @@ def test_retries_env_invalid_message_contains_raw_value(monkeypatch):
     _clear_retries_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_RETRIES_FOLLOW_UPS", "bar")
     from deile.config.settings import reset_settings
+
     reset_settings()
     with pytest.raises(ValueError, match="bar"):
         resolve_stage_max_retries("follow_ups")

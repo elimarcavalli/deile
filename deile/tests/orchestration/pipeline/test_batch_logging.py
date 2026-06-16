@@ -1,4 +1,5 @@
 """AC8 + AC2 — batch.claim / batch.release logging via pipeline_logger."""
+
 from __future__ import annotations
 
 import logging
@@ -26,7 +27,8 @@ def _reset_dedup(monkeypatch):
 
 def _batch_lines(caplog):
     return [
-        r.message for r in caplog.records
+        r.message
+        for r in caplog.records
         if r.name == "deile.pipeline.events" and r.message.startswith("batch.")
     ]
 
@@ -52,7 +54,9 @@ def _make_monitor(shard_count: int, claim_returns: object = "abc12345"):
         claude=MagicMock(),
     )
     monitor.identity = MonitorIdentity(
-        monitor_id="default", shard_index=0, shard_count=shard_count,
+        monitor_id="default",
+        shard_index=0,
+        shard_count=shard_count,
     )
     return monitor
 
@@ -72,21 +76,26 @@ class TestBatchLoggingAC8:
         monitor = _make_monitor(shard_count=2, claim_returns="abc12345")
         with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
             claimed = await stages._claim_for_classify(
-                monitor, "issue", 42, error_context="test_context",
+                monitor,
+                "issue",
+                42,
+                error_context="test_context",
             )
             await stages._release_classify_claim(monitor, "issue", 42)
         assert claimed is True
         lines = _batch_lines(caplog)
-        assert len(lines) == 2, (
-            f"shard_count=2 must emit exactly 2 batch.* lines, got: {lines}"
-        )
+        assert (
+            len(lines) == 2
+        ), f"shard_count=2 must emit exactly 2 batch.* lines, got: {lines}"
         assert any(ln.startswith("batch.claim") for ln in lines)
         assert any(ln.startswith("batch.release") for ln in lines)
 
     async def test_claim_returns_none_emits_no_batch_lines(self, caplog):
         monitor = _make_monitor(shard_count=2, claim_returns=None)
         with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-            claimed = await stages._claim_for_classify(monitor, "issue", 42, error_context="test")
+            claimed = await stages._claim_for_classify(
+                monitor, "issue", 42, error_context="test"
+            )
         assert claimed is False
         lines = _batch_lines(caplog)
         assert lines == [], f"claim=None must emit 0 batch.* lines, got: {lines}"
@@ -99,25 +108,30 @@ class TestBatchLoggingAC2:
         monitor = _make_monitor(shard_count=2, claim_returns="abc12345")
         with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
             await stages._claim_for_classify(
-                monitor, "issue", 42, error_context="classify",
+                monitor,
+                "issue",
+                42,
+                error_context="classify",
             )
         lines = _batch_lines(caplog)
         claim_lines = [ln for ln in lines if ln.startswith("batch.claim")]
         assert claim_lines, "No batch.claim line emitted"
         for line in claim_lines:
-            assert _CANON_PATTERN.match(line), (
-                f"batch.claim does not match canonical pattern: {line!r}"
-            )
+            assert _CANON_PATTERN.match(
+                line
+            ), f"batch.claim does not match canonical pattern: {line!r}"
 
     async def test_batch_release_matches_canonical_pattern(self, caplog):
         monitor = _make_monitor(shard_count=2, claim_returns="abc12345")
         with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-            await stages._claim_for_classify(monitor, "issue", 42, error_context="classify")
+            await stages._claim_for_classify(
+                monitor, "issue", 42, error_context="classify"
+            )
             await stages._release_classify_claim(monitor, "issue", 42)
         lines = _batch_lines(caplog)
         release_lines = [ln for ln in lines if ln.startswith("batch.release")]
         assert release_lines, "No batch.release line emitted"
         for line in release_lines:
-            assert _CANON_PATTERN.match(line), (
-                f"batch.release does not match canonical pattern: {line!r}"
-            )
+            assert _CANON_PATTERN.match(
+                line
+            ), f"batch.release does not match canonical pattern: {line!r}"

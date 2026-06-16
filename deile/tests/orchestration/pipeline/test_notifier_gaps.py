@@ -1,4 +1,5 @@
 """Tests for new DiscordNotifier methods added for issue #164 (gaps 2+4)."""
+
 from __future__ import annotations
 
 from deile.orchestration.pipeline.notifier import DiscordNotifier

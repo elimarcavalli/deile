@@ -69,18 +69,20 @@ def parse_skill_text(
         except yaml.YAMLError as exc:
             logger.warning(
                 "Skill file %s has invalid YAML front-matter and will be skipped: %s",
-                source_path, exc,
+                source_path,
+                exc,
             )
             return None
         if isinstance(parsed, dict):
             frontmatter = parsed
-        body = text[match.end():]
+        body = text[match.end() :]
 
     raw_name = frontmatter.get("name") or normalize_name(source_path.stem)
     if not isinstance(raw_name, str):
         logger.warning(
             "Skill file %s: 'name' must be a string (got %s) — using filename stem",
-            source_path, type(raw_name).__name__,
+            source_path,
+            type(raw_name).__name__,
         )
         raw_name = normalize_name(source_path.stem)
 
@@ -89,14 +91,17 @@ def parse_skill_text(
         name = name.upper()
 
     if not _VALID_NAME_RE.match(name):
-        logger.warning("Skill file %s produces invalid name %r — skipped", source_path, name)
+        logger.warning(
+            "Skill file %s produces invalid name %r — skipped", source_path, name
+        )
         return None
 
     raw_desc = frontmatter.get("description")
     if raw_desc is not None and not isinstance(raw_desc, str):
         logger.warning(
             "Skill file %s: 'description' must be a string (got %s) — using default",
-            source_path, type(raw_desc).__name__,
+            source_path,
+            type(raw_desc).__name__,
         )
         raw_desc = None
     description = (raw_desc or "").strip() or f"Skill: {name}"
@@ -109,10 +114,14 @@ def parse_skill_text(
     # Reject bools explicitly — ``isinstance(True, int)`` is True in Python so
     # ``int(True)`` returns 1, silently coercing YAML ``priority: yes`` to 1.
     priority_raw = frontmatter.get("priority", 0)
-    if isinstance(priority_raw, bool) or not isinstance(priority_raw, (int, float, str)):
+    if isinstance(priority_raw, bool) or not isinstance(
+        priority_raw, (int, float, str)
+    ):
         logger.warning(
             "Skill file %s: 'priority' must be an integer (got %s: %r) — defaulting to 0",
-            source_path, type(priority_raw).__name__, priority_raw,
+            source_path,
+            type(priority_raw).__name__,
+            priority_raw,
         )
         priority = 0
     else:
@@ -121,7 +130,8 @@ def parse_skill_text(
         except (TypeError, ValueError):
             logger.warning(
                 "Skill file %s: 'priority' not parseable as int (%r) — defaulting to 0",
-                source_path, priority_raw,
+                source_path,
+                priority_raw,
             )
             priority = 0
 
@@ -141,25 +151,35 @@ def _build_trigger(raw: Any, source_path: Path) -> SkillTrigger:
     if raw is None:
         return SkillTrigger()
     if not isinstance(raw, dict):
-        logger.warning("Skill file %s: 'triggers' must be a mapping — ignoring", source_path)
+        logger.warning(
+            "Skill file %s: 'triggers' must be a mapping — ignoring", source_path
+        )
         return SkillTrigger()
 
     def _str_list(value: Any, field_name: str) -> List[str]:
         if value is None:
             return []
-        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
             logger.warning(
                 "Skill file %s: 'triggers.%s' must be a list of strings — ignoring",
-                source_path, field_name,
+                source_path,
+                field_name,
             )
             return []
         return [v.strip() for v in value if v and v.strip()]
 
     return SkillTrigger(
         file_globs=_str_list(raw.get("file_globs"), "file_globs"),
-        code_block_langs=[lang.lower() for lang in _str_list(raw.get("code_block_langs"), "code_block_langs")],
+        code_block_langs=[
+            lang.lower()
+            for lang in _str_list(raw.get("code_block_langs"), "code_block_langs")
+        ],
         keywords=_str_list(raw.get("keywords"), "keywords"),
-        file_content_patterns=_str_list(raw.get("file_content_patterns"), "file_content_patterns"),
+        file_content_patterns=_str_list(
+            raw.get("file_content_patterns"), "file_content_patterns"
+        ),
     )
 
 
@@ -194,8 +214,11 @@ class SkillLoader:
         for md_path in md_files:
             text = await asyncio.to_thread(md_path.read_text, encoding="utf-8")
             skill = parse_skill_text(
-                text, md_path,
-                source=source, kind=kind, force_uppercase_name=force_uppercase_name,
+                text,
+                md_path,
+                source=source,
+                kind=kind,
+                force_uppercase_name=force_uppercase_name,
             )
             if skill is not None:
                 skills.append(skill)

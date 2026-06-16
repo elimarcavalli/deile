@@ -70,10 +70,17 @@ async def main() -> None:
     print(f"WORD COUNT: {word_count}")
     print(f"CHAR COUNT: {char_count}")
     print(f"APPROX TOKENS: {approx_tokens}")
-    print(f"RESULT: {'PASS (>=800 words)' if word_count >= 800 else 'FAIL (<800 words)'}")
+    print(
+        f"RESULT: {'PASS (>=800 words)' if word_count >= 800 else 'FAIL (<800 words)'}"
+    )
 
     tail = content.rstrip()[-100:]
-    ends_cleanly = bool(tail) and tail[-1] in ".!?\n" or tail.endswith("```") or tail.endswith("---")
+    ends_cleanly = (
+        bool(tail)
+        and tail[-1] in ".!?\n"
+        or tail.endswith("```")
+        or tail.endswith("---")
+    )
     print(f"ENDS CLEANLY: {ends_cleanly}")
     print(f"TAIL: ...{repr(tail[-60:])}")
 

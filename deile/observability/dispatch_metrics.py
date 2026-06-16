@@ -48,10 +48,13 @@ import time
 from typing import Any, Dict, FrozenSet, Optional
 
 from deile.observability.config import get_observability_config
-from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
-                                                 ATTR_SCHEMA_VERSION,
-                                                 SCHEMA_VERSION,
-                                                 get_pod_metadata)
+from deile.observability.dispatch_schema import (
+    ATTR_POD,
+    ATTR_ROLE,
+    ATTR_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    get_pod_metadata,
+)
 
 __all__ = [
     "record_dispatch_total",
@@ -81,13 +84,13 @@ METRIC_GIT_PUSH_TOTAL = "deile.git.push.total"
 # ── allowed labels (D2 — cardinality bounded) ──────────────────────────────
 
 _ALLOWED_LABELS: Dict[str, FrozenSet[str]] = {
-    METRIC_DISPATCH_TOTAL:            frozenset({"role", "outcome"}),
-    METRIC_DISPATCH_FAILED_TOTAL:     frozenset({"role", "reason"}),
-    METRIC_DISPATCH_DURATION_MS:      frozenset({"role", "outcome"}),
+    METRIC_DISPATCH_TOTAL: frozenset({"role", "outcome"}),
+    METRIC_DISPATCH_FAILED_TOTAL: frozenset({"role", "reason"}),
+    METRIC_DISPATCH_DURATION_MS: frozenset({"role", "outcome"}),
     METRIC_DISPATCH_TOOL_BURST_TOTAL: frozenset({"role", "bucket"}),
-    METRIC_DISPATCH_OTLP_DROP_TOTAL:  frozenset({"reason"}),
-    METRIC_FORGE_PR_REVIEW_TOTAL:     frozenset({"decision"}),
-    METRIC_GIT_PUSH_TOTAL:            frozenset({"outcome"}),
+    METRIC_DISPATCH_OTLP_DROP_TOTAL: frozenset({"reason"}),
+    METRIC_FORGE_PR_REVIEW_TOTAL: frozenset({"decision"}),
+    METRIC_GIT_PUSH_TOTAL: frozenset({"outcome"}),
 }
 
 # Labels proibidas (alta cardinalidade / segredo) — verificadas em AC3.
@@ -118,9 +121,7 @@ def _validate_labels(metric_name: str, labels: Dict[str, Any]) -> None:
     allowed = _ALLOWED_LABELS[metric_name]
     for key in labels:
         if key not in allowed:
-            raise ValueError(
-                f"label '{key}' not allowed for metric '{metric_name}'"
-            )
+            raise ValueError(f"label '{key}' not allowed for metric '{metric_name}'")
 
 
 # ── SDK availability ────────────────────────────────────────────────────────
@@ -131,6 +132,7 @@ def metrics_available() -> bool:
     try:
         import opentelemetry.metrics  # noqa: F401  pylint: disable=import-outside-toplevel
         import opentelemetry.sdk.metrics  # noqa: F401  pylint: disable=import-outside-toplevel
+
         return True
     except ImportError:
         return False
@@ -146,9 +148,7 @@ def _warn_sdk_unavailable() -> None:
     global _sdk_warned
     with _sdk_warned_lock:
         if not _sdk_warned:
-            _logger.info(
-                "dispatch_metrics: otel_sdk_available=false sink=disabled"
-            )
+            _logger.info("dispatch_metrics: otel_sdk_available=false sink=disabled")
             _sdk_warned = True
 
 
@@ -274,18 +274,23 @@ def _get_dispatch_meter_provider() -> Optional[Any]:
 
 def _build_meter_provider(config: Any) -> Any:
     """Constrói o ``MeterProvider`` apontando para o collector OTLP (D1)."""
-    from opentelemetry.sdk.metrics import \
-        MeterProvider  # pylint: disable=import-outside-toplevel
+    from opentelemetry.sdk.metrics import (  # pylint: disable=import-outside-toplevel
+        MeterProvider,
+    )
     from opentelemetry.sdk.resources import (  # pylint: disable=import-outside-toplevel
-        SERVICE_NAME, Resource)
+        SERVICE_NAME,
+        Resource,
+    )
 
     pod = get_pod_metadata()
-    resource = Resource.create({
-        SERVICE_NAME: config.service_name,
-        ATTR_ROLE: pod["role"],
-        ATTR_POD: pod["pod"],
-        ATTR_SCHEMA_VERSION: SCHEMA_VERSION,
-    })
+    resource = Resource.create(
+        {
+            SERVICE_NAME: config.service_name,
+            ATTR_ROLE: pod["role"],
+            ATTR_POD: pod["pod"],
+            ATTR_SCHEMA_VERSION: SCHEMA_VERSION,
+        }
+    )
     reader = _make_reader(config)
     readers = [reader] if reader is not None else []
     return MeterProvider(resource=resource, metric_readers=readers)
@@ -313,10 +318,12 @@ def _make_reader(config: Any) -> Optional[Any]:
     Falha silenciosa → None.
     """
     try:
-        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import \
-            OTLPMetricExporter  # pylint: disable=import-outside-toplevel
-        from opentelemetry.sdk.metrics.export import \
-            PeriodicExportingMetricReader  # pylint: disable=import-outside-toplevel
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (  # pylint: disable=import-outside-toplevel
+            OTLPMetricExporter,
+        )
+        from opentelemetry.sdk.metrics.export import (  # pylint: disable=import-outside-toplevel
+            PeriodicExportingMetricReader,
+        )
     except ImportError as exc:
         _logger.warning(
             "dispatch_metrics: OTLPMetricExporter não disponível (%s); "
@@ -424,30 +431,38 @@ def _record(metric_name: str, value: float, labels: Dict[str, Any]) -> None:
 
 def record_dispatch_total(*, role: str, outcome: str, **extra: Any) -> None:
     """Incrementa ``deile.dispatch.total{role,outcome}``."""
-    _add(METRIC_DISPATCH_TOTAL, 1,
-         {"role": str(role), "outcome": str(outcome), **extra})
+    _add(
+        METRIC_DISPATCH_TOTAL, 1, {"role": str(role), "outcome": str(outcome), **extra}
+    )
 
 
 def record_dispatch_failed_total(*, role: str, reason: str, **extra: Any) -> None:
     """Incrementa ``deile.dispatch.failed.total{role,reason}``."""
-    _add(METRIC_DISPATCH_FAILED_TOTAL, 1,
-         {"role": str(role), "reason": str(reason), **extra})
+    _add(
+        METRIC_DISPATCH_FAILED_TOTAL,
+        1,
+        {"role": str(role), "reason": str(reason), **extra},
+    )
 
 
 def record_dispatch_duration_ms(
     *, role: str, outcome: str, value_ms: float, **extra: Any
 ) -> None:
     """Registra ``deile.dispatch.duration_ms{role,outcome}``."""
-    _record(METRIC_DISPATCH_DURATION_MS, float(value_ms),
-            {"role": str(role), "outcome": str(outcome), **extra})
+    _record(
+        METRIC_DISPATCH_DURATION_MS,
+        float(value_ms),
+        {"role": str(role), "outcome": str(outcome), **extra},
+    )
 
 
-def record_dispatch_tool_burst_total(
-    *, role: str, bucket: str, **extra: Any
-) -> None:
+def record_dispatch_tool_burst_total(*, role: str, bucket: str, **extra: Any) -> None:
     """Incrementa ``deile.dispatch.tool_burst.total{role,bucket}``."""
-    _add(METRIC_DISPATCH_TOOL_BURST_TOTAL, 1,
-         {"role": str(role), "bucket": str(bucket), **extra})
+    _add(
+        METRIC_DISPATCH_TOOL_BURST_TOTAL,
+        1,
+        {"role": str(role), "bucket": str(bucket), **extra},
+    )
 
 
 def record_git_push_total(*, outcome: str, **extra: Any) -> None:

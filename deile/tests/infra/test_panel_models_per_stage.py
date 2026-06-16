@@ -27,15 +27,13 @@ if str(_INFRA_K8S) not in sys.path:
     sys.path.insert(0, str(_INFRA_K8S))
 
 from deile.config.settings import reset_settings  # noqa: E402
-from deile.orchestration.pipeline.model_resolver import \
-    PIPELINE_STAGES  # noqa: E402
+from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _isolate_settings(monkeypatch):
     for stage in PIPELINE_STAGES:
-        monkeypatch.delenv(f"DEILE_PIPELINE_MODEL_{stage.upper()}",
-                           raising=False)
+        monkeypatch.delenv(f"DEILE_PIPELINE_MODEL_{stage.upper()}", raising=False)
     monkeypatch.delenv("DEILE_PREFERRED_MODEL", raising=False)
     reset_settings()
     yield
@@ -56,9 +54,13 @@ class TestStageModelsProvider:
 
     def test_returns_five_entries_one_per_stage(self):
         from _panel_data import StageModelsProvider
-        with patch("_panel_data._capture_json",
-                   return_value=_deployment_json_with_env({})), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch(
+                "_panel_data._capture_json", return_value=_deployment_json_with_env({})
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             provider = StageModelsProvider()
             entries = provider.get(force=True)
         assert len(entries) == 5
@@ -66,9 +68,13 @@ class TestStageModelsProvider:
 
     def test_all_unset_no_global_shows_no_effective(self):
         from _panel_data import StageModelsProvider
-        with patch("_panel_data._capture_json",
-                   return_value=_deployment_json_with_env({})), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch(
+                "_panel_data._capture_json", return_value=_deployment_json_with_env({})
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entries = StageModelsProvider().get(force=True)
         for e in entries:
             assert e.override is None
@@ -77,11 +83,18 @@ class TestStageModelsProvider:
 
     def test_global_only_marks_all_as_fallback(self):
         from _panel_data import StageModelsProvider
-        with patch("_panel_data._capture_json",
-                   return_value=_deployment_json_with_env({
-                       "DEILE_PREFERRED_MODEL": "deepseek:deepseek-v4-pro",
-                   })), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch(
+                "_panel_data._capture_json",
+                return_value=_deployment_json_with_env(
+                    {
+                        "DEILE_PREFERRED_MODEL": "deepseek:deepseek-v4-pro",
+                    }
+                ),
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entries = StageModelsProvider().get(force=True)
         for e in entries:
             assert e.override is None
@@ -90,15 +103,20 @@ class TestStageModelsProvider:
 
     def test_mixed_overrides_and_fallback(self):
         from _panel_data import StageModelsProvider
-        with patch("_panel_data._capture_json",
-                   return_value=_deployment_json_with_env({
-                       "DEILE_PREFERRED_MODEL": "deepseek:deepseek-v4-pro",
-                       "DEILE_PIPELINE_MODEL_IMPLEMENT":
-                           "anthropic:claude-opus-4-8",
-                   })), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
-            by_stage = {e.stage: e for e in
-                        StageModelsProvider().get(force=True)}
+
+        with (
+            patch(
+                "_panel_data._capture_json",
+                return_value=_deployment_json_with_env(
+                    {
+                        "DEILE_PREFERRED_MODEL": "deepseek:deepseek-v4-pro",
+                        "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-8",
+                    }
+                ),
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
+            by_stage = {e.stage: e for e in StageModelsProvider().get(force=True)}
         # Override wins on implement.
         assert by_stage["implement"].override == "anthropic:claude-opus-4-8"
         assert by_stage["implement"].effective == "anthropic:claude-opus-4-8"
@@ -116,6 +134,7 @@ class TestSetStageModel:
 
     def test_rejects_unknown_stage(self):
         from _panel_data import set_stage_model
+
         ok, msg = set_stage_model("garbage", "deepseek:deepseek-v4-pro")
         assert ok is False
         assert "garbage" in msg
@@ -123,32 +142,35 @@ class TestSetStageModel:
 
     def test_rejects_malformed_slug(self):
         from _panel_data import set_stage_model
+
         ok, msg = set_stage_model("implement", "NOT A SLUG")
         assert ok is False
         assert "slug" in msg.lower()
 
     def test_rejects_non_string_slug(self):
         from _panel_data import set_stage_model
+
         ok, msg = set_stage_model("implement", 42)  # type: ignore[arg-type]
         assert ok is False
         assert "slug" in msg.lower()
 
     def test_kubectl_missing_returns_clear_error(self):
         from _panel_data import set_stage_model
+
         with patch("_panel_data.kubectl_bin", return_value=None):
-            ok, msg = set_stage_model("implement",
-                                      "anthropic:claude-opus-4-8")
+            ok, msg = set_stage_model("implement", "anthropic:claude-opus-4-8")
         assert ok is False
         assert "kubectl" in msg.lower()
 
     def test_success_issues_correct_kubectl_argv(self):
         from _panel_data import set_stage_model
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   return_value=fake_proc) as mock_run:
-            ok, msg = set_stage_model("implement",
-                                      "anthropic:claude-opus-4-8")
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc) as mock_run,
+        ):
+            ok, msg = set_stage_model("implement", "anthropic:claude-opus-4-8")
         assert ok is True
         argv = mock_run.call_args[0][0]
         assert argv[0] == "/fake/kubectl"
@@ -157,17 +179,19 @@ class TestSetStageModel:
         # via resolve_stage_model). Gravar no worker era silent cost amplifier.
         assert "deploy/deile-pipeline" in argv
         # The env-var name must be the canonical one (uppercase, no typo).
-        assert "DEILE_PIPELINE_MODEL_IMPLEMENT=anthropic:claude-opus-4-8" \
-            in argv
+        assert "DEILE_PIPELINE_MODEL_IMPLEMENT=anthropic:claude-opus-4-8" in argv
 
     def test_nonzero_returncode_surfaces_stderr(self):
         from _panel_data import set_stage_model
-        fake_proc = MagicMock(returncode=1, stdout="",
-                              stderr="forbidden: deployments.apps")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run", return_value=fake_proc):
-            ok, msg = set_stage_model("implement",
-                                      "anthropic:claude-opus-4-8")
+
+        fake_proc = MagicMock(
+            returncode=1, stdout="", stderr="forbidden: deployments.apps"
+        )
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc),
+        ):
+            ok, msg = set_stage_model("implement", "anthropic:claude-opus-4-8")
         assert ok is False
         assert "forbidden" in msg
 
@@ -175,6 +199,7 @@ class TestSetStageModel:
 class TestClearStageModel:
     def test_rejects_unknown_stage(self):
         from _panel_data import clear_stage_model
+
         ok, msg = clear_stage_model("garbage")
         assert ok is False
 
@@ -182,10 +207,12 @@ class TestClearStageModel:
         """``kubectl set env ... VAR-`` (trailing dash) is kubectl's
         syntax for unsetting an env. Assert the argv looks right."""
         from _panel_data import clear_stage_model
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   return_value=fake_proc) as mock_run:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc) as mock_run,
+        ):
             ok, msg = clear_stage_model("implement")
         assert ok is True
         argv = mock_run.call_args[0][0]
@@ -210,18 +237,19 @@ class TestStageModelsViewDynamicLayout:
         from rich.console import Console
 
         view = StageModelsView(data=PanelData.default())
-        app = PanelApp(views={"stage-models": view}, root="stage-models",
-                       data=view.data)
+        app = PanelApp(
+            views={"stage-models": view}, root="stage-models", data=view.data
+        )
         # Force the console to the test width — render reads
         # ``app.console.size.width`` for breakpoint selection.
         app.console = Console(width=width, file=StringIO(), force_terminal=True)
         # Stub the provider so we don't need a cluster.
-        with patch.object(view.data.stage_models, "get",
-                          return_value=[]):
+        with patch.object(view.data.stage_models, "get", return_value=[]):
             layout = view.render(app)
 
-        capture_console = Console(width=width, file=StringIO(),
-                                  force_terminal=True, record=True)
+        capture_console = Console(
+            width=width, file=StringIO(), force_terminal=True, record=True
+        )
         capture_console.print(layout)
         text = capture_console.export_text()
         # Title must appear at every breakpoint.
@@ -235,19 +263,16 @@ class TestStageModelsViewDynamicLayout:
         from rich.console import Console
 
         view = StageModelsView(data=None)  # demo mode keeps it self-contained
-        app = PanelApp(views={"stage-models": view}, root="stage-models",
-                       data=None)
+        app = PanelApp(views={"stage-models": view}, root="stage-models", data=None)
         app.console = Console(width=80, file=StringIO(), force_terminal=True)
         # Override _entries to return predictable rows (demo path also works,
         # but this makes the assertion deterministic).
         view._entries = lambda: [  # type: ignore[method-assign]
-            StageModelEntry(stage=s, override=None, effective=None,
-                            is_fallback=False)
+            StageModelEntry(stage=s, override=None, effective=None, is_fallback=False)
             for s in PIPELINE_STAGES
         ]
         layout = view.render(app)
-        capture = Console(width=80, file=StringIO(),
-                          force_terminal=True, record=True)
+        capture = Console(width=80, file=StringIO(), force_terminal=True, record=True)
         capture.print(layout)
         text = capture.export_text()
         # Column header "Override" must NOT appear in compact mode (the wide
@@ -262,12 +287,10 @@ class TestStageModelsViewDynamicLayout:
         from rich.console import Console
 
         view = StageModelsView(data=None)
-        app = PanelApp(views={"stage-models": view}, root="stage-models",
-                       data=None)
+        app = PanelApp(views={"stage-models": view}, root="stage-models", data=None)
         app.console = Console(width=120, file=StringIO(), force_terminal=True)
         layout = view.render(app)
-        capture = Console(width=120, file=StringIO(),
-                          force_terminal=True, record=True)
+        capture = Console(width=120, file=StringIO(), force_terminal=True, record=True)
         capture.print(layout)
         text = capture.export_text()
         for stage in PIPELINE_STAGES:
@@ -280,9 +303,9 @@ class TestStageModelsViewKeyHandling:
 
     def _new_view(self):
         from _panel import PanelApp, StageModelsView
+
         v = StageModelsView(data=None)  # demo mode — no kubectl needed
-        app = PanelApp(views={"stage-models": v}, root="stage-models",
-                       data=None)
+        app = PanelApp(views={"stage-models": v}, root="stage-models", data=None)
         return v, app
 
     def test_enter_opens_picker_for_current_stage(self):
@@ -330,10 +353,12 @@ class TestStageModelsViewKeyHandling:
         """Regression: pressing ESC while picker is open must close the
         modal, not pop the StageModelsView off the app stack."""
         from _panel import DashboardView, PanelApp, StageModelsView
+
         dash = DashboardView(data=None)
         view = StageModelsView(data=None)
-        app = PanelApp(views={"dashboard": dash, "stage-models": view},
-                       root="dashboard", data=None)
+        app = PanelApp(
+            views={"dashboard": dash, "stage-models": view}, root="dashboard", data=None
+        )
         app.push("stage-models")
         assert app.current_view is view
         view.mode = ("set", "implement")

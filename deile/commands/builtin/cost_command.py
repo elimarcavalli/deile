@@ -11,8 +11,12 @@ from typing import Any, List, Tuple
 from deile.__version__ import __version__
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.commands.builtin import _cost_views
-from deile.commands.builtin._shared import (export_timestamp, get_session_id,
-                                            split_args, success_panel)
+from deile.commands.builtin._shared import (
+    export_timestamp,
+    get_session_id,
+    split_args,
+    success_panel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +52,9 @@ class CostCommand(DirectCommand):
 
     def __init__(self):
         super().__init__()
-        self.config.description = "Rastreamento de custos, orçamentos e análise financeira"
+        self.config.description = (
+            "Rastreamento de custos, orçamentos e análise financeira"
+        )
         self.help_text = """
 Comando /cost — Gestão Financeira e Análise
 
@@ -90,8 +96,8 @@ EXEMPLOS:
         """Cost tracker resolvido sob demanda — evita import eager de
         ``deile.infrastructure`` na camada de comandos (Clean Arch §2)."""
         if self._cost_tracker is None:
-            from deile.infrastructure.monitoring.cost_tracker import \
-                get_cost_tracker
+            from deile.infrastructure.monitoring.cost_tracker import get_cost_tracker
+
             self._cost_tracker = get_cost_tracker()
         return self._cost_tracker
 
@@ -123,7 +129,9 @@ EXEMPLOS:
                             "Uso: /cost budget set <categoria> <período> <valor>"
                         )
                     return self._set_budget(args_list[2], args_list[3], args_list[4])
-                return CommandResult.error_result(f"Subcomando de budget desconhecido: {sub}")
+                return CommandResult.error_result(
+                    f"Subcomando de budget desconhecido: {sub}"
+                )
             if action == "forecast":
                 days = int(args_list[1]) if len(args_list) > 1 else 7
                 return self._show_forecast(days)
@@ -182,7 +190,9 @@ EXEMPLOS:
 
         except Exception as exc:
             logger.error("Falha ao exibir resumo de custos: %s", exc)
-            return CommandResult.error_result(f"Falha ao exibir resumo: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao exibir resumo: {exc}", error=exc
+            )
 
     def _show_session_costs(self, session_id=None) -> "CommandResult":
         try:
@@ -190,11 +200,15 @@ EXEMPLOS:
             session_cost_f = float(session_cost) if session_cost else 0.0
 
             content = _cost_views.build_session_panel(session_cost_f)
-            return CommandResult.success_result(content, "rich", session_cost=session_cost_f)
+            return CommandResult.success_result(
+                content, "rich", session_cost=session_cost_f
+            )
 
         except Exception as exc:
             logger.error("Falha ao exibir custos da sessão: %s", exc)
-            return CommandResult.error_result(f"Falha ao exibir sessão: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao exibir sessão: {exc}", error=exc
+            )
 
     def _show_categories(self) -> "CommandResult":
         try:
@@ -216,7 +230,9 @@ EXEMPLOS:
 
         except Exception as exc:
             logger.error("Falha ao exibir categorias: %s", exc)
-            return CommandResult.error_result(f"Falha ao exibir categorias: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao exibir categorias: {exc}", error=exc
+            )
 
     def _show_budget_list(self) -> "CommandResult":
         try:
@@ -236,13 +252,19 @@ EXEMPLOS:
 
         except Exception as exc:
             logger.error("Falha ao listar orçamentos: %s", exc)
-            return CommandResult.error_result(f"Falha ao listar orçamentos: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao listar orçamentos: {exc}", error=exc
+            )
 
-    def _set_budget(self, category: str, period: str, amount_str: str) -> "CommandResult":
+    def _set_budget(
+        self, category: str, period: str, amount_str: str
+    ) -> "CommandResult":
         try:
             amount = float(amount_str)
             if amount < 0:
-                return CommandResult.error_result("O valor do limite deve ser positivo.")
+                return CommandResult.error_result(
+                    "O valor do limite deve ser positivo."
+                )
 
             ok = self.cost_tracker.set_budget_limit(category, period, amount)
             if ok:
@@ -257,10 +279,14 @@ EXEMPLOS:
             return CommandResult.error_result("Falha ao salvar limite de orçamento.")
 
         except ValueError:
-            return CommandResult.error_result(f"Valor inválido: '{amount_str}'. Use número decimal.")
+            return CommandResult.error_result(
+                f"Valor inválido: '{amount_str}'. Use número decimal."
+            )
         except Exception as exc:
             logger.error("Falha ao definir orçamento: %s", exc)
-            return CommandResult.error_result(f"Falha ao definir orçamento: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao definir orçamento: {exc}", error=exc
+            )
 
     def _show_forecast(self, forecast_days: int = 7) -> "CommandResult":
         try:
@@ -299,7 +325,9 @@ EXEMPLOS:
 
         except Exception as exc:
             logger.error("Falha ao calcular previsão: %s", exc)
-            return CommandResult.error_result(f"Falha ao calcular previsão: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao calcular previsão: {exc}", error=exc
+            )
 
     async def _export_costs(self, fmt: str = "json", days: int = 30) -> "CommandResult":
         try:
@@ -373,7 +401,9 @@ EXEMPLOS:
 
         except Exception as exc:
             logger.error("Falha ao listar top despesas: %s", exc)
-            return CommandResult.error_result(f"Falha ao listar top despesas: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao listar top despesas: {exc}", error=exc
+            )
 
     def _show_alerts(self) -> "CommandResult":
         try:
@@ -390,9 +420,13 @@ EXEMPLOS:
 
         except Exception as exc:
             logger.error("Falha ao listar alertas: %s", exc)
-            return CommandResult.error_result(f"Falha ao listar alertas: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao listar alertas: {exc}", error=exc
+            )
 
-    def _show_cost_estimate(self, provider: str, model: str, tokens: int) -> "CommandResult":
+    def _show_cost_estimate(
+        self, provider: str, model: str, tokens: int
+    ) -> "CommandResult":
         try:
             estimate = self.cost_tracker.get_pricing_estimate(provider, model, tokens)
 
@@ -406,4 +440,6 @@ EXEMPLOS:
 
         except Exception as exc:
             logger.error("Falha ao calcular estimativa: %s", exc)
-            return CommandResult.error_result(f"Falha ao calcular estimativa: {exc}", error=exc)
+            return CommandResult.error_result(
+                f"Falha ao calcular estimativa: {exc}", error=exc
+            )

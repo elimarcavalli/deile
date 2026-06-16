@@ -19,7 +19,9 @@ class TestConcurrency:
     ):
         """10 dispatches paralelos → LogRecords não cruzam (cada trace_id único)."""
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed, emit_dispatch_received)
+            emit_dispatch_completed,
+            emit_dispatch_received,
+        )
 
         errors = []
         barrier = threading.Barrier(10)
@@ -55,7 +57,9 @@ class TestConcurrency:
     ):
         """LogRecords de dispatch diferentes não misturam trace_ids."""
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed, emit_dispatch_received)
+            emit_dispatch_completed,
+            emit_dispatch_received,
+        )
 
         # Run 3 sequential dispatches (easier to verify isolation)
         for i in range(3):
@@ -75,9 +79,9 @@ class TestConcurrency:
         for lr in logs:
             tid = lr.log_record.trace_id
             if tid != 0:
-                assert tid in span_trace_ids, (
-                    f"log record trace_id {tid:#x} not found in span trace_ids"
-                )
+                assert (
+                    tid in span_trace_ids
+                ), f"log record trace_id {tid:#x} not found in span trace_ids"
 
     def test_concurrent_emit_log_record_thread_safe(self, in_memory_log_exporter):
         """Múltiplas threads emitindo logs simultaneamente não causa cross-talk."""

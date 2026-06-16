@@ -53,12 +53,12 @@ def test_severity_matrix(event_name, attrs, expected_text, expected_number):
     from deile.observability.dispatch_log_export import _severity_for
 
     text, number = _severity_for(event_name, attrs)
-    assert text == expected_text, (
-        f"event={event_name!r} attrs={attrs}: expected {expected_text}, got {text}"
-    )
-    assert number == expected_number, (
-        f"event={event_name!r} attrs={attrs}: expected {expected_number}, got {number}"
-    )
+    assert (
+        text == expected_text
+    ), f"event={event_name!r} attrs={attrs}: expected {expected_text}, got {text}"
+    assert (
+        number == expected_number
+    ), f"event={event_name!r} attrs={attrs}: expected {expected_number}, got {number}"
 
 
 class TestSeverityInEmittedRecords:

@@ -17,9 +17,11 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import pytest
 
 from deile.core.models.base import ModelMessage
-from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                             StreamEventType,
-                                             UnifiedStreamEvent)
+from deile.core.models.stream_events import (
+    ModelUsageSnapshot,
+    StreamEventType,
+    UnifiedStreamEvent,
+)
 from deile.core.tool_loop_executor import ToolLoopExecutor
 from deile.tools.base import ToolResult, ToolStatus
 
@@ -107,7 +109,9 @@ async def test_no_tool_calls_returns_after_first_iteration():
     )
     executor = ToolLoopExecutor(tool_registry=FakeRegistry())
     events = []
-    async for evt in executor.run(provider, [ModelMessage(role="user", content="hi")], tools=[]):
+    async for evt in executor.run(
+        provider, [ModelMessage(role="user", content="hi")], tools=[]
+    ):
         events.append(evt)
     # The executor opens each iteration with a STAGE event so the UI can
     # show "Awaiting first token from <provider>" instead of going blank.
@@ -130,7 +134,9 @@ async def test_tool_call_emits_result_and_round_trips():
     provider = FakeProvider(
         iterations=[
             [
-                UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Let me list. "),
+                UnifiedStreamEvent(
+                    type=StreamEventType.TEXT_DELTA, text="Let me list. "
+                ),
                 UnifiedStreamEvent(
                     type=StreamEventType.TOOL_USE_START,
                     tool_call_id="t1",
@@ -153,7 +159,9 @@ async def test_tool_call_emits_result_and_round_trips():
     )
     executor = ToolLoopExecutor(tool_registry=registry)
     events = []
-    async for evt in executor.run(provider, [ModelMessage(role="user", content="ls")], tools=[]):
+    async for evt in executor.run(
+        provider, [ModelMessage(role="user", content="ls")], tools=[]
+    ):
         events.append(evt)
 
     types = [e.type for e in events]
@@ -359,7 +367,9 @@ async def test_event_publisher_called_for_each_tool():
         ]
     )
     executor = ToolLoopExecutor(tool_registry=FakeRegistry(), event_publisher=publisher)
-    async for _ in executor.run(provider, [ModelMessage(role="user", content="x")], tools=[]):
+    async for _ in executor.run(
+        provider, [ModelMessage(role="user", content="x")], tools=[]
+    ):
         pass
     kinds = [c[0] for c in calls]
     assert "invoked" in kinds

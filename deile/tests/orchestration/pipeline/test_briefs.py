@@ -8,14 +8,24 @@ module against future drift after the SRP extraction out of implementer.py.
 from __future__ import annotations
 
 from deile.orchestration.pipeline.briefs import (
-    _classify_mention_action, _is_spike, _render_claude_mention_prompt,
-    _render_trigger_details, _render_worker_implement_brief,
-    _render_worker_implement_resume_brief, _render_worker_mention_brief,
-    _render_worker_pr_address_brief, _render_worker_pr_unified_brief,
-    _summarize_trigger_types)
+    _classify_mention_action,
+    _is_spike,
+    _render_claude_mention_prompt,
+    _render_trigger_details,
+    _render_worker_implement_brief,
+    _render_worker_implement_resume_brief,
+    _render_worker_mention_brief,
+    _render_worker_pr_address_brief,
+    _render_worker_pr_unified_brief,
+    _summarize_trigger_types,
+)
 from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
-from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
-                                                        MentionTrigger, PrRef)
+from deile.orchestration.pipeline.github_client import (
+    CommentRef,
+    IssueRef,
+    MentionTrigger,
+    PrRef,
+)
 
 
 def _issue(number: int = 7) -> IssueRef:
@@ -91,7 +101,9 @@ class TestImplementBriefDefinitionOfDone:
 
     def test_normal_issue_create_pr_uses_closes(self):
         # Asserta no comando de criar PR (o DoD menciona "Refs" como fallback no texto).
-        out = _render_worker_implement_brief("o/r", "main", "b", 1, "Add widget", "do it")
+        out = _render_worker_implement_brief(
+            "o/r", "main", "b", 1, "Add widget", "do it"
+        )
         assert '. Closes #1."' in out
         assert '. Refs #1."' not in out
 
@@ -104,7 +116,11 @@ class TestImplementBriefDefinitionOfDone:
 
     def test_spike_exit_condition_body_create_pr_uses_refs(self):
         out = _render_worker_implement_brief(
-            "o/r", "main", "b", 5, "Investigar Y",
+            "o/r",
+            "main",
+            "b",
+            5,
+            "Investigar Y",
             "blah\n## Condição de Saída\nACs verdes com números",
         )
         assert '. Refs #5."' in out
@@ -132,7 +148,9 @@ class TestImplementBriefDefinitionOfDone:
         assert _is_spike("foo", "## Condição de Saída\n...")
         assert _is_spike("foo", "Critérios de Aprovação do Spike: ...")
         assert not _is_spike("[FEATURE] foo", "implementa um botão")
-        assert not _is_spike("Add spike-resistant retry", "feature normal")  # 'spike' solto no título não conta
+        assert not _is_spike(
+            "Add spike-resistant retry", "feature normal"
+        )  # 'spike' solto no título não conta
         assert not _is_spike(None, None)  # None-safe
 
     def test_gitlab_forge_dod_and_spike_refs(self):
@@ -141,23 +159,39 @@ class TestImplementBriefDefinitionOfDone:
         from deile.orchestration.forge.base import ForgeConfig, ForgeKind
 
         gl = ForgeConfig(
-            kind=ForgeKind.GITLAB, host="gitlab.com",
-            project_path="group/project", cli_path="/usr/bin/glab",
+            kind=ForgeKind.GITLAB,
+            host="gitlab.com",
+            project_path="group/project",
+            cli_path="/usr/bin/glab",
         )
         # Issue normal (GitLab) → `Closes` + comando glab.
         normal = _render_worker_implement_brief(
-            "group/project", "main", "auto/issue-3", 3, "Add botão", "faça", forge=gl,
+            "group/project",
+            "main",
+            "auto/issue-3",
+            3,
+            "Add botão",
+            "faça",
+            forge=gl,
         )
         assert "DEFINIÇÃO DE PRONTO" in normal
         assert "glab mr create" in normal
         assert '. Closes #3."' in normal
         # Spike (GitLab) → `Refs`, nunca `Closes`, e o draft cmd glab no dod_block.
         spike = _render_worker_implement_brief(
-            "group/project", "main", "auto/issue-8", 8, "[SPIKE] Provar Z", "spike", forge=gl,
+            "group/project",
+            "main",
+            "auto/issue-8",
+            8,
+            "[SPIKE] Provar Z",
+            "spike",
+            forge=gl,
         )
         assert '. Refs #8."' in spike
         assert '. Closes #8."' not in spike
-        assert "glab mr update auto/issue-8" in spike  # mark_draft_cmd embutido no dod_block
+        assert (
+            "glab mr update auto/issue-8" in spike
+        )  # mark_draft_cmd embutido no dod_block
 
 
 class TestUnifiedPrBrief:
@@ -170,8 +204,12 @@ class TestUnifiedPrBrief:
 
     def test_renders_all_placeholders(self):
         import re
+
         out = _render_worker_pr_unified_brief(
-            "o/r", "main", 11, gh_login="deile-one",
+            "o/r",
+            "main",
+            11,
+            gh_login="deile-one",
         )
         assert "#11" in out and "o/r" in out
         assert "deile-one" in out
@@ -182,7 +220,10 @@ class TestUnifiedPrBrief:
 
     def test_brief_always_executes_request(self):
         out = _render_worker_pr_unified_brief(
-            "o/r", "main", 11, gh_login="deile-one",
+            "o/r",
+            "main",
+            11,
+            gh_login="deile-one",
         )
         # Decisão #46: a regra antiga "autor é HUMANO → NUNCA dou push" foi
         # substituída pela regra "execute o pedido SEMPRE", com duas trilhas:
@@ -197,7 +238,10 @@ class TestUnifiedPrBrief:
 
     def test_brief_states_self_author_merge_path(self):
         out = _render_worker_pr_unified_brief(
-            "o/r", "main", 11, gh_login="deile-one",
+            "o/r",
+            "main",
+            11,
+            gh_login="deile-one",
         )
         # Ramo "sou assignee + review APPROVED + threads ok + CI verde → MERGEAR".
         assert "MERGEAR" in out
@@ -205,7 +249,10 @@ class TestUnifiedPrBrief:
 
     def test_brief_reads_progress_md_at_step_0(self):
         out = _render_worker_pr_unified_brief(
-            "o/r", "main", 11, gh_login="deile-one",
+            "o/r",
+            "main",
+            11,
+            gh_login="deile-one",
         )
         assert ".deile-progress.md" in out
         assert "PASSO 0" in out
@@ -227,7 +274,10 @@ class TestFullSuiteGate:
 
     def test_unified_pr_brief_requires_full_suite(self):
         out = _render_worker_pr_unified_brief(
-            "o/r", "main", 11, gh_login="deile-one",
+            "o/r",
+            "main",
+            11,
+            gh_login="deile-one",
         )
         assert self.FULL_SUITE in out
         assert "SUÍTE COMPLETA" in out
@@ -250,9 +300,7 @@ class TestFullSuiteGate:
 
     def test_implement_resume_brief_uses_impact_analysis_not_full_suite(self):
         """Mesmo que implement, mas para a retomada."""
-        out = _render_worker_implement_resume_brief(
-            "o/r", "main", "b", 3, "T", "body"
-        )
+        out = _render_worker_implement_resume_brief("o/r", "main", "b", 3, "T", "body")
         assert self.FULL_SUITE in out
         assert "NUNCA rode" in out
         assert "análise de impacto" in out
@@ -261,9 +309,7 @@ class TestFullSuiteGate:
 
 class TestResumeBriefs:
     def test_implement_resume_injects_progress_block(self):
-        out = _render_worker_implement_resume_brief(
-            "o/r", "main", "b", 3, "T", "body"
-        )
+        out = _render_worker_implement_resume_brief("o/r", "main", "b", 3, "T", "body")
         assert "#3" in out
         assert ".deile-progress.md" in out
         assert "{" not in out and "}" not in out
@@ -303,9 +349,7 @@ class TestClassifyMentionAction:
 
     def test_reviewer_takes_priority_over_assignee(self):
         t = MentionTrigger(trigger_type="reviewer", pr=_pr())
-        assert (
-            _classify_mention_action(t, ["assignee", "reviewer"]) == "review_request"
-        )
+        assert _classify_mention_action(t, ["assignee", "reviewer"]) == "review_request"
 
     def test_no_match_returns_default(self):
         t = MentionTrigger(trigger_type="comment", comment=_comment(kind="x"))
@@ -357,20 +401,23 @@ class TestBriefInvariants:
         # checkout obrigatório no PASSO 0 foram removidos silenciosamente,
         # causando flood de re-review. Estas substrings travam ambas as regras.
         "RESOLVER AGORA, nunca re-revisar",  # anti-loop: PR própria com REQUEST_CHANGES
-        "PASSO 0 — Checkout",               # checkout obrigatório antes de qualquer ação
+        "PASSO 0 — Checkout",  # checkout obrigatório antes de qualquer ação
         # Endurecimento do pr_review (homologação multi-CLI): mesmo no merge-direto
         # de PR própria, o reviewer DEVE (a) validar afirmações da PR contra o código
         # e (b) postar uma justificativa substantiva — não só o marcador. Sem
         # reintroduzir loop (justificativa única, no merge/review).
-        "VALIDAÇÃO DE AFIRMAÇÕES",          # confronta claim do doc/README vs código real
-        "tem que ser SUBSTANTIVO",          # comentário de justificativa obrigatório
+        "VALIDAÇÃO DE AFIRMAÇÕES",  # confronta claim do doc/README vs código real
+        "tem que ser SUBSTANTIVO",  # comentário de justificativa obrigatório
     ]
 
     def _load_briefs_source(self) -> str:
         import pathlib
+
         briefs_path = (
             pathlib.Path(__file__).parent.parent.parent.parent
-            / "orchestration" / "pipeline" / "briefs.py"
+            / "orchestration"
+            / "pipeline"
+            / "briefs.py"
         )
         return briefs_path.read_text(encoding="utf-8")
 
@@ -446,12 +493,11 @@ class TestAddressReviewBrief:
     FULL_SUITE = "pytest deile/tests/"
 
     def _render(self):
-        return _render_worker_pr_address_brief(
-            "o/r", "main", "auto/issue-42", 42
-        )
+        return _render_worker_pr_address_brief("o/r", "main", "auto/issue-42", 42)
 
     def test_renders_all_placeholders(self):
         import re
+
         out = self._render()
         assert "#42" in out and "o/r" in out
         # Nenhum placeholder snake_case deve sobrar não-renderizado.

@@ -16,9 +16,11 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 
-from deile.core.models.routing_strategies import (RoutingContext,
-                                                  RoutingStrategy,
-                                                  RoutingStrategySelector)
+from deile.core.models.routing_strategies import (
+    RoutingContext,
+    RoutingStrategy,
+    RoutingStrategySelector,
+)
 
 
 def _provider(name: str) -> MagicMock:
@@ -37,9 +39,7 @@ async def test_round_robin_fair_under_concurrent_calls() -> None:
 
     # 40 picks via gather = 10 each provider in a fair rotation.
     async def one_pick():
-        return selector.select(
-            RoutingStrategy.ROUND_ROBIN, ctx, providers, metrics
-        )
+        return selector.select(RoutingStrategy.ROUND_ROBIN, ctx, providers, metrics)
 
     results = await asyncio.gather(*[one_pick() for _ in range(40)])
 

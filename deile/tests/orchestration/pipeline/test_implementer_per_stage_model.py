@@ -22,8 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from deile.config.settings import reset_settings
-from deile.orchestration.pipeline.github_client import (CommentRef,
-                                                        MentionTrigger, PrRef)
+from deile.orchestration.pipeline.github_client import CommentRef, MentionTrigger, PrRef
 from deile.orchestration.pipeline.implementer import WorkerImplementer
 from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES
 
@@ -31,8 +30,7 @@ from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES
 @pytest.fixture(autouse=True)
 def _isolate_settings(monkeypatch):
     for stage in PIPELINE_STAGES:
-        monkeypatch.delenv(f"DEILE_PIPELINE_MODEL_{stage.upper()}",
-                           raising=False)
+        monkeypatch.delenv(f"DEILE_PIPELINE_MODEL_{stage.upper()}", raising=False)
     monkeypatch.delenv("DEILE_PREFERRED_MODEL", raising=False)
     reset_settings()
     yield
@@ -55,13 +53,16 @@ class _FakeClient:
 def _make_monitor():
     monitor = SimpleNamespace()
     monitor.config = SimpleNamespace(
-        repo="owner/name", main_branch="main", base_repo_path=Path("/tmp/x"),
+        repo="owner/name",
+        main_branch="main",
+        base_repo_path=Path("/tmp/x"),
         mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
     # Forge layer (PR #297) — implementer lê ``monitor.forge.config`` para
     # passar ao renderer de briefs. Stub mínimo com kind=GitHub default.
     from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+
     monitor.forge = SimpleNamespace(
         config=ForgeConfig(
             kind=ForgeKind.GITHUB,
@@ -79,7 +80,9 @@ def _issue(number=242, labels=()):
 
 def _pr(number=7):
     return SimpleNamespace(
-        number=number, title="t", head_ref=f"auto/issue-{number}",
+        number=number,
+        title="t",
+        head_ref=f"auto/issue-{number}",
         url=f"https://github.com/owner/name/pull/{number}",
     )
 
@@ -100,38 +103,43 @@ def _mention_trigger_issue_comment(number=1):
 def _mention_trigger_pr_assignee(number=7):
     """PR assignee mention → pr_review stage (work_merge mode)."""
     pr = PrRef(
-        number=number, title="t",
+        number=number,
+        title="t",
         url=f"https://github.com/owner/name/pull/{number}",
-        head_ref=f"auto/issue-{number}", labels=(),
+        head_ref=f"auto/issue-{number}",
+        labels=(),
     )
     return MentionTrigger(trigger_type="assignee", pr=pr)
 
 
 class TestStageModelPropagation:
     async def test_implement_sends_implement_stage_model(self, monkeypatch):
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT",
-                           "anthropic:claude-opus-4-8")
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_IMPLEMENT", "anthropic:claude-opus-4-8"
+        )
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "done"})
         await WorkerImplementer(client=client).implement(_make_monitor(), _issue())
         assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-8"
 
     async def test_review_sends_pr_review_stage_model(self, monkeypatch):
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_PR_REVIEW",
-                           "anthropic:claude-sonnet-4-6")
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_PR_REVIEW", "anthropic:claude-sonnet-4-6"
+        )
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "merged"})
         await WorkerImplementer(client=client).review(_make_monitor(), _pr())
-        assert client.last_payload["preferred_model"] == \
-            "anthropic:claude-sonnet-4-6"
+        assert client.last_payload["preferred_model"] == "anthropic:claude-sonnet-4-6"
 
-    async def test_critique_uses_classify_refine_decompose_use_refine(self, monkeypatch):
+    async def test_critique_uses_classify_refine_decompose_use_refine(
+        self, monkeypatch
+    ):
         """critique roteia pelo stage ``classify`` (knob próprio); refine e
         decompose continuam no ``refine``. Modelos independentes por stage."""
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_CLASSIFY",
-                           "deepseek:deepseek-v4-flash")
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_REFINE",
-                           "deepseek:deepseek-v4-pro")
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_CLASSIFY", "deepseek:deepseek-v4-flash"
+        )
+        monkeypatch.setenv("DEILE_PIPELINE_MODEL_REFINE", "deepseek:deepseek-v4-pro")
         reset_settings()
         issue = _issue(labels=("intent",))
         client = _FakeClient({"ok": True, "summary": "VEREDITO: CLARO"})
@@ -144,14 +152,18 @@ class TestStageModelPropagation:
         assert client.last_payload["preferred_model"] == "deepseek:deepseek-v4-pro"
 
     async def test_mention_comment_on_issue_uses_follow_ups_stage(self, monkeypatch):
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_FOLLOW_UPS",
-                           "deepseek:deepseek-v3-small")
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_FOLLOW_UPS", "deepseek:deepseek-v3-small"
+        )
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "answered"})
         trigger = _mention_trigger_issue_comment()
         await WorkerImplementer(client=client).mention(
-            _make_monitor(), trigger,
-            trigger_types=["comment"], all_triggers=[trigger], mode="comment",
+            _make_monitor(),
+            trigger,
+            trigger_types=["comment"],
+            all_triggers=[trigger],
+            mode="comment",
         )
         assert client.last_payload["preferred_model"] == "deepseek:deepseek-v3-small"
 
@@ -159,14 +171,18 @@ class TestStageModelPropagation:
         """Após o refactor "PR é o quadro", todo trigger sobre PR resolve para
         ``pr_unified`` (substitui ``work_merge``/``review_only``/``address``)
         e mapeia para o stage ``pr_review``."""
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_PR_REVIEW",
-                           "anthropic:claude-opus-4-8")
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_PR_REVIEW", "anthropic:claude-opus-4-8"
+        )
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "merged"})
         trigger = _mention_trigger_pr_assignee(number=7)
         await WorkerImplementer(client=client).mention(
-            _make_monitor(), trigger,
-            trigger_types=["assignee"], all_triggers=[trigger], mode="pr_unified",
+            _make_monitor(),
+            trigger,
+            trigger_types=["assignee"],
+            all_triggers=[trigger],
+            mode="pr_unified",
         )
         assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-8"
 
@@ -179,16 +195,20 @@ class TestStageModelPropagation:
         assert "preferred_model" not in client.last_payload
 
     async def test_payload_carries_resume_block_AND_preferred_model_together(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """The two additive wire fields (resume + preferred_model) coexist on
         the same payload — issue #305 must not break issue #254."""
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT",
-                           "anthropic:claude-opus-4-8")
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_IMPLEMENT", "anthropic:claude-opus-4-8"
+        )
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "done"})
         await WorkerImplementer(client=client).implement(
-            _make_monitor(), _issue(), resume=True,
+            _make_monitor(),
+            _issue(),
+            resume=True,
         )
         assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-8"
         assert "resume" in client.last_payload

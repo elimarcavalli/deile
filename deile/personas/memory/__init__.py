@@ -2,6 +2,4 @@
 
 from .integration import PersonaMemoryLayer
 
-__all__ = [
-    'PersonaMemoryLayer'
-]
+__all__ = ["PersonaMemoryLayer"]

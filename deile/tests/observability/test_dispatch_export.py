@@ -19,20 +19,25 @@ from typing import List
 
 import pytest
 
-from deile.observability.dispatch_export import (emit_dispatch_completed,
-                                                 emit_dispatch_failed,
-                                                 emit_dispatch_model_resolved,
-                                                 emit_dispatch_progress,
-                                                 emit_dispatch_received,
-                                                 emit_dispatch_tool_burst,
-                                                 emit_forge_pr_open,
-                                                 emit_forge_pr_review,
-                                                 emit_git_commit,
-                                                 emit_git_push,
-                                                 reset_dispatch_export)
-from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
-                                                 ATTR_SCHEMA_VERSION,
-                                                 SCHEMA_VERSION)
+from deile.observability.dispatch_export import (
+    emit_dispatch_completed,
+    emit_dispatch_failed,
+    emit_dispatch_model_resolved,
+    emit_dispatch_progress,
+    emit_dispatch_received,
+    emit_dispatch_tool_burst,
+    emit_forge_pr_open,
+    emit_forge_pr_review,
+    emit_git_commit,
+    emit_git_push,
+    reset_dispatch_export,
+)
+from deile.observability.dispatch_schema import (
+    ATTR_POD,
+    ATTR_ROLE,
+    ATTR_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -66,6 +71,7 @@ def test_no_spans_when_endpoint_empty(in_memory_exporter):
 def test_no_spans_without_endpoint():
     """Com endpoint vazio (estado padrão), emit_* não cria spans."""
     import os
+
     assert os.environ.get("DEILE_OTLP_ENDPOINT", "") == ""
     emit_dispatch_received("task-noop", session_id="s1")
     emit_dispatch_completed("task-noop")
@@ -79,7 +85,9 @@ def test_no_spans_without_endpoint():
 def test_full_lifecycle_produces_root_span_with_events(in_memory_exporter):
     """dispatch.received → model_resolved → progress → tool_burst → completed."""
     tid = "task-full-1"
-    emit_dispatch_received(tid, session_id="s1", model="anthropic:sonnet", branch="main")
+    emit_dispatch_received(
+        tid, session_id="s1", model="anthropic:sonnet", branch="main"
+    )
     emit_dispatch_model_resolved(tid, model="anthropic:sonnet-4-6")
     emit_dispatch_progress(tid, step="tool_execution", elapsed_s=12.0)
     emit_dispatch_tool_burst(tid, tools="read_file,bash", count=2)
@@ -232,7 +240,9 @@ def test_redact_in_event_attrs(in_memory_exporter):
     """Tokens em parâmetros de event attrs também são redactados."""
     tid = "task-redact-event"
     emit_dispatch_received(tid, session_id="s")
-    emit_dispatch_failed(tid, reason="Bearer ghp_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX expired")
+    emit_dispatch_failed(
+        tid, reason="Bearer ghp_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX expired"
+    )
 
     root = _root_span(in_memory_exporter)
     for evt in root.events:
@@ -320,7 +330,9 @@ def test_concurrent_dispatches_are_isolated(in_memory_exporter):
 
     assert not errors, f"concurrent errors: {errors}"
 
-    root_spans = [s for s in in_memory_exporter.get_finished_spans() if s.name == "deile.dispatch"]
+    root_spans = [
+        s for s in in_memory_exporter.get_finished_spans() if s.name == "deile.dispatch"
+    ]
     assert len(root_spans) == n, f"expected {n} root spans, got {len(root_spans)}"
 
     # Verify each span has a unique session_id
@@ -442,7 +454,12 @@ def test_drop_log_contains_reason(monkeypatch, caplog):
 def test_no_os_environ_in_dispatch_export():
     """grep -n 'os.environ' dispatch_export.py → ZERO matches."""
     import pathlib
-    src = pathlib.Path(__file__).parent.parent.parent / "observability" / "dispatch_export.py"
+
+    src = (
+        pathlib.Path(__file__).parent.parent.parent
+        / "observability"
+        / "dispatch_export.py"
+    )
     content = src.read_text()
     matches = [ln for ln in content.splitlines() if "os.environ" in ln]
     assert not matches, f"os.environ encontrado em dispatch_export.py: {matches}"

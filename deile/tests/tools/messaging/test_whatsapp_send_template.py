@@ -128,9 +128,7 @@ async def test_audit_redacts_phone_number(
     )
     await tool.execute(ctx)
     for evt in fake_audit.events:
-        assert phone not in str(evt), (
-            f"phone leaked into audit event: {evt}"
-        )
+        assert phone not in str(evt), f"phone leaked into audit event: {evt}"
 
 
 async def test_audit_keeps_template_name_and_category(
@@ -152,7 +150,8 @@ async def test_audit_keeps_template_name_and_category(
     )
     await tool.execute(ctx)
     success_events = [
-        e for e in fake_audit.events
+        e
+        for e in fake_audit.events
         if e.get("event_type") == AuditEventType.TOOL_EXECUTION
         and e.get("result") == "success"
     ]
@@ -182,7 +181,8 @@ async def test_param_counts_recorded_in_audit(
     )
     await tool.execute(ctx)
     success = [
-        e for e in fake_audit.events
+        e
+        for e in fake_audit.events
         if e.get("event_type") == AuditEventType.TOOL_EXECUTION
         and e.get("result") == "success"
     ]
@@ -217,14 +217,17 @@ async def test_upstream_error_maps_to_bot_upstream(
     from deile.integrations.bot.client import BotClientUpstreamError
 
     from .conftest import FakeBotClient
-    fake = FakeBotClient(raise_on={
-        "whatsapp_send_template": BotClientUpstreamError(
-            "Template name does not exist",
-            status_code=400,
-            code="UPSTREAM_ERROR",
-            details={"meta_code": 132001},
-        ),
-    })
+
+    fake = FakeBotClient(
+        raise_on={
+            "whatsapp_send_template": BotClientUpstreamError(
+                "Template name does not exist",
+                status_code=400,
+                code="UPSTREAM_ERROR",
+                details={"meta_code": 132001},
+            ),
+        }
+    )
     tool = WhatsAppSendTemplateTool()
     ctx = make_context(
         args={"to": "5511999", "template_name": "ghost", "language": "en_US"},
@@ -243,6 +246,7 @@ async def test_integration_disabled_short_circuits(
 ):
     """When facade is unavailable, no approval prompt and no send."""
     from .conftest import FakeBotClient
+
     fake = FakeBotClient()
     fake.disable()
     tool = WhatsAppSendTemplateTool()

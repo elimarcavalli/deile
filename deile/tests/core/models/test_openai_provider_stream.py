@@ -91,7 +91,9 @@ async def test_text_stream_emits_text_and_usage(provider):
     async def fake_create(**kwargs):
         return _replay(chunks)
 
-    with patch.object(provider._client.chat.completions, "create", side_effect=fake_create):
+    with patch.object(
+        provider._client.chat.completions, "create", side_effect=fake_create
+    ):
         out = []
         async for evt in provider.generate_stream(
             [ModelMessage(role="user", content="x")], tools=None
@@ -117,7 +119,9 @@ async def test_tool_call_stream_emits_lifecycle(provider):
                             SimpleNamespace(
                                 index=index,
                                 id=id_,
-                                function=SimpleNamespace(name=name, arguments=arguments),
+                                function=SimpleNamespace(
+                                    name=name, arguments=arguments
+                                ),
                             )
                         ],
                     ),
@@ -144,7 +148,9 @@ async def test_tool_call_stream_emits_lifecycle(provider):
     async def fake_create(**kwargs):
         return _replay(chunks)
 
-    with patch.object(provider._client.chat.completions, "create", side_effect=fake_create):
+    with patch.object(
+        provider._client.chat.completions, "create", side_effect=fake_create
+    ):
         out = []
         async for evt in provider.generate_stream(
             [ModelMessage(role="user", content="ls")], tools=None
@@ -160,9 +166,15 @@ async def test_tool_call_stream_emits_lifecycle(provider):
     assert end_evt.arguments == {"path": "."}
     # START must fire immediately before END (back-to-back at finish_reason time)
     # so the renderer always shows args the instant the tool block appears.
-    start_idx = next(i for i, e in enumerate(out) if e.type is StreamEventType.TOOL_USE_START)
-    end_idx = next(i for i, e in enumerate(out) if e.type is StreamEventType.TOOL_USE_END)
-    assert end_idx == start_idx + 1, "TOOL_USE_END must immediately follow TOOL_USE_START"
+    start_idx = next(
+        i for i, e in enumerate(out) if e.type is StreamEventType.TOOL_USE_START
+    )
+    end_idx = next(
+        i for i, e in enumerate(out) if e.type is StreamEventType.TOOL_USE_END
+    )
+    assert (
+        end_idx == start_idx + 1
+    ), "TOOL_USE_END must immediately follow TOOL_USE_START"
 
 
 def test_format_assistant_tool_use_message_structure(provider):
@@ -230,7 +242,9 @@ async def test_reasoning_content_emitted_in_usage_final_for_stop_path(provider):
     async def fake_create(**kwargs):
         return _replay(chunks)
 
-    with patch.object(provider._client.chat.completions, "create", side_effect=fake_create):
+    with patch.object(
+        provider._client.chat.completions, "create", side_effect=fake_create
+    ):
         out = []
         async for evt in provider.generate_stream(
             [ModelMessage(role="user", content="x")], tools=None
@@ -246,6 +260,7 @@ async def test_reasoning_content_emitted_in_tool_use_end(provider):
     """When finish_reason=='tool_calls', reasoning_content must be attached to
     every TOOL_USE_END event so ToolLoopExecutor can pass it to
     format_assistant_tool_use_message for the next iteration."""
+
     def _tc_delta(index, id_=None, name=None, arguments=None, reasoning=None):
         return SimpleNamespace(
             choices=[
@@ -257,7 +272,9 @@ async def test_reasoning_content_emitted_in_tool_use_end(provider):
                             SimpleNamespace(
                                 index=index,
                                 id=id_,
-                                function=SimpleNamespace(name=name, arguments=arguments),
+                                function=SimpleNamespace(
+                                    name=name, arguments=arguments
+                                ),
                             )
                         ],
                     ),
@@ -283,7 +300,9 @@ async def test_reasoning_content_emitted_in_tool_use_end(provider):
     async def fake_create(**kwargs):
         return _replay(chunks)
 
-    with patch.object(provider._client.chat.completions, "create", side_effect=fake_create):
+    with patch.object(
+        provider._client.chat.completions, "create", side_effect=fake_create
+    ):
         out = []
         async for evt in provider.generate_stream(
             [ModelMessage(role="user", content="x")], tools=None

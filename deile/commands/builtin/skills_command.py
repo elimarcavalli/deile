@@ -99,11 +99,16 @@ class SkillsCommand(DirectCommand):
     def _show_menu(self) -> CommandResult:
         body = Text()
         body.append("  /skills list\n", style="bold bright_cyan")
-        body.append("      List all active skill paths (global + project)\n\n", style="white")
+        body.append(
+            "      List all active skill paths (global + project)\n\n", style="white"
+        )
         body.append("  /skills add ", style="bold bright_cyan")
         body.append("<path>", style="bold yellow")
         body.append(" [--scope global|project]\n", style="dim cyan")
-        body.append("      Add a skill directory to settings (default scope: global)\n\n", style="white")
+        body.append(
+            "      Add a skill directory to settings (default scope: global)\n\n",
+            style="white",
+        )
         body.append("  /skills remove ", style="bold bright_cyan")
         body.append("<path>", style="bold yellow")
         body.append(" [--scope global|project]\n", style="dim cyan")
@@ -149,7 +154,12 @@ class SkillsCommand(DirectCommand):
             body.append("/skills add <path>", style="bold bright_cyan")
             body.append(" to add a directory.", style="dim")
             return CommandResult.success_result(
-                Panel(body, title="[bold cyan] Skills [/bold cyan]", border_style="cyan", padding=(1, 2)),
+                Panel(
+                    body,
+                    title="[bold cyan] Skills [/bold cyan]",
+                    border_style="cyan",
+                    padding=(1, 2),
+                ),
                 "rich",
             )
 
@@ -221,7 +231,12 @@ class SkillsCommand(DirectCommand):
             style = "yellow"
 
         return CommandResult.success_result(
-            Panel(body, title="[bold cyan] Skills — add [/bold cyan]", border_style=style, padding=(1, 2)),
+            Panel(
+                body,
+                title="[bold cyan] Skills — add [/bold cyan]",
+                border_style=style,
+                padding=(1, 2),
+            ),
             "rich",
         )
 
@@ -268,6 +283,11 @@ class SkillsCommand(DirectCommand):
             style = "yellow"
 
         return CommandResult.success_result(
-            Panel(body, title="[bold cyan] Skills — remove [/bold cyan]", border_style=style, padding=(1, 2)),
+            Panel(
+                body,
+                title="[bold cyan] Skills — remove [/bold cyan]",
+                border_style=style,
+                padding=(1, 2),
+            ),
             "rich",
         )

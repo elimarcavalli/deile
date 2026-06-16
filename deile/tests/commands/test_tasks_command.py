@@ -11,10 +11,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from deile.commands.base import CommandContext
 from deile.commands.builtin.tasks_command import (
@@ -23,7 +20,6 @@ from deile.commands.builtin.tasks_command import (
     _fmt_age,
     _fmt_time,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -180,13 +176,17 @@ class TestBuildOutput:
         assert "Backlog" not in out
 
     def test_backlog_section_shown_when_provided(self):
-        backlog = {"backlog": [{"kind": "issue", "ref": "7"}, {"kind": "issue", "ref": "8"}]}
+        backlog = {
+            "backlog": [{"kind": "issue", "ref": "7"}, {"kind": "issue", "ref": "8"}]
+        }
         out = _build_output(self._STATUS, self._LEDGER_EMPTY, backlog_data=backlog)
         assert "Backlog" in out
         assert "#7" in out
 
     def test_empty_backlog_shows_vazio(self):
-        out = _build_output(self._STATUS, self._LEDGER_EMPTY, backlog_data={"backlog": []})
+        out = _build_output(
+            self._STATUS, self._LEDGER_EMPTY, backlog_data={"backlog": []}
+        )
         assert "backlog vazio" in out
 
     def test_no_pods_shows_dash(self):
@@ -255,7 +255,10 @@ class TestTasksCommandExecuteMissingModule:
             result = await TasksCommand().execute(_ctx())
             assert result.success is False
             assert result.content is not None
-            assert "observabilidade" in result.content.lower() or "módulo" in result.content.lower()
+            assert (
+                "observabilidade" in result.content.lower()
+                or "módulo" in result.content.lower()
+            )
         finally:
             sys.modules.pop(fake_name, None)
             if real_module is not None:
@@ -302,10 +305,13 @@ class TestTasksCommandExecuteNetworkErrors:
         mock_parent = MagicMock()
         mock_parent.client = mock_client_module
 
-        return patch.dict(sys.modules, {
-            self._CLIENT_KEY: mock_client_module,
-            self._PARENT_KEY: mock_parent,
-        })
+        return patch.dict(
+            sys.modules,
+            {
+                self._CLIENT_KEY: mock_client_module,
+                self._PARENT_KEY: mock_parent,
+            },
+        )
 
     async def test_unreachable_pipeline_returns_error(self, monkeypatch):
         from deile.ui.panel.observability import client as real_client
@@ -318,7 +324,9 @@ class TestTasksCommandExecuteNetworkErrors:
             result = await TasksCommand().execute(_ctx())
 
         assert result.success is False
-        assert "inacessível" in (result.content or "") or "pipeline-status" in (result.content or "")
+        assert "inacessível" in (result.content or "") or "pipeline-status" in (
+            result.content or ""
+        )
 
     async def test_http_401_returns_auth_error_message(self, monkeypatch):
         from deile.ui.panel.observability import client as real_client
@@ -331,7 +339,10 @@ class TestTasksCommandExecuteNetworkErrors:
             result = await TasksCommand().execute(_ctx())
 
         assert result.success is False
-        assert "401" in (result.content or "") or "autenticação" in (result.content or "").lower()
+        assert (
+            "401" in (result.content or "")
+            or "autenticação" in (result.content or "").lower()
+        )
 
     async def test_successful_response_returns_success(self, monkeypatch):
         status_payload = {

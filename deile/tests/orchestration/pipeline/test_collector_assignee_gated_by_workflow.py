@@ -17,8 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.github_client import IssueRef
 from deile.orchestration.pipeline.labels import MENTION_DONE
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 from deile.orchestration.pipeline.stages import _collect_mention_triggers
 
 
@@ -39,14 +38,19 @@ def _make_monitor(*, assigned_issues: list | None = None) -> PipelineMonitor:
     notifier = MagicMock()
     notifier.error = AsyncMock()
     return PipelineMonitor(
-        cfg, github=github, worktrees=MagicMock(), claude=MagicMock(),
+        cfg,
+        github=github,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
         notifier=notifier,
     )
 
 
 def _issue(number: int, labels=()) -> IssueRef:
     return IssueRef(
-        number=number, title="t", url=f"https://github.com/o/r/issues/{number}",
+        number=number,
+        title="t",
+        url=f"https://github.com/o/r/issues/{number}",
         labels=tuple(labels),
     )
 
@@ -56,7 +60,9 @@ class TestAssigneeIssueGatedByWorkflow:
 
     async def test_issue_with_workflow_nova_is_skipped(self):
         """An issue with ``~workflow:nova`` must NOT produce a trigger."""
-        monitor = _make_monitor(assigned_issues=[_issue(10, labels=("~workflow:nova",))])
+        monitor = _make_monitor(
+            assigned_issues=[_issue(10, labels=("~workflow:nova",))]
+        )
         triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
         assert triggers == []
 
@@ -81,7 +87,9 @@ class TestAssigneeIssueGatedByWorkflow:
             "~workflow:aguardando_stakeholder",
         ):
             monitor = _make_monitor(assigned_issues=[_issue(12, labels=(label,))])
-            triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
+            triggers = await _collect_mention_triggers(
+                monitor, "@deile-one", "deile-one"
+            )
             assert triggers == [], f"Expected no trigger for issue with label {label!r}"
 
     async def test_issue_without_workflow_label_produces_trigger(self):

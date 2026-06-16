@@ -49,7 +49,8 @@ async def test_env_on_waives_approval_and_audits_warning(
     assert fake_approval_deny.requests == []
     # The waiver audit event is recorded as a WARNING
     granted = [
-        e for e in fake_audit.events
+        e
+        for e in fake_audit.events
         if e.get("event_type") == AuditEventType.APPROVAL_GRANTED
     ]
     assert granted

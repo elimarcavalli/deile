@@ -12,8 +12,7 @@ from __future__ import annotations
 import dataclasses
 
 from deile.orchestration.pipeline.actions import ACTIONS
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
 
 def test_actions_registry_is_nonempty():

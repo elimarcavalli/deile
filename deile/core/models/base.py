@@ -8,8 +8,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import (TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional,
-                    Tuple)
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from deile.core.models.tier import ModelTier
 
@@ -33,6 +32,7 @@ if TYPE_CHECKING:
 
 class ModelType(Enum):
     """Tipos de modelos disponíveis"""
+
     CHAT = "chat"
     COMPLETION = "completion"
     EMBEDDING = "embedding"
@@ -42,14 +42,16 @@ class ModelType(Enum):
 
 class ModelSize(Enum):
     """Tamanhos de modelo para routing inteligente (legado — use ModelTier em código novo)."""
-    SMALL = "small"    # Para tarefas rápidas e simples
+
+    SMALL = "small"  # Para tarefas rápidas e simples
     MEDIUM = "medium"  # Para tarefas balanceadas
-    LARGE = "large"    # Para tarefas complexas e críticas
+    LARGE = "large"  # Para tarefas complexas e críticas
 
 
 @dataclass
 class ModelUsage:
     """Informações de uso do modelo"""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -63,10 +65,11 @@ class ModelUsage:
 @dataclass
 class ModelMessage:
     """Mensagem para o modelo"""
+
     role: str  # 'user', 'assistant', 'system'
     content: str
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __str__(self) -> str:
         return f"[{self.role}] {self.content[:100]}..."
 
@@ -74,29 +77,32 @@ class ModelMessage:
 @dataclass
 class ModelResponse:
     """Resposta do modelo de IA"""
+
     content: str
     model_name: str
     usage: ModelUsage = field(default_factory=ModelUsage)
     metadata: Dict[str, Any] = field(default_factory=dict)
     raw_response: Any = None
     finish_reason: Optional[str] = None
-    
+
     @property
     def is_complete(self) -> bool:
         """Verifica se a resposta está completa"""
         return self.finish_reason != "length"
-    
+
     def __str__(self) -> str:
-        return f"ModelResponse(model={self.model_name}, tokens={self.usage.total_tokens})"
+        return (
+            f"ModelResponse(model={self.model_name}, tokens={self.usage.total_tokens})"
+        )
 
 
 class ModelProvider(ABC):
     """Interface base abstrata para provedores de modelos de IA
-    
+
     Permite implementações intercambiáveis de diferentes provedores
     (Gemini, OpenAI, Claude, etc.) seguindo o padrão Strategy.
     """
-    
+
     def __init__(self, model_name: str, **config):
         self.model_name = model_name
         self.config = config
@@ -174,44 +180,44 @@ class ModelProvider(ABC):
         if handle is not None:
             return handle.pricing
         return None
-    
+
     @property
     def is_available(self) -> bool:
         """Verifica se o provedor está disponível"""
         return self._is_available
-    
+
     @property
     def request_count(self) -> int:
         """Número total de requisições feitas"""
         return self._request_count
-    
+
     @property
     def total_tokens(self) -> int:
         """Total de tokens utilizados"""
         return self._total_tokens
-    
+
     @abstractmethod
     async def generate(
         self,
         messages: List[ModelMessage],
         system_instruction: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> ModelResponse:
         """Gera resposta para as mensagens fornecidas
-        
+
         Args:
             messages: Lista de mensagens da conversa
             system_instruction: Instrução do sistema (opcional)
             **kwargs: Parâmetros específicos do modelo
-            
+
         Returns:
             ModelResponse: Resposta gerada pelo modelo
-            
+
         Raises:
             ModelError: Erro específico do modelo
         """
         pass
-    
+
     @staticmethod
     def _extract_system(
         messages: List["ModelMessage"], system_instruction: Optional[str]
@@ -225,7 +231,9 @@ class ModelProvider(ABC):
         sys_from_msgs = next((m.content for m in messages if m.role == "system"), None)
         return system_instruction or sys_from_msgs
 
-    def _compose_system_instruction(self, system_instruction: Optional[str]) -> Optional[str]:
+    def _compose_system_instruction(
+        self, system_instruction: Optional[str]
+    ) -> Optional[str]:
         """Acresce um bloco de identidade runtime ao system instruction.
 
         Modelos tendem a alucinar identidade — sem prompt explícito, DeepSeek/
@@ -242,7 +250,7 @@ class ModelProvider(ABC):
             "Você é DEILE (Development Environment Intelligence & Learning Engine), o agente. "
             f"Neste turno, o modelo subjacente que processa esta requisição é **{runtime_id}**.\n"
             "Quando o usuário perguntar qual modelo/LLM você é, responda HONESTAMENTE: "
-            f"\"DEILE rodando via {runtime_id}\". "
+            f'"DEILE rodando via {runtime_id}". '
             "NUNCA afirme ser Claude/Anthropic, GPT/OpenAI, Gemini/Google, DeepSeek ou "
             "qualquer outro modelo a menos que corresponda exatamente ao provider_id acima. "
             "Não invente identidade — se incerto, replique provider_id:model_name verbatim.\n"
@@ -270,8 +278,8 @@ class ModelProvider(ABC):
             effort = kwargs.pop("reasoning_effort", None)
             if not effort:
                 return {}
-            from deile.core.models.reasoning import \
-                request_overrides  # noqa: PLC0415
+            from deile.core.models.reasoning import request_overrides  # noqa: PLC0415
+
             return request_overrides(self.provider_id, self.model_name, effort)
         except Exception as exc:  # noqa: BLE001 — reasoning nunca quebra o turno
             logger.debug("reasoning extra_body skipped (%s): %s", self.provider_id, exc)
@@ -328,9 +336,12 @@ class ModelProvider(ABC):
         """
         # Default: wrap generate() into a single TEXT_DELTA + USAGE_FINAL.
         # Subclasses that support streaming/tools override this method.
-        from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                                     StreamEventType,
-                                                     UnifiedStreamEvent)
+        from deile.core.models.stream_events import (
+            ModelUsageSnapshot,
+            StreamEventType,
+            UnifiedStreamEvent,
+        )
+
         response = await self.generate(messages, system_instruction, **kwargs)
         yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text=response.content)
         yield UnifiedStreamEvent(
@@ -398,15 +409,15 @@ class ModelProvider(ABC):
 
     async def validate_config(self) -> bool:
         """Valida a configuração do provedor
-        
+
         Returns:
             bool: True se a configuração é válida
         """
         return True
-    
+
     async def health_check(self) -> bool:
         """Verifica se o provedor está saudável
-        
+
         Returns:
             bool: True se o provedor está funcionando
         """
@@ -418,27 +429,27 @@ class ModelProvider(ABC):
         except Exception:
             self._is_available = False
             return False
-    
+
     async def get_available_models(self) -> List[str]:
         """Lista modelos disponíveis neste provedor
-        
+
         Returns:
             List[str]: Lista de nomes de modelos disponíveis
         """
         return [self.model_name]
-    
+
     def estimate_tokens(self, text: str) -> int:
         """Estima número de tokens para um texto
-        
+
         Args:
             text: Texto para estimar
-            
+
         Returns:
             int: Estimativa de tokens
         """
         # Estimativa simples baseada em caracteres (pode ser refinada)
         return len(text) // 4
-    
+
     def estimate_cost(self, usage: ModelUsage) -> float:
         """Estimate request cost in USD using catalog pricing when available."""
         p = self.pricing
@@ -470,8 +481,10 @@ class ModelProvider(ABC):
         em cada provider.
         """
         try:
-            from deile.storage.usage_repository import \
-                get_usage_repository  # noqa: PLC0415
+            from deile.storage.usage_repository import (  # noqa: PLC0415
+                get_usage_repository,
+            )
+
             repo = get_usage_repository()
             await repo.record_from_provider(
                 provider_id=self.provider_id,
@@ -488,23 +501,32 @@ class ModelProvider(ABC):
             # / schema drift can be diagnosed when the operator turns on debug logging.
             logger.debug(
                 "usage record failed (provider=%s, session=%s): %s",
-                getattr(self, "provider_id", "?"), session_id, exc,
+                getattr(self, "provider_id", "?"),
+                session_id,
+                exc,
             )
         # Issue #303 fase 4 — métricas OTLP (best-effort, nunca quebra o turn).
         try:
             from deile.observability import get_metrics  # noqa: PLC0415
+
             m = get_metrics()
             if usage.prompt_tokens:
-                m.record_tokens(self.provider_id, self.model_name, "in", usage.prompt_tokens)
+                m.record_tokens(
+                    self.provider_id, self.model_name, "in", usage.prompt_tokens
+                )
             if usage.completion_tokens:
-                m.record_tokens(self.provider_id, self.model_name, "out", usage.completion_tokens)
+                m.record_tokens(
+                    self.provider_id, self.model_name, "out", usage.completion_tokens
+                )
             if usage.cached_tokens:
-                m.record_tokens(self.provider_id, self.model_name, "cached", usage.cached_tokens)
+                m.record_tokens(
+                    self.provider_id, self.model_name, "cached", usage.cached_tokens
+                )
             if usage.cost_estimate:
                 m.record_cost(self.provider_id, self.model_name, usage.cost_estimate)
         except Exception as exc:  # noqa: BLE001
             logger.debug("OTLP metrics emission failed: %s", exc)
-    
+
     async def _record_failed_usage(
         self,
         *,
@@ -554,13 +576,19 @@ class ModelProvider(ABC):
         """
         try:
             from deile.observability import get_tracer  # noqa: PLC0415
-            return get_tracer().llm_call(provider=self.provider_id, model=self.model_name)
+
+            return get_tracer().llm_call(
+                provider=self.provider_id, model=self.model_name
+            )
         except Exception:  # noqa: BLE001 — observability nunca quebra o turn
             from contextlib import nullcontext  # noqa: PLC0415
+
             return nullcontext()
 
     @staticmethod
-    def _set_llm_span_usage(span: Any, usage: "ModelUsage", latency_ms: int = 0) -> None:
+    def _set_llm_span_usage(
+        span: Any, usage: "ModelUsage", latency_ms: int = 0
+    ) -> None:
         """Popula atributos canônicos no span de LLM call.
 
         Atributos seguem o esquema da Fase 4 (issue #303):
@@ -591,11 +619,12 @@ class ModelProvider(ABC):
             return
         try:
             from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+
             span.set_status(Status(StatusCode.ERROR, description=type(exc).__name__))
             span.record_exception(exc)
         except Exception:  # noqa: BLE001
             pass
-    
+
     async def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do provedor"""
         return {
@@ -606,11 +635,11 @@ class ModelProvider(ABC):
             "is_available": self.is_available,
             "request_count": self.request_count,
             "total_tokens": self.total_tokens,
-            "config": self.config
+            "config": self.config,
         }
-    
+
     def __str__(self) -> str:
         return f"{self.provider_name}:{self.model_name}"
-    
+
     def __repr__(self) -> str:
         return f"<ModelProvider: {self.provider_name}:{self.model_name}>"

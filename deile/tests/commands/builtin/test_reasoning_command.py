@@ -10,7 +10,9 @@ from deile.commands.builtin.reasoning_command import ReasoningCommand
 
 
 def _ctx(args: str, context_data=None):
-    session = SimpleNamespace(context_data=context_data if context_data is not None else {})
+    session = SimpleNamespace(
+        context_data=context_data if context_data is not None else {}
+    )
     return SimpleNamespace(session=session, args=args, raw_args=args)
 
 
@@ -65,6 +67,7 @@ def test_has_effort_alias():
 
 # ── /reasoning use <nível> — eixo HARD ────────────────────────────────────
 
+
 @pytest.mark.unit
 async def test_use_set_stores_forced():
     cmd = ReasoningCommand()
@@ -105,7 +108,10 @@ async def test_use_set_invalid_rejected():
 @pytest.mark.unit
 async def test_use_clear_removes_forced():
     cmd = ReasoningCommand()
-    ctx = _ctx("use clear", context_data={"forced_reasoning_effort": "high", "reasoning_effort": "low"})
+    ctx = _ctx(
+        "use clear",
+        context_data={"forced_reasoning_effort": "high", "reasoning_effort": "low"},
+    )
     res = await cmd.execute(ctx)
     assert res.success is True
     assert "forced_reasoning_effort" not in ctx.session.context_data
@@ -142,7 +148,9 @@ async def test_use_no_target_fails():
 @pytest.mark.unit
 async def test_show_reports_forced_source():
     cmd = ReasoningCommand()
-    ctx = _ctx("", context_data={"forced_reasoning_effort": "max", "reasoning_effort": "low"})
+    ctx = _ctx(
+        "", context_data={"forced_reasoning_effort": "max", "reasoning_effort": "low"}
+    )
     res = await cmd.execute(ctx)
     assert res.success is True
     assert res.metadata.get("source") == "forced (hard)"
@@ -162,7 +170,10 @@ async def test_show_falls_back_to_soft_when_no_forced():
 @pytest.mark.unit
 async def test_soft_clear_does_not_touch_forced():
     cmd = ReasoningCommand()
-    ctx = _ctx("clear", context_data={"forced_reasoning_effort": "high", "reasoning_effort": "max"})
+    ctx = _ctx(
+        "clear",
+        context_data={"forced_reasoning_effort": "high", "reasoning_effort": "max"},
+    )
     res = await cmd.execute(ctx)
     assert res.success is True
     assert "reasoning_effort" not in ctx.session.context_data

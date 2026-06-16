@@ -14,9 +14,7 @@ from ._base import MessagingTool
 
 class DiscordGetUserProfileTool(MessagingTool):
     tool_name = "discord_get_user_profile"
-    description_text = (
-        "Fetch the public profile (username, display name, avatar, is_bot) for a Discord user."
-    )
+    description_text = "Fetch the public profile (username, display name, avatar, is_bot) for a Discord user."
     parameters: Dict[str, Any] = {
         "user_id": {
             "type": "string",

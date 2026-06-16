@@ -89,7 +89,7 @@ def project_with_ignored_dirs(tmp_path: Path) -> Path:
             },
             "deilebot/": {
                 "daemon.py": "# canonical clone name",
-                "pyproject.toml": "[project]\nname = \"deilebot\"",
+                "pyproject.toml": '[project]\nname = "deilebot"',
             },
             "node_modules/": {
                 "lodash/": {
@@ -111,11 +111,11 @@ def project_with_binary_files(tmp_path: Path) -> Path:
         tmp_path,
         {
             "main.py": "pass",
-            "compiled.pyc": "\x00\x00",       # compiled Python
-            "lib.so": "\x7fELF",               # shared object
-            "image.png": "\x89PNG\r\n",        # PNG header
-            "archive.zip": "PK",               # ZIP
-            "data.sqlite3": "SQLite format",   # DB
+            "compiled.pyc": "\x00\x00",  # compiled Python
+            "lib.so": "\x7fELF",  # shared object
+            "image.png": "\x89PNG\r\n",  # PNG header
+            "archive.zip": "PK",  # ZIP
+            "data.sqlite3": "SQLite format",  # DB
         },
     )
     return tmp_path
@@ -126,12 +126,16 @@ def project_with_binary_files(tmp_path: Path) -> Path:
 
 @pytest.mark.unit
 async def test_returns_empty_for_nonexistent_dir(cm: ContextManager) -> None:
-    result = await cm._build_file_context(None, working_directory="/nonexistent/path/xyz")
+    result = await cm._build_file_context(
+        None, working_directory="/nonexistent/path/xyz"
+    )
     assert result == ""
 
 
 @pytest.mark.unit
-async def test_basic_project_lists_files(cm: ContextManager, simple_project: Path) -> None:
+async def test_basic_project_lists_files(
+    cm: ContextManager, simple_project: Path
+) -> None:
     result = await cm._build_file_context(None, working_directory=str(simple_project))
     assert result != ""
     assert "README.md" in result
@@ -143,7 +147,9 @@ async def test_basic_project_lists_files(cm: ContextManager, simple_project: Pat
 async def test_ignored_dirs_are_pruned(
     cm: ContextManager, project_with_ignored_dirs: Path
 ) -> None:
-    result = await cm._build_file_context(None, working_directory=str(project_with_ignored_dirs))
+    result = await cm._build_file_context(
+        None, working_directory=str(project_with_ignored_dirs)
+    )
 
     # These belong to pruned directories — must NOT appear.
     assert "main.cpython-311.pyc" not in result, "__pycache__ was not pruned"
@@ -162,7 +168,9 @@ async def test_ignored_dirs_are_pruned(
 async def test_binary_extensions_excluded(
     cm: ContextManager, project_with_binary_files: Path
 ) -> None:
-    result = await cm._build_file_context(None, working_directory=str(project_with_binary_files))
+    result = await cm._build_file_context(
+        None, working_directory=str(project_with_binary_files)
+    )
 
     assert "compiled.pyc" not in result, ".pyc files must be excluded"
     assert "lib.so" not in result, ".so files must be excluded"
@@ -175,15 +183,17 @@ async def test_binary_extensions_excluded(
 
 
 @pytest.mark.unit
-async def test_output_does_not_exceed_char_limit(cm: ContextManager, tmp_path: Path) -> None:
+async def test_output_does_not_exceed_char_limit(
+    cm: ContextManager, tmp_path: Path
+) -> None:
     """Generate many files and confirm output stays within _FILE_CONTEXT_MAX_CHARS."""
     for i in range(500):
         (tmp_path / f"module_{i:04d}.py").write_text("pass", encoding="utf-8")
 
     result = await cm._build_file_context(None, working_directory=str(tmp_path))
-    assert len(result) <= cm._FILE_CONTEXT_MAX_CHARS, (
-        f"Output length {len(result)} exceeds limit {cm._FILE_CONTEXT_MAX_CHARS}"
-    )
+    assert (
+        len(result) <= cm._FILE_CONTEXT_MAX_CHARS
+    ), f"Output length {len(result)} exceeds limit {cm._FILE_CONTEXT_MAX_CHARS}"
 
 
 @pytest.mark.unit
@@ -204,8 +214,7 @@ async def test_truncation_warning_logged(cm: ContextManager, tmp_path: Path) -> 
     # Collect all warning call args
     warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
     assert any(
-        "_build_file_context" in call and "truncated" in call
-        for call in warning_calls
+        "_build_file_context" in call and "truncated" in call for call in warning_calls
     ), f"Expected truncation WARNING. Got warning calls: {warning_calls}"
 
 
@@ -220,13 +229,17 @@ async def test_no_warning_for_small_project(
         await cm._build_file_context(None, working_directory=str(simple_project))
 
     truncation_records = [
-        r for r in caplog.records if "_build_file_context" in r.message and "truncated" in r.message
+        r
+        for r in caplog.records
+        if "_build_file_context" in r.message and "truncated" in r.message
     ]
     assert not truncation_records, "Unexpected truncation WARNING for a small project"
 
 
 @pytest.mark.unit
-async def test_session_working_directory_used(cm: ContextManager, simple_project: Path) -> None:
+async def test_session_working_directory_used(
+    cm: ContextManager, simple_project: Path
+) -> None:
     """When a session object is provided, its working_directory takes precedence."""
 
     class _FakeSession:
@@ -237,7 +250,9 @@ async def test_session_working_directory_used(cm: ContextManager, simple_project
 
 
 @pytest.mark.unit
-async def test_estimated_tokens_below_provider_limit(cm: ContextManager, tmp_path: Path) -> None:
+async def test_estimated_tokens_below_provider_limit(
+    cm: ContextManager, tmp_path: Path
+) -> None:
     """Rough token estimate of the output must be far below any provider's limit."""
     for i in range(500):
         (tmp_path / f"module_{i:04d}.py").write_text("pass", encoding="utf-8")
@@ -245,6 +260,6 @@ async def test_estimated_tokens_below_provider_limit(cm: ContextManager, tmp_pat
     result = await cm._build_file_context(None, working_directory=str(tmp_path))
     estimated_tokens = len(result) // 4  # 1 token ≈ 4 chars
     # The fix keeps it under 2 000 tokens; sanity-check against 10 000 to be loose.
-    assert estimated_tokens < 10_000, (
-        f"File context uses ~{estimated_tokens} tokens — dangerously close to provider limits"
-    )
+    assert (
+        estimated_tokens < 10_000
+    ), f"File context uses ~{estimated_tokens} tokens — dangerously close to provider limits"

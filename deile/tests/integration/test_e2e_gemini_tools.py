@@ -25,7 +25,7 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 _YAML_PATH = Path(__file__).parents[3] / "deile" / "config" / "model_providers.yaml"
-_MODEL_ID = "gemini-2.0-flash"   # stable, widely available Gemini model
+_MODEL_ID = "gemini-2.0-flash"  # stable, widely available Gemini model
 _PROVIDER_ID = "gemini"
 
 
@@ -58,8 +58,7 @@ def _make_provider():
 
 def _make_echo_registry():
     """Return a fake ToolRegistry that exposes a single 'echo' tool."""
-    from deile.tools.base import (Tool, ToolContext, ToolResult, ToolSchema,
-                                  ToolStatus)
+    from deile.tools.base import Tool, ToolContext, ToolResult, ToolSchema, ToolStatus
 
     class EchoTool(Tool):
         """Returns its input text verbatim."""
@@ -138,7 +137,9 @@ async def test_gemini_plain_chat():
     from deile.core.models.base import ModelMessage
 
     provider = _make_provider()
-    msgs = [ModelMessage(role="user", content="What is 2+2? Reply with just the number.")]
+    msgs = [
+        ModelMessage(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     response = await provider.generate(msgs)
 
     assert "4" in response.content, f"Unexpected response: {response.content!r}"
@@ -176,10 +177,7 @@ async def test_gemini_tool_calling():
         )
 
     assert tool_results, "Expected at least one tool result; got none"
-    combined = " ".join(
-        str(tr.data) + " " + str(tr.message)
-        for tr in tool_results
-    )
-    assert "hello world" in combined.lower(), (
-        f"'hello world' not found in tool results: {combined!r}"
-    )
+    combined = " ".join(str(tr.data) + " " + str(tr.message) for tr in tool_results)
+    assert (
+        "hello world" in combined.lower()
+    ), f"'hello world' not found in tool results: {combined!r}"

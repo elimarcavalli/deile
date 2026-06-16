@@ -35,18 +35,26 @@ import urllib.parse
 from datetime import datetime, timezone
 from typing import Iterable, List, Literal, Optional, Tuple
 
-from deile.orchestration.forge.base import (ForgeClient, ForgeCommandError,
-                                            ForgeConfig, ForgeKind,
-                                            MergeBlocked,
-                                            MergeBlockedByPipeline,
-                                            WorkItemDetails, discover_cli)
+from deile.orchestration.forge.base import (
+    ForgeClient,
+    ForgeCommandError,
+    ForgeConfig,
+    ForgeKind,
+    MergeBlocked,
+    MergeBlockedByPipeline,
+    WorkItemDetails,
+    discover_cli,
+)
 from deile.orchestration.forge.refs import CommentRef, IssueRef, PrRef
 from deile.orchestration.pipeline._time_utils import format_iso_utc
-from deile.orchestration.pipeline.labels import (LABEL_COLORS,
-                                                 LABEL_DESCRIPTIONS,
-                                                 MENTION_LABELS, REFINE_LABELS,
-                                                 REVIEW_LABELS,
-                                                 WORKFLOW_LABELS)
+from deile.orchestration.pipeline.labels import (
+    LABEL_COLORS,
+    LABEL_DESCRIPTIONS,
+    MENTION_LABELS,
+    REFINE_LABELS,
+    REVIEW_LABELS,
+    WORKFLOW_LABELS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +65,21 @@ _PER_PAGE = 100
 
 # Flags passed to ``glab api`` that consume the *next* argument as their value.
 # Used by :func:`_rewrite_gl_api_args` to locate the endpoint positional arg.
-_GL_API_VALUE_FLAGS = frozenset({
-    "-X", "--method", "-f", "--field", "--raw-field",
-    "-H", "--header", "-q", "--jq", "-F", "--form",
-})
+_GL_API_VALUE_FLAGS = frozenset(
+    {
+        "-X",
+        "--method",
+        "-f",
+        "--field",
+        "--raw-field",
+        "-H",
+        "--header",
+        "-q",
+        "--jq",
+        "-F",
+        "--form",
+    }
+)
 
 
 def _rewrite_gl_api_args(host: str, version: str, args: tuple) -> tuple:
@@ -95,6 +114,7 @@ def _pages_for_limit(limit: int) -> int:
     — turns a user-facing record cap into a page cap.
     """
     return max(1, (limit + _PER_PAGE - 1) // _PER_PAGE)
+
 
 # GitLab username regex — alphanumeric start, depois alnum/dot/underscore/hyphen
 # até 255 chars. Usado como guard defensivo simétrico ao ``_GH_LOGIN_RE`` do
@@ -146,12 +166,14 @@ class GitLabForge(ForgeClient):
             # Legacy/tests path: positional project_path
             path = str(config_or_path)
             cli = glab_path or discover_cli("glab")
-            super().__init__(ForgeConfig(
-                kind=ForgeKind.GITLAB,
-                host=host,
-                project_path=path,
-                cli_path=cli,
-            ))
+            super().__init__(
+                ForgeConfig(
+                    kind=ForgeKind.GITLAB,
+                    host=host,
+                    project_path=path,
+                    cli_path=cli,
+                )
+            )
 
     # ------------------------------------------------------------------
     # Subprocess plumbing — versioned API override
@@ -166,6 +188,7 @@ class GitLabForge(ForgeClient):
         endpoint to the full URL so glab uses the configured version.
         """
         from deile.config.settings import get_settings
+
         version = get_settings().forge_gitlab_api_version
         if version != "4" and args and args[0] == "api":
             args = _rewrite_gl_api_args(self._config.host, version, args)
@@ -198,7 +221,8 @@ class GitLabForge(ForgeClient):
         if self._config.project_id:
             return self._config.project_id
         out = await self._run_checked(
-            "api", f"projects/{self._config.encoded_project_path}",
+            "api",
+            f"projects/{self._config.encoded_project_path}",
         )
         try:
             payload = json.loads(out or "{}")
@@ -207,7 +231,9 @@ class GitLabForge(ForgeClient):
             # e evita confundir o operador com "exit code 0 mas falhou".
             raise ForgeCommandError(
                 ("glab", "api", f"projects/{self._config.encoded_project_path}"),
-                -1, out, f"resposta não-JSON ao resolver project id: {exc}",
+                -1,
+                out,
+                f"resposta não-JSON ao resolver project id: {exc}",
             )
         pid = payload.get("id")
         if not pid:
@@ -215,7 +241,9 @@ class GitLabForge(ForgeClient):
             # Pode indicar token sem permissão de leitura ou project_path errado.
             raise ForgeCommandError(
                 ("glab", "api", f"projects/{self._config.encoded_project_path}"),
-                -1, out, "payload do projeto não contém campo 'id' — verifique project_path e permissões do token",
+                -1,
+                out,
+                "payload do projeto não contém campo 'id' — verifique project_path e permissões do token",
             )
         self._config.project_id = str(pid)
         # Capture the default branch while we are here — it costs nothing
@@ -244,7 +272,9 @@ class GitLabForge(ForgeClient):
             return json.loads(out or "null")
         except json.JSONDecodeError as exc:
             # rc=-1 distingue erro de parsing (glab saiu 0) de falha de transporte.
-            raise ForgeCommandError(("glab",) + args, -1, out, f"non-JSON: {exc}") from exc
+            raise ForgeCommandError(
+                ("glab",) + args, -1, out, f"non-JSON: {exc}"
+            ) from exc
 
     async def _api_paginated(
         self,
@@ -267,8 +297,10 @@ class GitLabForge(ForgeClient):
         params = params or []
         while page <= max_pages:
             paged_params = list(params) + [
-                "-f", f"per_page={_PER_PAGE}",
-                "-f", f"page={page}",
+                "-f",
+                f"per_page={_PER_PAGE}",
+                "-f",
+                f"page={page}",
             ]
             payload = await self._api_get_json(endpoint, *paged_params)
             if not isinstance(payload, list):
@@ -289,13 +321,18 @@ class GitLabForge(ForgeClient):
     # ------------------------------------------------------------------
 
     async def list_issues_with_label(
-        self, label: str, *, limit: int = 50,
+        self,
+        label: str,
+        *,
+        limit: int = 50,
     ) -> List[IssueRef]:
         items = await self._api_paginated(
             f"projects/{self._project_ref}/issues",
             params=[
-                "-f", "state=opened",
-                "-f", f"labels={label}",
+                "-f",
+                "state=opened",
+                "-f",
+                f"labels={label}",
             ],
             max_pages=_pages_for_limit(limit),
         )
@@ -308,19 +345,26 @@ class GitLabForge(ForgeClient):
         if not isinstance(payload, dict):
             raise ForgeCommandError(
                 ("glab", "api", f"projects/{self._project_ref}/issues/{number}"),
-                0, json.dumps(payload), "expected object",
+                0,
+                json.dumps(payload),
+                "expected object",
             )
         return IssueRef.from_gl_json(payload)
 
     async def list_issues_assigned_to(
-        self, login: str, *, limit: int = 100,
+        self,
+        login: str,
+        *,
+        limit: int = 100,
     ) -> List[IssueRef]:
         try:
             items = await self._api_paginated(
                 f"projects/{self._project_ref}/issues",
                 params=[
-                    "-f", "state=opened",
-                    "-f", f"assignee_username={login}",
+                    "-f",
+                    "state=opened",
+                    "-f",
+                    f"assignee_username={login}",
                 ],
                 max_pages=_pages_for_limit(limit),
             )
@@ -369,10 +413,14 @@ class GitLabForge(ForgeClient):
         labels: Optional[List[str]] = None,
     ) -> int:
         cmd = [
-            "issue", "create",
-            "-R", self.repo,
-            "-t", title,
-            "-d", body,
+            "issue",
+            "create",
+            "-R",
+            self.repo,
+            "-t",
+            title,
+            "-d",
+            body,
         ]
         if labels:
             cmd.extend(["--label", ",".join(labels)])
@@ -400,9 +448,12 @@ class GitLabForge(ForgeClient):
         # the ``glab issue note --message`` interactive prompt that some
         # versions show on long messages.
         await self._run_checked(
-            "api", "-X", "POST",
+            "api",
+            "-X",
+            "POST",
             f"projects/{self._project_ref}/issues/{number}/notes",
-            "--raw-field", f"body={text}",
+            "--raw-field",
+            f"body={text}",
         )
 
     async def assign_issue(self, number: int, login: str) -> None:
@@ -432,7 +483,8 @@ class GitLabForge(ForgeClient):
             logger.warning(
                 "assign_issue #%d: login %r não é um GitLab username válido "
                 "(alnum start, alnum/dot/_/hyphen, ≤255 chars) — rejeitando",
-                number, login,
+                number,
+                login,
             )
             return
         # GitLab PUT é semântica REPLACE — registramos em DEBUG (operacional,
@@ -440,7 +492,8 @@ class GitLabForge(ForgeClient):
         # em toda chamada, gerando ruído sob auto-routing.
         logger.debug(
             "assign_issue #%d: PUT assignee_ids[] (REPLACE; substitui qualquer "
-            "assignee anterior)", number,
+            "assignee anterior)",
+            number,
         )
         try:
             users = await self._api_get_json("users", "-f", f"username={login}")
@@ -463,7 +516,8 @@ class GitLabForge(ForgeClient):
         except (TypeError, ValueError):
             logger.warning(
                 "assign_issue: user %r tem id não-numérico %r — rejeitando",
-                login, user_id_raw,
+                login,
+                user_id_raw,
             )
             return
         # IMPORTANTE: glab/GitLab rejeita ``-f assignee_ids[]=N`` para PUT —
@@ -474,15 +528,21 @@ class GitLabForge(ForgeClient):
         # sem ``--raw-field``. Outros parâmetros sem ``[]`` (``add_labels``,
         # ``draft``, etc.) funcionam normalmente com ``-f``.
         from urllib.parse import quote as _quote
+
         rc, _, err = await self._run(
-            "api", "-X", "PUT",
+            "api",
+            "-X",
+            "PUT",
             f"projects/{self._project_ref}/issues/{number}"
             f"?assignee_ids{_quote('[]')}={user_id}",
         )
         if rc != 0:
             logger.warning(
                 "assign_issue #%d -> %s (id=%s) failed: %s",
-                number, login, user_id, err.strip()[:200],
+                number,
+                login,
+                user_id,
+                err.strip()[:200],
             )
 
     # ------------------------------------------------------------------
@@ -522,7 +582,8 @@ class GitLabForge(ForgeClient):
         if isinstance(payload, list):
             for mr in payload:
                 if isinstance(mr, dict) and str(mr.get("state")).lower() in (
-                    "opened", "open",
+                    "opened",
+                    "open",
                 ):
                     return True
         # Back-fill: branch-name heuristic on any open MR.
@@ -551,14 +612,19 @@ class GitLabForge(ForgeClient):
         return [PrRef.from_gl_json(it) for it in items[:limit]]
 
     async def list_prs_assigned_to(
-        self, login: str, *, limit: int = 100,
+        self,
+        login: str,
+        *,
+        limit: int = 100,
     ) -> List[PrRef]:
         try:
             items = await self._api_paginated(
                 f"projects/{self._project_ref}/merge_requests",
                 params=[
-                    "-f", "state=opened",
-                    "-f", f"assignee_username={login}",
+                    "-f",
+                    "state=opened",
+                    "-f",
+                    f"assignee_username={login}",
                 ],
                 max_pages=_pages_for_limit(limit),
             )
@@ -570,7 +636,8 @@ class GitLabForge(ForgeClient):
     async def list_unclassified_prs(self) -> List[PrRef]:
         prs = await self.list_open_prs()
         return [
-            pr for pr in prs
+            pr
+            for pr in prs
             if not pr.is_draft and not any(lb.startswith("~") for lb in pr.labels)
         ]
 
@@ -579,9 +646,12 @@ class GitLabForge(ForgeClient):
             items = await self._api_paginated(
                 f"projects/{self._project_ref}/merge_requests",
                 params=[
-                    "-f", "state=merged",
-                    "-f", "order_by=updated_at",
-                    "-f", "sort=desc",
+                    "-f",
+                    "state=merged",
+                    "-f",
+                    "order_by=updated_at",
+                    "-f",
+                    "sort=desc",
                 ],
                 max_pages=1,
             )
@@ -591,7 +661,10 @@ class GitLabForge(ForgeClient):
         return [PrRef.from_gl_json(it, default_state="merged") for it in items[:limit]]
 
     async def list_prs_updated_since(
-        self, since_iso: str, *, limit: int = 100,
+        self,
+        since_iso: str,
+        *,
+        limit: int = 100,
     ) -> List[dict]:
         """Return MRs updated since *since_iso* (ISO-8601 UTC).
 
@@ -603,10 +676,14 @@ class GitLabForge(ForgeClient):
             items = await self._api_paginated(
                 f"projects/{self._project_ref}/merge_requests",
                 params=[
-                    "-f", "state=all",
-                    "-f", f"updated_after={since_iso}",
-                    "-f", "order_by=updated_at",
-                    "-f", "sort=desc",
+                    "-f",
+                    "state=all",
+                    "-f",
+                    f"updated_after={since_iso}",
+                    "-f",
+                    "order_by=updated_at",
+                    "-f",
+                    "sort=desc",
                 ],
                 max_pages=_pages_for_limit(limit),
             )
@@ -616,17 +693,24 @@ class GitLabForge(ForgeClient):
         return [_standup_item_from_gl_json(it) for it in items[:limit]]
 
     async def list_issues_updated_since(
-        self, since_iso: str, *, limit: int = 100,
+        self,
+        since_iso: str,
+        *,
+        limit: int = 100,
     ) -> List[dict]:
         """Return issues updated since *since_iso* (ISO-8601 UTC)."""
         try:
             items = await self._api_paginated(
                 f"projects/{self._project_ref}/issues",
                 params=[
-                    "-f", "state=all",
-                    "-f", f"updated_after={since_iso}",
-                    "-f", "order_by=updated_at",
-                    "-f", "sort=desc",
+                    "-f",
+                    "state=all",
+                    "-f",
+                    f"updated_after={since_iso}",
+                    "-f",
+                    "order_by=updated_at",
+                    "-f",
+                    "sort=desc",
                 ],
                 max_pages=_pages_for_limit(limit),
             )
@@ -647,7 +731,9 @@ class GitLabForge(ForgeClient):
         except ForgeCommandError as exc:
             logger.warning(
                 "pr_reviewer_still_requested(#%d, %s) failed: %s — fail-open=False",
-                number, login, exc,
+                number,
+                login,
+                exc,
             )
             return False
         if not isinstance(payload, dict):
@@ -662,8 +748,10 @@ class GitLabForge(ForgeClient):
             items = await self._api_paginated(
                 f"projects/{self._project_ref}/merge_requests",
                 params=[
-                    "-f", "state=opened",
-                    "-f", f"reviewer_username={login}",
+                    "-f",
+                    "state=opened",
+                    "-f",
+                    f"reviewer_username={login}",
                 ],
                 max_pages=2,
             )
@@ -682,9 +770,12 @@ class GitLabForge(ForgeClient):
         # --raw-field: evita magic type conversion e placeholder replacement
         # do glab api para conteúdo de texto livre (LLM output / input do operador).
         await self._run_checked(
-            "api", "-X", "POST",
+            "api",
+            "-X",
+            "POST",
             f"projects/{self._project_ref}/merge_requests/{number}/notes",
-            "--raw-field", f"body={text}",
+            "--raw-field",
+            f"body={text}",
         )
 
     async def get_pr_body(self, number: int) -> str:
@@ -719,13 +810,19 @@ class GitLabForge(ForgeClient):
     async def set_draft(self, number: int, draft: bool) -> None:
         """Toggle the MR draft state via REST."""
         rc, _, err = await self._run(
-            "api", "-X", "PUT",
+            "api",
+            "-X",
+            "PUT",
             f"projects/{self._project_ref}/merge_requests/{number}",
-            "-f", f"draft={'true' if draft else 'false'}",
+            "-f",
+            f"draft={'true' if draft else 'false'}",
         )
         if rc != 0:
             logger.warning(
-                "set_draft #%d draft=%s failed: %s", number, draft, err.strip()[:200],
+                "set_draft #%d draft=%s failed: %s",
+                number,
+                draft,
+                err.strip()[:200],
             )
 
     async def merge_pr(self, number: int, *, merge_method: str = "merge") -> None:
@@ -800,9 +897,12 @@ class GitLabForge(ForgeClient):
                     )
         squash_flag = "true" if merge_method == "squash" else "false"
         rc, out, err = await self._run(
-            "api", "-X", "PUT",
+            "api",
+            "-X",
+            "PUT",
             f"projects/{self._project_ref}/merge_requests/{number}/merge",
-            "-f", f"squash={squash_flag}",
+            "-f",
+            f"squash={squash_flag}",
         )
         if rc == 0:
             return
@@ -818,13 +918,21 @@ class GitLabForge(ForgeClient):
                 f"GitLab refused merge of MR #{number}: {err.strip()[:200] or 'method not allowed'}"
             )
         raise ForgeCommandError(
-            ("glab", "api", "-X", "PUT",
-             f"projects/{self._project_ref}/merge_requests/{number}/merge"),
-            rc, out, err,
+            (
+                "glab",
+                "api",
+                "-X",
+                "PUT",
+                f"projects/{self._project_ref}/merge_requests/{number}/merge",
+            ),
+            rc,
+            out,
+            err,
         )
 
     async def get_ci_status(
-        self, number: int,
+        self,
+        number: int,
     ) -> Literal["passing", "failing", "pending", "none"]:
         """Return the latest pipeline status for the MR.
 
@@ -858,7 +966,14 @@ class GitLabForge(ForgeClient):
             return "passing"
         if status in ("failed", "canceled"):
             return "failing"
-        if status in ("pending", "running", "preparing", "waiting_for_resource", "manual", "scheduled"):
+        if status in (
+            "pending",
+            "running",
+            "preparing",
+            "waiting_for_resource",
+            "manual",
+            "scheduled",
+        ):
             return "pending"
         return "none"
 
@@ -890,16 +1005,20 @@ class GitLabForge(ForgeClient):
                 continue
             if ts <= since_ts:
                 continue
-            result.append({
-                "sha": str(c.get("id", c.get("sha", ""))),
-                "message": str(c.get("title", "")),
-                "date": ts_str,
-                "files": [],  # GitLab commits endpoint does not include files by default
-            })
+            result.append(
+                {
+                    "sha": str(c.get("id", c.get("sha", ""))),
+                    "message": str(c.get("title", "")),
+                    "date": ts_str,
+                    "files": [],  # GitLab commits endpoint does not include files by default
+                }
+            )
         return result
 
     async def get_work_item_details(
-        self, kind: Literal["issue", "pr"], number: int,
+        self,
+        kind: Literal["issue", "pr"],
+        number: int,
     ) -> WorkItemDetails:
         """Fetch a rich snapshot for a single GitLab issue or MR.
 
@@ -917,8 +1036,10 @@ class GitLabForge(ForgeClient):
 
         def _links(body: str) -> list:
             return [
-                ("closes" if m.group(0).lower()[0] in "cfr" else "refs",
-                 int(m.group("issue") or "0"))
+                (
+                    "closes" if m.group(0).lower()[0] in "cfr" else "refs",
+                    int(m.group("issue") or "0"),
+                )
                 for m in _LINKED_RE.finditer(body or "")
                 if m.group("issue")
             ]
@@ -941,7 +1062,9 @@ class GitLabForge(ForgeClient):
 
         ci_status: Literal["passing", "failing", "pending", "none"] = "none"
         ci_summary: Tuple[int, int] = (0, 0)
-        mergeability: Literal["clean", "conflict", "draft", "blocked", "unknown"] = "unknown"
+        mergeability: Literal["clean", "conflict", "draft", "blocked", "unknown"] = (
+            "unknown"
+        )
         reviewers: List[Tuple[str, str]] = []
 
         if kind == "pr":
@@ -957,7 +1080,7 @@ class GitLabForge(ForgeClient):
             else:
                 mergeability = "unknown"
 
-            for rv in (payload.get("reviewers") or []):
+            for rv in payload.get("reviewers") or []:
                 login = (rv or {}).get("username", "")
                 if login:
                     reviewers.append((login, "pending"))
@@ -970,8 +1093,14 @@ class GitLabForge(ForgeClient):
                     ci_status = "passing"
                 elif status in ("failed", "canceled"):
                     ci_status = "failing"
-                elif status in ("pending", "running", "preparing",
-                                "waiting_for_resource", "manual", "scheduled"):
+                elif status in (
+                    "pending",
+                    "running",
+                    "preparing",
+                    "waiting_for_resource",
+                    "manual",
+                    "scheduled",
+                ):
                     ci_status = "pending"
 
         return WorkItemDetails(
@@ -996,8 +1125,12 @@ class GitLabForge(ForgeClient):
             return
         endpoint = self._label_target_endpoint(kind, number)
         await self._run_checked(
-            "api", "-X", "PUT", endpoint,
-            "-f", f"add_labels={','.join(labels_list)}",
+            "api",
+            "-X",
+            "PUT",
+            endpoint,
+            "-f",
+            f"add_labels={','.join(labels_list)}",
         )
         if self.on_label_change is not None:
             try:
@@ -1006,7 +1139,10 @@ class GitLabForge(ForgeClient):
                 pass
 
     async def label_applied_at(
-        self, kind: str, number: int, label: str,
+        self,
+        kind: str,
+        number: int,
+        label: str,
     ) -> Optional[int]:
         """GitLab resource_label_events API → ISO timestamp da última
         ``action='add'`` desse label no ``kind/number``. Endpoint:
@@ -1017,7 +1153,9 @@ class GitLabForge(ForgeClient):
         ou erro de transporte.
         """
         if kind == "issue":
-            endpoint = f"projects/{self._project_ref}/issues/{number}/resource_label_events"
+            endpoint = (
+                f"projects/{self._project_ref}/issues/{number}/resource_label_events"
+            )
         elif kind == "pr":
             endpoint = f"projects/{self._project_ref}/merge_requests/{number}/resource_label_events"
         else:
@@ -1026,7 +1164,9 @@ class GitLabForge(ForgeClient):
         if rc != 0:
             logger.debug(
                 "label_applied_at #%d label=%r: glab api failed: %s",
-                number, label, err[:100],
+                number,
+                label,
+                err[:100],
             )
             return None
         try:
@@ -1054,21 +1194,29 @@ class GitLabForge(ForgeClient):
             return None
         try:
             from datetime import datetime
+
             iso = latest_iso.replace("Z", "+00:00")
             return int(datetime.fromisoformat(iso).timestamp())
         except (ValueError, TypeError):
             return None
 
     async def remove_labels(
-        self, kind: str, number: int, labels: Iterable[str],
+        self,
+        kind: str,
+        number: int,
+        labels: Iterable[str],
     ) -> None:
         labels_list = self._validate_label_names(labels)
         if not labels_list:
             return
         endpoint = self._label_target_endpoint(kind, number)
         rc, out, err = await self._run(
-            "api", "-X", "PUT", endpoint,
-            "-f", f"remove_labels={','.join(labels_list)}",
+            "api",
+            "-X",
+            "PUT",
+            endpoint,
+            "-f",
+            f"remove_labels={','.join(labels_list)}",
         )
         if rc != 0:
             low = err.lower()
@@ -1076,11 +1224,16 @@ class GitLabForge(ForgeClient):
             # the parent issue/MR should not be raised either (idempotent).
             if "404" in err or "not found" in low:
                 logger.debug(
-                    "remove_labels: parent %s #%d not found (ignored)", kind, number,
+                    "remove_labels: parent %s #%d not found (ignored)",
+                    kind,
+                    number,
                 )
                 return
             raise ForgeCommandError(
-                ("glab", "api", "-X", "PUT", endpoint), rc, out, err,
+                ("glab", "api", "-X", "PUT", endpoint),
+                rc,
+                out,
+                err,
             )
         if self.on_label_change is not None:
             try:
@@ -1130,13 +1283,22 @@ class GitLabForge(ForgeClient):
         # description é texto livre (pode vir de LABEL_DESCRIPTIONS externo)
         # → --raw-field para evitar magic type conversion e placeholder replacement.
         rc, _, err = await self._run(
-            "api", "-X", "POST",
+            "api",
+            "-X",
+            "POST",
             f"projects/{self._project_ref}/labels",
-            "-f", f"name={name}",
-            "-f", f"color={gl_color}",
-            "--raw-field", f"description={description}",
+            "-f",
+            f"name={name}",
+            "-f",
+            f"color={gl_color}",
+            "--raw-field",
+            f"description={description}",
         )
-        if rc != 0 and "already" not in err.lower() and "has already been taken" not in err.lower():
+        if (
+            rc != 0
+            and "already" not in err.lower()
+            and "has already been taken" not in err.lower()
+        ):
             logger.debug("ensure_label %s: rc=%d err=%s", name, rc, err.strip()[:200])
 
     async def ensure_pipeline_labels(self) -> None:
@@ -1145,10 +1307,17 @@ class GitLabForge(ForgeClient):
             description = LABEL_DESCRIPTIONS.get(label, "Pipeline-managed label")
             await self._ensure_label(label, color=color, description=description)
 
-        await asyncio.gather(*[
-            _create_one(label)
-            for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS, *REFINE_LABELS)
-        ])
+        await asyncio.gather(
+            *[
+                _create_one(label)
+                for label in (
+                    *WORKFLOW_LABELS,
+                    *REVIEW_LABELS,
+                    *MENTION_LABELS,
+                    *REFINE_LABELS,
+                )
+            ]
+        )
 
     # ------------------------------------------------------------------
     # Comments / search (since)
@@ -1163,14 +1332,20 @@ class GitLabForge(ForgeClient):
         ``last_seen_iso`` cursor still de-duplicates intra-day notes via
         the post-filter on ``created_at``.
         """
-        since_utc = since.astimezone(timezone.utc) if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        since_utc = (
+            since.astimezone(timezone.utc)
+            if since.tzinfo
+            else since.replace(tzinfo=timezone.utc)
+        )
         after_date = since_utc.date().isoformat()
         try:
             events = await self._api_paginated(
                 f"projects/{self._project_ref}/events",
                 params=[
-                    "-f", "action=commented",
-                    "-f", f"after={after_date}",
+                    "-f",
+                    "action=commented",
+                    "-f",
+                    f"after={after_date}",
                 ],
                 max_pages=3,
             )
@@ -1199,13 +1374,19 @@ class GitLabForge(ForgeClient):
         then flattens each MR's discussions whose top note falls after the
         cursor.
         """
-        since_utc = since.astimezone(timezone.utc) if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        since_utc = (
+            since.astimezone(timezone.utc)
+            if since.tzinfo
+            else since.replace(tzinfo=timezone.utc)
+        )
         try:
             mrs = await self._api_paginated(
                 f"projects/{self._project_ref}/merge_requests",
                 params=[
-                    "-f", f"updated_after={format_iso_utc(since_utc)}",
-                    "-f", "state=opened",
+                    "-f",
+                    f"updated_after={format_iso_utc(since_utc)}",
+                    "-f",
+                    "state=opened",
                 ],
                 max_pages=2,
             )
@@ -1235,15 +1416,19 @@ class GitLabForge(ForgeClient):
                     if not created or _is_before(created, since_utc):
                         continue
                     try:
-                        result.append(CommentRef(
-                            comment_id=int(note["id"]),
-                            body=str(note.get("body") or ""),
-                            html_url=f"{mr_web}#note_{note.get('id')}",
-                            issue_url=str(mr.get("web_url") or ""),
-                            author=str(((note.get("author") or {}).get("username")) or ""),
-                            kind="pr_review",
-                            is_pr_comment=True,
-                        ))
+                        result.append(
+                            CommentRef(
+                                comment_id=int(note["id"]),
+                                body=str(note.get("body") or ""),
+                                html_url=f"{mr_web}#note_{note.get('id')}",
+                                issue_url=str(mr.get("web_url") or ""),
+                                author=str(
+                                    ((note.get("author") or {}).get("username")) or ""
+                                ),
+                                kind="pr_review",
+                                is_pr_comment=True,
+                            )
+                        )
                     except (KeyError, TypeError, ValueError) as exc:
                         logger.warning("skipping malformed GitLab MR note: %s", exc)
         return result
@@ -1255,7 +1440,7 @@ class GitLabForge(ForgeClient):
         - kind="issue"     → ``/-/issues/<iid>``
         - kind="pr_review" → ``/-/merge_requests/<iid>``
         """
-        author = (note.get("author") or event.get("author") or {})
+        author = note.get("author") or event.get("author") or {}
         # Reconstruct the target web URL from the event payload — GitLab events
         # do not always carry a fully-formed ``web_url`` for the note.
         target_iid = note.get("noteable_iid") or event.get("target_iid")
@@ -1286,7 +1471,9 @@ class GitLabForge(ForgeClient):
         return CommentRef(
             comment_id=int(note.get("id") or event.get("target_id") or 0),
             body=str(note.get("body") or ""),
-            html_url=f"{target_web}#note_{note.get('id')}" if note.get("id") else target_web,
+            html_url=(
+                f"{target_web}#note_{note.get('id')}" if note.get("id") else target_web
+            ),
             issue_url=target_web,
             author=str(author.get("username") or author.get("name") or ""),
             kind=kind,
@@ -1294,7 +1481,10 @@ class GitLabForge(ForgeClient):
         )
 
     async def search_items_mentioning(
-        self, query: str, *, limit: int = 50,
+        self,
+        query: str,
+        *,
+        limit: int = 50,
     ) -> Tuple[List[IssueRef], List[PrRef]]:
         """Search issues and MRs whose body contains *query*.
 
@@ -1305,16 +1495,20 @@ class GitLabForge(ForgeClient):
         issues_task = self._api_paginated(
             f"projects/{self._project_ref}/search",
             params=[
-                "-f", "scope=issues",
-                "-f", f"search={query}",
+                "-f",
+                "scope=issues",
+                "-f",
+                f"search={query}",
             ],
             max_pages=_pages_for_limit(limit),
         )
         mrs_task = self._api_paginated(
             f"projects/{self._project_ref}/search",
             params=[
-                "-f", "scope=merge_requests",
-                "-f", f"search={query}",
+                "-f",
+                "scope=merge_requests",
+                "-f",
+                f"search={query}",
             ],
             max_pages=_pages_for_limit(limit),
         )
@@ -1375,6 +1569,7 @@ def _is_before(iso_str: str, cursor: datetime) -> bool:
     """
     try:
         from deile.orchestration.pipeline._time_utils import parse_iso_utc
+
         dt = parse_iso_utc(iso_str)
     except (ValueError, ImportError):
         return False

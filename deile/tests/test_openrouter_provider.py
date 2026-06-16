@@ -47,7 +47,9 @@ def config() -> ProviderConfig:
         provider_id="openrouter",
         api_key_env="OPENROUTER_API_KEY",
         base_url="https://openrouter.ai/api/v1",
-        sdk_kwargs={"default_headers": {"HTTP-Referer": "https://x", "X-Title": "DEILE"}},
+        sdk_kwargs={
+            "default_headers": {"HTTP-Referer": "https://x", "X-Title": "DEILE"}
+        },
     )
 
 
@@ -182,10 +184,12 @@ def test_estimate_cost_prefers_reported():
         label="x",
     )
     cfg = ProviderConfig(
-        provider_id="openrouter", api_key_env="OPENROUTER_API_KEY",
+        provider_id="openrouter",
+        api_key_env="OPENROUTER_API_KEY",
         base_url="https://openrouter.ai/api/v1",
     )
     import os
+
     os.environ["OPENROUTER_API_KEY"] = "sk-or-test-key"
     with patch("openai.AsyncOpenAI"):
         p = OpenRouterProvider(handle, cfg)
@@ -208,15 +212,19 @@ def test_reported_cost_from_handles_response_and_usage(provider):
 @pytest.mark.asyncio
 async def test_stream_uses_reported_cost(provider):
     text = SimpleNamespace(
-        choices=[SimpleNamespace(
-            delta=SimpleNamespace(content="hello", tool_calls=None),
-            finish_reason=None)],
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content="hello", tool_calls=None),
+                finish_reason=None,
+            )
+        ],
         usage=None,
     )
     final = SimpleNamespace(
         choices=[SimpleNamespace(delta=None, finish_reason="stop")],
         usage=SimpleNamespace(
-            prompt_tokens=5, completion_tokens=8,
+            prompt_tokens=5,
+            completion_tokens=8,
             prompt_tokens_details=SimpleNamespace(cached_tokens=0),
             cost=0.009,
         ),
@@ -230,9 +238,11 @@ async def test_stream_uses_reported_cost(provider):
         side_effect=lambda **kw: _replay([text, final])
     )
     usage_events = [
-        ev async for ev in provider.generate_stream(
+        ev
+        async for ev in provider.generate_stream(
             [ModelMessage(role="user", content="hi")]
-        ) if ev.type == StreamEventType.USAGE_FINAL
+        )
+        if ev.type == StreamEventType.USAGE_FINAL
     ]
     assert len(usage_events) == 1
     assert usage_events[0].usage.cost_usd == pytest.approx(0.009)
@@ -273,7 +283,12 @@ def test_bootstrap_registers_openrouter_when_key_present(monkeypatch):
     from deile.core.models.tier_router import reset_tier_router
 
     yaml_path = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
-    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY"):
+    for k in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GOOGLE_API_KEY",
+    ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     reset_tier_router()
@@ -290,8 +305,13 @@ def test_bootstrap_skips_openrouter_without_key(monkeypatch):
     from deile.core.models.bootstrap import bootstrap_providers
 
     yaml_path = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
-    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY",
-              "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+    for k in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY",
+    ):
         monkeypatch.delenv(k, raising=False)
     registered = bootstrap_providers(yaml_path=yaml_path)
     assert "openrouter" not in registered
@@ -299,6 +319,7 @@ def test_bootstrap_skips_openrouter_without_key(monkeypatch):
 
 def test_bootstrap_maps_openrouter_class():
     from deile.core.models.bootstrap import _PROVIDER_CLASSES
+
     assert _PROVIDER_CLASSES["openrouter"].endswith("OpenRouterProvider")
 
 
@@ -335,10 +356,12 @@ async def test_e2e_chat_records_reported_cost_in_usage_repo(provider):
     fake_repo = MagicMock()
     fake_repo.record_from_provider = AsyncMock(side_effect=_fake_record_from_provider)
 
-    with patch("deile.storage.usage_repository.get_usage_repository",
-               return_value=fake_repo):
+    with patch(
+        "deile.storage.usage_repository.get_usage_repository", return_value=fake_repo
+    ):
         text, tool_results, usage = await provider.chat_with_tools(
-            [ModelMessage(role="user", content="hi")], tools=[],
+            [ModelMessage(role="user", content="hi")],
+            tools=[],
         )
 
     assert text == "done"

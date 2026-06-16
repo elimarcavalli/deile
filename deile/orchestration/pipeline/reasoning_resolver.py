@@ -62,8 +62,7 @@ def resolve_stage_reasoning(stage: str) -> Optional[str]:
     """
     if stage not in PIPELINE_STAGES:
         raise ValueError(
-            f"unknown pipeline stage: {stage!r} "
-            f"(expected one of {PIPELINE_STAGES})"
+            f"unknown pipeline stage: {stage!r} " f"(expected one of {PIPELINE_STAGES})"
         )
     settings = get_settings()
     raw = getattr(settings, f"pipeline_reasoning_{stage}", None)

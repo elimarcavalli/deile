@@ -41,33 +41,40 @@ import worker_server  # noqa: E402
 # _is_synthetic_snowflake — pure predicate
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("snowflake", [
-    # channel_id flavors
-    "pipeline-issue-299",
-    "pipeline-pr-123",
-    "pipeline-mention-pr-264",
-    "cli:abc123:0",
-    "cli:abc123:42",
-    # message_id flavors (slash command synthetic IDs)
-    "slash-1734567890123",
-    "slash-1",
-    # defensive cases
-    "",                       # empty → synthetic
-    None,                     # None → synthetic
-    "not-a-number",
-    "123abc",                 # has digit + letter → synthetic
-    "12-34",                  # has dash → synthetic
-])
+
+@pytest.mark.parametrize(
+    "snowflake",
+    [
+        # channel_id flavors
+        "pipeline-issue-299",
+        "pipeline-pr-123",
+        "pipeline-mention-pr-264",
+        "cli:abc123:0",
+        "cli:abc123:42",
+        # message_id flavors (slash command synthetic IDs)
+        "slash-1734567890123",
+        "slash-1",
+        # defensive cases
+        "",  # empty → synthetic
+        None,  # None → synthetic
+        "not-a-number",
+        "123abc",  # has digit + letter → synthetic
+        "12-34",  # has dash → synthetic
+    ],
+)
 def test_synthetic_ids_are_detected(snowflake):
     assert worker_server._is_synthetic_snowflake(snowflake) is True
 
 
-@pytest.mark.parametrize("snowflake", [
-    "1",
-    "42",
-    "1475913578648436909",    # real-shaped snowflake
-    "9999999999999999999",    # 19 digits
-])
+@pytest.mark.parametrize(
+    "snowflake",
+    [
+        "1",
+        "42",
+        "1475913578648436909",  # real-shaped snowflake
+        "9999999999999999999",  # 19 digits
+    ],
+)
 def test_real_snowflakes_pass_through(snowflake: str):
     assert worker_server._is_synthetic_snowflake(snowflake) is False
 
@@ -80,6 +87,7 @@ def test_legacy_alias_still_works():
 # --------------------------------------------------------------------------
 # _post/_edit/_react — short-circuit on synthetic ids, no bot call
 # --------------------------------------------------------------------------
+
 
 async def test_post_status_message_no_ops_on_synthetic_channel():
     """Synthetic channel must NOT reach _bot_facade()."""
@@ -96,7 +104,9 @@ async def test_edit_status_message_no_ops_on_synthetic_channel():
     fake_facade.message_edit = AsyncMock()
     with patch.object(worker_server, "_bot_facade", return_value=fake_facade):
         result = await worker_server._edit_status_message(
-            "cli:sess:0", "12345", "hi",
+            "cli:sess:0",
+            "12345",
+            "hi",
         )
     assert result is False
     fake_facade.message_edit.assert_not_called()
@@ -108,7 +118,9 @@ async def test_edit_status_message_no_ops_on_synthetic_message_id():
     fake_facade.message_edit = AsyncMock()
     with patch.object(worker_server, "_bot_facade", return_value=fake_facade):
         result = await worker_server._edit_status_message(
-            "12345", "slash-1734567890123", "hi",
+            "12345",
+            "slash-1734567890123",
+            "hi",
         )
     assert result is False
     fake_facade.message_edit.assert_not_called()
@@ -119,7 +131,9 @@ async def test_react_no_ops_on_synthetic_channel():
     fake_facade.reaction_add = AsyncMock()
     with patch.object(worker_server, "_bot_facade", return_value=fake_facade):
         result = await worker_server._react(
-            "pipeline-issue-42", "12345", "🔧",
+            "pipeline-issue-42",
+            "12345",
+            "🔧",
         )
     assert result is False
     fake_facade.reaction_add.assert_not_called()
@@ -131,8 +145,8 @@ async def test_react_no_ops_on_synthetic_message_id():
     fake_facade.reaction_add = AsyncMock()
     with patch.object(worker_server, "_bot_facade", return_value=fake_facade):
         result = await worker_server._react(
-            "1499608051114836128",   # canal real
-            "slash-1734567890123",   # user_message_id sintético do /deile
+            "1499608051114836128",  # canal real
+            "slash-1734567890123",  # user_message_id sintético do /deile
             "🔧",
         )
     assert result is False
@@ -142,6 +156,7 @@ async def test_react_no_ops_on_synthetic_message_id():
 # --------------------------------------------------------------------------
 # _post/_edit/_react — real snowflakes DO call through (sanity)
 # --------------------------------------------------------------------------
+
 
 async def test_post_status_message_calls_facade_on_real_snowflake():
     fake_result = MagicMock()
@@ -160,7 +175,9 @@ async def test_edit_status_message_calls_facade_on_real_snowflake():
     fake_facade.message_edit = AsyncMock()
     with patch.object(worker_server, "_bot_facade", return_value=fake_facade):
         result = await worker_server._edit_status_message(
-            "12345", "67890", "hi",
+            "12345",
+            "67890",
+            "hi",
         )
     assert result is True
     fake_facade.message_edit.assert_awaited_once()

@@ -18,6 +18,7 @@ async def fake_stream_yields(*events):
     async def gen(self, *args, **kwargs):
         for e in events:
             yield e
+
     return gen
 
 

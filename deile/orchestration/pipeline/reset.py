@@ -38,7 +38,8 @@ async def unlock_issue(github, issue_number: int) -> UnlockResult:
         return UnlockResult(False, [], f"gh error fetching issue: {exc}")
 
     to_remove = [
-        lb for lb in issue.labels
+        lb
+        for lb in issue.labels
         if any(lb.startswith(prefix) for prefix in _LOCK_LABEL_PREFIXES)
     ]
     if not to_remove:

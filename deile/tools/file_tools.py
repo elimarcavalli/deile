@@ -6,20 +6,28 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import ValidationError
+
 # `LocalFileAccessViolation` is both caught locally (6 `except` clauses
 # in Read/Write/Edit/List/Delete `execute_sync`) and re-exported for
 # existing test imports. `_post_write_validation_hint` and
 # `_validate_path_within_working_directory` are re-exported only
 # (no direct caller in this module) — see `__all__` below.
 from ._file_listing import _collect_entries, _render_tree
-from ._path_resolution import (_PATH_ARG_KEYS_EDIT, _PATH_ARG_KEYS_FALLBACK,
-                               _PATH_ARG_KEYS_PRIMARY, _PATH_ARG_KEYS_WRITE,
-                               LocalFileAccessViolation, ResolvedPath,
-                               _apply_post_write_hint, _extract_path_arg,
-                               _looks_like_outside_project, _not_found_message,
-                               _post_write_validation_hint,
-                               _resolve_project_path,
-                               _validate_path_within_working_directory)
+from ._path_resolution import (
+    _PATH_ARG_KEYS_EDIT,
+    _PATH_ARG_KEYS_FALLBACK,
+    _PATH_ARG_KEYS_PRIMARY,
+    _PATH_ARG_KEYS_WRITE,
+    LocalFileAccessViolation,
+    ResolvedPath,
+    _apply_post_write_hint,
+    _extract_path_arg,
+    _looks_like_outside_project,
+    _not_found_message,
+    _post_write_validation_hint,
+    _resolve_project_path,
+    _validate_path_within_working_directory,
+)
 from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
@@ -45,17 +53,17 @@ __all__ = [
 # file reference, e.g. "read the readme". Used by ReadFileTool path-extraction
 # regexes; shared so the vocabulary stays in one place.
 _PATH_EXTRACTION_FILLERS = (
-    r'(?:(?:the|a|an|me|my|this|that|o|a|os|as|um|uma|este|esta|esse|essa)\s+)*'
+    r"(?:(?:the|a|an|me|my|this|that|o|a|os|as|um|uma|este|esta|esse|essa)\s+)*"
 )
 
 
 class ReadFileTool(SyncTool):
     """Ferramenta para leitura de arquivos"""
-    
+
     @property
     def name(self) -> str:
         return "read_file"
-    
+
     def _read_file_universal(self, file_path: Path) -> str:
         """Lê qualquer tipo de arquivo com detecção robusta de encoding e verificação de tamanho"""
         import chardet
@@ -72,17 +80,19 @@ class ReadFileTool(SyncTool):
             if file_size > max_size:
                 size_mb = file_size / (1024 * 1024)
                 max_mb = max_size / (1024 * 1024)
-                raise ValueError(f"Arquivo muito grande ({size_mb:.2f}MB). Limite: {max_mb:.2f}MB")
+                raise ValueError(
+                    f"Arquivo muito grande ({size_mb:.2f}MB). Limite: {max_mb:.2f}MB"
+                )
 
             # Lê o arquivo como bytes primeiro
-            with open(file_path, 'rb') as f:
+            with open(file_path, "rb") as f:
                 raw_data = f.read()
 
             # Verifica se é arquivo binário analisando os primeiros bytes
             def is_binary_file(data):
                 # Verifica presença de bytes nulos nos primeiros 1024 bytes
                 sample = data[:1024]
-                return b'\x00' in sample
+                return b"\x00" in sample
 
             # Se é arquivo binário, tenta interpretação especial
             if is_binary_file(raw_data):
@@ -92,47 +102,61 @@ class ReadFileTool(SyncTool):
             if settings.file_encoding_detection:
                 try:
                     detected = chardet.detect(raw_data)
-                    encoding = detected.get('encoding', 'utf-8')
-                    confidence = detected.get('confidence', 0)
+                    encoding = detected.get("encoding", "utf-8")
+                    confidence = detected.get("confidence", 0)
 
-                    logger.debug(f"Detected encoding for {file_path}: {encoding} (confidence: {confidence:.2f})")
+                    logger.debug(
+                        f"Detected encoding for {file_path}: {encoding} (confidence: {confidence:.2f})"
+                    )
 
                     # Se confiança baixa, tenta encodings comuns
                     if confidence < 0.7:
-                        encodings_to_try = ['utf-8', 'utf-16', 'latin-1', 'cp1252', 'iso-8859-1']
+                        encodings_to_try = [
+                            "utf-8",
+                            "utf-16",
+                            "latin-1",
+                            "cp1252",
+                            "iso-8859-1",
+                        ]
                     else:
-                        encodings_to_try = [encoding, 'utf-8', 'utf-16', 'latin-1']
+                        encodings_to_try = [encoding, "utf-8", "utf-16", "latin-1"]
 
                     # Tenta cada encoding
                     for enc in encodings_to_try:
                         try:
                             content = raw_data.decode(enc)
                             # Remove BOM se presente
-                            if content.startswith('\ufeff'):
+                            if content.startswith("\ufeff"):
                                 content = content[1:]
-                            logger.debug(f"Successfully read {file_path} with encoding: {enc}")
+                            logger.debug(
+                                f"Successfully read {file_path} with encoding: {enc}"
+                            )
                             return content
                         except (UnicodeDecodeError, UnicodeError):
                             continue
 
                     # Fallback final - força utf-8 com errors='replace'
-                    content = raw_data.decode('utf-8', errors='replace')
-                    logger.warning(f"Used fallback utf-8 with errors='replace' for {file_path}")
+                    content = raw_data.decode("utf-8", errors="replace")
+                    logger.warning(
+                        f"Used fallback utf-8 with errors='replace' for {file_path}"
+                    )
                     return content
 
                 except ImportError:
                     # Se chardet não disponível, usa fallbacks manuais
-                    logger.debug("chardet not available, using manual encoding detection")
+                    logger.debug(
+                        "chardet not available, using manual encoding detection"
+                    )
                     return self._read_file_manual_encoding(file_path)
             else:
                 # Se detecção automática desabilitada, força UTF-8
-                return raw_data.decode('utf-8', errors='replace')
+                return raw_data.decode("utf-8", errors="replace")
 
         except Exception as e:
             logger.error(f"Error in universal file reading for {file_path}: {e}")
             # Fallback final mais seguro
             try:
-                return file_path.read_text(encoding='utf-8', errors='replace')
+                return file_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 return f"[ERRO: Não foi possível ler o arquivo {file_path}: {str(e)}]"
 
@@ -143,18 +167,18 @@ class ReadFileTool(SyncTool):
 
         # Detecta tipo de arquivo baseado na extensão e magic numbers
         magic_signatures = {
-            b'\x89PNG\r\n\x1a\n': 'PNG Image',
-            b'\xff\xd8\xff': 'JPEG Image',
-            b'GIF8': 'GIF Image',
-            b'%PDF': 'PDF Document',
-            b'PK\x03\x04': 'ZIP Archive (or Office Document)',
-            b'\x50\x4b\x05\x06': 'ZIP Archive (empty)',
-            b'\x50\x4b\x07\x08': 'ZIP Archive (spanned)',
-            b'RIFF': 'RIFF Media File (WAV/AVI)',
-            b'\x00\x00\x01\x00': 'ICO Icon',
-            b'BM': 'Bitmap Image',
-            b'\x1f\x8b': 'GZIP Archive',
-            b'7z\xbc\xaf\x27\x1c': '7-Zip Archive'
+            b"\x89PNG\r\n\x1a\n": "PNG Image",
+            b"\xff\xd8\xff": "JPEG Image",
+            b"GIF8": "GIF Image",
+            b"%PDF": "PDF Document",
+            b"PK\x03\x04": "ZIP Archive (or Office Document)",
+            b"\x50\x4b\x05\x06": "ZIP Archive (empty)",
+            b"\x50\x4b\x07\x08": "ZIP Archive (spanned)",
+            b"RIFF": "RIFF Media File (WAV/AVI)",
+            b"\x00\x00\x01\x00": "ICO Icon",
+            b"BM": "Bitmap Image",
+            b"\x1f\x8b": "GZIP Archive",
+            b"7z\xbc\xaf\x27\x1c": "7-Zip Archive",
         }
 
         # Verifica magic numbers
@@ -165,7 +189,7 @@ class ReadFileTool(SyncTool):
                 break
 
         # Formatação especial para tipos conhecidos
-        if 'image' in file_type.lower():
+        if "image" in file_type.lower():
             return f"""[ARQUIVO DE IMAGEM]
 Tipo: {file_type}
 Tamanho: {file_size:,} bytes ({file_size / 1024:.1f} KB)
@@ -178,7 +202,7 @@ Este é um arquivo de imagem binário. Para visualizar:
 - Primeira linha de bytes: {raw_data[:32].hex()}
 """
 
-        elif 'pdf' in file_type.lower():
+        elif "pdf" in file_type.lower():
             return f"""[DOCUMENTO PDF]
 Tipo: {file_type}
 Tamanho: {file_size:,} bytes ({file_size / 1024:.1f} KB)
@@ -189,7 +213,7 @@ Este é um documento PDF. Para extrair texto:
 - Primeira linha de bytes: {raw_data[:64].decode('ascii', errors='replace')}
 """
 
-        elif 'archive' in file_type.lower() or 'zip' in file_type.lower():
+        elif "archive" in file_type.lower() or "zip" in file_type.lower():
             return f"""[ARQUIVO COMPACTADO]
 Tipo: {file_type}
 Tamanho: {file_size:,} bytes ({file_size / 1024:.1f} KB)
@@ -203,7 +227,7 @@ Este é um arquivo compactado. Para extrair:
 
         else:
             # Tenta ver se há algum texto legível no arquivo
-            sample_text = raw_data[:512].decode('utf-8', errors='replace')
+            sample_text = raw_data[:512].decode("utf-8", errors="replace")
             readable_chars = sum(1 for c in sample_text if c.isprintable())
 
             if readable_chars > len(sample_text) * 0.7:  # Se 70%+ são legíveis
@@ -229,40 +253,52 @@ Este arquivo contém dados binários não-texto.
 Primeira linha de bytes (hex): {raw_data[:32].hex()}
 Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace')}
 """
-    
+
     def _read_file_manual_encoding(self, file_path: Path) -> str:
         """Detecção manual de encoding sem chardet"""
-        encodings = ['utf-8', 'utf-16', 'utf-16-le', 'utf-16-be', 'latin-1', 'cp1252', 'iso-8859-1']
-        
+        encodings = [
+            "utf-8",
+            "utf-16",
+            "utf-16-le",
+            "utf-16-be",
+            "latin-1",
+            "cp1252",
+            "iso-8859-1",
+        ]
+
         for encoding in encodings:
             try:
                 content = file_path.read_text(encoding=encoding)
                 # Remove BOM se presente
-                if content.startswith('\ufeff'):
+                if content.startswith("\ufeff"):
                     content = content[1:]
-                logger.debug(f"Successfully read {file_path} with manual encoding: {encoding}")
+                logger.debug(
+                    f"Successfully read {file_path} with manual encoding: {encoding}"
+                )
                 return content
             except (UnicodeDecodeError, UnicodeError):
                 continue
-        
+
         # Última tentativa com errors='replace'
-        logger.warning(f"All encodings failed for {file_path}, using utf-8 with errors='replace'")
-        return file_path.read_text(encoding='utf-8', errors='replace')
-    
+        logger.warning(
+            f"All encodings failed for {file_path}, using utf-8 with errors='replace'"
+        )
+        return file_path.read_text(encoding="utf-8", errors="replace")
+
     @property
     def description(self) -> str:
         return "Reads the content of a file"
-    
+
     @property
     def category(self) -> str:
         return "file"
-    
+
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa leitura de arquivo"""
         # CORREÇÃO ROBUSTA: Debug e múltiplos fallbacks para extração de file_path
         logger.debug(f"ReadFileTool - parsed_args: {context.parsed_args}")
         logger.debug(f"ReadFileTool - file_list: {context.file_list}")
-        
+
         # Obtém caminho do arquivo dos argumentos parseados ou da file_list.
         # ReadFileTool's historical precedence is two-stage: PRIMARY keys
         # (``file_path``, ``path``) beat ``file_list``, but ``file_list`` beats
@@ -278,7 +314,9 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         # behavior where an explicit ``file_list`` argument beats the LLM's
         # near-miss synonyms.
         if not file_path:
-            file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_FALLBACK)
+            file_path = _extract_path_arg(
+                context.parsed_args, keys=_PATH_ARG_KEYS_FALLBACK
+            )
 
         # NOVO: Fallback para argumentos sem nome (posicionais)
         if not file_path and context.parsed_args:
@@ -287,23 +325,23 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
             if len(args_values) == 1 and isinstance(args_values[0], str):
                 file_path = args_values[0]
                 logger.debug(f"Using positional argument as file_path: {file_path}")
-        
+
         # NOVO: Fallback para user_input se contém referência a arquivo
         if not file_path and context.user_input:
             # Procura por padrões de arquivo no user_input
             file_patterns = [
-                r'(?:file|arquivo)\s+([^\s]+)',
-                r'([^\s]+\.(?:txt|py|md|json|js|html|css|xml|csv|ya?ml|toml|conf|cfg|ini|sh|rst))',
-                r'@([^\s]+)',  # Remove @ e usa só o nome do arquivo
-                rf'(?:ler|read|abrir|open|examine)\s+{_PATH_EXTRACTION_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s]+)',
-                rf'(?:show|mostrar|exibir)\s+{_PATH_EXTRACTION_FILLERS}(?:arquivo\s+)?(?:@)?([^\s]+)'
+                r"(?:file|arquivo)\s+([^\s]+)",
+                r"([^\s]+\.(?:txt|py|md|json|js|html|css|xml|csv|ya?ml|toml|conf|cfg|ini|sh|rst))",
+                r"@([^\s]+)",  # Remove @ e usa só o nome do arquivo
+                rf"(?:ler|read|abrir|open|examine)\s+{_PATH_EXTRACTION_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s]+)",
+                rf"(?:show|mostrar|exibir)\s+{_PATH_EXTRACTION_FILLERS}(?:arquivo\s+)?(?:@)?([^\s]+)",
             ]
             for pattern in file_patterns:
                 match = re.search(pattern, context.user_input, re.IGNORECASE)
                 if match:
                     file_path = match.group(1)
                     # Remove @ se presente no início do nome do arquivo
-                    if file_path.startswith('@'):
+                    if file_path.startswith("@"):
                         file_path = file_path[1:]
                     logger.debug(f"Extracted file_path from user_input: {file_path}")
                     break
@@ -327,17 +365,17 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
 
                 # Padrões para extrair referências naturais a arquivos
                 query_patterns = [
-                    rf'(?:leia?|read|examine?|show|mostrar|abrir|open)\s+{_PATH_EXTRACTION_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s,\.!?]+)',
-                    r'(?:arquivo|file)\s+([^\s,\.!?]+)',
-                    r'([a-zA-Z0-9_\-]+(?:\.[a-zA-Z0-9]+)?)\s*(?:file|arquivo)?',
-                    r'@([a-zA-Z0-9_\-\.]+)',  # Referencias com @
+                    rf"(?:leia?|read|examine?|show|mostrar|abrir|open)\s+{_PATH_EXTRACTION_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s,\.!?]+)",
+                    r"(?:arquivo|file)\s+([^\s,\.!?]+)",
+                    r"([a-zA-Z0-9_\-]+(?:\.[a-zA-Z0-9]+)?)\s*(?:file|arquivo)?",
+                    r"@([a-zA-Z0-9_\-\.]+)",  # Referencias com @
                 ]
 
                 potential_query = None
                 for pattern in query_patterns:
                     match = re.search(pattern, context.user_input, re.IGNORECASE)
                     if match:
-                        candidate = re.sub(r'[^\w\-\.]', '', match.group(1).strip())
+                        candidate = re.sub(r"[^\w\-\.]", "", match.group(1).strip())
                         # Skip 1-char captures (e.g. "I" from "I want to ..."):
                         # they fuzz-match arbitrary files at high confidence.
                         if len(candidate) > 1:
@@ -345,18 +383,26 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                             break
 
                 if potential_query:
-                    logger.debug(f"Attempting smart file resolution for query: '{potential_query}'")
+                    logger.debug(
+                        f"Attempting smart file resolution for query: '{potential_query}'"
+                    )
 
                     # Usa o file resolver para encontrar o arquivo
                     file_resolver = get_file_resolver(Path(context.working_directory))
-                    best_match = file_resolver.get_best_match(potential_query, min_confidence=0.6)
+                    best_match = file_resolver.get_best_match(
+                        potential_query, min_confidence=0.6
+                    )
 
                     if best_match:
                         file_path = str(best_match.path)
-                        logger.info(f"✅ Smart resolution: '{potential_query}' → '{best_match.path.name}' (confidence: {best_match.confidence:.1%})")
+                        logger.info(
+                            f"✅ Smart resolution: '{potential_query}' → '{best_match.path.name}' (confidence: {best_match.confidence:.1%})"
+                        )
                     else:
                         # Se não encontrou match bom, tenta obter sugestões
-                        suggestions = file_resolver.suggest_alternatives(potential_query, max_suggestions=3)
+                        suggestions = file_resolver.suggest_alternatives(
+                            potential_query, max_suggestions=3
+                        )
                         if suggestions:
                             suggestion_names = [s.path.name for s in suggestions[:3]]
                             error_msg = (
@@ -365,14 +411,18 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                             )
                             return ToolResult.error_result(
                                 message=error_msg,
-                                error=ValidationError("file not found with suggestions")
+                                error=ValidationError(
+                                    "file not found with suggestions"
+                                ),
                             )
                         # No match and no suggestions: still surface a clear
                         # "not found" message rather than the generic
                         # "no file path provided" error below.
                         return ToolResult.error_result(
                             message=f"File '{potential_query}' not found in working directory.",
-                            error=FileNotFoundError(f"File '{potential_query}' not found"),
+                            error=FileNotFoundError(
+                                f"File '{potential_query}' not found"
+                            ),
                         )
 
             except Exception as e:
@@ -386,10 +436,9 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                 f"file_list={context.file_list}, user_input='{context.user_input}'"
             )
             return ToolResult.error_result(
-                message=error_msg,
-                error=ValidationError("file_path is required")
+                message=error_msg, error=ValidationError("file_path is required")
             )
-        
+
         try:
             # Resolve and validate the path. The path resolver normalizes
             # leading '/', '@', '~', backslashes, Windows drives, etc.
@@ -403,7 +452,7 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                         resolved,
                         file_path,
                         detail="Use list_files to inspect the project tree "
-                               "before assuming a path.",
+                        "before assuming a path.",
                         include_bash_hint=True,
                         bash_verb="cat",
                     ),
@@ -421,14 +470,20 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
 
             # Verifica configurações de segurança (se habilitadas)
             from ..config.settings import get_settings
+
             settings = get_settings()
 
             if settings.enable_file_safety_checks and not settings.allow_all_file_types:
                 file_extension = full_path.suffix.lower()
-                if file_extension and file_extension not in settings.allowed_file_extensions:
+                if (
+                    file_extension
+                    and file_extension not in settings.allowed_file_extensions
+                ):
                     return ToolResult.error_result(
                         message=f"File type not allowed: {file_extension}. Allowed types: {settings.allowed_file_extensions}",
-                        error=PermissionError(f"File extension '{file_extension}' not in allowed list")
+                        error=PermissionError(
+                            f"File extension '{file_extension}' not in allowed list"
+                        ),
                     )
 
             # Lê conteúdo do arquivo com sistema universal
@@ -457,9 +512,7 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                 f"  project_relative: {resolved.relative_to_cwd}",
             ]
             if resolved.note:
-                message_parts.append(
-                    f"  ⚠️  PATH_NORMALIZED: {resolved.note}"
-                )
+                message_parts.append(f"  ⚠️  PATH_NORMALIZED: {resolved.note}")
 
             return ToolResult(
                 status=ToolStatus.SUCCESS,
@@ -476,38 +529,34 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                     "rich_display": rich_display,
                 },
             )
-            
+
         except LocalFileAccessViolation as e:
-            return ToolResult.error_result(
-                message=str(e),
-                error=e
-            )
+            return ToolResult.error_result(message=str(e), error=e)
         except UnicodeDecodeError as e:
             return ToolResult.error_result(
-                message=f"Error decoding file {file_path}: {str(e)}",
-                error=e
+                message=f"Error decoding file {file_path}: {str(e)}", error=e
             )
         except Exception as e:
             return ToolResult.error_result(
-                message=f"Error reading file {file_path}: {str(e)}",
-                error=e
+                message=f"Error reading file {file_path}: {str(e)}", error=e
             )
-    
+
+
 class WriteFileTool(SyncTool):
     """Ferramenta para escrita de arquivos"""
-    
+
     @property
     def name(self) -> str:
         return "write_file"
-    
+
     @property
     def description(self) -> str:
         return "Writes content to a file"
-    
+
     @property
     def category(self) -> str:
         return "file"
-    
+
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa escrita de arquivo"""
         # DEBUG: Log dos argumentos recebidos
@@ -521,72 +570,76 @@ class WriteFileTool(SyncTool):
         # arquivo, a tool não pergunta — apenas garante fidelidade total via
         # escrita atômica + read-back (ver _atomic_write_text abaixo).
         overwrite = context.parsed_args.get("overwrite", True)
-        
+
         # 1. Tenta argumentos nomeados primeiro. WriteFileTool's original
         # precedence is ``file_path > filename > path > file > filepath`` —
         # pinned via ``_PATH_ARG_KEYS_WRITE`` so the centralized helper does
         # not silently reshuffle the synonym order.
         file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_WRITE)
 
-        if 'content' in context.parsed_args:
-            content = context.parsed_args['content']
-        elif 'text' in context.parsed_args:
-            content = context.parsed_args['text']
-        elif 'data' in context.parsed_args:
-            content = context.parsed_args['data']
-        
+        if "content" in context.parsed_args:
+            content = context.parsed_args["content"]
+        elif "text" in context.parsed_args:
+            content = context.parsed_args["text"]
+        elif "data" in context.parsed_args:
+            content = context.parsed_args["data"]
+
         # 2. Fallback para argumentos posicionais
         if not file_path and len(context.parsed_args) >= 2:
             args_values = list(context.parsed_args.values())
             file_path = args_values[0]
             content = args_values[1]
-        
+
         # 3. Fallback para parsing do user_input
         if not file_path or content is None:
             user_input = context.user_input.lower()
-            
+
             # Padrões para extrair file_path
             path_patterns = [
                 r"write\s+(?:file\s+)?['\"]?([^'\"]+?)['\"]?\s+with",
                 r"create\s+(?:file\s+)?['\"]?([^'\"]+?)['\"]?\s+with",
                 r"(?:file|arquivo)\s+['\"]?([^'\"]+?)['\"]?",
-                r"['\"]([^'\"]+?\.\w+)['\"]"
+                r"['\"]([^'\"]+?\.\w+)['\"]",
             ]
-            
+
             for pattern in path_patterns:
                 match = re.search(pattern, user_input)
                 if match and not file_path:
                     file_path = match.group(1).strip()
-                    logger.debug(f"WriteFileTool: Extracted file_path from user_input: {file_path}")
+                    logger.debug(
+                        f"WriteFileTool: Extracted file_path from user_input: {file_path}"
+                    )
                     break
-            
+
             # Padrões para extrair content
             content_patterns = [
                 r"with\s+content\s+['\"]([^'\"]*)['\"]",
                 r"with\s+['\"]([^'\"]*)['\"]",
-                r"content\s+['\"]([^'\"]*)['\"]"
+                r"content\s+['\"]([^'\"]*)['\"]",
             ]
-            
+
             for pattern in content_patterns:
                 match = re.search(pattern, context.user_input)
                 if match and content is None:
                     content = match.group(1)
-                    logger.debug(f"WriteFileTool: Extracted content from user_input: {content[:50] if content else 'None'}...")
+                    logger.debug(
+                        f"WriteFileTool: Extracted content from user_input: {content[:50] if content else 'None'}..."
+                    )
                     break
-        
+
         # Valida que content foi fornecido
         if content is None:
             return ToolResult.error_result(
                 message="No content provided",
-                error=ValidationError("content is required")
+                error=ValidationError("content is required"),
             )
-        
+
         if not file_path:
             return ToolResult.error_result(
                 message="No file path provided. Please specify a file to write.",
-                error=ValidationError("file_path is required")
+                error=ValidationError("file_path is required"),
             )
-        
+
         try:
             # Resolve and validate the path. The resolver normalizes common
             # LLM-confusion patterns (leading '/', '@', '~', backslashes,
@@ -674,16 +727,12 @@ class WriteFileTool(SyncTool):
             )
 
         except LocalFileAccessViolation as e:
-            return ToolResult.error_result(
-                message=str(e),
-                error=e
-            )
+            return ToolResult.error_result(message=str(e), error=e)
         except Exception as e:
             return ToolResult.error_result(
-                message=f"Error writing file {file_path}: {str(e)}",
-                error=e
+                message=f"Error writing file {file_path}: {str(e)}", error=e
             )
-    
+
     @staticmethod
     def _atomic_write_text(target: Path, content: str) -> None:
         """Escreve ``content`` em ``target`` de forma atômica e fiel.
@@ -734,6 +783,7 @@ class WriteFileTool(SyncTool):
             except FileNotFoundError:
                 pass
             raise
+
 
 class EditFileTool(SyncTool):
     """Edita arquivos existentes via lista ordenada de patches find/replace.
@@ -791,7 +841,9 @@ class EditFileTool(SyncTool):
 
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Aplica patches ao arquivo, atomicamente."""
-        logger.debug(f"EditFileTool - parsed_args keys: {list(context.parsed_args.keys())}")
+        logger.debug(
+            f"EditFileTool - parsed_args keys: {list(context.parsed_args.keys())}"
+        )
 
         # 1. Extrai file_path. EditFileTool's canonical order is
         # ``file_path > path > filename > file > filepath`` — pinned via
@@ -814,11 +866,15 @@ class EditFileTool(SyncTool):
             old = context.parsed_args.get("old_string")
             new = context.parsed_args.get("new_string")
             if old is not None and new is not None:
-                patches_raw = [{
-                    "find": old,
-                    "replace": new,
-                    "replace_all": bool(context.parsed_args.get("replace_all", False)),
-                }]
+                patches_raw = [
+                    {
+                        "find": old,
+                        "replace": new,
+                        "replace_all": bool(
+                            context.parsed_args.get("replace_all", False)
+                        ),
+                    }
+                ]
 
         if not isinstance(patches_raw, list) or not patches_raw:
             return ToolResult.error_result(
@@ -861,11 +917,13 @@ class EditFileTool(SyncTool):
                     ),
                     error=ValidationError(f"patch #{idx}: empty find"),
                 )
-            normalized.append({
-                "find": find,
-                "replace": replace,
-                "replace_all": replace_all,
-            })
+            normalized.append(
+                {
+                    "find": find,
+                    "replace": replace,
+                    "replace_all": replace_all,
+                }
+            )
 
         # 4. Resolve path e lê conteúdo atual.
         try:
@@ -880,11 +938,9 @@ class EditFileTool(SyncTool):
                     resolved,
                     file_path,
                     detail="edit_file only modifies existing files — use "
-                           "write_file to create new ones.",
+                    "write_file to create new ones.",
                 ),
-                error=FileNotFoundError(
-                    f"File '{resolved.relative_to_cwd}' not found"
-                ),
+                error=FileNotFoundError(f"File '{resolved.relative_to_cwd}' not found"),
             )
         if not full_path.is_file():
             return ToolResult.error_result(
@@ -936,9 +992,7 @@ class EditFileTool(SyncTool):
                         f"newlines).{hint} No change was written; original "
                         f"file is intact."
                     ),
-                    error=ValidationError(
-                        f"patch #{idx}: 'find' not found in buffer"
-                    ),
+                    error=ValidationError(f"patch #{idx}: 'find' not found in buffer"),
                     metadata={
                         "function_name": "edit_file",
                         "file_path": resolved.absolute,
@@ -976,12 +1030,14 @@ class EditFileTool(SyncTool):
                 replaced_count = 1
                 buffer = buffer.replace(find, replace, 1)
 
-            applied_log.append({
-                "index": idx,
-                "occurrences": occurrences,
-                "replaced": replaced_count,
-                "find_preview": find[:60] + ("…" if len(find) > 60 else ""),
-            })
+            applied_log.append(
+                {
+                    "index": idx,
+                    "occurrences": occurrences,
+                    "replaced": replaced_count,
+                    "find_preview": find[:60] + ("…" if len(find) > 60 else ""),
+                }
+            )
 
         # 6. No-op? Se nada mudou (ex.: find == replace), não reescreve disco.
         new_bytes = buffer.encode("utf-8")
@@ -1017,7 +1073,9 @@ class EditFileTool(SyncTool):
             )
 
         # 8. Display rico + validation hint pós-write quando aplicável.
-        line_count = buffer.count("\n") + (0 if buffer.endswith("\n") else 1 if buffer else 0)
+        line_count = buffer.count("\n") + (
+            0 if buffer.endswith("\n") else 1 if buffer else 0
+        )
         rich_lines = [f"● edit_file({resolved.relative_to_cwd})"]
         rich_lines.append(
             f"  ⎿ Applied {len(applied_log)} patch(es), now {len(new_bytes)} bytes / {line_count} lines"
@@ -1085,21 +1143,22 @@ class EditFileTool(SyncTool):
             )
         return ""
 
+
 class ListFilesTool(SyncTool):
     """Ferramenta para listar arquivos"""
-    
+
     @property
     def name(self) -> str:
         return "list_files"
-    
+
     @property
     def description(self) -> str:
         return "Lists files and directories in a given path"
-    
+
     @property
     def category(self) -> str:
         return "file"
-    
+
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa listagem de arquivos"""
         # Extração robusta dos argumentos com fallbacks múltiplos
@@ -1107,41 +1166,45 @@ class ListFilesTool(SyncTool):
         recursive = False
         show_hidden = False
         pattern = None
-        
+
         # 1. Tenta argumentos nomeados primeiro
-        if 'path' in context.parsed_args:
-            target_path = context.parsed_args['path']
-        elif 'directory' in context.parsed_args:
-            target_path = context.parsed_args['directory']
-        elif 'folder' in context.parsed_args:
-            target_path = context.parsed_args['folder']
-        elif 'dir' in context.parsed_args:
-            target_path = context.parsed_args['dir']
-            
+        if "path" in context.parsed_args:
+            target_path = context.parsed_args["path"]
+        elif "directory" in context.parsed_args:
+            target_path = context.parsed_args["directory"]
+        elif "folder" in context.parsed_args:
+            target_path = context.parsed_args["folder"]
+        elif "dir" in context.parsed_args:
+            target_path = context.parsed_args["dir"]
+
         recursive = context.parsed_args.get("recursive", False)
         show_hidden = context.parsed_args.get("show_hidden", False)
         pattern = context.parsed_args.get("pattern")
-        
+
         # 2. Fallback para argumentos posicionais
         if target_path == "." and len(context.parsed_args) >= 1:
             args_values = list(context.parsed_args.values())
             potential_path = args_values[0]
-            if isinstance(potential_path, str) and potential_path != "True" and potential_path != "False":
+            if (
+                isinstance(potential_path, str)
+                and potential_path != "True"
+                and potential_path != "False"
+            ):
                 target_path = potential_path
-        
+
         # 3. Fallback para parsing do user_input
         if target_path == ".":
             user_input = context.user_input.lower()
-            
+
             # Padrões para extrair path
             path_patterns = [
                 r"list\s+files?\s+in\s+['\"]?([^'\"]+?)['\"]?",
                 r"list\s+['\"]?([^'\"]+?)['\"]?",
                 r"files?\s+in\s+['\"]?([^'\"]+?)['\"]?",
                 r"directory\s+['\"]?([^'\"]+?)['\"]?",
-                r"folder\s+['\"]?([^'\"]+?)['\"]?"
+                r"folder\s+['\"]?([^'\"]+?)['\"]?",
             ]
-            
+
             for pattern_regex in path_patterns:
                 match = re.search(pattern_regex, user_input)
                 if match:
@@ -1151,12 +1214,19 @@ class ListFilesTool(SyncTool):
                     # Real paths are either explicit (./, /, ~) or have length>1.
                     is_explicit_root = extracted_path in {".", "/", "~"}
                     is_too_short = len(extracted_path) < 2 and not is_explicit_root
-                    is_filler_word = extracted_path.lower() in {"files", "file", "directory", "folder"}
+                    is_filler_word = extracted_path.lower() in {
+                        "files",
+                        "file",
+                        "directory",
+                        "folder",
+                    }
                     if not (is_too_short or is_filler_word):
                         target_path = extracted_path
-                        logger.debug(f"ListFilesTool: Extracted path from user_input: {target_path}")
+                        logger.debug(
+                            f"ListFilesTool: Extracted path from user_input: {target_path}"
+                        )
                         break
-        
+
         # Resolve the LLM-supplied target_path through the canonical resolver
         # so we capture the normalization ``note`` (e.g. "leading '/' stripped"
         # or "@ prefix stripped") AND surface sandbox violations cleanly.
@@ -1172,12 +1242,12 @@ class ListFilesTool(SyncTool):
         resolved_obj: Optional[ResolvedPath] = None
         working_dir = Path(context.working_directory).resolve()
 
-        logger.debug(f"ListFilesTool - target_path: {target_path}, working_directory: {context.working_directory}")
+        logger.debug(
+            f"ListFilesTool - target_path: {target_path}, working_directory: {context.working_directory}"
+        )
 
         try:
-            resolved_obj = _resolve_project_path(
-                target_path, context.working_directory
-            )
+            resolved_obj = _resolve_project_path(target_path, context.working_directory)
             full_path = Path(resolved_obj.absolute)
             logger.debug(f"ListFilesTool - validation successful: {full_path}")
         except LocalFileAccessViolation as e:
@@ -1187,7 +1257,9 @@ class ListFilesTool(SyncTool):
                 error=e,
             )
         except Exception as e:
-            logger.debug(f"ListFilesTool - unexpected resolver error for {target_path!r}: {e}")
+            logger.debug(
+                f"ListFilesTool - unexpected resolver error for {target_path!r}: {e}"
+            )
             # Fall through to the working_directory fallback below — this
             # branch should be unreachable in normal operation, but keeping
             # the safety net avoids a hard 500 on resolver bugs.
@@ -1204,8 +1276,7 @@ class ListFilesTool(SyncTool):
                 hint = ""
                 if resolved_obj is not None and resolved_obj.note:
                     hint += (
-                        f" (input was {resolved_obj.input!r} → "
-                        f"{resolved_obj.note})"
+                        f" (input was {resolved_obj.input!r} → " f"{resolved_obj.note})"
                     )
                 if _looks_like_outside_project(target_path):
                     hint += (
@@ -1217,9 +1288,9 @@ class ListFilesTool(SyncTool):
                     )
                 return ToolResult.error_result(
                     message=f"Path not found: {target_path}{hint}",
-                    error=FileNotFoundError(f"Path '{target_path}' not found")
+                    error=FileNotFoundError(f"Path '{target_path}' not found"),
                 )
-            
+
             files_info = _collect_entries(
                 full_path,
                 working_dir,
@@ -1240,36 +1311,33 @@ class ListFilesTool(SyncTool):
                     "show_hidden": show_hidden,
                     "pattern": pattern,
                     "total_items": len(files_info),
-                    "rich_display": rich_display
-                }
+                    "rich_display": rich_display,
+                },
             )
-            
+
         except LocalFileAccessViolation as e:
-            return ToolResult.error_result(
-                message=str(e),
-                error=e
-            )
+            return ToolResult.error_result(message=str(e), error=e)
         except Exception as e:
             return ToolResult.error_result(
-                message=f"Error listing files in {target_path}: {str(e)}",
-                error=e
+                message=f"Error listing files in {target_path}: {str(e)}", error=e
             )
-    
+
+
 class DeleteFileTool(SyncTool):
     """Ferramenta para deletar arquivos (com precauções)"""
-    
+
     @property
     def name(self) -> str:
         return "delete_file"
-    
+
     @property
     def description(self) -> str:
         return "Deletes a file or directory (use with caution)"
-    
+
     @property
     def category(self) -> str:
         return "file"
-    
+
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa deleção de arquivo"""
         # DeleteFileTool's historical precedence is two-stage: ``file_path``/
@@ -1278,25 +1346,27 @@ class DeleteFileTool(SyncTool):
         # per-tier keys, matching the pre-DRY behavior in commit 0ea6af1.
         file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_PRIMARY)
         if not file_path:
-            file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_FALLBACK)
+            file_path = _extract_path_arg(
+                context.parsed_args, keys=_PATH_ARG_KEYS_FALLBACK
+            )
         force = context.parsed_args.get("force", False)
 
         if not file_path:
             return ToolResult.error_result(
                 message="No file path provided. Please specify a file to delete.",
-                error=ValidationError("file_path is required")
+                error=ValidationError("file_path is required"),
             )
-        
+
         # Medidas de segurança
         if not force:
             # Verifica se não é um arquivo crítico
-            dangerous_patterns = ['.env', 'config', '.git', '__pycache__']
+            dangerous_patterns = [".env", "config", ".git", "__pycache__"]
             if any(pattern in file_path.lower() for pattern in dangerous_patterns):
                 return ToolResult.error_result(
                     message=f"Refusing to delete potentially important file: {file_path}. Use force=True if needed.",
-                    error=PermissionError("Safety check failed")
+                    error=PermissionError("Safety check failed"),
                 )
-        
+
         try:
             resolved = _resolve_project_path(file_path, context.working_directory)
             full_path = Path(resolved.absolute)
@@ -1309,25 +1379,28 @@ class DeleteFileTool(SyncTool):
                         include_bash_hint=True,
                         bash_verb="rm",
                     ),
-                    error=FileNotFoundError(f"File '{resolved.relative_to_cwd}' not found"),
+                    error=FileNotFoundError(
+                        f"File '{resolved.relative_to_cwd}' not found"
+                    ),
                 )
-            
+
             # Registra informações antes de deletar
             was_directory = full_path.is_dir()
             size = full_path.stat().st_size if full_path.is_file() else 0
-            
+
             # Deleta
             if was_directory:
                 # Remove diretório recursivamente
                 import shutil
+
                 shutil.rmtree(full_path)
             else:
                 full_path.unlink()
-            
+
             # Prepara display rico
             item_type = "directory" if was_directory else "file"
             rich_display = f"● delete_file({file_path})\n  ⎿ Deleted [red]{file_path}[/red] ({item_type})"
-            
+
             return ToolResult(
                 status=ToolStatus.SUCCESS,
                 message=f"Successfully deleted {'directory' if was_directory else 'file'}: {file_path}",
@@ -1336,18 +1409,13 @@ class DeleteFileTool(SyncTool):
                     "was_directory": was_directory,
                     "size": size,
                     "force": force,
-                    "rich_display": rich_display
-                }
+                    "rich_display": rich_display,
+                },
             )
-            
+
         except LocalFileAccessViolation as e:
-            return ToolResult.error_result(
-                message=str(e),
-                error=e
-            )
+            return ToolResult.error_result(message=str(e), error=e)
         except Exception as e:
             return ToolResult.error_result(
-                message=f"Error deleting {file_path}: {str(e)}",
-                error=e
+                message=f"Error deleting {file_path}: {str(e)}", error=e
             )
-    

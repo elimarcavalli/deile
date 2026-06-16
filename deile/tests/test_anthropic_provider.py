@@ -18,6 +18,7 @@ from deile.core.models.tier import ModelTier
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def handle() -> ModelHandle:
     return ModelHandle(
@@ -58,6 +59,7 @@ def provider(handle, config, monkeypatch) -> AnthropicProvider:
 # Helpers to build mock Anthropic response objects
 # ---------------------------------------------------------------------------
 
+
 def _usage(inp=10, out=20, cached_read=0, cached_create=0):
     u = MagicMock()
     u.input_tokens = inp
@@ -94,6 +96,7 @@ def _response(content, stop_reason="end_turn", usage_kwargs=None):
 # ---------------------------------------------------------------------------
 # Test: generate()
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_generate_returns_model_response(provider):
@@ -134,6 +137,7 @@ async def test_generate_system_instruction(provider):
 # Test: chat_with_tools() — 1-turn (no tool calls)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_chat_with_tools_no_tool_calls(provider):
     resp = _response([_text_block("Paris")], stop_reason="end_turn")
@@ -153,6 +157,7 @@ async def test_chat_with_tools_no_tool_calls(provider):
 # Test: chat_with_tools() — 2-turn with 1 tool call
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_chat_with_tools_one_tool_call(provider):
     tool_block = _tool_use_block("tu_1", "bash", {"command": "ls"})
@@ -164,9 +169,18 @@ async def test_chat_with_tools_one_tool_call(provider):
 
     # Mock tool execution
     from deile.tools.base import ToolResult, ToolStatus
-    mock_result = ToolResult(status=ToolStatus.SUCCESS, data="main.py\nREADME.md", message="ok")
 
-    with patch.object(provider, "_execute_tool", AsyncMock(return_value=(mock_result, {"status": "success", "result": "main.py"}))):
+    mock_result = ToolResult(
+        status=ToolStatus.SUCCESS, data="main.py\nREADME.md", message="ok"
+    )
+
+    with patch.object(
+        provider,
+        "_execute_tool",
+        AsyncMock(
+            return_value=(mock_result, {"status": "success", "result": "main.py"})
+        ),
+    ):
         text, tool_results, usage = await provider.chat_with_tools(
             messages=[ModelMessage(role="user", content="List files")],
             tools=[],
@@ -181,6 +195,7 @@ async def test_chat_with_tools_one_tool_call(provider):
 # Test: chat_with_tools() — 2 sequential iterations
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_chat_with_tools_two_iterations(provider):
     tool1 = _tool_use_block("tu_1", "bash", {"command": "ls"})
@@ -192,9 +207,14 @@ async def test_chat_with_tools_two_iterations(provider):
     provider._client.messages.create = AsyncMock(side_effect=[resp1, resp2, resp3])
 
     from deile.tools.base import ToolResult, ToolStatus
+
     mock_tr = ToolResult(status=ToolStatus.SUCCESS, data="ok")
 
-    with patch.object(provider, "_execute_tool", AsyncMock(return_value=(mock_tr, {"status": "success", "result": "ok"}))):
+    with patch.object(
+        provider,
+        "_execute_tool",
+        AsyncMock(return_value=(mock_tr, {"status": "success", "result": "ok"})),
+    ):
         text, tool_results, usage = await provider.chat_with_tools(
             messages=[ModelMessage(role="user", content="Do stuff")],
             tools=[],
@@ -207,6 +227,7 @@ async def test_chat_with_tools_two_iterations(provider):
 # ---------------------------------------------------------------------------
 # Test: auth error → ProviderInvocationError with envelope
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_generate_auth_error_raises_envelope(provider):
@@ -232,6 +253,7 @@ async def test_generate_auth_error_raises_envelope(provider):
 # ---------------------------------------------------------------------------
 # Test: streaming — yields TEXT_DELTA + USAGE_FINAL
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_generate_stream_events(provider):
@@ -291,8 +313,11 @@ async def test_generate_stream_events(provider):
 # Test: cost estimation
 # ---------------------------------------------------------------------------
 
+
 def test_estimate_cost(provider):
-    usage = ModelUsage(prompt_tokens=1_000_000, completion_tokens=1_000_000, total_tokens=2_000_000)
+    usage = ModelUsage(
+        prompt_tokens=1_000_000, completion_tokens=1_000_000, total_tokens=2_000_000
+    )
     cost = provider.estimate_cost(usage)
     # 1M input @ $5.00 + 1M output @ $25.00 = $30.00
     assert abs(cost - 30.00) < 1e-4
@@ -301,6 +326,7 @@ def test_estimate_cost(provider):
 # ---------------------------------------------------------------------------
 # Test: provider_id and tier
 # ---------------------------------------------------------------------------
+
 
 def test_provider_id(provider):
     assert provider.provider_id == "anthropic"

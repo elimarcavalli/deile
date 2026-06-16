@@ -40,9 +40,10 @@ def _enum_value(item: Any) -> Any:
 @dataclass
 class PersonaIntegrationContext:
     """Context for persona integration with DeileAgent"""
-    agent: 'DeileAgent'
-    persona_manager: 'PersonaManager'
-    current_persona: Optional['BasePersona'] = None
+
+    agent: "DeileAgent"
+    persona_manager: "PersonaManager"
+    current_persona: Optional["BasePersona"] = None
     session_id: str = "default"
     enhanced_context: Dict[str, Any] = field(default_factory=dict)
 
@@ -60,7 +61,11 @@ class PersonaEnhancedAgent:
     while maintaining the agent as the central orchestrator.
     """
 
-    def __init__(self, base_agent: 'DeileAgent', persona_manager: Optional['PersonaManager'] = None):
+    def __init__(
+        self,
+        base_agent: "DeileAgent",
+        persona_manager: Optional["PersonaManager"] = None,
+    ):
         """
         Initialize persona-enhanced agent
 
@@ -75,13 +80,16 @@ class PersonaEnhancedAgent:
         # If no persona manager provided, create one with agent's memory manager
         if not self.persona_manager:
             from .manager import PersonaManager
-            memory_manager = getattr(base_agent, 'memory_manager', None)
+
+            memory_manager = getattr(base_agent, "memory_manager", None)
             self.persona_manager = PersonaManager(memory_manager=memory_manager)
 
             if memory_manager:
                 logger.info("PersonaEnhancedAgent created with memory integration")
             else:
-                logger.warning("PersonaEnhancedAgent created without memory integration")
+                logger.warning(
+                    "PersonaEnhancedAgent created without memory integration"
+                )
 
         # Set up integration
         self._setup_agent_integration()
@@ -94,14 +102,13 @@ class PersonaEnhancedAgent:
         await self.base_agent.initialize()
 
         # Initialize persona manager if not already done
-        if self.persona_manager and not hasattr(self.persona_manager, '_initialized'):
+        if self.persona_manager and not hasattr(self.persona_manager, "_initialized"):
             await self.persona_manager.initialize()
             self.persona_manager._initialized = True
 
         # Create integration context
         self.integration_context = PersonaIntegrationContext(
-            agent=self.base_agent,
-            persona_manager=self.persona_manager
+            agent=self.base_agent, persona_manager=self.persona_manager
         )
 
         # Set up deep integration points
@@ -110,11 +117,8 @@ class PersonaEnhancedAgent:
         logger.info("PersonaEnhancedAgent fully initialized with deep integration")
 
     async def process_input_with_persona(
-        self,
-        user_input: str,
-        session_id: str = "default",
-        **kwargs
-    ) -> 'AgentResponse':
+        self, user_input: str, session_id: str = "default", **kwargs
+    ) -> "AgentResponse":
         """
         Process input with persona-enhanced behavior
 
@@ -125,25 +129,31 @@ class PersonaEnhancedAgent:
             # Update integration context
             if self.integration_context:
                 self.integration_context.session_id = session_id
-                self.integration_context.current_persona = await self._get_current_persona()
+                self.integration_context.current_persona = (
+                    await self._get_current_persona()
+                )
 
             # If no active persona, use standard agent processing
             if not self._has_active_persona():
-                return await self.base_agent.process_input(user_input, session_id, **kwargs)
+                return await self.base_agent.process_input(
+                    user_input, session_id, **kwargs
+                )
 
             # Enhance context with persona information
-            enhanced_kwargs = await self._enhance_context_with_persona(user_input, session_id, **kwargs)
+            enhanced_kwargs = await self._enhance_context_with_persona(
+                user_input, session_id, **kwargs
+            )
 
             # Use base agent's processing with persona enhancements
             response = await self.base_agent.process_input(
-                user_input=user_input,
-                session_id=session_id,
-                **enhanced_kwargs
+                user_input=user_input, session_id=session_id, **enhanced_kwargs
             )
 
             # Post-process response with persona insights
             if self.integration_context and self.integration_context.current_persona:
-                response = await self._post_process_with_persona(response, user_input, session_id)
+                response = await self._post_process_with_persona(
+                    response, user_input, session_id
+                )
 
             return response
 
@@ -152,7 +162,9 @@ class PersonaEnhancedAgent:
             # Fallback to standard agent processing
             return await self.base_agent.process_input(user_input, session_id, **kwargs)
 
-    async def switch_persona(self, persona_id: str, session_id: str = "default") -> bool:
+    async def switch_persona(
+        self, persona_id: str, session_id: str = "default"
+    ) -> bool:
         """Switch to a different persona"""
         if not self.persona_manager:
             return False
@@ -161,7 +173,9 @@ class PersonaEnhancedAgent:
             success = await self.persona_manager.switch_persona(persona_id, session_id)
 
             if success and self.integration_context:
-                self.integration_context.current_persona = await self._get_current_persona()
+                self.integration_context.current_persona = (
+                    await self._get_current_persona()
+                )
                 self.integration_context.session_id = session_id
 
                 # Update agent systems with new persona context
@@ -183,23 +197,31 @@ class PersonaEnhancedAgent:
         """Set up deep integration with agent systems"""
         try:
             # Integrate with context manager
-            if hasattr(self.base_agent.context_manager, 'set_persona_integration'):
-                self.base_agent.context_manager.set_persona_integration(self.persona_manager)
+            if hasattr(self.base_agent.context_manager, "set_persona_integration"):
+                self.base_agent.context_manager.set_persona_integration(
+                    self.persona_manager
+                )
 
             # Integrate with tool registry (if method exists)
-            if hasattr(self.base_agent.tool_registry, 'register_persona_tools'):
-                self.base_agent.tool_registry.register_persona_tools(self.persona_manager)
+            if hasattr(self.base_agent.tool_registry, "register_persona_tools"):
+                self.base_agent.tool_registry.register_persona_tools(
+                    self.persona_manager
+                )
 
             # Set up intent analyzer integration
-            if hasattr(self.base_agent, 'intent_analyzer') and hasattr(self.base_agent.intent_analyzer, 'set_persona_context'):
-                self.base_agent.intent_analyzer.set_persona_context(self.persona_manager)
+            if hasattr(self.base_agent, "intent_analyzer") and hasattr(
+                self.base_agent.intent_analyzer, "set_persona_context"
+            ):
+                self.base_agent.intent_analyzer.set_persona_context(
+                    self.persona_manager
+                )
 
             logger.debug("Deep integration setup completed")
 
         except Exception as e:
             logger.warning(f"Some deep integration features unavailable: {e}")
 
-    async def _get_current_persona(self) -> Optional['BasePersona']:
+    async def _get_current_persona(self) -> Optional["BasePersona"]:
         """Get the currently active persona"""
         if not self.persona_manager:
             return None
@@ -212,14 +234,10 @@ class PersonaEnhancedAgent:
 
     def _has_active_persona(self) -> bool:
         """Check if there's an active persona"""
-        return (self.integration_context and
-                self.integration_context.has_active_persona)
+        return self.integration_context and self.integration_context.has_active_persona
 
     async def _enhance_context_with_persona(
-        self,
-        user_input: str,
-        session_id: str,
-        **kwargs
+        self, user_input: str, session_id: str, **kwargs
     ) -> Dict[str, Any]:
         """Enhance processing context with persona information"""
         enhanced_kwargs = kwargs.copy()
@@ -235,29 +253,34 @@ class PersonaEnhancedAgent:
             # may remain as enums. Coerce both shapes uniformly via _enum_value.
             # Add persona context to kwargs
             persona_context = {
-                'persona_id': current_persona.persona_id if current_persona else None,
-                'persona_name': current_persona.name if current_persona else None,
-                'persona_capabilities': (
+                "persona_id": current_persona.persona_id if current_persona else None,
+                "persona_name": current_persona.name if current_persona else None,
+                "persona_capabilities": (
                     [_enum_value(cap) for cap in current_persona.config.capabilities]
-                    if current_persona else []
+                    if current_persona
+                    else []
                 ),
-                'communication_style': (
+                "communication_style": (
                     _enum_value(current_persona.config.communication_style)
-                    if current_persona else None
+                    if current_persona
+                    else None
                 ),
-                'response_mode': (
+                "response_mode": (
                     _enum_value(current_persona.config.response_mode)
-                    if current_persona else None
-                )
+                    if current_persona
+                    else None
+                ),
             }
 
-            enhanced_kwargs['persona_context'] = persona_context
+            enhanced_kwargs["persona_context"] = persona_context
 
             # Store enhanced context for other integration points
             if self.integration_context:
                 self.integration_context.enhanced_context = persona_context
 
-            logger.debug(f"Enhanced context with persona {persona_context['persona_id']}")
+            logger.debug(
+                f"Enhanced context with persona {persona_context['persona_id']}"
+            )
 
         except Exception as e:
             logger.warning(f"Failed to enhance context with persona: {e}")
@@ -265,11 +288,8 @@ class PersonaEnhancedAgent:
         return enhanced_kwargs
 
     async def _post_process_with_persona(
-        self,
-        response: 'AgentResponse',
-        user_input: str,
-        session_id: str
-    ) -> 'AgentResponse':
+        self, response: "AgentResponse", user_input: str, session_id: str
+    ) -> "AgentResponse":
         """Post-process response with persona insights"""
         if not self._has_active_persona():
             return response
@@ -281,20 +301,24 @@ class PersonaEnhancedAgent:
             if not response.metadata:
                 response.metadata = {}
 
-            response.metadata.update({
-                'persona_enhanced': True,
-                'persona_id': current_persona.persona_id,
-                'persona_name': current_persona.name,
-                'integration_version': __version__
-            })
+            response.metadata.update(
+                {
+                    "persona_enhanced": True,
+                    "persona_id": current_persona.persona_id,
+                    "persona_name": current_persona.name,
+                    "integration_version": __version__,
+                }
+            )
 
             # Store interaction in persona memory if available
-            if hasattr(self.persona_manager, 'store_interaction'):
+            if hasattr(self.persona_manager, "store_interaction"):
                 await self.persona_manager.store_interaction(
                     user_input, response.content, session_id
                 )
 
-            logger.debug(f"Post-processed response with persona {current_persona.persona_id}")
+            logger.debug(
+                f"Post-processed response with persona {current_persona.persona_id}"
+            )
 
         except Exception as e:
             logger.warning(f"Failed to post-process with persona: {e}")
@@ -315,14 +339,17 @@ class PersonaEnhancedAgent:
             # callsite was a no-op (method never defined) — removed in #65.
 
             # Update intent analyzer with persona patterns
-            if (hasattr(self.base_agent, 'intent_analyzer') and
-                hasattr(self.base_agent.intent_analyzer, 'add_persona_patterns')):
+            if hasattr(self.base_agent, "intent_analyzer") and hasattr(
+                self.base_agent.intent_analyzer, "add_persona_patterns"
+            ):
 
-                if hasattr(current_persona, 'get_intent_patterns'):
+                if hasattr(current_persona, "get_intent_patterns"):
                     patterns = current_persona.get_intent_patterns()
                     await self.base_agent.intent_analyzer.add_persona_patterns(patterns)
 
-            logger.debug(f"Updated agent systems with persona {current_persona.persona_id}")
+            logger.debug(
+                f"Updated agent systems with persona {current_persona.persona_id}"
+            )
 
         except Exception as e:
             logger.warning(f"Failed to update agent systems with persona: {e}")
@@ -337,17 +364,20 @@ class PersonaEnhancedAgent:
         if self.persona_manager:
             try:
                 persona_stats = {
-                    'active_persona': (
+                    "active_persona": (
                         self.integration_context.current_persona.persona_id
-                        if self._has_active_persona() else None
+                        if self._has_active_persona()
+                        else None
                     ),
-                    'available_personas': len(self.persona_manager._personas),
-                    'total_switches': getattr(self.persona_manager, '_total_switches', 0)
+                    "available_personas": len(self.persona_manager._personas),
+                    "total_switches": getattr(
+                        self.persona_manager, "_total_switches", 0
+                    ),
                 }
             except Exception as e:
                 logger.debug(f"Failed to get persona stats: {e}")
 
-        base_stats['persona_integration'] = persona_stats
+        base_stats["persona_integration"] = persona_stats
         return base_stats
 
     def get_session(self, session_id: str):
@@ -379,7 +409,9 @@ class PersonaEnhancedAgent:
     def __repr__(self) -> str:
         persona_info = ""
         if self._has_active_persona():
-            persona_info = f" + Persona({self.integration_context.current_persona.persona_id})"
+            persona_info = (
+                f" + Persona({self.integration_context.current_persona.persona_id})"
+            )
         return f"<PersonaEnhancedAgent: {self.base_agent}{persona_info}>"
 
 
@@ -391,11 +423,11 @@ class PersonaIntegrationLayer:
     DeileAgent's tools, context, and memory systems.
     """
 
-    def __init__(self, agent: 'DeileAgent'):
+    def __init__(self, agent: "DeileAgent"):
         self.agent = agent
-        self.persona_manager: Optional['PersonaManager'] = None
+        self.persona_manager: Optional["PersonaManager"] = None
 
-    def set_persona_manager(self, persona_manager: 'PersonaManager') -> None:
+    def set_persona_manager(self, persona_manager: "PersonaManager") -> None:
         """Set the persona manager for this integration layer"""
         self.persona_manager = persona_manager
 
@@ -410,14 +442,20 @@ class PersonaIntegrationLayer:
                 return base_context
 
             enhanced_context = base_context.copy()
-            enhanced_context.update({
-                'persona_id': current_persona.persona_id,
-                'personality_traits': getattr(current_persona, 'traits', []),
-                'communication_style': _enum_value(current_persona.config.communication_style),
-                'specialized_capabilities': [_enum_value(cap) for cap in current_persona.config.capabilities],
-                'response_mode': _enum_value(current_persona.config.response_mode),
-                'expertise_level': current_persona.config.expertise_level
-            })
+            enhanced_context.update(
+                {
+                    "persona_id": current_persona.persona_id,
+                    "personality_traits": getattr(current_persona, "traits", []),
+                    "communication_style": _enum_value(
+                        current_persona.config.communication_style
+                    ),
+                    "specialized_capabilities": [
+                        _enum_value(cap) for cap in current_persona.config.capabilities
+                    ],
+                    "response_mode": _enum_value(current_persona.config.response_mode),
+                    "expertise_level": current_persona.config.expertise_level,
+                }
+            )
 
             logger.debug(f"Enhanced context with persona {current_persona.persona_id}")
             return enhanced_context
@@ -433,11 +471,13 @@ class PersonaIntegrationLayer:
 
         try:
             current_persona = self.persona_manager.get_current_persona()
-            if not current_persona or not hasattr(current_persona, 'prioritize_tools'):
+            if not current_persona or not hasattr(current_persona, "prioritize_tools"):
                 return tools
 
             prioritized_tools = current_persona.prioritize_tools(tools)
-            logger.debug(f"Persona {current_persona.persona_id} prioritized {len(tools)} tools")
+            logger.debug(
+                f"Persona {current_persona.persona_id} prioritized {len(tools)} tools"
+            )
             return prioritized_tools
 
         except Exception as e:
@@ -456,10 +496,13 @@ class PersonaIntegrationLayer:
 
             # Create minimal context for instruction building
             from .base import AgentContext
+
             context = AgentContext(session_id="default")
 
             instruction = await current_persona.build_system_instruction(context)
-            logger.debug(f"Generated system instruction from persona {current_persona.persona_id}")
+            logger.debug(
+                f"Generated system instruction from persona {current_persona.persona_id}"
+            )
             return instruction
 
         except Exception as e:

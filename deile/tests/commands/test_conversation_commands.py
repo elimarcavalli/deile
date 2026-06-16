@@ -9,8 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
-                                       SWITCH_SESSION_KEY)
+from deile.commands._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 from deile.commands.base import CommandContext
 from deile.commands.builtin._conv_store import ConversationNameStore
 from deile.commands.builtin._session_store import SessionHistoryStore
@@ -78,6 +77,7 @@ def _make_context(
 
 def _render(obj) -> str:
     from rich.console import Console
+
     buf = StringIO()
     Console(file=buf, highlight=False, markup=False, width=200).print(obj)
     return buf.getvalue()
@@ -181,7 +181,12 @@ class TestForkCommand:
     @pytest.mark.unit
     async def test_fork_refuses_history_without_user_messages(self):
         history = [
-            {"role": "system", "content": "sys prompt", "timestamp": 0.0, "metadata": {}},
+            {
+                "role": "system",
+                "content": "sys prompt",
+                "timestamp": 0.0,
+                "metadata": {},
+            },
             {"role": "assistant", "content": "olá", "timestamp": 0.1, "metadata": {}},
         ]
         ctx = _make_context("fork", history=history)
@@ -475,7 +480,9 @@ class TestSessionHistoryStore:
 
     def test_load_returns_stored_data(self, tmp_path):
         store = SessionHistoryStore(base_dir=tmp_path)
-        history = [{"role": "user", "content": "test", "timestamp": 1.0, "metadata": {}}]
+        history = [
+            {"role": "user", "content": "test", "timestamp": 1.0, "metadata": {}}
+        ]
         store.save("s2", history)
         data = store.load("s2")
         assert data is not None
@@ -486,7 +493,12 @@ class TestSessionHistoryStore:
         store = SessionHistoryStore(base_dir=tmp_path)
         history = [
             {"role": "user", "content": "/fork", "timestamp": 1.0, "metadata": {}},
-            {"role": "user", "content": "real question", "timestamp": 2.0, "metadata": {}},
+            {
+                "role": "user",
+                "content": "real question",
+                "timestamp": 2.0,
+                "metadata": {},
+            },
         ]
         store.save("s3", history)
         sessions = store.list_sessions()
@@ -501,11 +513,18 @@ class TestSessionHistoryStore:
 
     def test_sorted_by_last_activity(self, tmp_path):
         store = SessionHistoryStore(base_dir=tmp_path)
-        store.save("older", [{"role": "user", "content": "x", "timestamp": 1.0, "metadata": {}}])
+        store.save(
+            "older",
+            [{"role": "user", "content": "x", "timestamp": 1.0, "metadata": {}}],
+        )
         # Overwrite last_activity by re-saving slightly later
         import time as _time
+
         _time.sleep(0.01)
-        store.save("newer", [{"role": "user", "content": "y", "timestamp": 2.0, "metadata": {}}])
+        store.save(
+            "newer",
+            [{"role": "user", "content": "y", "timestamp": 2.0, "metadata": {}}],
+        )
         sessions = store.list_sessions()
         assert sessions[0]["session_id"] == "newer"
 
@@ -552,7 +571,9 @@ class TestResumeCommand:
         mock_selector.select = AsyncMock(return_value=None)
 
         with (
-            patch.object(SessionHistoryStore, "list_sessions", return_value=self._SESSIONS),
+            patch.object(
+                SessionHistoryStore, "list_sessions", return_value=self._SESSIONS
+            ),
             patch.object(res_mod, "get_default_selector", return_value=mock_selector),
             patch.object(ConversationNameStore, "get", return_value=None),
         ):
@@ -576,7 +597,9 @@ class TestResumeCommand:
         )
 
         with (
-            patch.object(SessionHistoryStore, "list_sessions", return_value=self._SESSIONS),
+            patch.object(
+                SessionHistoryStore, "list_sessions", return_value=self._SESSIONS
+            ),
             patch.object(SessionHistoryStore, "load", return_value=self._STORED),
             patch.object(res_mod, "get_default_selector", return_value=mock_selector),
             patch.object(ConversationNameStore, "get", return_value=None),
@@ -605,7 +628,9 @@ class TestResumeCommand:
         mock_selector.is_supported.return_value = False
 
         with (
-            patch.object(SessionHistoryStore, "list_sessions", return_value=self._SESSIONS),
+            patch.object(
+                SessionHistoryStore, "list_sessions", return_value=self._SESSIONS
+            ),
             patch.object(res_mod, "get_default_selector", return_value=mock_selector),
             patch.object(ConversationNameStore, "get", return_value=None),
         ):
@@ -628,7 +653,9 @@ class TestResumeCommand:
         )
 
         with (
-            patch.object(SessionHistoryStore, "list_sessions", return_value=self._SESSIONS),
+            patch.object(
+                SessionHistoryStore, "list_sessions", return_value=self._SESSIONS
+            ),
             patch.object(SessionHistoryStore, "load", return_value=None),
             patch.object(res_mod, "get_default_selector", return_value=mock_selector),
             patch.object(ConversationNameStore, "get", return_value=None),

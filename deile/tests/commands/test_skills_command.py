@@ -133,7 +133,9 @@ class TestSkillsList:
         mgr = _make_manager(tmp_path)
         with patch.object(cmd, "_manager", return_value=mgr):
             result = await cmd.execute(_ctx("list"))
-        assert "no skill" in str(result.content).lower() or result.content_type == "rich"
+        assert (
+            "no skill" in str(result.content).lower() or result.content_type == "rich"
+        )
 
     async def test_list_shows_global_path(self, tmp_path):
         cmd = _make_cmd()
@@ -182,7 +184,9 @@ class TestSkillsAdd:
         assert result.success is True
         assert "/team/skills" in mgr.list_skills_paths("project")
 
-    async def test_add_duplicate_returns_success_with_already_present_msg(self, tmp_path):
+    async def test_add_duplicate_returns_success_with_already_present_msg(
+        self, tmp_path
+    ):
         cmd = _make_cmd()
         mgr = _make_manager(tmp_path)
         mgr.add_skills_path("/dup")
@@ -228,7 +232,9 @@ class TestSkillsRemove:
         assert result.success is True
         assert "/old/skills" not in mgr.list_skills_paths("global")
 
-    async def test_remove_nonexistent_path_still_succeeds_with_not_found_msg(self, tmp_path):
+    async def test_remove_nonexistent_path_still_succeeds_with_not_found_msg(
+        self, tmp_path
+    ):
         cmd = _make_cmd()
         mgr = _make_manager(tmp_path)
         with patch.object(cmd, "_manager", return_value=mgr):

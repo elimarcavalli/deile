@@ -62,8 +62,16 @@ def test_each_policy_has_four_tiers(cfg):
 
 
 def test_each_model_has_required_fields(cfg):
-    required = {"provider_id", "model_id", "tier", "label", "display_name",
-                "pricing", "context_window", "capabilities"}
+    required = {
+        "provider_id",
+        "model_id",
+        "tier",
+        "label",
+        "display_name",
+        "pricing",
+        "context_window",
+        "capabilities",
+    }
     for m in cfg["models"]:
         missing = required - set(m.keys())
         assert not missing, f"Model {m.get('model_id')} missing fields: {missing}"

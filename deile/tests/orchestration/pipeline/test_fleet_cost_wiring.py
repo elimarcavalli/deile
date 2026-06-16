@@ -45,8 +45,7 @@ def cli_worker_adapter(monkeypatch):
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / f"{_CLI_KIND}.py"
     mod_path.write_text(
-        textwrap.dedent(
-            f'''\
+        textwrap.dedent(f"""\
             from cli_adapters.base import BaseCliAdapter, WorkResult
 
 
@@ -59,8 +58,7 @@ def cli_worker_adapter(monkeypatch):
 
 
             ADAPTER = CostWireAdapter(kind="{_CLI_KIND}", default_port={_CLI_PORT})
-            '''
-        ),
+            """),
         encoding="utf-8",
     )
     cli_adapters.reload_adapters()
@@ -72,13 +70,16 @@ def cli_worker_adapter(monkeypatch):
         f"http://{_CLI_DISPATCHER}:18795",
     )
     from deile.orchestration.pipeline.cli_worker_scaler import (
-        EnsureReplicaOutcome, ScaleResult)
+        EnsureReplicaOutcome,
+        ScaleResult,
+    )
 
     async def _ready(_dispatcher):
         return EnsureReplicaOutcome(ScaleResult.READY, "test: ready")
 
     monkeypatch.setattr(
-        "deile.orchestration.pipeline.cli_worker_scaler.ensure_replica", _ready,
+        "deile.orchestration.pipeline.cli_worker_scaler.ensure_replica",
+        _ready,
     )
     try:
         yield
@@ -105,6 +106,7 @@ def central_repo(tmp_path, monkeypatch):
     """UsageRepository central isolado + injeção no singleton lido pelo recorder."""
     repo = UsageRepository(db_path=tmp_path / "usage.db")
     import deile.storage.usage_repository as ur
+
     monkeypatch.setattr(ur, "_usage_repository", repo)
     return repo
 
@@ -130,8 +132,9 @@ class _FakeClient:
 
 def _all(repo: UsageRepository) -> list:
     with repo._connect() as conn:  # noqa: SLF001 — leitura direta no teste
-        return [dict(r) for r in conn.execute(
-            "SELECT * FROM usage_records ORDER BY id")]
+        return [
+            dict(r) for r in conn.execute("SELECT * FROM usage_records ORDER BY id")
+        ]
 
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +142,10 @@ def _all(repo: UsageRepository) -> list:
 # --------------------------------------------------------------------------- #
 class TestWaitPathWiring:
     async def test_cli_dispatch_wait_records_central_usage(
-        self, cli_worker_adapter, central_repo, monkeypatch,
+        self,
+        cli_worker_adapter,
+        central_repo,
+        monkeypatch,
     ):
         """AC #638: um dispatch real (wait) da frota grava 1 registro central com
         tokens+custo+modelo+stage corretos — fiação ponta-a-ponta."""
@@ -157,7 +163,10 @@ class TestWaitPathWiring:
                 "model": "openrouter/deepseek/deepseek-v4-pro",
                 "tokens_by_model": {
                     "openrouter/deepseek/deepseek-v4-pro": {
-                        "in": 1500, "out": 300, "cache_read": 21415, "cache_write": 0,
+                        "in": 1500,
+                        "out": 300,
+                        "cache_read": 21415,
+                        "cache_write": 0,
                     },
                 },
             },
@@ -166,14 +175,16 @@ class TestWaitPathWiring:
         # _dispatch é o ponto de fiação real (mesma chamada que critique/refine/
         # mention fazem); nowait=False exercita o caminho wait que lê o bloco usage.
         await impl._dispatch(
-            "brief", channel_id="pipeline-issue-242", stage="classify",
+            "brief",
+            channel_id="pipeline-issue-242",
+            stage="classify",
             nowait=False,
         )
         recs = _all(central_repo)
         assert len(recs) == 1, recs
         r = recs[0]
-        assert r["provider_id"] == _CLI_KIND          # worker
-        assert r["tier"] == "classify"                # stage
+        assert r["provider_id"] == _CLI_KIND  # worker
+        assert r["tier"] == "classify"  # stage
         assert r["session_id"] == "pipeline-issue-242"
         assert r["model_id"] == "openrouter/deepseek/deepseek-v4-pro"
         assert r["prompt_tokens"] == 1500
@@ -182,33 +193,48 @@ class TestWaitPathWiring:
         assert r["cost_usd"] > 0
 
     async def test_cli_dispatch_without_usage_block_writes_nothing(
-        self, cli_worker_adapter, central_repo, monkeypatch,
+        self,
+        cli_worker_adapter,
+        central_repo,
+        monkeypatch,
     ):
         """Worker antigo (sem bloco usage) → no-op central, sem quebrar dispatch."""
         monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_CLASSIFY", _CLI_DISPATCHER)
         reset_settings()
         impl = WorkerImplementer(client=_FakeClient({"ok": True, "summary": "x"}))
         out = await impl._dispatch(
-            "brief", channel_id="pipeline-issue-1", stage="classify", nowait=False,
+            "brief",
+            channel_id="pipeline-issue-1",
+            stage="classify",
+            nowait=False,
         )
         assert out.ok is True
         assert _all(central_repo) == []
 
     async def test_deile_worker_does_not_write_fleet_central(
-        self, central_repo,
+        self,
+        central_repo,
     ):
         """Sem regressão: deile-worker (núcleo) NÃO grava central por esta via —
         ele contabiliza no SQLite do próprio pod. O recorder só roda p/ CLI."""
         reset_settings()
         response = {
-            "ok": True, "summary": "ok", "task_id": "t1",
+            "ok": True,
+            "summary": "ok",
+            "task_id": "t1",
             # Mesmo que viesse um bloco usage, o gate is_cli_worker barra.
-            "usage": {"worker": "deile", "model": "x:y",
-                      "tokens_by_model": {"x:y": {"in": 9, "out": 9}}},
+            "usage": {
+                "worker": "deile",
+                "model": "x:y",
+                "tokens_by_model": {"x:y": {"in": 9, "out": 9}},
+            },
         }
         impl = WorkerImplementer(client=_FakeClient(response))
         await impl._dispatch(
-            "brief", channel_id="pipeline-issue-2", stage="classify", nowait=False,
+            "brief",
+            channel_id="pipeline-issue-2",
+            stage="classify",
+            nowait=False,
         )
         assert _all(central_repo) == []
 
@@ -218,7 +244,10 @@ class TestWaitPathWiring:
 # --------------------------------------------------------------------------- #
 class TestFireAndForgetWiring:
     async def test_reconcile_records_central_usage_from_resume_info(
-        self, cli_worker_adapter, central_repo, monkeypatch,
+        self,
+        cli_worker_adapter,
+        central_repo,
+        monkeypatch,
     ):
         """AC #638: implement paralelo (fire-and-forget) tem o custo capturado no
         reconcile (a resposta do 202 é descartada). DONE + bloco usage → grava."""
@@ -236,8 +265,12 @@ class TestFireAndForgetWiring:
             "usage": {
                 "model": "openrouter/qwen3-coder-plus",
                 "tokens_by_model": {
-                    "openrouter/qwen3-coder-plus": {"in": 4000, "out": 900,
-                                                    "cache_read": 0, "cache_write": 0},
+                    "openrouter/qwen3-coder-plus": {
+                        "in": 4000,
+                        "out": 900,
+                        "cache_read": 0,
+                        "cache_write": 0,
+                    },
                 },
             },
         }
@@ -245,7 +278,9 @@ class TestFireAndForgetWiring:
         monitor = SimpleNamespace(implementer=impl)
 
         state, _info = await stages._fetch_reconcile_state(
-            monitor, "abc123", "implement",
+            monitor,
+            "abc123",
+            "implement",
             channel_id="pipeline-issue-50",
         )
         assert state == stages._RECON_DONE
@@ -260,6 +295,9 @@ class TestFireAndForgetWiring:
 
         # Reconcile roda a cada tick: 2ª leitura DONE → no-op idempotente.
         await stages._fetch_reconcile_state(
-            monitor, "abc123", "implement", channel_id="pipeline-issue-50",
+            monitor,
+            "abc123",
+            "implement",
+            channel_id="pipeline-issue-50",
         )
         assert len(_all(central_repo)) == 1

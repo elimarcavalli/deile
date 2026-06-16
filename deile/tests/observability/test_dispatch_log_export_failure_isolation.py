@@ -18,10 +18,16 @@ class TestFailureIsolation:
         import deile.observability.dispatch_log_export as dle
 
         # Make emit_log_record always raise
-        monkeypatch.setattr(dle, "emit_log_record", lambda **kw: (_ for _ in ()).throw(RuntimeError("log boom")))
+        monkeypatch.setattr(
+            dle,
+            "emit_log_record",
+            lambda **kw: (_ for _ in ()).throw(RuntimeError("log boom")),
+        )
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed, emit_dispatch_received)
+            emit_dispatch_completed,
+            emit_dispatch_received,
+        )
 
         # Should not raise
         emit_dispatch_received("isolation-log-fail", session_id="s1")
@@ -31,11 +37,17 @@ class TestFailureIsolation:
         root_spans = [s for s in spans if s.name == "deile.dispatch"]
         assert len(root_spans) >= 1, "span deve ser emitido mesmo com log falhando"
 
-    def test_log_failure_does_not_affect_dispatch_return(self, in_memory_exporter, monkeypatch):
+    def test_log_failure_does_not_affect_dispatch_return(
+        self, in_memory_exporter, monkeypatch
+    ):
         """Falha no log pipeline não propaga exceção para o chamador."""
         import deile.observability.dispatch_log_export as dle
 
-        monkeypatch.setattr(dle, "emit_log_record", lambda **kw: (_ for _ in ()).throw(RuntimeError("log boom")))
+        monkeypatch.setattr(
+            dle,
+            "emit_log_record",
+            lambda **kw: (_ for _ in ()).throw(RuntimeError("log boom")),
+        )
 
         from deile.observability.dispatch_export import emit_dispatch_received
 
@@ -43,7 +55,9 @@ class TestFailureIsolation:
         result = emit_dispatch_received("isolation-ret", session_id="s1")
         assert result is None
 
-    def test_span_failure_does_not_affect_log(self, in_memory_log_exporter, monkeypatch):
+    def test_span_failure_does_not_affect_log(
+        self, in_memory_log_exporter, monkeypatch
+    ):
         """Falha no _get_raw_tracer não afeta log emission."""
         import deile.observability.dispatch_export as dep
 
@@ -58,7 +72,9 @@ class TestFailureIsolation:
         # Should not raise
         emit_dispatch_received("isolation-span-fail", session_id="s1")
 
-    def test_separate_try_except_blocks(self, in_memory_exporter, in_memory_log_exporter, monkeypatch):
+    def test_separate_try_except_blocks(
+        self, in_memory_exporter, in_memory_log_exporter, monkeypatch
+    ):
         """Verifica que span e log têm try/except separados via _try_emit_log."""
         import deile.observability.dispatch_export as dep
 
@@ -72,7 +88,9 @@ class TestFailureIsolation:
         monkeypatch.setattr(dep, "_try_emit_log", tracking_try_emit_log)
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed, emit_dispatch_received)
+            emit_dispatch_completed,
+            emit_dispatch_received,
+        )
 
         emit_dispatch_received("sep-test", session_id="s1")
         emit_dispatch_completed("sep-test", elapsed_s=1.0)

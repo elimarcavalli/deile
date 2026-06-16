@@ -7,11 +7,15 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 if TYPE_CHECKING:
     from ..core.agent import DeileAgent
 
-from ..core.exceptions import (PersonaConfigError, PersonaError,
-                               PersonaExecutionError,
-                               PersonaInitializationError,
-                               PersonaIntegrationError, PersonaLoadError,
-                               PersonaSwitchError)
+from ..core.exceptions import (
+    PersonaConfigError,
+    PersonaError,
+    PersonaExecutionError,
+    PersonaInitializationError,
+    PersonaIntegrationError,
+    PersonaLoadError,
+    PersonaSwitchError,
+)
 from .audit_integration import get_persona_audit_logger
 from .base import AgentCapability, BaseAutonomousPersona, BasePersona
 from .config import PersonaConfig  # ← Use unified configuration
@@ -36,16 +40,17 @@ class PersonaManager:
     - Integração com sistema de memória unificado DEILE
     """
 
-    def __init__(self, agent: 'DeileAgent' = None, memory_manager=None):
+    def __init__(self, agent: "DeileAgent" = None, memory_manager=None):
         # UNIFIED CONFIGURATION: Use agent's ConfigManager
         if agent:
             self.agent = agent
             self.config_manager = agent.config_manager
             self.memory_manager = agent.memory_manager or memory_manager
-            self.tool_registry = getattr(agent, 'tool_registry', None)
+            self.tool_registry = getattr(agent, "tool_registry", None)
         else:
             # Fallback for standalone usage
             from ..config.manager import get_config_manager
+
             self.agent = None
             self.config_manager = get_config_manager()
             self.memory_manager = memory_manager
@@ -55,7 +60,9 @@ class PersonaManager:
         self._memory_integrated = self.memory_manager is not None
 
         if self._memory_integrated:
-            logger.info("PersonaManager initialized with unified memory system integration")
+            logger.info(
+                "PersonaManager initialized with unified memory system integration"
+            )
 
         # Storage de personas ativas
         self._personas: Dict[str, BasePersona] = {}
@@ -76,7 +83,9 @@ class PersonaManager:
         self._total_switches = 0
         self._last_reload_time = 0.0
 
-        logger.info("PersonaManager initialized with unified configuration and error handling systems")
+        logger.info(
+            "PersonaManager initialized with unified configuration and error handling systems"
+        )
 
     async def initialize(self, enable_hot_reload: bool = True) -> None:
         """Initialize persona manager with unified configuration"""
@@ -85,7 +94,7 @@ class PersonaManager:
         try:
             # Load persona configuration from unified ConfigManager
             personas_config = await self.config_manager.load_persona_configuration()
-            if not personas_config or not personas_config.get('enabled', False):
+            if not personas_config or not personas_config.get("enabled", False):
                 logger.info("Personas disabled in unified configuration")
                 return
 
@@ -93,7 +102,7 @@ class PersonaManager:
             await self._load_available_personas()
 
             # Set default persona from unified configuration
-            default_persona_id = personas_config.get('default_persona', 'developer')
+            default_persona_id = personas_config.get("default_persona", "developer")
             if default_persona_id in self._personas:
                 await self.switch_persona(default_persona_id)
 
@@ -101,7 +110,9 @@ class PersonaManager:
             if enable_hot_reload:
                 await self.config_manager.setup_hot_reload()
 
-            logger.info(f"PersonaManager initialized with {len(self._personas)} personas")
+            logger.info(
+                f"PersonaManager initialized with {len(self._personas)} personas"
+            )
 
         except Exception as e:
             logger.error(f"Error initializing PersonaManager: {e}")
@@ -110,14 +121,14 @@ class PersonaManager:
             context = ErrorContext(
                 operation="initialize_persona_manager",
                 severity=ErrorSeverity.CRITICAL,
-                error_type="PersonaInitializationError"
+                error_type="PersonaInitializationError",
             )
 
             # Create proper PersonaInitializationError
             error = PersonaInitializationError(
                 f"PersonaManager initialization failed: {e}",
                 persona_id="system",
-                initialization_step="manager_init"
+                initialization_step="manager_init",
             )
 
             # Log to audit system
@@ -127,7 +138,9 @@ class PersonaManager:
 
     async def _load_available_personas(self) -> None:
         """Load all available personas from unified configuration"""
-        persona_configs = await self.config_manager._get_config_value('personas.persona_configs', {})
+        persona_configs = await self.config_manager._get_config_value(
+            "personas.persona_configs", {}
+        )
 
         for persona_id, config_data in persona_configs.items():
             try:
@@ -137,7 +150,9 @@ class PersonaManager:
                 )
 
                 # Create persona instance
-                persona = await self._create_persona_from_config(persona_id, persona_config)
+                persona = await self._create_persona_from_config(
+                    persona_id, persona_config
+                )
                 self._personas[persona_id] = persona
 
                 logger.debug(f"Loaded persona from unified config: {persona_id}")
@@ -150,7 +165,7 @@ class PersonaManager:
                     operation="load_persona",
                     persona_id=persona_id,
                     severity=ErrorSeverity.HIGH,
-                    error_type="PersonaLoadError"
+                    error_type="PersonaLoadError",
                 )
                 context.capture_stack_trace()
 
@@ -158,19 +173,21 @@ class PersonaManager:
                 load_error = PersonaLoadError(
                     f"Failed to load persona {persona_id}: {str(e)}",
                     persona_id=persona_id,
-                    recovery_suggestion="Check persona configuration and dependencies"
+                    recovery_suggestion="Check persona configuration and dependencies",
                 )
 
                 # Log to audit system (don't raise to continue loading other personas)
                 try:
-                    await self.persona_audit_logger.log_persona_error(load_error, context)
+                    await self.persona_audit_logger.log_persona_error(
+                        load_error, context
+                    )
                 except Exception as audit_error:
-                    logger.warning(f"Failed to log persona load error to audit: {audit_error}")
+                    logger.warning(
+                        f"Failed to log persona load error to audit: {audit_error}"
+                    )
 
     async def _create_persona_from_config(
-        self,
-        persona_id: str,
-        persona_config: PersonaConfig
+        self, persona_id: str, persona_config: PersonaConfig
     ) -> BasePersona:
         """Create persona instance with unified configuration"""
         # Create memory layer for this persona
@@ -184,7 +201,8 @@ class PersonaManager:
         # We need to convert our unified PersonaConfig to the expected format
         try:
             # Convert unified config to base.py PersonaConfig format
-            from .base import AgentCapability, PersonaConfig as PydanticPersonaConfig
+            from .base import AgentCapability
+            from .base import PersonaConfig as PydanticPersonaConfig
 
             # Map capability strings to AgentCapability enum values.
             # Unknown strings are skipped with a WARNING (policy: never break on bad input).
@@ -214,26 +232,34 @@ class PersonaManager:
                 capabilities=mapped_capabilities,
                 model_preferences=persona_config.model_preferences.to_dict(),
                 communication_style=persona_config.communication_style.value,
-                system_instruction=instructions
+                system_instruction=instructions,
             )
 
             persona = BaseAutonomousPersona(config=pydantic_config)
 
         except Exception as e:
-            logger.warning(f"Failed to create BaseAutonomousPersona for {persona_id}: {e}")
+            logger.warning(
+                f"Failed to create BaseAutonomousPersona for {persona_id}: {e}"
+            )
             # Fallback: Create a minimal persona wrapper
-            persona = self._create_minimal_persona(persona_id, persona_config, instructions)
+            persona = self._create_minimal_persona(
+                persona_id, persona_config, instructions
+            )
 
         await persona.initialize()
         return persona
 
-    def _create_minimal_persona(self, persona_id: str, config: PersonaConfig, instructions: str):
+    def _create_minimal_persona(
+        self, persona_id: str, config: PersonaConfig, instructions: str
+    ):
         """Create a minimal persona wrapper as fallback"""
 
         class MinimalPersona:
             """Minimal persona implementation for unified configuration compatibility"""
 
-            def __init__(self, persona_id: str, config: PersonaConfig, instructions: str):
+            def __init__(
+                self, persona_id: str, config: PersonaConfig, instructions: str
+            ):
                 self.id = persona_id
                 self.persona_id = persona_id
                 self.name = persona_id.title()
@@ -281,18 +307,15 @@ class PersonaManager:
     # CONFIGURATION CHANGE HANDLING
 
     async def _on_persona_config_change(
-        self,
-        persona_id: str,
-        new_config: Dict[str, Any],
-        event_type: str
+        self, persona_id: str, new_config: Dict[str, Any], event_type: str
     ) -> None:
         """Handle persona configuration changes from unified ConfigManager"""
         try:
-            if event_type == 'added':
+            if event_type == "added":
                 await self._handle_persona_added(persona_id, new_config)
-            elif event_type == 'updated':
+            elif event_type == "updated":
                 await self._handle_persona_updated(persona_id, new_config)
-            elif event_type == 'removed':
+            elif event_type == "removed":
                 await self._handle_persona_removed(persona_id)
 
             logger.info(f"Handled persona config change: {event_type} for {persona_id}")
@@ -300,7 +323,9 @@ class PersonaManager:
         except Exception as e:
             logger.error(f"Failed to handle persona config change: {e}")
 
-    async def _handle_persona_added(self, persona_id: str, config_data: Dict[str, Any]) -> None:
+    async def _handle_persona_added(
+        self, persona_id: str, config_data: Dict[str, Any]
+    ) -> None:
         """Handle new persona addition"""
         if persona_id not in self._personas:
             persona_config = PersonaConfig.from_dict(
@@ -309,7 +334,9 @@ class PersonaManager:
             persona = await self._create_persona_from_config(persona_id, persona_config)
             self._personas[persona_id] = persona
 
-    async def _handle_persona_updated(self, persona_id: str, config_data: Dict[str, Any]) -> None:
+    async def _handle_persona_updated(
+        self, persona_id: str, config_data: Dict[str, Any]
+    ) -> None:
         """Handle persona configuration update"""
         if persona_id in self._personas:
             # Update existing persona configuration
@@ -337,7 +364,7 @@ class PersonaManager:
             # If this was the current persona, switch to default
             if self._current_context and self._active_persona == persona_id:
                 default_persona = await self.config_manager._get_config_value(
-                    'personas.default_persona', 'developer'
+                    "personas.default_persona", "developer"
                 )
                 if default_persona in self._personas:
                     await self.switch_persona(default_persona)
@@ -359,7 +386,7 @@ class PersonaManager:
         self,
         persona_id: str,
         session_id: str = "default",
-        user_context: Optional[Dict[str, Any]] = None
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Switch to a specific persona with comprehensive error handling
 
@@ -382,8 +409,8 @@ class PersonaManager:
             operation_parameters={
                 "from_persona": current_persona_name,
                 "to_persona": persona_id,
-                "session_id": session_id
-            }
+                "session_id": session_id,
+            },
         )
 
         try:
@@ -393,7 +420,7 @@ class PersonaManager:
                     f"Target persona '{persona_id}' not found",
                     from_persona=current_persona_name,
                     to_persona=persona_id,
-                    recovery_suggestion="Use /persona list to see available personas"
+                    recovery_suggestion="Use /persona list to see available personas",
                 )
 
                 context.severity = ErrorSeverity.MEDIUM
@@ -405,13 +432,17 @@ class PersonaManager:
                     to_persona=persona_id,
                     success=False,
                     session_id=session_id,
-                    switch_reason="persona_not_found"
+                    switch_reason="persona_not_found",
                 )
 
                 return False
 
             # Save current persona context if exists and memory manager is available
-            if self._current_context and self._memory_integrated and self.memory_manager:
+            if (
+                self._current_context
+                and self._memory_integrated
+                and self.memory_manager
+            ):
                 await self._current_context.save_state()
                 logger.debug(f"Saved current persona context for session {session_id}")
 
@@ -420,14 +451,16 @@ class PersonaManager:
                 current_persona = self._personas.get(self._active_persona)
                 if current_persona:
                     current_persona.deactivate()
-                    logger.debug(f"Deactivated previous persona: {self._active_persona}")
+                    logger.debug(
+                        f"Deactivated previous persona: {self._active_persona}"
+                    )
 
             # Create new persona context with unified memory if available
             if self._memory_integrated and self.memory_manager:
                 new_context = await PersonaContext.create(
                     persona_id=persona_id,
                     session_id=session_id,
-                    memory_manager=self.memory_manager
+                    memory_manager=self.memory_manager,
                 )
                 self._current_context = new_context
 
@@ -436,10 +469,10 @@ class PersonaManager:
                     event_type="persona_switch",
                     session_id=session_id,
                     details={
-                        'from_persona': self._active_persona,
-                        'to_persona': persona_id,
-                        'timestamp': datetime.now().isoformat()
-                    }
+                        "from_persona": self._active_persona,
+                        "to_persona": persona_id,
+                        "timestamp": datetime.now().isoformat(),
+                    },
                 )
                 logger.debug("Stored persona switch event in unified memory")
             else:
@@ -456,10 +489,12 @@ class PersonaManager:
                 from_persona=current_persona_name,
                 to_persona=persona_id,
                 success=True,
-                session_id=session_id
+                session_id=session_id,
             )
 
-            logger.info(f"Successfully switched from '{current_persona_name}' to '{new_persona.name}' ({persona_id})")
+            logger.info(
+                f"Successfully switched from '{current_persona_name}' to '{new_persona.name}' ({persona_id})"
+            )
             return True
 
         except PersonaError as persona_error:
@@ -491,7 +526,7 @@ class PersonaManager:
                     to_persona=persona_id,
                     success=False,
                     session_id=session_id,
-                    switch_reason="persona_error"
+                    switch_reason="persona_error",
                 )
                 raise persona_error
 
@@ -503,7 +538,7 @@ class PersonaManager:
                 f"Unexpected error switching persona: {str(unexpected_error)}",
                 from_persona=current_persona_name,
                 to_persona=persona_id,
-                recovery_suggestion="Check system logs and retry"
+                recovery_suggestion="Check system logs and retry",
             )
 
             context.severity = ErrorSeverity.HIGH
@@ -515,7 +550,7 @@ class PersonaManager:
                 to_persona=persona_id,
                 success=False,
                 session_id=session_id,
-                switch_reason="unexpected_error"
+                switch_reason="unexpected_error",
             )
 
             raise switch_error
@@ -544,7 +579,8 @@ class PersonaManager:
             communication_style = getattr(persona.config, "communication_style", None)
             comm_value = (
                 communication_style.value
-                if communication_style is not None and hasattr(communication_style, "value")
+                if communication_style is not None
+                and hasattr(communication_style, "value")
                 else communication_style
             )
             result.append(
@@ -555,7 +591,9 @@ class PersonaManager:
                         cap.value if hasattr(cap, "value") else cap
                         for cap in getattr(persona, "capabilities", [])
                     ],
-                    "expertise_areas": list(getattr(persona, "expertise_areas", []) or []),
+                    "expertise_areas": list(
+                        getattr(persona, "expertise_areas", []) or []
+                    ),
                     "is_active": persona.is_active,
                     "communication_style": comm_value,
                     "expertise_level": getattr(persona.config, "expertise_level", None),
@@ -572,11 +610,15 @@ class PersonaManager:
                 cap.value if hasattr(cap, "value") else cap
                 for cap in getattr(persona, "capabilities", [])
             ]
-            if target in persona_caps or capability in getattr(persona, "capabilities", []):
+            if target in persona_caps or capability in getattr(
+                persona, "capabilities", []
+            ):
                 result.append(persona_id)
         return result
 
-    async def find_best_persona_for_task(self, task_description: str, required_capabilities: List[AgentCapability] = None) -> Optional[str]:
+    async def find_best_persona_for_task(
+        self, task_description: str, required_capabilities: List[AgentCapability] = None
+    ) -> Optional[str]:
         """Encontra a melhor persona para uma tarefa específica
 
         Args:
@@ -626,23 +668,26 @@ class PersonaManager:
 
         try:
             # Get persona-specific context from unified memory
-            conversation_history = await self._current_context.memory_layer.get_conversation_history(
-                self._current_context.session_id,
-                limit=5
+            conversation_history = (
+                await self._current_context.memory_layer.get_conversation_history(
+                    self._current_context.session_id, limit=5
+                )
             )
 
             # Get learned patterns
-            learned_patterns = await self._current_context.memory_layer.get_learned_patterns(
-                "conversation_style"
+            learned_patterns = (
+                await self._current_context.memory_layer.get_learned_patterns(
+                    "conversation_style"
+                )
             )
 
             enhanced_context = {
                 **base_context,
-                'persona_id': self._active_persona,
-                'persona_state': self._current_context.current_state,
-                'persona_preferences': self._current_context.preferences,
-                'conversation_history': conversation_history,
-                'learned_patterns': learned_patterns
+                "persona_id": self._active_persona,
+                "persona_state": self._current_context.current_state,
+                "persona_preferences": self._current_context.preferences,
+                "conversation_history": conversation_history,
+                "learned_patterns": learned_patterns,
             }
 
             return enhanced_context
@@ -652,9 +697,7 @@ class PersonaManager:
             return base_context
 
     async def process_interaction_feedback(
-        self,
-        interaction_data: Dict[str, Any],
-        success_metrics: Dict[str, float]
+        self, interaction_data: Dict[str, Any], success_metrics: Dict[str, float]
     ) -> None:
         """Process interaction feedback for learning"""
         if not self._current_context:
@@ -665,11 +708,11 @@ class PersonaManager:
             await self._current_context.update_from_interaction(interaction_data)
 
             # Learn from successful patterns
-            if success_metrics.get('success_rate', 0) > 0.7:
+            if success_metrics.get("success_rate", 0) > 0.7:
                 await self._current_context.memory_layer.learn_pattern(
                     pattern_type="successful_interaction",
                     pattern_data=interaction_data,
-                    success_rate=success_metrics['success_rate']
+                    success_rate=success_metrics["success_rate"],
                 )
 
         except Exception as e:
@@ -695,9 +738,13 @@ class PersonaManager:
         self._memory_integrated = memory_manager is not None
 
         if self._memory_integrated:
-            logger.info("Memory manager set for persona manager - unified memory integration enabled")
+            logger.info(
+                "Memory manager set for persona manager - unified memory integration enabled"
+            )
         else:
-            logger.warning("Memory manager set to None - unified memory integration disabled")
+            logger.warning(
+                "Memory manager set to None - unified memory integration disabled"
+            )
 
     def validate_memory_integration(self) -> bool:
         """Validate that memory integration is working correctly"""
@@ -707,7 +754,11 @@ class PersonaManager:
 
         try:
             # Check if memory manager has required components
-            required_components = ['semantic_memory', 'episodic_memory', 'working_memory']
+            required_components = [
+                "semantic_memory",
+                "episodic_memory",
+                "working_memory",
+            ]
             for component in required_components:
                 if not hasattr(self.memory_manager, component):
                     logger.error(f"Memory manager missing component: {component}")
@@ -730,11 +781,7 @@ class PersonaManager:
 
     # CONFIGURATION MANAGEMENT METHODS
 
-    async def add_persona(
-        self,
-        persona_id: str,
-        persona_config: PersonaConfig
-    ) -> None:
+    async def add_persona(self, persona_id: str, persona_config: PersonaConfig) -> None:
         """Add new persona using unified configuration"""
         try:
             # Save to unified configuration
@@ -761,9 +808,7 @@ class PersonaManager:
             raise
 
     async def update_persona_configuration(
-        self,
-        persona_id: str,
-        config_updates: Dict[str, Any]
+        self, persona_id: str, config_updates: Dict[str, Any]
     ) -> None:
         """Update persona configuration using unified system"""
         try:
@@ -792,7 +837,7 @@ class PersonaManager:
         user_input: str,
         response: str,
         session_id: str,
-        metadata: Dict[str, Any] = None
+        metadata: Dict[str, Any] = None,
     ) -> None:
         """Store interaction in persona memory"""
         if not self._current_context:
@@ -800,12 +845,12 @@ class PersonaManager:
 
         try:
             interaction_data = {
-                'user_input': user_input,
-                'response': response,
-                'timestamp': datetime.now().isoformat(),
-                'session_id': session_id,
-                'persona_id': self._active_persona,
-                'metadata': metadata or {}
+                "user_input": user_input,
+                "response": response,
+                "timestamp": datetime.now().isoformat(),
+                "session_id": session_id,
+                "persona_id": self._active_persona,
+                "metadata": metadata or {},
             }
 
             await self._current_context.memory_layer.store_conversation_context(
@@ -827,7 +872,14 @@ class PersonaManager:
 
             # Create minimal context for instruction building
             from .base import AgentContext
-            context = AgentContext(session_id=self._current_context.session_id if self._current_context else "default")
+
+            context = AgentContext(
+                session_id=(
+                    self._current_context.session_id
+                    if self._current_context
+                    else "default"
+                )
+            )
 
             return await persona.build_system_instruction(context)
 
@@ -844,17 +896,18 @@ class PersonaManager:
             "hot_reload_enabled": True,  # Managed by unified ConfigManager
             "last_reload_time": self._last_reload_time,
             "personas_by_capability": {
-                cap.value: len(self.list_by_capability(cap))
-                for cap in AgentCapability
+                cap.value: len(self.list_by_capability(cap)) for cap in AgentCapability
             },
             "configuration_system": "unified",
-            "memory_integration_enabled": self.memory_manager is not None
+            "memory_integration_enabled": self.memory_manager is not None,
         }
 
         # Add current context info if available
         if self._current_context:
-            stats['current_session'] = self._current_context.session_id
-            stats['interaction_count'] = self._current_context.current_state.get('interaction_count', 0)
+            stats["current_session"] = self._current_context.session_id
+            stats["interaction_count"] = self._current_context.current_state.get(
+                "interaction_count", 0
+            )
 
         return stats
 

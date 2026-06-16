@@ -27,7 +27,8 @@ import _panel_data as pd  # noqa: E402
 def _row(name: str, role: str, **extra) -> "panel.PodRow":
     return panel.PodRow(
         icon=extra.get("icon", "●"),
-        name=name, role=role,
+        name=name,
+        role=role,
         status=extra.get("status", "Running"),
         age=extra.get("age", "5m"),
         restarts=extra.get("restarts", "0"),
@@ -40,6 +41,7 @@ def _row(name: str, role: str, **extra) -> "panel.PodRow":
 # --------------------------------------------------------------------------- #
 # _is_worker_class_role
 # --------------------------------------------------------------------------- #
+
 
 def test_worker_class_role_covers_core_and_fleet():
     assert panel._is_worker_class_role("worker")
@@ -65,6 +67,7 @@ def test_ordered_worker_roles_core_first_then_alpha():
 # _role_for_app — frota CLI derivada do registro
 # --------------------------------------------------------------------------- #
 
+
 def test_role_for_app_static_and_fleet():
     assert pd._role_for_app("deile-worker") == "worker"
     assert pd._role_for_app("claude-worker") == "claude-worker"
@@ -81,12 +84,16 @@ def test_role_for_app_static_and_fleet():
 # _render_grouped_pods — um cabeçalho por tipo de worker
 # --------------------------------------------------------------------------- #
 
+
 def _render_to_text(rows) -> str:
     tbl = Table(expand=True)
     for col in ("icon", "pod", "status", "age", "r", "last", "doing"):
         tbl.add_column(col)
     panel._render_grouped_pods(
-        tbl, rows, panel._restart_text, panel._doing_now_render,
+        tbl,
+        rows,
+        panel._restart_text,
+        panel._doing_now_render,
     )
     console = Console(width=200)
     with console.capture() as cap:
@@ -125,6 +132,7 @@ def test_render_no_group_header_when_no_workers():
 # PodPickerView._rows — agrupa contíguo sem desalinhar cursor
 # --------------------------------------------------------------------------- #
 
+
 def test_pod_picker_rows_groups_workers_contiguously(monkeypatch):
     pods = [
         _row("deile-pipeline-0", "pipeline"),
@@ -147,8 +155,6 @@ def test_pod_picker_rows_groups_workers_contiguously(monkeypatch):
 
 def test_deployment_for_role_maps_fleet_workers():
     assert panel.PodPickerView._deployment_for_role("worker") == "deile-worker"
-    assert panel.PodPickerView._deployment_for_role(
-        "claude-worker") == "claude-worker"
-    assert panel.PodPickerView._deployment_for_role(
-        "codex-worker") == "codex-worker"
+    assert panel.PodPickerView._deployment_for_role("claude-worker") == "claude-worker"
+    assert panel.PodPickerView._deployment_for_role("codex-worker") == "codex-worker"
     assert panel.PodPickerView._deployment_for_role("local-shell") is None

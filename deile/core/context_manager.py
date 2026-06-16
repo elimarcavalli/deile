@@ -17,8 +17,7 @@ from ..skills.bootstrap import bootstrap_skills
 from ..skills.router import SkillRouter, SkillSelectionContext
 from ..storage.embeddings import EmbeddingStore
 from ..tools.base import ToolResult
-from .deile_md_loader import \
-    DEILEMDLoader  # Issue #62 — leitura hierárquica DEILE.md
+from .deile_md_loader import DEILEMDLoader  # Issue #62 — leitura hierárquica DEILE.md
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +33,7 @@ async def _build_preferences_block(session: Any) -> str:
         if not user_id:
             return ""
         from deile.preferences.store import PreferenceStore
+
         store = PreferenceStore()
         prefs = store.get_all(user_id)
         if not prefs:
@@ -77,12 +77,15 @@ def _merge_bot_extra(base: str, session: Any) -> str:
         return base
     try:
         from deile.core.bot_hooks import merge_extra_system_prompt
+
         return merge_extra_system_prompt(base, str(extra))
     except Exception:
         return base
 
 
-async def _prepend_deile_md_layers(base_instruction: str, working_directory: Optional[str] = None) -> str:
+async def _prepend_deile_md_layers(
+    base_instruction: str, working_directory: Optional[str] = None
+) -> str:
     """Issue #62: Prepend hierarchical DEILE.md layers (Core → User → CWD).
 
     As camadas DEILE.md são injetadas ANTES da instrução da persona,
@@ -100,13 +103,16 @@ async def _prepend_deile_md_layers(base_instruction: str, working_directory: Opt
             return deile_md_block + "\n\n" + base_instruction
         return base_instruction
     except Exception as exc:
-        logger.warning("Falha ao carregar camadas DEILE.md: %s — usando instrução base", exc)
+        logger.warning(
+            "Falha ao carregar camadas DEILE.md: %s — usando instrução base", exc
+        )
         return base_instruction
 
 
 @dataclass
 class ContextChunk:
     """Chunk de contexto com metadata"""
+
     content: str
     source: str  # 'file', 'conversation', 'tool_result', etc.
     source_path: Optional[str] = None
@@ -115,7 +121,7 @@ class ContextChunk:
     metadata: Dict[str, Any] = field(default_factory=dict)
     embedding: Optional[List[float]] = None
     relevance_score: float = 0.0
-    
+
     def __post_init__(self):
         if not self.chunk_id:
             self.chunk_id = f"{self.source}_{hash(self.content)}_{int(self.timestamp)}"
@@ -124,10 +130,11 @@ class ContextChunk:
 @dataclass
 class ContextWindow:
     """Janela de contexto com limites de tokens"""
+
     chunks: List[ContextChunk] = field(default_factory=list)
     max_tokens: int = 8000  # Default para modelos médios
     current_tokens: int = 0
-    
+
     def add_chunk(self, chunk: ContextChunk, estimated_tokens: int) -> bool:
         """Adiciona chunk se couber na janela"""
         if self.current_tokens + estimated_tokens <= self.max_tokens:
@@ -135,7 +142,7 @@ class ContextWindow:
             self.current_tokens += estimated_tokens
             return True
         return False
-    
+
     def remove_oldest(self) -> Optional[ContextChunk]:
         """Remove o chunk mais antigo"""
         if self.chunks:
@@ -144,7 +151,7 @@ class ContextWindow:
             self.current_tokens = sum(len(c.content) // 4 for c in self.chunks)
             return removed
         return None
-    
+
     def clear(self) -> None:
         """Limpa a janela"""
         self.chunks.clear()
@@ -174,7 +181,7 @@ class ContextManager:
         embedding_store: Optional[EmbeddingStore] = None,
         max_context_tokens: int = 8000,
         persona_manager: Optional[PersonaManager] = None,
-        memory_manager: Optional[MemoryManager] = None
+        memory_manager: Optional[MemoryManager] = None,
     ):
         # Core components
         self.embedding_store = embedding_store
@@ -197,14 +204,14 @@ class ContextManager:
         self._context_builds = 0
         self._persona_switches = 0
         self._memory_retrievals = 0
-    
+
     async def build_context(
         self,
         user_input: str,
         parse_result: Optional[ParseResult] = None,
         tool_results: Optional[List[ToolResult]] = None,
         session: Optional[Any] = None,  # AgentSession
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         """Constrói contexto para a próxima invocação do provider.
 
@@ -254,12 +261,16 @@ class ContextManager:
                     "user_input_length": len(user_input),
                     "tool_results_count": len(tool_results) if tool_results else 0,
                     "history_length": len(messages),
-                    "chat_session_mode": True
-                }
+                    "chat_session_mode": True,
+                },
             }
 
             # CORREÇÃO CRÍTICA: Inclui file_data se há arquivos uploadados no ParseResult
-            if parse_result and parse_result.metadata and "uploaded_files" in parse_result.metadata:
+            if (
+                parse_result
+                and parse_result.metadata
+                and "uploaded_files" in parse_result.metadata
+            ):
                 uploaded_files = parse_result.metadata["uploaded_files"]
                 file_data_parts = []
 
@@ -270,7 +281,9 @@ class ContextManager:
                 if file_data_parts:
                     context["file_data_parts"] = file_data_parts
                     context["metadata"]["uploaded_files_count"] = len(file_data_parts)
-                    logger.info(f"Added {len(file_data_parts)} file_data_parts to context")
+                    logger.info(
+                        f"Added {len(file_data_parts)} file_data_parts to context"
+                    )
 
             # Inclui file_data na ÚLTIMA mensagem (turno atual) — Gemini-style parts
             if "file_data_parts" in context:
@@ -292,27 +305,24 @@ class ContextManager:
             return {
                 "messages": [{"role": "user", "content": user_input}],
                 "system_instruction": "You are DEILE, a helpful AI assistant.",
-                "error": str(e)
+                "error": str(e),
             }
-    
+
     def clear_cache(self) -> None:
         """Limpa todos os caches (mantido para compatibilidade)"""
         logger.debug("Cache clearing requested (simplified context manager)")
-    
+
     async def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas simplificadas do context manager"""
         return {
             "context_builds": self._context_builds,
             "max_context_tokens": self.max_context_tokens,
             "chat_session_mode": True,
-            "simplified": True
+            "simplified": True,
         }
-    
+
     async def _build_system_instruction(
-        self,
-        parse_result: Optional[ParseResult],
-        session: Optional[Any],
-        **kwargs
+        self, parse_result: Optional[ParseResult], session: Optional[Any], **kwargs
     ) -> str:
         """Constrói instrução do sistema usando PersonaManager ou fallback hardcoded.
 
@@ -324,24 +334,30 @@ class ContextManager:
         final da instrução base como bloco `<bot_capabilities>`.
         """
 
-        working_directory = kwargs.get('working_directory', os.getcwd())
+        working_directory = kwargs.get("working_directory", os.getcwd())
 
         # CORREÇÃO CRÍTICA: Usa PersonaManager se disponível
         if self.persona_manager:
             try:
                 active_persona = self.persona_manager.get_active_persona()
                 if active_persona:
-                    logger.debug(f"Using persona '{active_persona.name}' system instruction")
+                    logger.debug(
+                        f"Using persona '{active_persona.name}' system instruction"
+                    )
 
                     # Constrói instrução usando o método da persona (que carrega do MD)
                     context = {
-                        'session': session,
-                        'working_directory': working_directory
+                        "session": session,
+                        "working_directory": working_directory,
                     }
-                    base_instruction = await active_persona.build_system_instruction(context)
+                    base_instruction = await active_persona.build_system_instruction(
+                        context
+                    )
 
                     # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
-                    base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
+                    base_instruction = await _prepend_deile_md_layers(
+                        base_instruction, working_directory
+                    )
 
                     # Issue #341: Inject user preferences (after persona, before skills)
                     prefs_block = await _build_preferences_block(session)
@@ -358,22 +374,30 @@ class ContextManager:
                     # Adiciona contexto de arquivos
                     file_context = await self._build_file_context(session, **kwargs)
                     if file_context:
-                        base_instruction += f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
+                        base_instruction += (
+                            f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
+                        )
 
                     return _merge_bot_extra(base_instruction, session)
 
             except Exception as e:
-                logger.error(f"Error using PersonaManager: {e}, falling back to hardcoded")
+                logger.error(
+                    f"Error using PersonaManager: {e}, falling back to hardcoded"
+                )
 
         # Fallback para instrução de arquivo MD
-        logger.debug("Using fallback system instruction from MD file (PersonaManager not available)")
-        return await self._build_fallback_system_instruction(parse_result, session, **kwargs)
+        logger.debug(
+            "Using fallback system instruction from MD file (PersonaManager not available)"
+        )
+        return await self._build_fallback_system_instruction(
+            parse_result, session, **kwargs
+        )
 
     async def _build_fallback_system_instruction(
         self,
         parse_result: Optional[ParseResult] = None,
         session: Optional[Any] = None,
-        **kwargs
+        **kwargs,
     ) -> str:
         """CORREÇÃO BG003: Carrega instrução de arquivo MD (não mais hardcoded!)
 
@@ -382,13 +406,15 @@ class ContextManager:
 
         logger.debug("Loading system instruction from MD file (fallback)")
 
-        working_directory = kwargs.get('working_directory', os.getcwd())
+        working_directory = kwargs.get("working_directory", os.getcwd())
 
         # Carrega instrução de arquivo MD
         base_instruction = self.instruction_loader.load_fallback_instruction()
 
         # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
-        base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
+        base_instruction = await _prepend_deile_md_layers(
+            base_instruction, working_directory
+        )
 
         # Issue #341: Inject user preferences (after DEILE.md layers, before skills)
         prefs_block = await _build_preferences_block(session)
@@ -405,7 +431,9 @@ class ContextManager:
         # Adiciona contexto de arquivos se disponível
         file_context = await self._build_file_context(session, **kwargs)
         if file_context:
-            base_instruction += f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
+            base_instruction += (
+                f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
+            )
 
         return _merge_bot_extra(base_instruction, session)
 
@@ -433,14 +461,18 @@ class ContextManager:
             self._skills_bootstrapped = True
             try:
                 project_dir: Optional[Path] = None
-                session_wd = getattr(session, "working_directory", None) if session else None
+                session_wd = (
+                    getattr(session, "working_directory", None) if session else None
+                )
                 if session_wd:
                     project_dir = Path(session_wd)
                 elif working_directory:
                     project_dir = Path(working_directory)
                 self._skill_router = await bootstrap_skills(project_dir=project_dir)
             except Exception as exc:
-                logger.warning("skills: bootstrap failed (%s); subsystem disabled for session", exc)
+                logger.warning(
+                    "skills: bootstrap failed (%s); subsystem disabled for session", exc
+                )
                 self._skill_router = None
 
         if self._skill_router is None:
@@ -456,13 +488,21 @@ class ContextManager:
                         user_input = content
                     break
 
-        file_refs = tuple(parse_result.file_references) if parse_result and parse_result.file_references else ()
+        file_refs = (
+            tuple(parse_result.file_references)
+            if parse_result and parse_result.file_references
+            else ()
+        )
 
-        context = SkillSelectionContext(user_input=user_input, file_references=file_refs)
+        context = SkillSelectionContext(
+            user_input=user_input, file_references=file_refs
+        )
         try:
             selected = self._skill_router.select_skills(context)
         except Exception as exc:
-            logger.warning("skills: selection raised %s; skipping injection this turn", exc)
+            logger.warning(
+                "skills: selection raised %s; skipping injection this turn", exc
+            )
             selected = []
 
         # Stash the active skill names on the session so the streaming layer
@@ -494,24 +534,51 @@ class ContextManager:
 
         parts = [p for p in (active_block, catalog) if p]
         return "\n\n".join(parts)
-    
+
     # Maximum characters for the file-context block injected into the system prompt.
     # Each LLM token is roughly 4 chars; keeping this at 8 000 chars ≈ 2 000 tokens —
     # enough to list a few hundred top-level paths without blowing the context window.
     _FILE_CONTEXT_MAX_CHARS: int = 8_000
 
     # Extensions that are never useful as references in a chat context.
-    _IGNORE_EXTENSIONS: frozenset = frozenset({
-        ".pyc", ".pyo", ".pyd",           # compiled Python
-        ".o", ".so", ".a", ".dylib",      # compiled C/C++
-        ".class", ".jar",                  # Java bytecode
-        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
-        ".mp4", ".mp3", ".wav", ".avi",   # media
-        ".zip", ".tar", ".gz", ".bz2", ".xz", ".rar",  # archives
-        ".db", ".sqlite", ".sqlite3",     # databases
-        ".bin", ".exe", ".dll",           # binaries
-        ".lock",                          # lock files (large, unreadable)
-    })
+    _IGNORE_EXTENSIONS: frozenset = frozenset(
+        {
+            ".pyc",
+            ".pyo",
+            ".pyd",  # compiled Python
+            ".o",
+            ".so",
+            ".a",
+            ".dylib",  # compiled C/C++
+            ".class",
+            ".jar",  # Java bytecode
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".bmp",
+            ".ico",
+            ".svg",
+            ".webp",
+            ".mp4",
+            ".mp3",
+            ".wav",
+            ".avi",  # media
+            ".zip",
+            ".tar",
+            ".gz",
+            ".bz2",
+            ".xz",
+            ".rar",  # archives
+            ".db",
+            ".sqlite",
+            ".sqlite3",  # databases
+            ".bin",
+            ".exe",
+            ".dll",  # binaries
+            ".lock",  # lock files (large, unreadable)
+        }
+    )
 
     async def _build_file_context(self, session: Optional[Any], **kwargs) -> str:
         """Constrói lista compacta de arquivos do projeto para o system prompt.
@@ -537,17 +604,30 @@ class ContextManager:
 
             # Directories that are fully pruned from the walk (no descent, no listing).
             ignore_dirs = {
-                ".git", ".github", ".hg", ".svn",
-                "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-                ".venv", "venv", ".env", "env",
+                ".git",
+                ".github",
+                ".hg",
+                ".svn",
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                ".venv",
+                "venv",
+                ".env",
+                "env",
                 "node_modules",
                 "logs",
                 ".claude",
-                "cache", ".cache",
-                "deilebot", "deile_bot",  # separate repo (canonical + transitional names)
-                "work_items",          # large planning docs, not project code
-                "test-your-might",     # sandbox output dir
-                "dist", "build", "site-packages",
+                "cache",
+                ".cache",
+                "deilebot",
+                "deile_bot",  # separate repo (canonical + transitional names)
+                "work_items",  # large planning docs, not project code
+                "test-your-might",  # sandbox output dir
+                "dist",
+                "build",
+                "site-packages",
                 ".worktrees",
             }
 
@@ -560,8 +640,7 @@ class ContextManager:
             for root, dirs, files in os.walk(work_dir):
                 # Prune in-place so os.walk does NOT recurse into ignored dirs.
                 dirs[:] = [
-                    d for d in dirs
-                    if d not in ignore_dirs and not d.startswith(".")
+                    d for d in dirs if d not in ignore_dirs and not d.startswith(".")
                 ]
 
                 for file in files:
@@ -589,7 +668,7 @@ class ContextManager:
             char_budget = (
                 self._FILE_CONTEXT_MAX_CHARS
                 - len(header)
-                - 1              # header newline
+                - 1  # header newline
                 - _FOOTER_RESERVE
             )
             truncated = False

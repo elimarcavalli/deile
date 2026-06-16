@@ -17,8 +17,7 @@ import logging
 
 import pytest
 
-from deile.config.settings import (Settings, _apply_env_overrides,
-                                   reset_settings)
+from deile.config.settings import Settings, _apply_env_overrides, reset_settings
 
 # Env vars que passam por _apply_env_overrides sem emitir WARNING "deprecated".
 # Inclui tanto vars ativas quanto vars silenciadas — o critério aqui é
@@ -87,7 +86,8 @@ class TestNoDeprecationWarnings:
         with caplog.at_level(logging.WARNING, logger="deile.config.settings"):
             _apply_env_overrides(s)
         deprecation_records = [
-            r for r in caplog.records
+            r
+            for r in caplog.records
             if "deprecated" in r.getMessage().lower()
             and r.name == "deile.config.settings"
         ]

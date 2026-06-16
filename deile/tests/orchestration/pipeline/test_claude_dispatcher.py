@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from deile.orchestration.pipeline.claude_dispatcher import (
-    ClaudeDispatcher, render_implement_prompt, render_review_prompt)
+    ClaudeDispatcher,
+    render_implement_prompt,
+    render_review_prompt,
+)
 
 
 @pytest.fixture
@@ -113,11 +116,19 @@ class TestSubscriptionAuthStripping:
         assert env.get("PATH") == "/bin"  # other vars preserved
 
     def test_build_env_strips_all_anthropic_auth_vars(self, monkeypatch):
-        for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BEARER_TOKEN"):
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BEARER_TOKEN",
+        ):
             monkeypatch.setenv(k, "secret")
         d = ClaudeDispatcher()
         env = d._build_env(None)
-        for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BEARER_TOKEN"):
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BEARER_TOKEN",
+        ):
             assert k not in env
 
     def test_build_env_inherits_when_subscription_disabled(self, monkeypatch):
@@ -138,13 +149,12 @@ class TestSubscriptionAuthStripping:
         # Echo the env back so we can assert what claude actually saw.
         echoer = tmp_path / "echo-env"
         echoer.write_text(
-            "#!/bin/sh\n"
-            "echo \"key=${ANTHROPIC_API_KEY:-UNSET}\"\n"
-            "exit 0\n"
+            "#!/bin/sh\n" 'echo "key=${ANTHROPIC_API_KEY:-UNSET}"\n' "exit 0\n"
         )
         echoer.chmod(0o755)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-leak")
         d = ClaudeDispatcher(claude_path=str(echoer), timeout_seconds=10)
         result = await d.run("anything", cwd=tmp_path)
-        assert "key=UNSET" in result.stdout, \
-            f"expected ANTHROPIC_API_KEY to be stripped; got: {result.stdout!r}"
+        assert (
+            "key=UNSET" in result.stdout
+        ), f"expected ANTHROPIC_API_KEY to be stripped; got: {result.stdout!r}"

@@ -13,15 +13,22 @@ import pytest
 from rich.panel import Panel
 
 from deile.commands.base import CommandContext
-from deile.commands.builtin._shared import (_colored_panel, emit_audit_event,
-                                            error_panel, export_timestamp,
-                                            get_memory_manager, get_session_id,
-                                            split_args, success_panel,
-                                            warning_panel)
+from deile.commands.builtin._shared import (
+    _colored_panel,
+    emit_audit_event,
+    error_panel,
+    export_timestamp,
+    get_memory_manager,
+    get_session_id,
+    split_args,
+    success_panel,
+    warning_panel,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_context(args: str = "") -> CommandContext:
     ctx = CommandContext(user_input=f"/cmd {args}", args=args)
@@ -192,6 +199,7 @@ def test_get_memory_manager_agent_without_memory_manager():
 # get_session_id
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 def test_get_session_id_no_session_returns_default():
     ctx = _make_context()  # no session attribute
@@ -252,7 +260,10 @@ def test_emit_audit_event_fail_soft_on_exception():
 
     with patch("deile.commands.builtin._shared.logger") as mock_logger:
         # get_audit_logger is imported lazily inside the function body
-        with patch("deile.security.audit_logger.get_audit_logger", side_effect=RuntimeError("db down")):
+        with patch(
+            "deile.security.audit_logger.get_audit_logger",
+            side_effect=RuntimeError("db down"),
+        ):
             # Should NOT raise
             emit_audit_event(
                 event_type=AuditEventType.TOOL_EXECUTION,

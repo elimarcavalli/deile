@@ -74,13 +74,15 @@ def _write_session(workdir: Path, home: Path | None = None) -> None:
     project_dir = home / ".claude" / "projects" / workspace_hash
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "session.jsonl").write_text(
-        '{"type": "text", "text": "hello"}\n', encoding="utf-8",
+        '{"type": "text", "text": "hello"}\n',
+        encoding="utf-8",
     )
 
 
 # ---------------------------------------------------------------------------
 # _lease_is_stale
 # ---------------------------------------------------------------------------
+
 
 def test_lease_is_stale_when_expired_and_pid_dead(cws, work_root):
     wd = _make_workdir(work_root)
@@ -114,6 +116,7 @@ def test_lease_is_not_stale_when_pid_still_alive(cws, work_root):
 # _workdir_has_session
 # ---------------------------------------------------------------------------
 
+
 def test_workdir_has_session_with_jsonl(cws, work_root, monkeypatch):
     wd = _make_workdir(work_root)
     monkeypatch.setenv("HOME", str(work_root.parent))
@@ -130,6 +133,7 @@ def test_workdir_has_no_session_empty(cws, work_root, monkeypatch):
 # ---------------------------------------------------------------------------
 # startup_cleanup — cenários
 # ---------------------------------------------------------------------------
+
 
 def test_startup_cleanup_root_missing(cws, tmp_path):
     result = cws.startup_cleanup(root=tmp_path / "nonexistent")
@@ -148,6 +152,7 @@ def test_startup_cleanup_removes_stale_lease_only(cws, work_root, monkeypatch):
     _write_lease(wd, expired, pid=999999999)
     # Garante que mtime é recente (não cai no critério de old workdir)
     import os
+
     os.utime(wd, (time.time(), time.time()))
 
     result = cws.startup_cleanup(root=work_root)
@@ -191,6 +196,7 @@ def test_startup_cleanup_removes_old_workdir(cws, work_root, monkeypatch):
     # Força mtime para 30 dias atrás
     old_mtime = time.time() - (30 * 86400)
     import os
+
     os.utime(wd, (old_mtime, old_mtime))
 
     result = cws.startup_cleanup(root=work_root)
@@ -205,6 +211,7 @@ def test_startup_cleanup_keeps_recent_workdir_with_session(cws, work_root, monke
     wd = _make_workdir(work_root)
     _write_session(wd, home=work_root.parent)
     import os
+
     os.utime(wd, (time.time(), time.time()))
 
     result = cws.startup_cleanup(root=work_root)
@@ -234,6 +241,7 @@ def test_startup_cleanup_counts_multiple_workdirs(cws, work_root, monkeypatch):
     wd_keep = _make_workdir(work_root, "aabb00112233aabb")
     _write_session(wd_keep, home=work_root.parent)
     import os
+
     os.utime(wd_keep, (time.time(), time.time()))
 
     # Workdir a remover: sem sessão

@@ -28,10 +28,12 @@ class SandboxCommand(DirectCommand):
     """Sandbox status and toggle (informational only — no real isolation)."""
 
     def __init__(self):
-        super().__init__(CommandConfig(
-            name="sandbox",
-            description="Sandbox status and toggle (informational only)",
-        ))
+        super().__init__(
+            CommandConfig(
+                name="sandbox",
+                description="Sandbox status and toggle (informational only)",
+            )
+        )
         self.sandbox_enabled = False
 
     async def execute(self, context: CommandContext) -> CommandResult:
@@ -61,11 +63,17 @@ class SandboxCommand(DirectCommand):
         status_table.add_column("Value", style=status_color)
         status_table.add_column("Description", style="dim")
 
-        status_table.add_row("Mode", f"{status_emoji} {status_text}", "Toggle state (informational only)")
+        status_table.add_row(
+            "Mode", f"{status_emoji} {status_text}", "Toggle state (informational only)"
+        )
         status_table.add_row("Isolation", "None", "No real isolation in either mode")
-        status_table.add_row("File Access", "Unrestricted", "Filesystem permissions (host-level)")
+        status_table.add_row(
+            "File Access", "Unrestricted", "Filesystem permissions (host-level)"
+        )
         status_table.add_row("Network", "Open", "Network access (host-level)")
-        status_table.add_row("System Calls", "Direct", "System interaction (host-level)")
+        status_table.add_row(
+            "System Calls", "Direct", "System interaction (host-level)"
+        )
 
         info_text = (
             "ℹ️ **Sandbox toggle is informational only.**\n\n"
@@ -143,11 +151,21 @@ class SandboxCommand(DirectCommand):
         config_table.add_column("Value", style="white")
         config_table.add_column("Description", style="dim")
 
-        config_table.add_row("Execution Mode", "Host (no isolation)", "Tools run with DEILE's privileges")
-        config_table.add_row("File System", "Unrestricted", "Access controlled by `/permissions`")
-        config_table.add_row("Network Policy", "Unrestricted", "Network rules controlled elsewhere")
-        config_table.add_row("Resource Limits", "None", "No CPU/memory/disk limits enforced here")
-        config_table.add_row("Monitoring", "Audit log", "Every tool execution is recorded")
+        config_table.add_row(
+            "Execution Mode", "Host (no isolation)", "Tools run with DEILE's privileges"
+        )
+        config_table.add_row(
+            "File System", "Unrestricted", "Access controlled by `/permissions`"
+        )
+        config_table.add_row(
+            "Network Policy", "Unrestricted", "Network rules controlled elsewhere"
+        )
+        config_table.add_row(
+            "Resource Limits", "None", "No CPU/memory/disk limits enforced here"
+        )
+        config_table.add_row(
+            "Monitoring", "Audit log", "Every tool execution is recorded"
+        )
 
         notes_text = (
             "ℹ️ **What is and is not configurable here**\n\n"

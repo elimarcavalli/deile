@@ -18,6 +18,7 @@ from deile.core.models.tier import ModelTier
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def handle() -> ModelHandle:
     return ModelHandle(
@@ -58,6 +59,7 @@ def provider(handle, config, monkeypatch) -> DeepSeekProvider:
 # Helpers (mirror openai_provider tests)
 # ---------------------------------------------------------------------------
 
+
 def _usage(prompt=10, completion=20, cached=0):
     u = MagicMock()
     u.prompt_tokens = prompt
@@ -84,6 +86,7 @@ def _response(content="", finish_reason="stop"):
 # ---------------------------------------------------------------------------
 # Identity tests
 # ---------------------------------------------------------------------------
+
 
 def test_provider_id(provider):
     assert provider.provider_id == "deepseek"
@@ -112,6 +115,7 @@ def test_pricing(provider):
 # ---------------------------------------------------------------------------
 # Functional tests — inherited from OpenAIProvider
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_generate_returns_model_response(provider):
@@ -194,7 +198,10 @@ async def test_generate_stream_events(provider):
 
 def test_estimate_cost(provider):
     from deile.core.models.base import ModelUsage
-    usage = ModelUsage(prompt_tokens=1_000_000, completion_tokens=1_000_000, total_tokens=2_000_000)
+
+    usage = ModelUsage(
+        prompt_tokens=1_000_000, completion_tokens=1_000_000, total_tokens=2_000_000
+    )
     cost = provider.estimate_cost(usage)
     # 1M input @ $0.27 + 1M output @ $1.10 = $1.37
     assert abs(cost - 1.37) < 1e-4

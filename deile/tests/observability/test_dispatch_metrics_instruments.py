@@ -100,18 +100,32 @@ class TestEmission:
 
 
 _ALL_RECORDERS = [
-    (dm.record_dispatch_total, {"role": "w", "outcome": "completed"},
-     dm.METRIC_DISPATCH_TOTAL),
-    (dm.record_dispatch_failed_total, {"role": "w", "reason": "timeout"},
-     dm.METRIC_DISPATCH_FAILED_TOTAL),
-    (dm.record_dispatch_duration_ms,
-     {"role": "w", "outcome": "completed", "value_ms": 10},
-     dm.METRIC_DISPATCH_DURATION_MS),
-    (dm.record_dispatch_tool_burst_total, {"role": "w", "bucket": "50-"},
-     dm.METRIC_DISPATCH_TOOL_BURST_TOTAL),
+    (
+        dm.record_dispatch_total,
+        {"role": "w", "outcome": "completed"},
+        dm.METRIC_DISPATCH_TOTAL,
+    ),
+    (
+        dm.record_dispatch_failed_total,
+        {"role": "w", "reason": "timeout"},
+        dm.METRIC_DISPATCH_FAILED_TOTAL,
+    ),
+    (
+        dm.record_dispatch_duration_ms,
+        {"role": "w", "outcome": "completed", "value_ms": 10},
+        dm.METRIC_DISPATCH_DURATION_MS,
+    ),
+    (
+        dm.record_dispatch_tool_burst_total,
+        {"role": "w", "bucket": "50-"},
+        dm.METRIC_DISPATCH_TOOL_BURST_TOTAL,
+    ),
     (dm.record_git_push_total, {"outcome": "ok"}, dm.METRIC_GIT_PUSH_TOTAL),
-    (dm.record_forge_pr_review_total, {"decision": "APPROVED"},
-     dm.METRIC_FORGE_PR_REVIEW_TOTAL),
+    (
+        dm.record_forge_pr_review_total,
+        {"decision": "APPROVED"},
+        dm.METRIC_FORGE_PR_REVIEW_TOTAL,
+    ),
 ]
 
 
@@ -127,9 +141,7 @@ class TestAllowlist:
     def test_otlp_drop_allowlist(self):
         """A métrica interna otlp_drop só aceita 'reason'."""
         with pytest.raises(ValueError):
-            dm._validate_labels(
-                dm.METRIC_DISPATCH_OTLP_DROP_TOTAL, {"role": "w"}
-            )
+            dm._validate_labels(dm.METRIC_DISPATCH_OTLP_DROP_TOTAL, {"role": "w"})
         # 'reason' é aceito.
         dm._validate_labels(dm.METRIC_DISPATCH_OTLP_DROP_TOTAL, {"reason": "x"})
 

@@ -34,7 +34,9 @@ class ConversationNameStore:
     def _save(self, data: dict) -> None:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         except Exception as exc:
             logger.warning("Could not persist conversation name: %s", exc)
 

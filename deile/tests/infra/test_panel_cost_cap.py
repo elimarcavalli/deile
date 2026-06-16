@@ -55,10 +55,13 @@ class TestSetStageCostCapUsd:
         mock_proc = MagicMock()
         mock_proc.returncode = 0
         mock_proc.stdout = "deployment.apps/deile-pipeline env updated"
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("subprocess.run", return_value=mock_proc) as mock_run:
-            ok, msg = pd_mod.set_stage_cost_cap_usd("implement", "5.00",
-                                                     namespace="deile")
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("subprocess.run", return_value=mock_proc) as mock_run,
+        ):
+            ok, msg = pd_mod.set_stage_cost_cap_usd(
+                "implement", "5.00", namespace="deile"
+            )
         assert ok is True
         assert "5.00" in msg
         # Check env var name in argv
@@ -71,8 +74,10 @@ class TestSetStageCostCapUsd:
         mock_proc.returncode = 1
         mock_proc.stdout = ""
         mock_proc.stderr = "Error: deployment not found"
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("subprocess.run", return_value=mock_proc):
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("subprocess.run", return_value=mock_proc),
+        ):
             ok, msg = pd_mod.set_stage_cost_cap_usd("implement", "5.00")
         assert ok is False
         assert "not found" in msg.lower()
@@ -83,8 +88,10 @@ class TestSetStageCostCapUsd:
         mock_proc.returncode = 0
         mock_proc.stdout = "ok"
         for stage in ("classify", "refine", "implement", "pr_review", "follow_ups"):
-            with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-                 patch("subprocess.run", return_value=mock_proc):
+            with (
+                patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+                patch("subprocess.run", return_value=mock_proc),
+            ):
                 ok, _ = pd_mod.set_stage_cost_cap_usd(stage, "2.00")
             assert ok is True, f"stage {stage!r} should be accepted"
 
@@ -109,10 +116,11 @@ class TestResetStageCostCapUsd:
         mock_proc = MagicMock()
         mock_proc.returncode = 0
         mock_proc.stdout = "ok"
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("subprocess.run", return_value=mock_proc) as mock_run:
-            ok, msg = pd_mod.reset_stage_cost_cap_usd("implement",
-                                                       namespace="deile")
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("subprocess.run", return_value=mock_proc) as mock_run,
+        ):
+            ok, msg = pd_mod.reset_stage_cost_cap_usd("implement", namespace="deile")
         assert ok is True
         call_args = mock_run.call_args[0][0]
         # Trailing dash = unset
@@ -151,9 +159,11 @@ class TestStageDispatchProviderReadsCostCap:
 
     def test_cost_cap_read_from_pipeline_env(self):
         """Provider reads DEILE_PIPELINE_COST_CAP_USD_<STAGE> from deile-pipeline."""
-        pipeline_json = self._pipeline_env_json({
-            "DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT": "7.50",
-        })
+        pipeline_json = self._pipeline_env_json(
+            {
+                "DEILE_PIPELINE_COST_CAP_USD_IMPLEMENT": "7.50",
+            }
+        )
         worker_json = _deployment_env_json({})
 
         def fake_capture(cmd, **kwargs):
@@ -163,8 +173,10 @@ class TestStageDispatchProviderReadsCostCap:
                 return worker_json
             return None
 
-        with patch("_panel_data._capture_json", side_effect=fake_capture), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch("_panel_data._capture_json", side_effect=fake_capture),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             provider = pd_mod.StageDispatchProvider(enabled=True)
             entries = provider.get_all_stages(force=True)
 
@@ -186,8 +198,10 @@ class TestStageDispatchProviderReadsCostCap:
                 return worker_json
             return None
 
-        with patch("_panel_data._capture_json", side_effect=fake_capture), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch("_panel_data._capture_json", side_effect=fake_capture),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             provider = pd_mod.StageDispatchProvider(enabled=True)
             entries = provider.get_all_stages(force=True)
 
@@ -228,7 +242,9 @@ class TestDispatchMatrixViewCostCapCol:
         with console.capture() as cap:
             console.print(view.render(app))
         output = cap.get()
-        assert "Cost cap" in output or "cost_cap" in output.lower() or "USD/run" in output
+        assert (
+            "Cost cap" in output or "cost_cap" in output.lower() or "USD/run" in output
+        )
 
     def test_no_cap_renders_no_cap_text(self):
         from rich.console import Console  # noqa: PLC0415
@@ -275,13 +291,15 @@ class TestDispatchMatrixViewCostCapCol:
         mock_data.context.namespace = "deile"
         view.data = mock_data
         view._entries = lambda: [  # type: ignore[method-assign]
-            pd_mod.StageDispatchEntry("implement", "deile-worker", None,
-                                      "default", cost_cap_usd=None)
+            pd_mod.StageDispatchEntry(
+                "implement", "deile-worker", None, "default", cost_cap_usd=None
+            )
         ]
         app = MagicMock()
 
-        with patch("_panel.pd_reset_stage_cost_cap_usd",
-                   return_value=(True, "ok")) as mock_reset:
+        with patch(
+            "_panel.pd_reset_stage_cost_cap_usd", return_value=(True, "ok")
+        ) as mock_reset:
             view.handle_key("r", app)
 
         mock_reset.assert_called_once_with("implement", namespace="deile")
@@ -310,8 +328,9 @@ class TestDispatchMatrixViewCostCapCol:
         mock_data.context.namespace = "deile"
         view.data = mock_data
         view._entries = lambda: [  # type: ignore[method-assign]
-            pd_mod.StageDispatchEntry("implement", "deile-worker", None,
-                                      "default", cost_cap_usd=None)
+            pd_mod.StageDispatchEntry(
+                "implement", "deile-worker", None, "default", cost_cap_usd=None
+            )
         ]
         app = MagicMock()
 
@@ -323,8 +342,9 @@ class TestDispatchMatrixViewCostCapCol:
         # picker_cursor=0 → "(no cap)"
         view.picker_cursor = 0
 
-        with patch("_panel.pd_reset_stage_cost_cap_usd",
-                   return_value=(True, "unset")) as mock_reset:
+        with patch(
+            "_panel.pd_reset_stage_cost_cap_usd", return_value=(True, "unset")
+        ) as mock_reset:
             view.handle_key("\r", app)
 
         mock_reset.assert_called_once_with("implement", namespace="deile")

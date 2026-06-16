@@ -32,6 +32,7 @@ DEILE_PKG = DEILE_ROOT / "deile"
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _source(rel: str) -> str:
     return (DEILE_ROOT / rel).read_text(encoding="utf-8")
 
@@ -60,9 +61,8 @@ def _md5_calls_without_flag(tree: ast.Module) -> list[ast.Call]:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        is_md5 = (
-            (isinstance(func, ast.Attribute) and func.attr == "md5")
-            or (isinstance(func, ast.Name) and func.id == "md5")
+        is_md5 = (isinstance(func, ast.Attribute) and func.attr == "md5") or (
+            isinstance(func, ast.Name) and func.id == "md5"
         )
         if not is_md5:
             continue
@@ -175,13 +175,12 @@ def test_cost_where_clauses_hardcoded(rel_path: str) -> None:
     source = _source(rel_path)
 
     # Find all where_clauses.append(...) calls in the source
-    pattern = re.compile(r'where_clauses\.append\(([^)]+)\)')
+    pattern = re.compile(r"where_clauses\.append\(([^)]+)\)")
     for m in pattern.finditer(source):
         arg = m.group(1).strip()
         # Argument must be a plain string literal (starts and ends with quote)
-        is_string_literal = (
-            (arg.startswith('"') and arg.endswith('"'))
-            or (arg.startswith("'") and arg.endswith("'"))
+        is_string_literal = (arg.startswith('"') and arg.endswith('"')) or (
+            arg.startswith("'") and arg.endswith("'")
         )
         assert is_string_literal, (
             f"{rel_path}: where_clauses.append() called with non-literal argument: {arg!r}. "
@@ -192,6 +191,7 @@ def test_cost_where_clauses_hardcoded(rel_path: str) -> None:
 # ---------------------------------------------------------------------------
 # 4. pyproject.toml — cryptography minimum version
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.security
 def test_pyproject_pins_cryptography() -> None:

@@ -98,6 +98,7 @@ def _snapshot_instance_state() -> Dict[str, Any]:
     """
     try:
         from deile.runtime.instance_state import peek_instance_state
+
         singleton = peek_instance_state()
         if singleton is None:
             return {}
@@ -183,9 +184,7 @@ else:
             """Foca o input no boot e renderiza a mensagem de boas-vindas."""
             self.query_one("#prompt", Input).focus()
             log = self.query_one("#chat_history", RichLog)
-            log.write(
-                "[bold cyan]DEILE — shell Textual (Fase 1 skeleton)[/bold cyan]"
-            )
+            log.write("[bold cyan]DEILE — shell Textual (Fase 1 skeleton)[/bold cyan]")
             log.write(
                 "[dim]Esta fase ainda nao integra o agente. Mensagens sao "
                 "apenas ecoadas no historico abaixo.[/dim]"

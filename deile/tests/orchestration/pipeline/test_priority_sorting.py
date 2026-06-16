@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from deile.orchestration.forge.refs import IssueRef, PrRef
-from deile.orchestration.pipeline.labels import (LABEL_COLORS,
-                                                 LABEL_DESCRIPTIONS,
-                                                 PRIORITY_0, PRIORITY_1,
-                                                 PRIORITY_2, PRIORITY_3,
-                                                 PRIORITY_LABEL_PREFIX,
-                                                 PRIORITY_LABELS,
-                                                 parse_priority_from_labels)
+from deile.orchestration.pipeline.labels import (
+    LABEL_COLORS,
+    LABEL_DESCRIPTIONS,
+    PRIORITY_0,
+    PRIORITY_1,
+    PRIORITY_2,
+    PRIORITY_3,
+    PRIORITY_LABEL_PREFIX,
+    PRIORITY_LABELS,
+    parse_priority_from_labels,
+)
 from deile.orchestration.pipeline.stages import sort_by_priority
 
 # ---------------------------------------------------------------------------
@@ -162,9 +166,9 @@ class TestPriorityLabelConstants:
     def test_priorities_have_distinct_colors(self):
         # Each priority should have a visibly distinct color
         colors = {lb: LABEL_COLORS[lb] for lb in PRIORITY_LABELS}
-        assert len(set(colors.values())) == len(PRIORITY_LABELS), (
-            f"Priority labels must have distinct colors, got: {colors}"
-        )
+        assert len(set(colors.values())) == len(
+            PRIORITY_LABELS
+        ), f"Priority labels must have distinct colors, got: {colors}"
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +204,9 @@ class TestSortByPriorityIntegration:
     def test_multiple_priority_labels_only_first_counts(self):
         """If an item has multiple ~prioridade:N labels, parse returns the first."""
         issue = IssueRef(
-            number=1, title="x", url="u",
+            number=1,
+            title="x",
+            url="u",
             labels=("~prioridade:0", "~prioridade:3", "bug"),
         )
         assert parse_priority_from_labels(issue.labels) == 0

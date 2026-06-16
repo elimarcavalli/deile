@@ -28,7 +28,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 import cli_adapters  # noqa: E402
 from cli_adapters import base  # noqa: E402
 
-
 # --------------------------------------------------------------------------- #
 # Contrato / dataclasses
 # --------------------------------------------------------------------------- #
@@ -50,12 +49,14 @@ def test_workresult_usage_fields_are_settable():
     instância (default_factory evita dict compartilhado entre WorkResults)."""
     b = base.WorkResult(
         ok=True,
-        tokens_by_model={"deepseek": {"in": 10, "out": 5, "cache_read": 0,
-                                      "cache_write": 0}},
+        tokens_by_model={
+            "deepseek": {"in": 10, "out": 5, "cache_read": 0, "cache_write": 0}
+        },
         model="deepseek",
     )
     assert b.tokens_by_model == {
-        "deepseek": {"in": 10, "out": 5, "cache_read": 0, "cache_write": 0}}
+        "deepseek": {"in": 10, "out": 5, "cache_read": 0, "cache_write": 0}
+    }
     assert b.model == "deepseek"
     # default_factory (não default mutável): cada WorkResult novo tem dict próprio.
     assert base.WorkResult(ok=True).tokens_by_model == {}
@@ -76,8 +77,12 @@ def test_modelinfo_as_dict_fills_label_from_id():
 def test_modelinfo_price_and_auth_roundtrip():
     """Frente 3: ModelInfo carrega preço + auth e serializa em as_dict."""
     mi = base.ModelInfo(
-        id="gpt-5-codex", provider="openai",
-        price_in=1.25, cached_in=0.125, price_out=10.00, auth="chatgpt",
+        id="gpt-5-codex",
+        provider="openai",
+        price_in=1.25,
+        cached_in=0.125,
+        price_out=10.00,
+        auth="chatgpt",
     )
     d = mi.as_dict()
     assert d["price_in"] == 1.25
@@ -108,8 +113,9 @@ def test_base_adapter_satisfies_protocol_with_overrides():
 
     a = _Fake(kind="fake", default_port=8799)
     assert isinstance(a, base.CliAdapter)
-    assert a.build_argv(brief_path="b", model=None, reasoning=None,
-                        workdir="w", resume=None) == ["fake"]
+    assert a.build_argv(
+        brief_path="b", model=None, reasoning=None, workdir="w", resume=None
+    ) == ["fake"]
     assert a.parse_output(stdout="", stderr="", rc=0).ok is True
     assert a.list_models() == []
     assert a.env_overlay(home="/home/fake") == {}
@@ -138,7 +144,8 @@ def synthetic_adapter(tmp_path, monkeypatch):
     """
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / "zzz_synthetic_fake.py"
-    mod_path.write_text(textwrap.dedent('''\
+    mod_path.write_text(
+        textwrap.dedent("""\
         from cli_adapters.base import BaseCliAdapter, WorkResult, ModelInfo
 
 
@@ -154,7 +161,9 @@ def synthetic_adapter(tmp_path, monkeypatch):
 
 
         ADAPTER = SyntheticAdapter(kind="synthetic", default_port=8799)
-    '''), encoding="utf-8")
+    """),
+        encoding="utf-8",
+    )
     try:
         cli_adapters.reload_adapters()
         yield

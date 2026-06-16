@@ -33,12 +33,12 @@ async def test_get_tasks_for_list_populates_cache_timestamp(manager) -> None:
 
     await manager._get_tasks_for_list(list_id)
 
-    assert list_id in manager._cache_timestamps, (
-        "_cache_timestamps must contain list_id after _get_tasks_for_list"
-    )
-    assert manager._is_cache_valid(list_id), (
-        "_is_cache_valid must return True immediately after _get_tasks_for_list"
-    )
+    assert (
+        list_id in manager._cache_timestamps
+    ), "_cache_timestamps must contain list_id after _get_tasks_for_list"
+    assert manager._is_cache_valid(
+        list_id
+    ), "_is_cache_valid must return True immediately after _get_tasks_for_list"
 
 
 @pytest.mark.unit
@@ -60,7 +60,9 @@ async def test_get_tasks_for_list_second_call_uses_cache(tmp_path) -> None:
         connect_calls.append(args)
         return original_connect(*args, **kwargs)
 
-    with patch("deile.orchestration.sqlite_task_manager.aiosqlite.connect", new=spy_connect):
+    with patch(
+        "deile.orchestration.sqlite_task_manager.aiosqlite.connect", new=spy_connect
+    ):
         second_result = await manager._get_tasks_for_list(list_id)
 
     assert connect_calls == [], (

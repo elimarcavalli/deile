@@ -27,9 +27,14 @@ import _worker_resume as resume  # noqa: E402
 # git fixture: a real throwaway repo with a feature branch + untracked file
 # --------------------------------------------------------------------------
 
+
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], check=True,
-                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
 
 @pytest.fixture()
@@ -62,6 +67,7 @@ def workspace(tmp_path: Path) -> Path:
 # --------------------------------------------------------------------------
 # fingerprint + substantive-diff filtering (item 4)
 # --------------------------------------------------------------------------
+
 
 class TestFingerprint:
     def test_detects_substantive_work(self, workspace: Path):
@@ -130,6 +136,7 @@ class TestSubstantiveDiffFilter:
 # ground-truth end detection (item 5)
 # --------------------------------------------------------------------------
 
+
 class TestEndDetection:
     def test_concluido_when_pr_present(self, workspace: Path):
         repo = resume.repo_dir(workspace)
@@ -145,7 +152,9 @@ class TestEndDetection:
     def test_incompleto_when_diff_but_no_pr(self, workspace: Path):
         repo = resume.repo_dir(workspace)
         end = resume.detect_end_state(
-            repo, "fiz parte mas estourou o limite", main_branch="main",
+            repo,
+            "fiz parte mas estourou o limite",
+            main_branch="main",
             loop_ended=resume.LOOP_CAP,
         )
         assert end["ended"] == resume.ENDED_INCOMPLETO
@@ -155,7 +164,8 @@ class TestEndDetection:
     def test_bloqueado_when_agent_declares(self, workspace: Path):
         repo = resume.repo_dir(workspace)
         end = resume.detect_end_state(
-            repo, "tentei mas\nBLOQUEADO: falta a credencial X no ambiente",
+            repo,
+            "tentei mas\nBLOQUEADO: falta a credencial X no ambiente",
             main_branch="main",
         )
         assert end["ended"] == resume.ENDED_BLOQUEADO
@@ -175,13 +185,17 @@ class TestEndDetection:
         # On the review/merge stage, a PR URL without MERGED is still incomplete.
         repo = resume.repo_dir(workspace)
         end = resume.detect_end_state(
-            repo, "https://github.com/o/r/pull/9 (ainda não mergeei)",
-            main_branch="main", expect_merge=True,
+            repo,
+            "https://github.com/o/r/pull/9 (ainda não mergeei)",
+            main_branch="main",
+            expect_merge=True,
         )
         assert end["ended"] == resume.ENDED_INCOMPLETO
         end2 = resume.detect_end_state(
-            repo, "https://github.com/o/r/pull/9 MERGED",
-            main_branch="main", expect_merge=True,
+            repo,
+            "https://github.com/o/r/pull/9 MERGED",
+            main_branch="main",
+            expect_merge=True,
         )
         assert end2["ended"] == resume.ENDED_CONCLUIDO
 
@@ -189,6 +203,7 @@ class TestEndDetection:
 # --------------------------------------------------------------------------
 # journal: agent writes vs worker auto-summary fallback (item 3)
 # --------------------------------------------------------------------------
+
 
 class TestJournal:
     def test_agent_wrote_progress_detected(self, workspace: Path):
@@ -220,6 +235,7 @@ class TestJournal:
 # progress.json state (attempt + fingerprint + budget) — item 4 + 6
 # --------------------------------------------------------------------------
 
+
 class TestProgressState:
     def test_roundtrip(self, workspace: Path):
         resume.write_progress_state(
@@ -241,6 +257,7 @@ class TestProgressState:
 # --------------------------------------------------------------------------
 # state files never enter the PR (gitignore + un-stage) — item: PR cleanliness
 # --------------------------------------------------------------------------
+
 
 class TestStateFilesNeverCommitted:
     def test_ensure_ignored_adds_exclude_entries(self, workspace: Path):
@@ -269,12 +286,17 @@ class TestStateFilesNeverCommitted:
         repo = resume.repo_dir(workspace)
         # Force-add the progress file (simulating an agent that did `git add -f`).
         (repo / resume.PROGRESS_MD).write_text("# journal\n")
-        subprocess.run(["git", "-C", str(repo), "add", "-f", resume.PROGRESS_MD],
-                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "-f", resume.PROGRESS_MD],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         resume.strip_state_files_from_index(repo)
         rc = subprocess.run(
             ["git", "-C", str(repo), "ls-files", "--error-unmatch", resume.PROGRESS_MD],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         ).returncode
         assert rc != 0  # no longer tracked
 
@@ -283,13 +305,19 @@ class TestStateFilesNeverCommitted:
 # worker_server orchestration: _compute_resume_result + structured result
 # --------------------------------------------------------------------------
 
+
 class TestComputeResumeResult:
     def test_incompleto_writes_state_and_fallback_journal(self, workspace: Path):
         pytest.importorskip("aiohttp")
         import worker_server
 
-        ctx = {"repo": "o/r", "branch": "auto/issue-1", "main_branch": "main",
-               "expect_merge": False, "elapsed_s": 5.0}
+        ctx = {
+            "repo": "o/r",
+            "branch": "auto/issue-1",
+            "main_branch": "main",
+            "expect_merge": False,
+            "elapsed_s": 5.0,
+        }
         res = worker_server._compute_resume_result(
             workspace, "fiz parte, estourei o limite", resume.LOOP_CAP, ctx
         )
@@ -308,10 +336,19 @@ class TestComputeResumeResult:
         pytest.importorskip("aiohttp")
         import worker_server
 
-        ctx = {"repo": "o/r", "branch": "auto/issue-1", "main_branch": "main",
-               "expect_merge": False, "elapsed_s": 3.0}
-        r1 = worker_server._compute_resume_result(workspace, "wip", resume.LOOP_CAP, ctx)
-        r2 = worker_server._compute_resume_result(workspace, "wip more", resume.LOOP_CAP, ctx)
+        ctx = {
+            "repo": "o/r",
+            "branch": "auto/issue-1",
+            "main_branch": "main",
+            "expect_merge": False,
+            "elapsed_s": 3.0,
+        }
+        r1 = worker_server._compute_resume_result(
+            workspace, "wip", resume.LOOP_CAP, ctx
+        )
+        r2 = worker_server._compute_resume_result(
+            workspace, "wip more", resume.LOOP_CAP, ctx
+        )
         assert r1["tentativa"] == 1
         assert r2["tentativa"] == 2
         # Budget accumulates across attempts.
@@ -322,9 +359,16 @@ class TestComputeResumeResult:
         import worker_server
 
         resume.write_progress_md(workspace, "# JOURNAL ESCRITO PELO AGENTE\n")
-        ctx = {"repo": "o/r", "branch": "auto/issue-1", "main_branch": "main",
-               "expect_merge": False, "elapsed_s": 1.0}
-        worker_server._compute_resume_result(workspace, "transcript", resume.LOOP_NATURAL, ctx)
+        ctx = {
+            "repo": "o/r",
+            "branch": "auto/issue-1",
+            "main_branch": "main",
+            "expect_merge": False,
+            "elapsed_s": 1.0,
+        }
+        worker_server._compute_resume_result(
+            workspace, "transcript", resume.LOOP_NATURAL, ctx
+        )
         # The agent's journal must survive (worker only writes fallback if absent).
         assert "ESCRITO PELO AGENTE" in resume.read_progress_md(workspace)
 
@@ -332,8 +376,13 @@ class TestComputeResumeResult:
         pytest.importorskip("aiohttp")
         import worker_server
 
-        ctx = {"repo": "o/r", "branch": "auto/issue-1", "main_branch": "main",
-               "expect_merge": False, "elapsed_s": 2.0}
+        ctx = {
+            "repo": "o/r",
+            "branch": "auto/issue-1",
+            "main_branch": "main",
+            "expect_merge": False,
+            "elapsed_s": 2.0,
+        }
         res = worker_server._compute_resume_result(
             workspace, "pronto https://github.com/o/r/pull/5", resume.LOOP_NATURAL, ctx
         )
@@ -346,10 +395,17 @@ class TestParseResumeCtx:
         pytest.importorskip("aiohttp")
         import worker_server
 
-        ctx = worker_server._parse_resume_ctx({
-            "resume": {"mode": "resume", "repo": "o/r", "branch": "b",
-                       "main_branch": "develop", "expect_merge": True}
-        })
+        ctx = worker_server._parse_resume_ctx(
+            {
+                "resume": {
+                    "mode": "resume",
+                    "repo": "o/r",
+                    "branch": "b",
+                    "main_branch": "develop",
+                    "expect_merge": True,
+                }
+            }
+        )
         assert ctx is not None
         assert ctx["mode"] == "resume"
         assert ctx["main_branch"] == "develop"
@@ -384,16 +440,32 @@ class TestRunTaskEmbedsResume:
         fake_agent.process_input = AsyncMock(return_value=_Resp())
         # Force the non-streaming path (simpler, deterministic).
         fake_agent.process_input_stream = None
-        monkeypatch.setattr(worker_server, "_get_agent", AsyncMock(return_value=fake_agent))
+        monkeypatch.setattr(
+            worker_server, "_get_agent", AsyncMock(return_value=fake_agent)
+        )
         # Silence the status-message UI.
-        monkeypatch.setattr(worker_server, "_post_status_message", AsyncMock(return_value=None))
-        monkeypatch.setattr(worker_server, "_edit_status_message", AsyncMock(return_value=True))
+        monkeypatch.setattr(
+            worker_server, "_post_status_message", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr(
+            worker_server, "_edit_status_message", AsyncMock(return_value=True)
+        )
         monkeypatch.setattr(worker_server, "_react", AsyncMock(return_value=True))
 
-        resume_ctx = {"mode": "resume", "repo": "o/r", "branch": "auto/issue-1",
-                      "main_branch": "main", "expect_merge": False, "pr_url_hint": ""}
+        resume_ctx = {
+            "mode": "resume",
+            "repo": "o/r",
+            "branch": "auto/issue-1",
+            "main_branch": "main",
+            "expect_merge": False,
+            "pr_url_hint": "",
+        }
         result = await worker_server._run_task(
-            "task1", "continue a issue", "pipeline-issue-1", None, "developer",
+            "task1",
+            "continue a issue",
+            "pipeline-issue-1",
+            None,
+            "developer",
             resume_ctx=resume_ctx,
         )
         assert "resume" in result
@@ -403,7 +475,9 @@ class TestRunTaskEmbedsResume:
         assert rb["tentativa"] == 1
         assert rb["fingerprint"]
 
-    async def test_run_task_without_resume_ctx_has_no_resume_block(self, workspace, monkeypatch):
+    async def test_run_task_without_resume_ctx_has_no_resume_block(
+        self, workspace, monkeypatch
+    ):
         pytest.importorskip("aiohttp")
         import worker_server
 
@@ -416,13 +490,23 @@ class TestRunTaskEmbedsResume:
         fake_agent.get_or_create_session = AsyncMock()
         fake_agent.process_input = AsyncMock(return_value=_Resp())
         fake_agent.process_input_stream = None
-        monkeypatch.setattr(worker_server, "_get_agent", AsyncMock(return_value=fake_agent))
-        monkeypatch.setattr(worker_server, "_post_status_message", AsyncMock(return_value=None))
-        monkeypatch.setattr(worker_server, "_edit_status_message", AsyncMock(return_value=True))
+        monkeypatch.setattr(
+            worker_server, "_get_agent", AsyncMock(return_value=fake_agent)
+        )
+        monkeypatch.setattr(
+            worker_server, "_post_status_message", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr(
+            worker_server, "_edit_status_message", AsyncMock(return_value=True)
+        )
         monkeypatch.setattr(worker_server, "_react", AsyncMock(return_value=True))
 
         # Non-pipeline dispatch (the /deile passthrough): no resume_ctx.
         result = await worker_server._run_task(
-            "task2", "faça algo", "pipeline-issue-1", None, "developer",
+            "task2",
+            "faça algo",
+            "pipeline-issue-1",
+            None,
+            "developer",
         )
         assert "resume" not in result

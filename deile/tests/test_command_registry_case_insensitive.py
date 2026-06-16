@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from deile.commands.base import (CommandContext, CommandResult, CommandStatus,
-                                 SlashCommand)
+from deile.commands.base import (
+    CommandContext,
+    CommandResult,
+    CommandStatus,
+    SlashCommand,
+)
 from deile.commands.registry import CommandRegistry
 from deile.config.manager import CommandConfig
 

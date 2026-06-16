@@ -6,6 +6,7 @@ hex digest from either ``str`` or ``bytes`` payloads. Direct unit tests
 are required so a regression to the encoding rule, the truncation, or
 the surrogate-replace policy fails fast.
 """
+
 from __future__ import annotations
 
 import hashlib

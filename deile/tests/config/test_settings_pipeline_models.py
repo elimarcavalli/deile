@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import pytest
 
-from deile.config.settings import (Settings, _apply_env_overrides,
-                                   _apply_nested_dict, _to_optional_model_slug)
+from deile.config.settings import (
+    Settings,
+    _apply_env_overrides,
+    _apply_nested_dict,
+    _to_optional_model_slug,
+)
 
 
 class TestModelSlugValidator:
@@ -29,13 +33,19 @@ class TestModelSlugValidator:
         assert _to_optional_model_slug("   ") is None
 
     def test_valid_slugs_pass_through(self):
-        assert _to_optional_model_slug("deepseek:deepseek-v4-pro") == \
-            "deepseek:deepseek-v4-pro"
-        assert _to_optional_model_slug("anthropic:claude-opus-4-8") == \
-            "anthropic:claude-opus-4-8"
+        assert (
+            _to_optional_model_slug("deepseek:deepseek-v4-pro")
+            == "deepseek:deepseek-v4-pro"
+        )
+        assert (
+            _to_optional_model_slug("anthropic:claude-opus-4-8")
+            == "anthropic:claude-opus-4-8"
+        )
         # Dots, underscores and dashes in the model portion are allowed.
-        assert _to_optional_model_slug("openai:gpt-4o-mini-2024_07_18") == \
-            "openai:gpt-4o-mini-2024_07_18"
+        assert (
+            _to_optional_model_slug("openai:gpt-4o-mini-2024_07_18")
+            == "openai:gpt-4o-mini-2024_07_18"
+        )
 
     def test_openrouter_slug_with_slash_is_accepted(self):
         """OpenRouter model ids embed the upstream vendor with a '/', e.g.
@@ -43,25 +53,34 @@ class TestModelSlugValidator:
         the '/' on the model side; otherwise the per-stage override is silently
         dropped (the validator raises and ``apply_overrides`` keeps the default).
         """
-        assert _to_optional_model_slug("openrouter:anthropic/claude-sonnet-4.6") == \
-            "openrouter:anthropic/claude-sonnet-4.6"
-        assert _to_optional_model_slug("openrouter:deepseek/deepseek-chat") == \
-            "openrouter:deepseek/deepseek-chat"
-        assert _to_optional_model_slug("openrouter:qwen/qwen3-coder") == \
-            "openrouter:qwen/qwen3-coder"
+        assert (
+            _to_optional_model_slug("openrouter:anthropic/claude-sonnet-4.6")
+            == "openrouter:anthropic/claude-sonnet-4.6"
+        )
+        assert (
+            _to_optional_model_slug("openrouter:deepseek/deepseek-chat")
+            == "openrouter:deepseek/deepseek-chat"
+        )
+        assert (
+            _to_optional_model_slug("openrouter:qwen/qwen3-coder")
+            == "openrouter:qwen/qwen3-coder"
+        )
 
     def test_strips_surrounding_whitespace(self):
         assert _to_optional_model_slug("  deepseek:v4-pro  ") == "deepseek:v4-pro"
 
-    @pytest.mark.parametrize("bad", [
-        "garbage",            # missing colon
-        "ANTHROPIC:opus",     # uppercase provider
-        "provider:Model",     # uppercase in model
-        ":model",             # empty provider
-        "provider:",          # empty model
-        "provider:with space",
-        "provider:with\nnewline",
-    ])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "garbage",  # missing colon
+            "ANTHROPIC:opus",  # uppercase provider
+            "provider:Model",  # uppercase in model
+            ":model",  # empty provider
+            "provider:",  # empty model
+            "provider:with space",
+            "provider:with\nnewline",
+        ],
+    )
     def test_rejects_malformed(self, bad):
         with pytest.raises(ValueError):
             _to_optional_model_slug(bad)
@@ -91,15 +110,17 @@ class TestApplyOverrides:
 
     def test_writes_per_stage_fields_from_nested_json(self):
         s = Settings()
-        s.apply_overrides({
-            "pipeline": {
-                "models": {
-                    "classify": "deepseek:deepseek-v3-small",
-                    "implement": "anthropic:claude-sonnet-4-6",
-                    "pr_review": "anthropic:claude-opus-4-8",
+        s.apply_overrides(
+            {
+                "pipeline": {
+                    "models": {
+                        "classify": "deepseek:deepseek-v3-small",
+                        "implement": "anthropic:claude-sonnet-4-6",
+                        "pr_review": "anthropic:claude-opus-4-8",
+                    }
                 }
             }
-        })
+        )
         assert s.pipeline_model_classify == "deepseek:deepseek-v3-small"
         assert s.pipeline_model_implement == "anthropic:claude-sonnet-4-6"
         assert s.pipeline_model_pr_review == "anthropic:claude-opus-4-8"
@@ -112,14 +133,11 @@ class TestApplyOverrides:
         # Pre-set a value so we can prove the rejection doesn't clobber it.
         s.pipeline_model_implement = "deepseek:deepseek-v4-pro"
         with caplog.at_level("WARNING", logger="deile.config.settings"):
-            s.apply_overrides({
-                "pipeline": {"models": {"implement": "GARBAGE"}}
-            })
+            s.apply_overrides({"pipeline": {"models": {"implement": "GARBAGE"}}})
         # Previous value preserved.
         assert s.pipeline_model_implement == "deepseek:deepseek-v4-pro"
         # And a warning was emitted (the strict path's safety net).
-        assert any("pipeline.models.implement" in r.message
-                   for r in caplog.records)
+        assert any("pipeline.models.implement" in r.message for r in caplog.records)
 
 
 class TestNestedDictLoader:
@@ -129,14 +147,17 @@ class TestNestedDictLoader:
 
     def test_per_stage_keys_round_trip(self):
         s = Settings()
-        _apply_nested_dict(s, {
-            "pipeline": {
-                "models": {
-                    "refine": "deepseek:deepseek-v4-pro",
-                    "follow_ups": "deepseek:deepseek-v3-small",
+        _apply_nested_dict(
+            s,
+            {
+                "pipeline": {
+                    "models": {
+                        "refine": "deepseek:deepseek-v4-pro",
+                        "follow_ups": "deepseek:deepseek-v3-small",
+                    }
                 }
-            }
-        })
+            },
+        )
         assert s.pipeline_model_refine == "deepseek:deepseek-v4-pro"
         assert s.pipeline_model_follow_ups == "deepseek:deepseek-v3-small"
 
@@ -148,7 +169,9 @@ class TestEnvOverrides:
 
     def test_env_vars_apply(self, monkeypatch):
         s = Settings()
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT", "anthropic:claude-opus-4-8")
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_IMPLEMENT", "anthropic:claude-opus-4-8"
+        )
         monkeypatch.setenv("DEILE_PIPELINE_MODEL_PR_REVIEW", "deepseek:deepseek-v4-pro")
         _apply_env_overrides(s)
         assert s.pipeline_model_implement == "anthropic:claude-opus-4-8"

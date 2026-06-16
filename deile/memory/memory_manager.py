@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MemoryConfiguration:
     """Configuração do sistema de memória"""
+
     # Working Memory
     working_memory_size: int = 8000
     working_memory_ttl: int = 3600  # 1 hora
@@ -63,27 +64,26 @@ class MemoryManager:
 
         # Componentes de memória
         self.working_memory = WorkingMemory(
-            max_size=self.config.working_memory_size,
-            ttl=self.config.working_memory_ttl
+            max_size=self.config.working_memory_size, ttl=self.config.working_memory_ttl
         )
 
         self.episodic_memory = EpisodicMemory(
             storage_dir=self.memory_dir / "episodes",
             max_episodes_per_session=self.config.max_episodes_per_session,
-            retention_days=self.config.episode_retention_days
+            retention_days=self.config.episode_retention_days,
         )
 
         self.semantic_memory = SemanticMemory(
             storage_dir=self.memory_dir / "semantic",
             enable_vector_store=self.config.enable_vector_store,
             vector_dimensions=self.config.vector_dimensions,
-            similarity_threshold=self.config.similarity_threshold
+            similarity_threshold=self.config.similarity_threshold,
         )
 
         self.procedural_memory = ProceduralMemory(
             storage_dir=self.memory_dir / "patterns",
             min_frequency=self.config.min_pattern_frequency,
-            confidence_threshold=self.config.pattern_confidence_threshold
+            confidence_threshold=self.config.pattern_confidence_threshold,
         )
 
         # Consolidator para otimização
@@ -91,7 +91,7 @@ class MemoryManager:
             working_memory=self.working_memory,
             episodic_memory=self.episodic_memory,
             semantic_memory=self.semantic_memory,
-            procedural_memory=self.procedural_memory
+            procedural_memory=self.procedural_memory,
         )
 
         # Estado do manager
@@ -105,7 +105,7 @@ class MemoryManager:
             "retrievals": 0,
             "stores": 0,
             "consolidations": 0,
-            "last_consolidation": 0.0
+            "last_consolidation": 0.0,
         }
 
         logger.info("MemoryManager inicializado")
@@ -142,7 +142,7 @@ class MemoryManager:
         user_input: str,
         agent_response: str,
         context: Dict[str, Any] = None,
-        session_id: str = None
+        session_id: str = None,
     ) -> str:
         """Armazena uma interação completa no sistema de memória
 
@@ -171,22 +171,20 @@ class MemoryManager:
 
             # Extrai conhecimento para semantic memory (assíncrono)
             self._spawn_background(
-                self._extract_semantic_knowledge(
-                    user_input, agent_response, context
-                ),
+                self._extract_semantic_knowledge(user_input, agent_response, context),
                 name="extract_semantic_knowledge",
             )
 
             # Analisa patterns para procedural memory (assíncrono)
             self._spawn_background(
-                self._analyze_interaction_patterns(
-                    user_input, agent_response, context
-                ),
+                self._analyze_interaction_patterns(user_input, agent_response, context),
                 name="analyze_interaction_patterns",
             )
 
             self._memory_stats["stores"] += 1
-            logger.debug(f"Interação armazenada: working_id={working_id}, episode_id={episode_id}")
+            logger.debug(
+                f"Interação armazenada: working_id={working_id}, episode_id={episode_id}"
+            )
 
             return episode_id
 
@@ -195,10 +193,7 @@ class MemoryManager:
             raise
 
     async def retrieve_context(
-        self,
-        query: str,
-        session_id: str = None,
-        max_results: int = 10
+        self, query: str, session_id: str = None, max_results: int = 10
     ) -> Dict[str, Any]:
         """Recupera contexto relevante de todos os tipos de memória
 
@@ -229,8 +224,11 @@ class MemoryManager:
             )
 
             # Aguarda todos os resultados
-            working_results, episodic_results, semantic_results, procedural_results = \
-                await asyncio.gather(working_task, episodic_task, semantic_task, procedural_task)
+            working_results, episodic_results, semantic_results, procedural_results = (
+                await asyncio.gather(
+                    working_task, episodic_task, semantic_task, procedural_task
+                )
+            )
 
             context = {
                 "working_memory": working_results,
@@ -241,9 +239,11 @@ class MemoryManager:
                     "query": query,
                     "session_id": session_id,
                     "timestamp": time.time(),
-                    "total_results": len(working_results) + len(episodic_results) +
-                                   len(semantic_results) + len(procedural_results)
-                }
+                    "total_results": len(working_results)
+                    + len(episodic_results)
+                    + len(semantic_results)
+                    + len(procedural_results),
+                },
             }
 
             self._memory_stats["retrievals"] += 1
@@ -254,14 +254,16 @@ class MemoryManager:
         except Exception as e:
             logger.error(f"Erro na recuperação de contexto: {e}")
             # Retorna contexto mínimo em caso de erro
-            return {"error": str(e), "working_memory": [], "episodic_memory": [],
-                   "semantic_memory": [], "procedural_memory": []}
+            return {
+                "error": str(e),
+                "working_memory": [],
+                "episodic_memory": [],
+                "semantic_memory": [],
+                "procedural_memory": [],
+            }
 
     async def learn_from_feedback(
-        self,
-        interaction_id: str,
-        feedback_type: str,
-        feedback_data: Dict[str, Any]
+        self, interaction_id: str, feedback_type: str, feedback_data: Dict[str, Any]
     ) -> None:
         """Aprende a partir de feedback do usuário
 
@@ -272,7 +274,9 @@ class MemoryManager:
         """
         try:
             # Atualiza working memory
-            await self.working_memory.update_with_feedback(interaction_id, feedback_type, feedback_data)
+            await self.working_memory.update_with_feedback(
+                interaction_id, feedback_type, feedback_data
+            )
 
             # Atualiza procedural memory com patterns de sucesso/falha
             await self.procedural_memory.update_pattern_effectiveness(
@@ -281,9 +285,13 @@ class MemoryManager:
 
             # Se for correção, armazena na semantic memory
             if feedback_type == "correction":
-                await self.semantic_memory.store_correction(interaction_id, feedback_data)
+                await self.semantic_memory.store_correction(
+                    interaction_id, feedback_data
+                )
 
-            logger.info(f"Feedback processado: {feedback_type} para interação {interaction_id}")
+            logger.info(
+                f"Feedback processado: {feedback_type} para interação {interaction_id}"
+            )
 
         except Exception as e:
             logger.error(f"Erro ao processar feedback: {e}")
@@ -302,10 +310,10 @@ class MemoryManager:
 
             # Calcula uso total estimado (em MB)
             total_memory_mb = (
-                working_stats.get("memory_mb", 0) +
-                episodic_stats.get("memory_mb", 0) +
-                semantic_stats.get("memory_mb", 0) +
-                procedural_stats.get("memory_mb", 0)
+                working_stats.get("memory_mb", 0)
+                + episodic_stats.get("memory_mb", 0)
+                + semantic_stats.get("memory_mb", 0)
+                + procedural_stats.get("memory_mb", 0)
             )
 
             return {
@@ -314,10 +322,11 @@ class MemoryManager:
                     "working_memory": working_stats,
                     "episodic_memory": episodic_stats,
                     "semantic_memory": semantic_stats,
-                    "procedural_memory": procedural_stats
+                    "procedural_memory": procedural_stats,
                 },
                 "manager_stats": self._memory_stats.copy(),
-                "consolidation_active": self._consolidation_task is not None and not self._consolidation_task.done()
+                "consolidation_active": self._consolidation_task is not None
+                and not self._consolidation_task.done(),
             }
 
         except Exception as e:
@@ -341,7 +350,9 @@ class MemoryManager:
         return {
             "older_than_days": older_than_days,
             "entries_before": report.get("working_memory", {}).get("entries_before", 0),
-            "entries_processed": report.get("working_memory", {}).get("expired_cleaned", 0),
+            "entries_processed": report.get("working_memory", {}).get(
+                "expired_cleaned", 0
+            ),
             "total_time_s": report.get("total_time", 0.0),
         }
 
@@ -372,10 +383,7 @@ class MemoryManager:
             return {"error": str(e)}
 
     async def _extract_semantic_knowledge(
-        self,
-        user_input: str,
-        agent_response: str,
-        context: Dict[str, Any]
+        self, user_input: str, agent_response: str, context: Dict[str, Any]
     ) -> None:
         """Extrai conhecimento semântico de uma interação"""
         try:
@@ -385,7 +393,7 @@ class MemoryManager:
                 "user_input": user_input,
                 "agent_response": agent_response,
                 "context": context,
-                "extracted_at": time.time()
+                "extracted_at": time.time(),
             }
 
             await self.semantic_memory.store_knowledge(knowledge)
@@ -394,10 +402,7 @@ class MemoryManager:
             logger.error(f"Erro na extração de conhecimento semântico: {e}")
 
     async def _analyze_interaction_patterns(
-        self,
-        user_input: str,
-        agent_response: str,
-        context: Dict[str, Any]
+        self, user_input: str, agent_response: str, context: Dict[str, Any]
     ) -> None:
         """Analisa patterns na interação"""
         try:
@@ -406,7 +411,7 @@ class MemoryManager:
                 "input_length": len(user_input),
                 "output_length": len(agent_response),
                 "context_keys": list(context.keys()) if context else [],
-                "timestamp": time.time()
+                "timestamp": time.time(),
             }
 
             await self.procedural_memory.analyze_interaction(pattern_data)
@@ -427,8 +432,12 @@ class MemoryManager:
                 total_memory = memory_stats.get("total_memory_mb", 0)
 
                 # Se memória está alta, força consolidação
-                if total_memory > 1000 * self.config.memory_pressure_threshold:  # 850MB default
-                    logger.info(f"Pressão de memória detectada ({total_memory}MB), iniciando consolidação")
+                if (
+                    total_memory > 1000 * self.config.memory_pressure_threshold
+                ):  # 850MB default
+                    logger.info(
+                        f"Pressão de memória detectada ({total_memory}MB), iniciando consolidação"
+                    )
                     await self.optimize_memory(force=True)
                 else:
                     # Consolidação normal

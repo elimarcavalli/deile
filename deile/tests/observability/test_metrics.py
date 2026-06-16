@@ -92,7 +92,9 @@ def test_record_tool_duration_emits_histogram(in_memory_metrics_reader):
     points = _collect_metric_data_points(in_memory_metrics_reader)
     assert "deile.tool.duration_ms" in points
     # histogram sum por (tool_name, status) — basta confirmar a presença
-    found_pairs = {(p[1]["tool_name"], p[1]["status"]) for p in points["deile.tool.duration_ms"]}
+    found_pairs = {
+        (p[1]["tool_name"], p[1]["status"]) for p in points["deile.tool.duration_ms"]
+    }
     assert ("read_file", "success") in found_pairs
     assert ("write_file", "error") in found_pairs
 
@@ -110,7 +112,9 @@ def test_record_error_emits_counter_with_labels(in_memory_metrics_reader):
     m.record_error("ValueError", "agent")
     points = _collect_metric_data_points(in_memory_metrics_reader)
     assert "deile.errors.total" in points
-    pairs = {(p[1]["error_type"], p[1]["component"]) for p in points["deile.errors.total"]}
+    pairs = {
+        (p[1]["error_type"], p[1]["component"]) for p in points["deile.errors.total"]
+    }
     assert ("TimeoutError", "tool_loop") in pairs
     assert ("ValueError", "agent") in pairs
 
@@ -124,9 +128,9 @@ def test_metrics_no_session_id_label(in_memory_metrics_reader):
     points = _collect_metric_data_points(in_memory_metrics_reader)
     for metric_name, dps in points.items():
         for _val, attrs in dps:
-            assert "session_id" not in attrs, (
-                f"session_id leaked in metric {metric_name} attrs: {attrs}"
-            )
+            assert (
+                "session_id" not in attrs
+            ), f"session_id leaked in metric {metric_name} attrs: {attrs}"
 
 
 def test_metrics_shutdown_is_idempotent(in_memory_metrics_reader):

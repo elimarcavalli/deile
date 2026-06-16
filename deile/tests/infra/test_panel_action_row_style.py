@@ -29,8 +29,9 @@ _UTC = timezone.utc
 
 def _make_event(action: str, detail: str = "") -> pd.ActivityEvent:
     ts = datetime.now(_UTC) - timedelta(seconds=1)
-    return pd.ActivityEvent(ts=ts, actor="pipeline", action=action,
-                            target="#1", detail=detail)
+    return pd.ActivityEvent(
+        ts=ts, actor="pipeline", action=action, target="#1", detail=detail
+    )
 
 
 def _make_data(events: list) -> MagicMock:
@@ -45,6 +46,7 @@ def _make_data(events: list) -> MagicMock:
 # ---------------------------------------------------------------------------
 # AC1: predicado puro
 # ---------------------------------------------------------------------------
+
 
 class TestActionRowStylePredicate:
     def test_dropped_returns_dim(self):
@@ -67,6 +69,7 @@ class TestActionRowStylePredicate:
 # AC2: render — inspecionar células da coluna action
 # ---------------------------------------------------------------------------
 
+
 class TestActivityPanelActionCellStyle:
     def _get_action_cells(self, events: list):
         """Build DashboardView with given events and return action column cells."""
@@ -82,6 +85,7 @@ class TestActivityPanelActionCellStyle:
         assert len(cells) == 1
         cell = cells[0]
         from rich.text import Text
+
         assert isinstance(cell, Text)
         assert str(cell.style) == "dim"
 
@@ -91,6 +95,7 @@ class TestActivityPanelActionCellStyle:
         assert len(cells) == 1
         cell = cells[0]
         from rich.text import Text
+
         assert isinstance(cell, Text)
         assert cell.style in (None, "")
 
@@ -100,27 +105,33 @@ class TestActivityPanelActionCellStyle:
         assert len(cells) == 1
         cell = cells[0]
         from rich.text import Text
+
         assert isinstance(cell, Text)
         assert cell.style in (None, "")
 
     def test_dropped_and_real_in_same_table(self):
         """Dropped and real actions coexist without collision."""
         from rich.text import Text
+
         ts_base = datetime.now(_UTC)
         ev_drop = pd.ActivityEvent(
             ts=ts_base - timedelta(seconds=2),
-            actor="pipeline", action="routing.dropped",
-            target="#1", detail="skip: no assignee",
+            actor="pipeline",
+            action="routing.dropped",
+            target="#1",
+            detail="skip: no assignee",
         )
         ev_real = pd.ActivityEvent(
             ts=ts_base - timedelta(seconds=1),
-            actor="pipeline", action="routing.mention",
-            target="#1", detail="",
+            actor="pipeline",
+            action="routing.mention",
+            target="#1",
+            detail="",
         )
         # top() returns descending by ts: ev_real (newer) is cells[0]
         cells = self._get_action_cells([ev_drop, ev_real])
         assert len(cells) == 2
-        action_styles = {str(c) : c.style for c in cells if isinstance(c, Text)}
+        action_styles = {str(c): c.style for c in cells if isinstance(c, Text)}
         assert action_styles.get("routing.dropped") == "dim"
         assert action_styles.get("routing.mention") in (None, "")
 
@@ -130,5 +141,6 @@ class TestActivityPanelActionCellStyle:
         cells = self._get_action_cells([ev])
         assert len(cells) == 1
         from rich.text import Text
+
         assert isinstance(cells[0], Text)
         assert str(cells[0].style) == "dim"

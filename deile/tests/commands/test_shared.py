@@ -13,16 +13,22 @@ from unittest.mock import patch
 
 from rich.panel import Panel
 
-from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
-                                       SWITCH_SESSION_KEY)
-from deile.commands.builtin._shared import (FLAG_DESCRICOES_PTBR,
-                                            PROJECT_LINKS, _colored_panel,
-                                            _resolve_patches_dir,
-                                            emit_audit_event, error_panel,
-                                            export_timestamp,
-                                            get_memory_manager, indisponivel,
-                                            split_args, success_panel,
-                                            truncate_oneline, warning_panel)
+from deile.commands._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
+from deile.commands.builtin._shared import (
+    FLAG_DESCRICOES_PTBR,
+    PROJECT_LINKS,
+    _colored_panel,
+    _resolve_patches_dir,
+    emit_audit_event,
+    error_panel,
+    export_timestamp,
+    get_memory_manager,
+    indisponivel,
+    split_args,
+    success_panel,
+    truncate_oneline,
+    warning_panel,
+)
 
 # ---------------------------------------------------------------------------
 # split_args
@@ -111,7 +117,12 @@ class TestExportTimestamp:
 
 
 _AUDIT_PATCH = "deile.security.audit_logger.get_audit_logger"
-_AUDIT_KWARGS = {"event_type": "EVT", "severity": "INFO", "resource": "/x", "action": "run"}
+_AUDIT_KWARGS = {
+    "event_type": "EVT",
+    "severity": "INFO",
+    "resource": "/x",
+    "action": "run",
+}
 
 
 def _capturing_logger() -> tuple[dict, object]:
@@ -209,6 +220,7 @@ class TestConstants:
 
     def test_flag_descricoes_covers_active_features(self):
         import deile.__version__ as version_mod
+
         active = [k for k, v in version_mod.FEATURES.items() if v]
         for flag in active:
             assert flag in FLAG_DESCRICOES_PTBR
@@ -310,5 +322,6 @@ class TestSentinels:
     def test_cli_class_attributes_match_sentinels(self):
         """The CLI must source the sentinels from _sentinels — no drift."""
         from deile.cli import _DeileCLI
+
         assert _DeileCLI._SWITCH_SESSION_KEY == SWITCH_SESSION_KEY
         assert _DeileCLI._POST_SWITCH_ACTION_KEY == POST_SWITCH_ACTION_KEY

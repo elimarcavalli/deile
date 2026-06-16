@@ -1,4 +1,5 @@
 """Unit tests for ``CostTracker.list_budget_limits`` reload semantics."""
+
 from __future__ import annotations
 
 from decimal import Decimal

@@ -14,36 +14,44 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-from deile.orchestration.forge import GhCommandError
-from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
-                                                        PrRef)
-from deile.orchestration.pipeline.implementer import WorkOutcome, WorkerImplementer
+from deile.orchestration.pipeline.github_client import CommentRef, IssueRef
+from deile.orchestration.pipeline.implementer import WorkerImplementer, WorkOutcome
 from deile.orchestration.pipeline.labels import (
-    MENTION_DONE, REFINAR, WORKFLOW_ARCHITECTURE, WORKFLOW_BLOCKED,
-    WORKFLOW_DECOMPOSED, WORKFLOW_NEW, WORKFLOW_REFINING, WORKFLOW_REVIEWED,
+    REFINAR,
+    WORKFLOW_ARCHITECTURE,
+    WORKFLOW_DECOMPOSED,
+    WORKFLOW_REFINING,
     make_refine_attempt_label,
 )
 from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
 _NOTIFIER_METHODS = (
-    "issue_picked_up", "issue_reviewed", "implementation_started",
-    "implementation_finished", "implementation_parked", "implementation_resumed",
-    "implementation_blocked", "pr_picked_up", "pr_reviewed",
-    "issue_auto_classified", "follow_ups_processed", "error",
-    "pr_auto_classified", "mention_processed",
+    "issue_picked_up",
+    "issue_reviewed",
+    "implementation_started",
+    "implementation_finished",
+    "implementation_parked",
+    "implementation_resumed",
+    "implementation_blocked",
+    "pr_picked_up",
+    "pr_reviewed",
+    "issue_auto_classified",
+    "follow_ups_processed",
+    "error",
+    "pr_auto_classified",
+    "mention_processed",
 )
 
 
-def _issue(number: int, *labels: str, body: str = "corpo", author: str = "alice") -> IssueRef:
+def _issue(
+    number: int, *labels: str, body: str = "corpo", author: str = "alice"
+) -> IssueRef:
     return IssueRef(
         number=number,
         title="t",
@@ -70,13 +78,16 @@ def _transitions(github: MagicMock) -> List[Tuple[int, str, str]]:
     out = []
     for call_ in github.transition_issue.await_args_list:
         number = call_.args[0] if call_.args else call_.kwargs.get("number")
-        out.append((number, call_.kwargs.get("from_label"), call_.kwargs.get("to_label")))
+        out.append(
+            (number, call_.kwargs.get("from_label"), call_.kwargs.get("to_label"))
+        )
     return out
 
 
 # ---------------------------------------------------------------------------
 # Fix 1: _apply_refine_verdict detecta DECOMPOSTO no output do architect
 # ---------------------------------------------------------------------------
+
 
 class _SeqWorkerClient:
     """Worker client fake para testes fire-and-forget (espelha test_refinement_gate)."""
@@ -89,7 +100,9 @@ class _SeqWorkerClient:
         self._seq = 0
 
     def _next_response(self) -> dict:
-        return self._responses.pop(0) if self._responses else {"ok": True, "summary": ""}
+        return (
+            self._responses.pop(0) if self._responses else {"ok": True, "summary": ""}
+        )
 
     async def dispatch(self, payload, *, wait):
         self.payloads.append(payload)
@@ -98,17 +111,24 @@ class _SeqWorkerClient:
             return resp
         if not resp.get("ok", True):
             from deile.infrastructure.deile_worker_client import WorkerDispatchError
-            raise WorkerDispatchError(resp.get("error", "rejected"), error_code="WORKER_REJECTED")
+
+            raise WorkerDispatchError(
+                resp.get("error", "rejected"), error_code="WORKER_REJECTED"
+            )
         self._seq += 1
         task_id = f"task-{self._seq:04d}"
         self.dispatched_tasks.append(task_id)
-        self._task_results[task_id] = {"ok": bool(resp.get("ok", True)), "summary": resp.get("summary", "")}
+        self._task_results[task_id] = {
+            "ok": bool(resp.get("ok", True)),
+            "summary": resp.get("summary", ""),
+        }
         return {"task_id": task_id, "status": "running"}
 
     async def get_resume_info(self, task_id, *, endpoint_url=None):
         result = self._task_results.get(task_id)
         if result is None:
             from deile.infrastructure.deile_worker_client import WorkerDispatchError
+
             raise WorkerDispatchError("not found", error_code="NOT_FOUND")
         return {
             "last_completed_at": 1_700_000_000,
@@ -125,6 +145,7 @@ _LEDGER_SEQ = [0]
 
 def _new_ledger_path() -> Path:
     import tempfile
+
     _LEDGER_SEQ[0] += 1
     d = tempfile.mkdtemp(prefix=".test568_ledger_")
     return Path(d) / "dispatches.json"
@@ -155,7 +176,9 @@ def _make_refine_monitor(
             registry.setdefault(i.number, i)
     github = MagicMock()
     github.ensure_pipeline_labels = AsyncMock()
-    github.list_issues_with_label = AsyncMock(side_effect=lambda label, **_: list(lm.get(label, [])))
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: list(lm.get(label, []))
+    )
     github.list_open_prs = AsyncMock(return_value=[])
     github.has_open_pr_for_issue = AsyncMock(return_value=False)
     github.claim_with_batch = AsyncMock(return_value="abc12345")
@@ -169,6 +192,7 @@ def _make_refine_monitor(
         labels = base.labels if base is not None else ("feature",)
         author = base.author if base is not None else "alice"
         return _issue(number, *labels, author=author, body="corpo refinado")
+
     github.get_issue = AsyncMock(side_effect=_get_issue)
     github.assign_issue = AsyncMock()
     github.comment_on_issue = AsyncMock()
@@ -182,9 +206,12 @@ def _make_refine_monitor(
 
     client = _SeqWorkerClient(worker_responses or [])
     from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
     ledger = DispatchLedger(path=_new_ledger_path())
     monitor = PipelineMonitor(
-        cfg, github=github, notifier=notifier,
+        cfg,
+        github=github,
+        notifier=notifier,
         implementer=WorkerImplementer(client=client, ledger=ledger),
     )
     monitor._test_issue_registry = registry
@@ -235,13 +262,17 @@ class TestRefineDetectsDecomposto:
         issue = _issue(100, "feature", WORKFLOW_ARCHITECTURE, REFINAR)
         monitor, github, _ = _make_refine_monitor(
             label_map={WORKFLOW_ARCHITECTURE: [issue], REFINAR: [issue]},
-            worker_responses=[{"ok": True, "summary": "Criei as issues.\nDECOMPOSTO: #201 #202 #203"}],
+            worker_responses=[
+                {"ok": True, "summary": "Criei as issues.\nDECOMPOSTO: #201 #202 #203"}
+            ],
         )
         await _refine_then_reconcile(monitor)
         t = _transitions(github)
-        assert (100, WORKFLOW_ARCHITECTURE, WORKFLOW_DECOMPOSED) in t, (
-            "feature em em_arquitetura com DECOMPOSTO: deve transicionar para decomposta"
-        )
+        assert (
+            100,
+            WORKFLOW_ARCHITECTURE,
+            WORKFLOW_DECOMPOSED,
+        ) in t, "feature em em_arquitetura com DECOMPOSTO: deve transicionar para decomposta"
 
     async def test_architect_decomposto_cleans_refinar_label(self):
         """REFINAR e ~refine:N são removidos após o handshake de decomposição."""
@@ -252,8 +283,11 @@ class TestRefineDetectsDecomposto:
             worker_responses=[{"ok": True, "summary": "DECOMPOSTO: #210 #211"}],
         )
         await _refine_then_reconcile(monitor)
-        removed_calls = [call_.args[2] for call_ in github.remove_labels.await_args_list
-                         if call_.args[1] == 101]
+        removed_calls = [
+            call_.args[2]
+            for call_ in github.remove_labels.await_args_list
+            if call_.args[1] == 101
+        ]
         all_removed = {lb for labels in removed_calls for lb in labels}
         assert REFINAR in all_removed, "REFINAR deve ser removido após decomposição"
 
@@ -266,9 +300,11 @@ class TestRefineDetectsDecomposto:
         )
         await _refine_then_reconcile(monitor)
         t = _transitions(github)
-        assert (102, WORKFLOW_ARCHITECTURE, WORKFLOW_DECOMPOSED) not in t, (
-            "REFINO: OK sem DECOMPOSTO não deve transicionar para decomposta"
-        )
+        assert (
+            102,
+            WORKFLOW_ARCHITECTURE,
+            WORKFLOW_DECOMPOSED,
+        ) not in t, "REFINO: OK sem DECOMPOSTO não deve transicionar para decomposta"
 
     async def test_intent_in_refining_with_decomposto_also_handled(self):
         """Intent em em_refinamento com DECOMPOSTO (edge case) também é tratado."""
@@ -280,7 +316,15 @@ class TestRefineDetectsDecomposto:
         # Override: seed em_refinamento em vez de em_arquitetura
         ledger = monitor.implementer._ledger
         await monitor._refine_one_issue()
-        refining = [_issue(103, "intent", WORKFLOW_REFINING, REFINAR, monitor.identity.ownership_label())]
+        refining = [
+            _issue(
+                103,
+                "intent",
+                WORKFLOW_REFINING,
+                REFINAR,
+                monitor.identity.ownership_label(),
+            )
+        ]
         _override_label(monitor, WORKFLOW_REFINING, refining)
         _override_label(monitor, WORKFLOW_ARCHITECTURE, [])
         await monitor._reconcile_refine_issues()
@@ -291,6 +335,7 @@ class TestRefineDetectsDecomposto:
 # ---------------------------------------------------------------------------
 # Fix 2: _dispatch_mention_group aplica handshake após one-shot com DECOMPOSTO
 # ---------------------------------------------------------------------------
+
 
 def _make_mention_monitor(
     *,
@@ -330,7 +375,8 @@ def _make_mention_monitor(
     # get_issue: devolve a issue com os labels fornecidos (para o handshake).
     github.get_issue = AsyncMock(
         return_value=IssueRef(
-            number=1, title="t",
+            number=1,
+            title="t",
             url="https://github.com/owner/name/issues/1",
             labels=issue_labels,
         )
@@ -351,7 +397,10 @@ def _make_mention_monitor(
     implementer_stub.review = AsyncMock(return_value=WorkOutcome(ok=True, text=""))
 
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=MagicMock(), notifier=notifier,
+        cfg,
+        github=github,
+        worktrees=MagicMock(),
+        notifier=notifier,
         implementer=implementer_stub,
     )
     return monitor, github
@@ -370,13 +419,14 @@ class TestMentionOneShot_DecomposeHandshake:
         await monitor._process_mentions()
         # Deve ter tentado aplicar WORKFLOW_DECOMPOSED
         added_calls = [
-            list(c.args[2]) for c in github.add_labels.await_args_list
+            list(c.args[2])
+            for c in github.add_labels.await_args_list
             if len(c.args) >= 3 and c.args[1] == 1
         ]
         all_added = {lb for labels in added_calls for lb in labels}
-        assert WORKFLOW_DECOMPOSED in all_added, (
-            "Menção com DECOMPOSTO: deve adicionar ~workflow:decomposta à issue pai"
-        )
+        assert (
+            WORKFLOW_DECOMPOSED in all_added
+        ), "Menção com DECOMPOSTO: deve adicionar ~workflow:decomposta à issue pai"
 
     async def test_mention_decomposto_with_refine_state_transitions(self):
         """Issue em em_refinamento (estado terminal não-gate): menção one-shot
@@ -397,15 +447,29 @@ class TestMentionOneShot_DecomposeHandshake:
         # deve retornar um estado que não está em GATE_REDISPATCHES_COMMENT.
         # Usamos side_effect: a primeira chamada (pelo router) retorna sem ~workflow:*;
         # a segunda (pelo handshake) retorna com em_refinamento.
-        github.get_issue = AsyncMock(side_effect=[
-            IssueRef(number=1, title="t", url="https://github.com/owner/name/issues/1", labels=()),
-            IssueRef(number=1, title="t", url="https://github.com/owner/name/issues/1", labels=(WORKFLOW_REFINING,)),
-        ])
+        github.get_issue = AsyncMock(
+            side_effect=[
+                IssueRef(
+                    number=1,
+                    title="t",
+                    url="https://github.com/owner/name/issues/1",
+                    labels=(),
+                ),
+                IssueRef(
+                    number=1,
+                    title="t",
+                    url="https://github.com/owner/name/issues/1",
+                    labels=(WORKFLOW_REFINING,),
+                ),
+            ]
+        )
         await monitor._process_mentions()
         t = _transitions(github)
-        assert (1, WORKFLOW_REFINING, WORKFLOW_DECOMPOSED) in t, (
-            "Issue em em_refinamento (relida no handshake) deve transicionar para decomposta"
-        )
+        assert (
+            1,
+            WORKFLOW_REFINING,
+            WORKFLOW_DECOMPOSED,
+        ) in t, "Issue em em_refinamento (relida no handshake) deve transicionar para decomposta"
 
     async def test_mention_decomposto_idempotent_already_decomposed(self):
         """Issue já decomposta: handshake NÃO re-transiciona (idempotência)."""
@@ -416,10 +480,12 @@ class TestMentionOneShot_DecomposeHandshake:
         await monitor._process_mentions()
         t = _transitions(github)
         # Nenhuma transição deve ter sido feita (já está decomposta)
-        decompose_transitions = [(n, f, to) for (n, f, to) in t if to == WORKFLOW_DECOMPOSED]
-        assert decompose_transitions == [], (
-            "Issue já decomposta não deve ser re-transicionada (idempotência)"
-        )
+        decompose_transitions = [
+            (n, f, to) for (n, f, to) in t if to == WORKFLOW_DECOMPOSED
+        ]
+        assert (
+            decompose_transitions == []
+        ), "Issue já decomposta não deve ser re-transicionada (idempotência)"
 
     async def test_mention_no_decomposto_output_no_handshake(self):
         """Menção sem DECOMPOSTO: no output não dispara o handshake."""
@@ -429,13 +495,14 @@ class TestMentionOneShot_DecomposeHandshake:
         )
         await monitor._process_mentions()
         added_calls = [
-            list(c.args[2]) for c in github.add_labels.await_args_list
+            list(c.args[2])
+            for c in github.add_labels.await_args_list
             if len(c.args) >= 3 and c.args[1] == 1
         ]
         all_added = {lb for labels in added_calls for lb in labels}
-        assert WORKFLOW_DECOMPOSED not in all_added, (
-            "Menção sem DECOMPOSTO: não deve adicionar ~workflow:decomposta"
-        )
+        assert (
+            WORKFLOW_DECOMPOSED not in all_added
+        ), "Menção sem DECOMPOSTO: não deve adicionar ~workflow:decomposta"
 
     async def test_mention_failed_outcome_no_handshake(self):
         """Menção com outcome ok=False não dispara o handshake mesmo com DECOMPOSTO."""
@@ -446,10 +513,11 @@ class TestMentionOneShot_DecomposeHandshake:
         )
         await monitor._process_mentions()
         added_calls = [
-            list(c.args[2]) for c in github.add_labels.await_args_list
+            list(c.args[2])
+            for c in github.add_labels.await_args_list
             if len(c.args) >= 3 and c.args[1] == 1
         ]
         all_added = {lb for labels in added_calls for lb in labels}
-        assert WORKFLOW_DECOMPOSED not in all_added, (
-            "Outcome com ok=False não deve acionar o handshake de decomposição"
-        )
+        assert (
+            WORKFLOW_DECOMPOSED not in all_added
+        ), "Outcome com ok=False não deve acionar o handshake de decomposição"

@@ -25,37 +25,56 @@ Princípio 8 (segurança): nenhum atributo carrega prompt/args/response/conteúd
 Apenas tamanhos (int), tokens (int), custo (float) e identificadores opacos.
 """
 
-from deile.observability.config import (ObservabilityConfig,
-                                        get_observability_config,
-                                        reset_observability_config)
-from deile.observability.dispatch_export import (emit_dispatch_completed,
-                                                 emit_dispatch_failed,
-                                                 emit_dispatch_model_resolved,
-                                                 emit_dispatch_progress,
-                                                 emit_dispatch_received,
-                                                 emit_dispatch_tool_burst,
-                                                 emit_forge_pr_open,
-                                                 emit_forge_pr_review,
-                                                 emit_git_commit,
-                                                 emit_git_push,
-                                                 reset_dispatch_export)
-from deile.observability.dispatch_log_export import (emit_log_record,
-                                                     get_dispatch_log_export,
-                                                     get_log_provider,
-                                                     reset_dispatch_log_export)
+from deile.observability.config import (
+    ObservabilityConfig,
+    get_observability_config,
+    reset_observability_config,
+)
+from deile.observability.dispatch_export import (
+    emit_dispatch_completed,
+    emit_dispatch_failed,
+    emit_dispatch_model_resolved,
+    emit_dispatch_progress,
+    emit_dispatch_received,
+    emit_dispatch_tool_burst,
+    emit_forge_pr_open,
+    emit_forge_pr_review,
+    emit_git_commit,
+    emit_git_push,
+    reset_dispatch_export,
+)
+from deile.observability.dispatch_log_export import (
+    emit_log_record,
+    get_dispatch_log_export,
+    get_log_provider,
+    reset_dispatch_log_export,
+)
 from deile.observability.dispatch_metrics import (
-    record_dispatch_duration_ms, record_dispatch_failed_total,
-    record_dispatch_tool_burst_total, record_dispatch_total,
-    record_forge_pr_review_total, record_git_push_total,
-    reset_dispatch_metrics, shutdown_dispatch_metrics)
-from deile.observability.dispatch_schema import (SCHEMA_VERSION,
-                                                 get_pod_metadata)
-from deile.observability.metrics import (DeileMetrics, NoOpMetrics,
-                                         OtlpMetrics, get_metrics,
-                                         reset_metrics)
+    record_dispatch_duration_ms,
+    record_dispatch_failed_total,
+    record_dispatch_tool_burst_total,
+    record_dispatch_total,
+    record_forge_pr_review_total,
+    record_git_push_total,
+    reset_dispatch_metrics,
+    shutdown_dispatch_metrics,
+)
+from deile.observability.dispatch_schema import SCHEMA_VERSION, get_pod_metadata
+from deile.observability.metrics import (
+    DeileMetrics,
+    NoOpMetrics,
+    OtlpMetrics,
+    get_metrics,
+    reset_metrics,
+)
 from deile.observability.no_op import NoOpSpan, NoOpTracer
-from deile.observability.tracer import (DeileTracer, OtlpTracer, get_tracer,
-                                        otel_available, reset_tracer)
+from deile.observability.tracer import (
+    DeileTracer,
+    OtlpTracer,
+    get_tracer,
+    otel_available,
+    reset_tracer,
+)
 
 __all__ = [
     # tracer

@@ -27,9 +27,7 @@ class LockHeldError(DEILEError):
     """Raised when another live process already holds the lock."""
 
     def __init__(self, path: Path, holder_pid: int) -> None:
-        super().__init__(
-            f"lock {path} is held by live PID {holder_pid}"
-        )
+        super().__init__(f"lock {path} is held by live PID {holder_pid}")
         self.path = path
         self.holder_pid = holder_pid
 

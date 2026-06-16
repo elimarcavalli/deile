@@ -14,15 +14,16 @@ from unittest.mock import AsyncMock, MagicMock, call
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
-from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
-                                                 REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING,
-                                                 WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW,
-                                                 WORKFLOW_REVIEWED,
-                                                 WORKFLOW_REVIEWING)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.labels import (
+    REVIEW_CONCLUDED,
+    REVIEW_IN_PROGRESS,
+    REVIEW_PENDING,
+    WORKFLOW_IMPLEMENTING,
+    WORKFLOW_NEW,
+    WORKFLOW_REVIEWED,
+    WORKFLOW_REVIEWING,
+)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 from deile.orchestration.pipeline.worktree_manager import Worktree
 
 # ---------------------------------------------------------------------------
@@ -106,10 +107,13 @@ def _make_monitor_full(
     # Issue #309 fase 2 + #373: pr_review fresh é fire-and-forget. Reusa o fake
     # do test_monitor (grava task_id no ledger + simula resume-info concluído),
     # preservando a semântica de ``claude_rc``/``claude_stdout``.
-    from deile.tests.orchestration.pipeline.test_monitor import \
-        _FakeFireAndForgetImplementer
+    from deile.tests.orchestration.pipeline.test_monitor import (
+        _FakeFireAndForgetImplementer,
+    )
+
     implementer_stub = _FakeFireAndForgetImplementer(
-        claude_stdout=claude_stdout, claude_rc=claude_rc,
+        claude_stdout=claude_stdout,
+        claude_rc=claude_rc,
     )
 
     monitor = PipelineMonitor(
@@ -216,8 +220,11 @@ class TestStageIntegration:
         notifier3.pr_picked_up.assert_called_once()
         notifier3.pr_reviewed.assert_not_called()
         pr_in_progress = PrRef(
-            number=55, title="auto: issue-10", url=_PR_URL,
-            labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-10",
+            number=55,
+            title="auto: issue-10",
+            url=_PR_URL,
+            labels=(REVIEW_IN_PROGRESS,),
+            head_ref="auto/issue-10",
         )
         github3.list_open_prs = AsyncMock(return_value=[pr_in_progress])
         github3.get_pr = AsyncMock(return_value=None)  # merged → não-aberta
@@ -247,10 +254,7 @@ class TestStageIntegration:
 
         # Ownership label is added so stage 2 knows who claimed it.
         add_labels_calls = github.add_labels.call_args_list
-        owned = any(
-            "~by:default" in str(c)
-            for c in add_labels_calls
-        )
+        owned = any("~by:default" in str(c) for c in add_labels_calls)
         assert owned, f"~by:default not added; add_labels calls: {add_labels_calls}"
 
         # Workflow transition: nova → revisada (via em_revisao)

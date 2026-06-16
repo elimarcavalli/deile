@@ -20,8 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.labels import MENTION_DONE
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 from deile.orchestration.pipeline.stages import _collect_mention_triggers
 
 
@@ -53,22 +52,30 @@ def _make_monitor(
     notifier = MagicMock()
     notifier.error = AsyncMock()
     return PipelineMonitor(
-        cfg, github=github, worktrees=MagicMock(), claude=MagicMock(),
+        cfg,
+        github=github,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
         notifier=notifier,
     )
 
 
 def _issue(number: int, labels=()) -> IssueRef:
     return IssueRef(
-        number=number, title="t", url=f"https://github.com/o/r/issues/{number}",
+        number=number,
+        title="t",
+        url=f"https://github.com/o/r/issues/{number}",
         labels=tuple(labels),
     )
 
 
 def _pr(number: int, labels=()) -> PrRef:
     return PrRef(
-        number=number, title="pr", url=f"https://github.com/o/r/pull/{number}",
-        labels=tuple(labels), head_ref=f"auto/issue-{number}",
+        number=number,
+        title="pr",
+        url=f"https://github.com/o/r/pull/{number}",
+        labels=tuple(labels),
+        head_ref=f"auto/issue-{number}",
     )
 
 

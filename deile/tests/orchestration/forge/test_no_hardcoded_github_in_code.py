@@ -70,7 +70,9 @@ def test_no_hardcoded_github_com_in_production_python():
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
             if "github.com" in line and "# noqa: forge" not in line:
-                offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
+                offenders.append(
+                    f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}"
+                )
     assert not offenders, (
         "hardcoded github.com references in production code — replace with "
         "ForgeConfig helpers (web_pr_url / web_issue_url) or move to forge/. "
@@ -88,13 +90,17 @@ def test_no_bare_gh_cli_in_pipeline_briefs():
     # placeholders). The render helpers themselves do mention "gh" /
     # "glab" in fallbacks, which is allowed.
     forbidden = [
-        "gh pr create", "gh pr view", "gh issue view --comments",
-        "gh issue edit", "gh issue comment", "gh issue create --repo",
+        "gh pr create",
+        "gh pr view",
+        "gh issue view --comments",
+        "gh issue edit",
+        "gh issue comment",
+        "gh issue create --repo",
     ]
     inside_template_block = False
     offenders = []
     for lineno, line in enumerate(text.splitlines(), start=1):
-        if line.startswith('_WORKER_') and '"""' in line:
+        if line.startswith("_WORKER_") and '"""' in line:
             inside_template_block = True
             continue
         if inside_template_block and line.strip().endswith('"""'):

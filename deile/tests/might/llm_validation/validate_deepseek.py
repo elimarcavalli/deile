@@ -153,16 +153,18 @@ async def test_live_multi_turn():
     history = [
         ModelMessage(role="user", content="My favorite color is teal. Remember it."),
         ModelMessage(role="assistant", content="Got it, teal."),
-        ModelMessage(role="user", content="What is my favorite color? Reply with one word."),
+        ModelMessage(
+            role="user", content="What is my favorite color? Reply with one word."
+        ),
     ]
     resp = await provider.generate(history, max_tokens=10)
     _emit("content", repr(resp.content)[:80])
     _emit("prompt_tokens", resp.usage.prompt_tokens)
     _emit("cost_estimate", f"{resp.usage.cost_estimate:.8f}")
     assert resp.content, "empty multi-turn response"
-    assert "teal" in resp.content.lower(), (
-        f"multi-turn history not honoured: {resp.content!r}"
-    )
+    assert (
+        "teal" in resp.content.lower()
+    ), f"multi-turn history not honoured: {resp.content!r}"
     print("  ✓ multi-turn history flowed through correctly")
 
 
@@ -216,8 +218,14 @@ async def test_live_plan_manager_timeout_with_real_tool():
     print("\n=== 5) PlanManager step over real LLM (loop liveness) ===")
     from deile.core.models.base import ModelMessage
     from deile.orchestration.plan_manager import PlanManager
-    from deile.tools.base import (SecurityLevel, Tool, ToolCategory,
-                                  ToolContext, ToolResult, ToolSchema)
+    from deile.tools.base import (
+        SecurityLevel,
+        Tool,
+        ToolCategory,
+        ToolContext,
+        ToolResult,
+        ToolSchema,
+    )
 
     provider = _build_provider()
 
@@ -235,14 +243,16 @@ async def test_live_plan_manager_timeout_with_real_tool():
             return ToolCategory.OTHER.value
 
         def __init__(self) -> None:
-            super().__init__(schema=ToolSchema(
-                name="llm_echo",
-                description="round-trips a single prompt to deepseek",
-                parameters={"prompt": {"type": "string", "description": "prompt"}},
-                required=["prompt"],
-                security_level=SecurityLevel.SAFE,
-                category=ToolCategory.OTHER,
-            ))
+            super().__init__(
+                schema=ToolSchema(
+                    name="llm_echo",
+                    description="round-trips a single prompt to deepseek",
+                    parameters={"prompt": {"type": "string", "description": "prompt"}},
+                    required=["prompt"],
+                    security_level=SecurityLevel.SAFE,
+                    category=ToolCategory.OTHER,
+                )
+            )
 
         async def execute(self, ctx: ToolContext) -> ToolResult:
             r = await provider.generate(

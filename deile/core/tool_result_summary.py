@@ -87,7 +87,11 @@ def semantic_summary(tool_name: str, result: ToolResult) -> Optional[str]:
         head = " • ".join(parts) or "ok"
         # Append first line of stdout (or stderr if errored) for context.
         trailer = ""
-        snippet_source = stderr if (isinstance(exit_code, int) and exit_code != 0 and stderr) else stdout
+        snippet_source = (
+            stderr
+            if (isinstance(exit_code, int) and exit_code != 0 and stderr)
+            else stdout
+        )
         first_line = next(
             (ln.strip() for ln in snippet_source.splitlines() if ln.strip()),
             "",
@@ -155,7 +159,9 @@ def semantic_summary(tool_name: str, result: ToolResult) -> Optional[str]:
 
     if tool_name == "delete_file":
         if result.message:
-            msg = result.message.replace("Successfully deleted directory: ", "deleted dir ")
+            msg = result.message.replace(
+                "Successfully deleted directory: ", "deleted dir "
+            )
             msg = msg.replace("Successfully deleted file: ", "deleted ")
             msg = msg.replace("Successfully deleted: ", "deleted ")
             return msg

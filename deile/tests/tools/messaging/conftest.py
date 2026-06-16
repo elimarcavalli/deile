@@ -72,19 +72,32 @@ class FakeBotClient:
         return _DummyResp(ok=True, version="fake", providers=["discord"], is_ready=True)
 
     async def channel_post(self, *, channel_id, text, reply_to=None):
-        self._record("channel_post", channel_id=channel_id, text=text, reply_to=reply_to)
-        return _DummyResp(message_id="mid-" + channel_id, channel_id=channel_id, sent_at=_now())
+        self._record(
+            "channel_post", channel_id=channel_id, text=text, reply_to=reply_to
+        )
+        return _DummyResp(
+            message_id="mid-" + channel_id, channel_id=channel_id, sent_at=_now()
+        )
 
     async def dm_send(self, *, text, user_id=None, bot_user_id=None):
         self._record("dm_send", user_id=user_id, bot_user_id=bot_user_id, text=text)
-        return _DummyResp(message_id="dm-1", user_id=user_id or "resolved", sent_at=_now())
+        return _DummyResp(
+            message_id="dm-1", user_id=user_id or "resolved", sent_at=_now()
+        )
 
     async def reaction_add(self, *, channel_id, message_id, emoji):
-        self._record("reaction_add", channel_id=channel_id, message_id=message_id, emoji=emoji)
+        self._record(
+            "reaction_add", channel_id=channel_id, message_id=message_id, emoji=emoji
+        )
         return _DummyResp(ok=True)
 
     async def thread_start(self, *, channel_id, name, parent_message_id=None):
-        self._record("thread_start", channel_id=channel_id, name=name, parent_message_id=parent_message_id)
+        self._record(
+            "thread_start",
+            channel_id=channel_id,
+            name=name,
+            parent_message_id=parent_message_id,
+        )
         return _DummyResp(thread_id="t-1", name=name)
 
     async def message_pin(self, *, channel_id, message_id):
@@ -140,7 +153,12 @@ class FakePermissionManager:
 
     def check_permission(self, *, tool_name, resource, action, context=None):
         self.calls.append(
-            {"tool_name": tool_name, "resource": resource, "action": action, "context": context}
+            {
+                "tool_name": tool_name,
+                "resource": resource,
+                "action": action,
+                "context": context,
+            }
         )
         return self.allow
 

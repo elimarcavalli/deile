@@ -5,6 +5,7 @@ All tests are hermetic:
 - URL download uses a real aiohttp server (``image_server`` fixture) so
   the streaming / size-cap logic runs for real.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -32,6 +33,7 @@ def tool():
 def ctx_factory():
     def _make(**kwargs):
         return ToolContext(user_input="", parsed_args=kwargs)
+
     return _make
 
 
@@ -47,10 +49,12 @@ async def test_no_source_returns_error(tool, ctx_factory):
 
 
 async def test_url_and_base64_together_returns_error(tool, ctx_factory):
-    res = await tool.execute(ctx_factory(
-        image_url="https://example.com/img.png",
-        image_base64="abc",
-    ))
+    res = await tool.execute(
+        ctx_factory(
+            image_url="https://example.com/img.png",
+            image_base64="abc",
+        )
+    )
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
@@ -69,6 +73,7 @@ async def test_invalid_base64_returns_error(tool, ctx_factory):
 
 async def test_non_image_mime_returns_error(tool, ctx_factory):
     import base64
+
     b64 = base64.b64encode(b"data").decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="text/plain"))
     assert res.is_error
@@ -84,13 +89,16 @@ async def test_url_only_accepts_http(tool, ctx_factory):
 async def test_all_three_sources_returns_error(tool, ctx_factory):
     """Multiple input sources at once -> VISION_BAD_INPUT (no silent pick)."""
     import base64
+
     b64 = base64.b64encode(PNG_1x1_BYTES).decode()
-    res = await tool.execute(ctx_factory(
-        image_url="https://example.com/img.png",
-        image_base64=b64,
-        image_path="/some/path.png",
-        mime_type="image/png",
-    ))
+    res = await tool.execute(
+        ctx_factory(
+            image_url="https://example.com/img.png",
+            image_base64=b64,
+            image_path="/some/path.png",
+            mime_type="image/png",
+        )
+    )
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
@@ -224,7 +232,9 @@ async def test_image_path_happy(tool, ctx_factory, monkeypatch, repo_tmp_path):
     assert captured["bytes_len"] == len(PNG_1x1_BYTES)
 
 
-async def test_image_path_with_file_scheme(tool, ctx_factory, monkeypatch, repo_tmp_path):
+async def test_image_path_with_file_scheme(
+    tool, ctx_factory, monkeypatch, repo_tmp_path
+):
     async def fake(image_bytes, mime, prompt, model):
         return "ok"
 
@@ -247,12 +257,16 @@ async def test_image_path_outside_safe_root_rejected(tool, ctx_factory):
 
 async def test_image_path_not_found(tool, ctx_factory, repo_tmp_path):
     """A path inside safe roots that does not exist returns VISION_BAD_INPUT."""
-    res = await tool.execute(ctx_factory(image_path=str(repo_tmp_path / "nonexistent.png")))
+    res = await tool.execute(
+        ctx_factory(image_path=str(repo_tmp_path / "nonexistent.png"))
+    )
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_image_path_unknown_extension_requires_mime(tool, ctx_factory, repo_tmp_path):
+async def test_image_path_unknown_extension_requires_mime(
+    tool, ctx_factory, repo_tmp_path
+):
     p = repo_tmp_path / "noext"
     p.write_bytes(PNG_1x1_BYTES)
     res = await tool.execute(ctx_factory(image_path=str(p)))
@@ -269,9 +283,7 @@ async def test_image_path_bmp_rejected_before_llm(tool, ctx_factory, repo_tmp_pa
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
     # Even when MIME passed explicitly, BMP must be refused early.
-    res2 = await tool.execute(
-        ctx_factory(image_path=str(p), mime_type="image/bmp")
-    )
+    res2 = await tool.execute(ctx_factory(image_path=str(p), mime_type="image/bmp"))
     assert res2.is_error
     assert res2.metadata["error_code"] == "VISION_BAD_INPUT"
 
@@ -283,6 +295,7 @@ async def test_image_path_chunked_read_caps_oversize_atomic(
     so a TOCTOU swap can't bypass it. Simulated by writing a file larger
     than the cap and asserting the failure is VISION_IMAGE_TOO_LARGE."""
     from deile.tools.vision_tool import _MAX_IMAGE_BYTES
+
     p = repo_tmp_path / "huge.png"
     # 1 MiB beyond the cap
     p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (_MAX_IMAGE_BYTES + 1024))
@@ -299,6 +312,7 @@ async def test_llm_failure_returns_typed_error(tool, ctx_factory, monkeypatch):
 
     async def fail(image_bytes, mime, prompt, model):
         from deile.tools.vision_tool import VisionToolError
+
         raise VisionToolError("VISION_LLM_FAILED", "quota exceeded")
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fail)
@@ -309,13 +323,17 @@ async def test_llm_failure_returns_typed_error(tool, ctx_factory, monkeypatch):
     assert "quota" in res.message
 
 
-async def test_llm_generic_exception_returns_vision_llm_failed(tool, ctx_factory, monkeypatch):
+async def test_llm_generic_exception_returns_vision_llm_failed(
+    tool, ctx_factory, monkeypatch
+):
     """A non-VisionToolError from _gemini_describe must return VISION_LLM_FAILED."""
+
     async def fail(image_bytes, mime, prompt, model):
         raise RuntimeError("unexpected SDK error")
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fail)
     import base64
+
     b64 = base64.b64encode(PNG_1x1_BYTES).decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
     assert res.is_error
@@ -340,25 +358,28 @@ def test_registered_by_auto_discover():
 async def test_unknown_model_returns_bad_input(tool, ctx_factory):
     """Caller-supplied model not in allowlist must be rejected."""
     import base64
+
     b64 = base64.b64encode(PNG_1x1_BYTES).decode()
-    res = await tool.execute(ctx_factory(
-        image_base64=b64, mime_type="image/png", model="gemini-ultra"
-    ))
+    res = await tool.execute(
+        ctx_factory(image_base64=b64, mime_type="image/png", model="gemini-ultra")
+    )
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
 async def test_allowed_model_passes(tool, ctx_factory, monkeypatch):
     """A model in the allowlist must not be rejected at the gate."""
+
     async def fake(image_bytes, mime, prompt, model):
         return "ok"
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
     import base64
+
     b64 = base64.b64encode(PNG_1x1_BYTES).decode()
-    res = await tool.execute(ctx_factory(
-        image_base64=b64, mime_type="image/png", model="gemini-2.5-flash"
-    ))
+    res = await tool.execute(
+        ctx_factory(image_base64=b64, mime_type="image/png", model="gemini-2.5-flash")
+    )
     assert res.is_success
 
 
@@ -368,8 +389,11 @@ async def test_allowed_model_passes(tool, ctx_factory, monkeypatch):
 async def test_base64_oversized_rejected_before_decode(tool, ctx_factory):
     """Oversized base64 string must be rejected before b64decode allocation."""
     from deile.tools.vision_tool import _MAX_IMAGE_BYTES
+
     oversized_b64 = "A" * (_MAX_IMAGE_BYTES * 2)
-    res = await tool.execute(ctx_factory(image_base64=oversized_b64, mime_type="image/png"))
+    res = await tool.execute(
+        ctx_factory(image_base64=oversized_b64, mime_type="image/png")
+    )
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_IMAGE_TOO_LARGE"
 
@@ -380,6 +404,7 @@ async def test_base64_oversized_rejected_before_decode(tool, ctx_factory):
 async def test_b64_unsupported_mime_rejected(tool, ctx_factory):
     """image/svg+xml is a valid image/ prefix but not in _GEMINI_SUPPORTED_MIMES."""
     import base64
+
     b64 = base64.b64encode(b"<svg/>").decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/svg+xml"))
     assert res.is_error
@@ -421,7 +446,9 @@ async def test_file_uri_with_non_localhost_authority_rejected(tool, ctx_factory)
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_file_uri_remote_authority_emits_suspicious_audit(tool, ctx_factory, monkeypatch):
+async def test_file_uri_remote_authority_emits_suspicious_audit(
+    tool, ctx_factory, monkeypatch
+):
     """file://remotehost/... must emit _try_audit_blocked(suspicious=True)."""
     calls = []
 
@@ -431,7 +458,9 @@ async def test_file_uri_remote_authority_emits_suspicious_audit(tool, ctx_factor
     monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
     res = await tool.execute(ctx_factory(image_path="file://remotehost/etc/passwd"))
     assert res.is_error
-    assert calls, "_try_audit_blocked was not called on file:// remote-authority rejection"
+    assert (
+        calls
+    ), "_try_audit_blocked was not called on file:// remote-authority rejection"
     assert calls[0]["suspicious"] is True
 
 
@@ -443,9 +472,12 @@ async def test_prompt_too_long_returns_bad_input(tool, ctx_factory):
     import base64
 
     from deile.tools.vision_tool import _MAX_PROMPT_BYTES
+
     b64 = base64.b64encode(b"x").decode()
     long_prompt = "a" * (_MAX_PROMPT_BYTES + 1)
-    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png", prompt=long_prompt))
+    res = await tool.execute(
+        ctx_factory(image_base64=b64, mime_type="image/png", prompt=long_prompt)
+    )
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
@@ -512,7 +544,14 @@ async def test_path_containment_emits_blocked_audit(tool, ctx_factory, monkeypat
     calls = []
 
     def _fake_audit(resource, action, details, suspicious=False):
-        calls.append({"resource": resource, "action": action, "details": details, "suspicious": suspicious})
+        calls.append(
+            {
+                "resource": resource,
+                "action": action,
+                "details": details,
+                "suspicious": suspicious,
+            }
+        )
 
     monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
     res = await tool.execute(ctx_factory(image_path="/etc/passwd"))
@@ -540,12 +579,12 @@ async def test_direct_private_ip_rejected(tool, ctx_factory):
 async def test_direct_ipv6_private_rejected(tool, ctx_factory):
     """IPv6 loopback, link-local, multicast, and deprecated site-local must all be blocked."""
     for bad_url in (
-        "http://[::1]/",              # IPv6 loopback
-        "http://[fe80::1]/",          # IPv6 link-local
-        "http://[ff02::1]/",          # IPv6 multicast (is_global=True on Python 3.11)
-        "http://[fec0::1]/",          # IPv6 deprecated site-local RFC 3879 (is_global=True on Python 3.11)
+        "http://[::1]/",  # IPv6 loopback
+        "http://[fe80::1]/",  # IPv6 link-local
+        "http://[ff02::1]/",  # IPv6 multicast (is_global=True on Python 3.11)
+        "http://[fec0::1]/",  # IPv6 deprecated site-local RFC 3879 (is_global=True on Python 3.11)
         "http://[::ffff:10.0.0.1]/",  # IPv4-mapped private
-        "http://[::ffff:127.0.0.1]/", # IPv4-mapped loopback
+        "http://[::ffff:127.0.0.1]/",  # IPv4-mapped loopback
     ):
         res = await tool.execute(ctx_factory(image_url=bad_url))
         assert res.is_error, f"expected error for {bad_url}"
@@ -583,6 +622,7 @@ async def test_magic_byte_mismatch_rejected(tool, ctx_factory):
 
 async def test_webp_valid_magic_passes(tool, ctx_factory, monkeypatch):
     """RIFF????WEBP (WebP compound magic) must pass validation."""
+
     async def fake(image_bytes, mime, prompt, model):
         return "ok"
 
@@ -599,6 +639,7 @@ async def test_webp_valid_magic_passes(tool, ctx_factory, monkeypatch):
 async def test_webp_riff_without_webp_fourcc_rejected(tool, ctx_factory):
     """RIFF container with non-WEBP fourcc (e.g. AVI) must fail magic-byte check."""
     import base64
+
     riff_avi = b"RIFF" + b"\x00" * 4 + b"AVI " + b"\x00" * 10
     b64 = base64.b64encode(riff_avi).decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/webp"))
@@ -608,11 +649,13 @@ async def test_webp_riff_without_webp_fourcc_rejected(tool, ctx_factory):
 
 async def test_gif87a_valid_magic_passes(tool, ctx_factory, monkeypatch):
     """GIF87a 6-byte magic must pass validation."""
+
     async def fake(image_bytes, mime, prompt, model):
         return "ok"
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
     import base64
+
     gif87a_bytes = b"GIF87a" + b"\x00" * 10
     b64 = base64.b64encode(gif87a_bytes).decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/gif"))
@@ -621,10 +664,13 @@ async def test_gif87a_valid_magic_passes(tool, ctx_factory, monkeypatch):
 
 async def test_gif89a_valid_magic_passes(tool, ctx_factory, monkeypatch):
     """GIF89a 6-byte magic must pass validation."""
-    async def fake(image_bytes, mime, prompt, model):        return "ok"
+
+    async def fake(image_bytes, mime, prompt, model):
+        return "ok"
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
     import base64
+
     gif89a_bytes = b"GIF89a" + b"\x00" * 10
     b64 = base64.b64encode(gif89a_bytes).decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/gif"))
@@ -634,6 +680,7 @@ async def test_gif89a_valid_magic_passes(tool, ctx_factory, monkeypatch):
 async def test_gif_junk_magic_rejected(tool, ctx_factory):
     """GIF8<junk> polyglot must be rejected -- only GIF87a and GIF89a are accepted."""
     import base64
+
     gif_junk = b"GIF8" + b"\x00" * 12
     b64 = base64.b64encode(gif_junk).decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/gif"))
@@ -646,10 +693,18 @@ async def test_magic_byte_mismatch_emits_blocked_audit(tool, ctx_factory, monkey
     calls = []
 
     def _fake_audit(resource, action, details, suspicious=False):
-        calls.append({"resource": resource, "action": action, "details": details, "suspicious": suspicious})
+        calls.append(
+            {
+                "resource": resource,
+                "action": action,
+                "details": details,
+                "suspicious": suspicious,
+            }
+        )
 
     monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
     import base64
+
     jpeg_magic = b"\xff\xd8\xff" + b"\x00" * 10
     b64 = base64.b64encode(jpeg_magic).decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
@@ -675,8 +730,10 @@ async def test_operator_model_env_var_invalid_falls_back_to_default(
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
     # Simulate settings returning an invalid model name
     import deile.tools.vision_tool as vt
+
     monkeypatch.setattr(vt, "_resolve_vision_model", lambda: vt._DEFAULT_VISION_MODEL)
     import base64
+
     b64 = base64.b64encode(PNG_1x1_BYTES).decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
     assert res.is_success
@@ -719,6 +776,7 @@ async def test_file_uri_percent_encoded_path_decoded(
     tool, ctx_factory, monkeypatch, repo_tmp_path
 ):
     """file:// URIs with percent-encoded spaces (%20) must resolve correctly."""
+
     async def fake(image_bytes, mime, prompt, model):
         return "ok"
 
@@ -833,19 +891,27 @@ async def test_ipv4_mapped_link_local_rejected(tool, ctx_factory):
 # ---- file:// audit resource must not contain credentials --------------------
 
 
-async def test_file_uri_remote_authority_audit_resource_sanitised(tool, ctx_factory, monkeypatch):
+async def test_file_uri_remote_authority_audit_resource_sanitised(
+    tool, ctx_factory, monkeypatch
+):
     """Credentials in file://user:pass@host/path must NOT appear in the audit resource."""
     calls = []
 
     def _fake_audit(resource, action, details, suspicious=False):
-        calls.append({"resource": resource, "details": details, "suspicious": suspicious})
+        calls.append(
+            {"resource": resource, "details": details, "suspicious": suspicious}
+        )
 
     monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
-    res = await tool.execute(ctx_factory(image_path="file://user:secret@remotehost/etc/passwd"))
+    res = await tool.execute(
+        ctx_factory(image_path="file://user:secret@remotehost/etc/passwd")
+    )
     assert res.is_error
     assert calls, "_try_audit_blocked was not called"
     assert "secret" not in calls[0]["resource"], "credentials leaked to audit resource"
-    assert "secret" not in calls[0]["details"].get("authority", ""), "credentials leaked to audit details.authority"
+    assert "secret" not in calls[0]["details"].get(
+        "authority", ""
+    ), "credentials leaked to audit details.authority"
 
 
 # ---- DNS OSError (NXDOMAIN / gaierror) yields VISION_DOWNLOAD_FAILED -------

@@ -3,6 +3,7 @@
 Covers the new _build_settings() / _load_json_file() / _apply_nested_dict()
 / _apply_env_overrides() logic introduced in issue #111.
 """
+
 from __future__ import annotations
 
 import json
@@ -11,9 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from deile.config.settings import (Settings, _apply_env_overrides,
-                                   _apply_nested_dict, _load_json_file,
-                                   reset_settings)
+from deile.config.settings import (
+    Settings,
+    _apply_env_overrides,
+    _apply_nested_dict,
+    _load_json_file,
+    reset_settings,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -189,16 +194,27 @@ class TestApplyEnvOverrides:
     def test_deprecated_env_vars_emit_no_warning(self, monkeypatch, caplog):
         """Deprecated env vars must not emit any deprecation warning (issue #309)."""
         deprecated_vars = [
-            "DEILE_DEBUG", "DEILE_PREFERRED_MODEL", "DEILE_VISION_MODEL",
-            "DEILE_BOT_APPROVAL_AUTO", "DEILE_LOOP_GUARD_DISABLE",
-            "DEILE_LOOP_GUARD_MAX_CALLS", "DEILE_LOOP_GUARD_REPEAT_THRESHOLD",
-            "DEILE_LOOP_GUARD_WINDOW_SIZE", "DEILE_LOOP_GUARD_WINDOW_THRESHOLD",
-            "DEILE_LOOP_GUARD_NO_PROGRESS", "DEILE_PIPELINE_BASE_PATH",
-            "DEILE_PIPELINE_REPO", "DEILE_PIPELINE_NOTIFY_USER_ID",
-            "DEILE_PIPELINE_POLL_INTERVAL", "DEILE_PIPELINE_CLAUDE_TIMEOUT",
-            "DEILE_PIPELINE_DISPATCH_MODE", "DEILE_PIPELINE_RESUME_ENABLED",
-            "DEILE_PIPELINE_RESUME_INTERVAL", "DEILE_PIPELINE_RESUME_MAX_ATTEMPTS",
-            "DEILE_PIPELINE_RESUME_BUDGET", "DEILE_CRON_DB_PATH",
+            "DEILE_DEBUG",
+            "DEILE_PREFERRED_MODEL",
+            "DEILE_VISION_MODEL",
+            "DEILE_BOT_APPROVAL_AUTO",
+            "DEILE_LOOP_GUARD_DISABLE",
+            "DEILE_LOOP_GUARD_MAX_CALLS",
+            "DEILE_LOOP_GUARD_REPEAT_THRESHOLD",
+            "DEILE_LOOP_GUARD_WINDOW_SIZE",
+            "DEILE_LOOP_GUARD_WINDOW_THRESHOLD",
+            "DEILE_LOOP_GUARD_NO_PROGRESS",
+            "DEILE_PIPELINE_BASE_PATH",
+            "DEILE_PIPELINE_REPO",
+            "DEILE_PIPELINE_NOTIFY_USER_ID",
+            "DEILE_PIPELINE_POLL_INTERVAL",
+            "DEILE_PIPELINE_CLAUDE_TIMEOUT",
+            "DEILE_PIPELINE_DISPATCH_MODE",
+            "DEILE_PIPELINE_RESUME_ENABLED",
+            "DEILE_PIPELINE_RESUME_INTERVAL",
+            "DEILE_PIPELINE_RESUME_MAX_ATTEMPTS",
+            "DEILE_PIPELINE_RESUME_BUDGET",
+            "DEILE_CRON_DB_PATH",
             "DEILE_CRON_POLL_INTERVAL",
         ]
         for var in deprecated_vars:
@@ -238,7 +254,9 @@ class TestBuildSettings:
         monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         proj = tmp_path / "project"
         proj.mkdir(exist_ok=True)
-        monkeypatch.setattr("deile.config.settings.Path.home", lambda: tmp_path / "home")
+        monkeypatch.setattr(
+            "deile.config.settings.Path.home", lambda: tmp_path / "home"
+        )
         monkeypatch.chdir(proj)
         reset_settings()
         from deile.config.settings import get_settings
@@ -298,7 +316,9 @@ class TestBuildSettings:
             proj / ".deile" / "settings.json",
             {"forge": {"repo": "from-json/repo"}},
         )
-        monkeypatch.setattr("deile.config.settings.Path.home", lambda: tmp_path / "home")
+        monkeypatch.setattr(
+            "deile.config.settings.Path.home", lambda: tmp_path / "home"
+        )
         monkeypatch.chdir(proj)
         monkeypatch.setenv("DEILE_FORGE_REPO", "from-env/repo")
         reset_settings()
@@ -317,7 +337,9 @@ class TestBuildSettings:
             proj / ".deile" / "settings.json",
             {"pipeline": {"repo": "from-json/repo"}},
         )
-        monkeypatch.setattr("deile.config.settings.Path.home", lambda: tmp_path / "home")
+        monkeypatch.setattr(
+            "deile.config.settings.Path.home", lambda: tmp_path / "home"
+        )
         monkeypatch.chdir(proj)
         monkeypatch.setenv("DEILE_PIPELINE_REPO", "from-env/repo")
         reset_settings()
@@ -329,7 +351,9 @@ class TestBuildSettings:
 
     def test_reset_clears_singleton(self, tmp_path, monkeypatch):
         monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
-        monkeypatch.setattr("deile.config.settings.Path.home", lambda: tmp_path / "home")
+        monkeypatch.setattr(
+            "deile.config.settings.Path.home", lambda: tmp_path / "home"
+        )
         monkeypatch.chdir(tmp_path)
         reset_settings()
         from deile.config.settings import get_settings
@@ -349,13 +373,17 @@ class TestSettingsManagerGetAllPreferences:
     def test_empty_when_no_files(self, tmp_path):
         from deile.commands.settings_manager import SettingsManager
 
-        mgr = SettingsManager(project_dir=tmp_path / "project", user_home=tmp_path / "home")
+        mgr = SettingsManager(
+            project_dir=tmp_path / "project", user_home=tmp_path / "home"
+        )
         assert mgr.get_all_preferences() == {}
 
     def test_global_prefs_returned(self, tmp_path):
         from deile.commands.settings_manager import SettingsManager
 
-        mgr = SettingsManager(project_dir=tmp_path / "project", user_home=tmp_path / "home")
+        mgr = SettingsManager(
+            project_dir=tmp_path / "project", user_home=tmp_path / "home"
+        )
         _write_json(
             mgr.global_settings_path,
             {"loop_guard": {"max_calls": 77}, "skills_paths": []},
@@ -366,7 +394,9 @@ class TestSettingsManagerGetAllPreferences:
     def test_project_overrides_global(self, tmp_path):
         from deile.commands.settings_manager import SettingsManager
 
-        mgr = SettingsManager(project_dir=tmp_path / "project", user_home=tmp_path / "home")
+        mgr = SettingsManager(
+            project_dir=tmp_path / "project", user_home=tmp_path / "home"
+        )
         _write_json(
             mgr.global_settings_path,
             {"pipeline": {"repo": "global/repo"}, "skills_paths": []},
@@ -385,7 +415,9 @@ class TestSettingsManagerGetAllPreferences:
         # mutation never leaks into neighboring test files.
         from deile.commands.settings_manager import SettingsManager
 
-        mgr = SettingsManager(project_dir=tmp_path / "project", user_home=tmp_path / "home")
+        mgr = SettingsManager(
+            project_dir=tmp_path / "project", user_home=tmp_path / "home"
+        )
         assert mgr.set_preference("debug", {"enabled": True}) is True
         prefs = mgr.get_all_preferences()
         assert prefs["debug"]["enabled"] is True
@@ -393,6 +425,8 @@ class TestSettingsManagerGetAllPreferences:
     def test_load_all_preferences_invalid_scope(self, tmp_path):
         from deile.commands.settings_manager import SettingsManager
 
-        mgr = SettingsManager(project_dir=tmp_path / "project", user_home=tmp_path / "home")
+        mgr = SettingsManager(
+            project_dir=tmp_path / "project", user_home=tmp_path / "home"
+        )
         with pytest.raises(ValueError, match="Invalid scope"):
             mgr.load_all_preferences("invalid")

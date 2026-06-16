@@ -52,19 +52,21 @@ class TestLogsPvcYaml:
 
     def test_deile_logs_pipeline_pvc_uses_rwo(self):
         docs = _load_all("42b-deile-logs-pvc.yaml")
-        pipeline_pvc = next(d for d in docs if d["metadata"]["name"] == "deile-logs-pipeline")
-        modes = pipeline_pvc["spec"]["accessModes"]
-        assert modes == ["ReadWriteOnce"], (
-            "deile-logs-pipeline must use ReadWriteOnce for k3s local-path compatibility"
+        pipeline_pvc = next(
+            d for d in docs if d["metadata"]["name"] == "deile-logs-pipeline"
         )
+        modes = pipeline_pvc["spec"]["accessModes"]
+        assert modes == [
+            "ReadWriteOnce"
+        ], "deile-logs-pipeline must use ReadWriteOnce for k3s local-path compatibility"
 
     def test_both_pvcs_have_256mi_storage(self):
         docs = _load_all("42b-deile-logs-pvc.yaml")
         for doc in docs:
             storage = doc["spec"]["resources"]["requests"]["storage"]
-            assert storage == "256Mi", (
-                f"PVC {doc['metadata']['name']} must request 256Mi storage"
-            )
+            assert (
+                storage == "256Mi"
+            ), f"PVC {doc['metadata']['name']} must request 256Mi storage"
 
 
 class TestDeploymentProfileManifests:
@@ -113,18 +115,18 @@ class TestPipelineDeploymentLogsMount:
     def test_logs_volume_declared(self):
         volumes = self._spec().get("volumes", [])
         names = [v["name"] for v in volumes]
-        assert "logs" in names, (
-            "Volume 'logs' must be declared in deile-pipeline so logs survive rollout"
-        )
+        assert (
+            "logs" in names
+        ), "Volume 'logs' must be declared in deile-pipeline so logs survive rollout"
 
     def test_logs_volume_uses_deile_logs_pipeline_pvc(self):
         volumes = self._spec().get("volumes", [])
         logs_vol = next((v for v in volumes if v["name"] == "logs"), None)
         assert logs_vol is not None
         claim = logs_vol.get("persistentVolumeClaim", {}).get("claimName")
-        assert claim == "deile-logs-pipeline", (
-            f"Pipeline logs volume must use deile-logs-pipeline PVC, got: {claim!r}"
-        )
+        assert (
+            claim == "deile-logs-pipeline"
+        ), f"Pipeline logs volume must use deile-logs-pipeline PVC, got: {claim!r}"
 
     def test_logs_volumemount_at_home_deile_logs(self):
         containers = self._spec().get("containers", [])
@@ -143,7 +145,8 @@ class TestDoCreateNamespaceManifestsOrder:
 
     def test_logs_pvc_in_create_namespace_order(self):
         import inspect
+
         src = inspect.getsource(deploy.do_create_namespace)
-        assert "42b-deile-logs-pvc.yaml" in src, (
-            "do_create_namespace must include 42b-deile-logs-pvc.yaml in manifests_order"
-        )
+        assert (
+            "42b-deile-logs-pvc.yaml" in src
+        ), "do_create_namespace must include 42b-deile-logs-pvc.yaml in manifests_order"

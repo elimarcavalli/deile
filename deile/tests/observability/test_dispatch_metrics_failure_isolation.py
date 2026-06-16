@@ -22,11 +22,11 @@ class _Boom:
         raise RuntimeError("metric exporter boom")
 
 
-def test_metric_failure_does_not_break_dispatch_span(
-    in_memory_exporter, monkeypatch
-):
-    from deile.observability.dispatch_export import (emit_dispatch_completed,
-                                                     emit_dispatch_received)
+def test_metric_failure_does_not_break_dispatch_span(in_memory_exporter, monkeypatch):
+    from deile.observability.dispatch_export import (
+        emit_dispatch_completed,
+        emit_dispatch_received,
+    )
 
     # Força provider "ligado" e troca todos os instruments por bombas.
     monkeypatch.setattr(dm, "_provider_tried", True)
@@ -45,6 +45,7 @@ def test_metric_failure_does_not_break_dispatch_span(
     root = root_spans[0]
     # Span fechado com status OK apesar do estouro de métrica.
     from opentelemetry.trace import StatusCode
+
     assert root.status.status_code == StatusCode.OK
 
 
@@ -52,8 +53,6 @@ def test_record_helper_swallows_instrument_error(monkeypatch):
     """O ``_add``/``_record`` engole exceção do instrument (best-effort)."""
     monkeypatch.setattr(dm, "_provider_tried", True)
     monkeypatch.setattr(dm, "_meter_provider_singleton", object())
-    monkeypatch.setattr(
-        dm, "_instruments", {dm.METRIC_DISPATCH_TOTAL: _Boom()}
-    )
+    monkeypatch.setattr(dm, "_instruments", {dm.METRIC_DISPATCH_TOTAL: _Boom()})
     # Não levanta.
     dm.record_dispatch_total(role="worker", outcome="completed")

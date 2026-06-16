@@ -8,11 +8,21 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from deile.orchestration.pipeline.github_client import (
-    CommentRef, GhCommandError, GitHubClient, IssueRef, MentionTrigger, PrRef,
-    _parse_gh_jq_output, compute_batch_id_for_number)
-from deile.orchestration.pipeline.labels import (REVIEW_PENDING, WORKFLOW_NEW,
-                                                 WORKFLOW_REVIEWED,
-                                                 WORKFLOW_REVIEWING)
+    CommentRef,
+    GhCommandError,
+    GitHubClient,
+    IssueRef,
+    MentionTrigger,
+    PrRef,
+    _parse_gh_jq_output,
+    compute_batch_id_for_number,
+)
+from deile.orchestration.pipeline.labels import (
+    REVIEW_PENDING,
+    WORKFLOW_NEW,
+    WORKFLOW_REVIEWED,
+    WORKFLOW_REVIEWING,
+)
 
 
 class TestGitHubClientCtor:
@@ -24,16 +34,19 @@ class TestGitHubClientCtor:
         client = GitHubClient("owner/name")
         assert client.repo == "owner/name"
 
-    @pytest.mark.parametrize("bad_repo", [
-        "owner/..evil",       # path-traversal in name
-        "../owner/name",      # leading traversal
-        "owner/name/extra",   # too many segments
-        "owner/",             # empty name
-        "/name",              # empty owner
-        "owner/name space",   # invalid char (space)
-        "owner/name;rm",      # shell metachar
-        "owner/name\nfoo",    # newline
-    ])
+    @pytest.mark.parametrize(
+        "bad_repo",
+        [
+            "owner/..evil",  # path-traversal in name
+            "../owner/name",  # leading traversal
+            "owner/name/extra",  # too many segments
+            "owner/",  # empty name
+            "/name",  # empty owner
+            "owner/name space",  # invalid char (space)
+            "owner/name;rm",  # shell metachar
+            "owner/name\nfoo",  # newline
+        ],
+    )
     def test_rejects_path_traversal_and_bad_chars(self, bad_repo):
         with pytest.raises(ValueError):
             GitHubClient(bad_repo)
@@ -42,24 +55,26 @@ class TestGitHubClientCtor:
 class TestListIssues:
     async def test_list_issues_with_label_parses_json(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {
-                "number": 1,
-                "title": "primeira",
-                "url": "https://github.com/owner/name/issues/1",
-                "labels": [{"name": WORKFLOW_NEW}],
-                "body": "corpo",
-                "state": "open",
-            },
-            {
-                "number": 2,
-                "title": "segunda",
-                "url": "https://github.com/owner/name/issues/2",
-                "labels": [{"name": WORKFLOW_NEW}, {"name": "~batch:abcd1234"}],
-                "body": "outro corpo",
-                "state": "open",
-            },
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 1,
+                    "title": "primeira",
+                    "url": "https://github.com/owner/name/issues/1",
+                    "labels": [{"name": WORKFLOW_NEW}],
+                    "body": "corpo",
+                    "state": "open",
+                },
+                {
+                    "number": 2,
+                    "title": "segunda",
+                    "url": "https://github.com/owner/name/issues/2",
+                    "labels": [{"name": WORKFLOW_NEW}, {"name": "~batch:abcd1234"}],
+                    "body": "outro corpo",
+                    "state": "open",
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             issues = await client.list_issues_with_label(WORKFLOW_NEW)
         assert len(issues) == 2
@@ -77,14 +92,16 @@ class TestListIssues:
 class TestGetIssue:
     async def test_get_issue_parses_single_object(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps({
-            "number": 9,
-            "title": "test",
-            "url": "https://github.com/owner/name/issues/9",
-            "labels": [{"name": WORKFLOW_REVIEWED}],
-            "body": "",
-            "state": "open",
-        })
+        payload = json.dumps(
+            {
+                "number": 9,
+                "title": "test",
+                "url": "https://github.com/owner/name/issues/9",
+                "labels": [{"name": WORKFLOW_REVIEWED}],
+                "body": "",
+                "state": "open",
+            }
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             issue = await client.get_issue(9)
         assert issue.number == 9
@@ -96,9 +113,17 @@ class TestTransitions:
         client = GitHubClient("owner/name")
         # Labels now go through the REST issues/labels endpoint: remove is a
         # DELETE via _run (404-tolerant), add is a POST via _run_checked.
-        with patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))) as run, \
-             patch.object(client, "_run_checked", new=AsyncMock(return_value="")) as run_checked:
-            await client.transition_issue(7, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING)
+        with (
+            patch.object(
+                client, "_run", new=AsyncMock(return_value=(0, "", ""))
+            ) as run,
+            patch.object(
+                client, "_run_checked", new=AsyncMock(return_value="")
+            ) as run_checked,
+        ):
+            await client.transition_issue(
+                7, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING
+            )
         remove_call = run.call_args_list[0].args
         assert "DELETE" in remove_call
         assert any(isinstance(a, str) and "/labels/" in a for a in remove_call)
@@ -108,7 +133,9 @@ class TestTransitions:
 
     async def test_transition_skips_remove_when_from_label_none(self):
         client = GitHubClient("owner/name")
-        with patch.object(client, "_run_checked", new=AsyncMock(return_value="")) as run:
+        with patch.object(
+            client, "_run_checked", new=AsyncMock(return_value="")
+        ) as run:
             await client.transition_pr(7, from_label=None, to_label=REVIEW_PENDING)
         assert run.call_count == 1
 
@@ -122,9 +149,11 @@ class TestClaimWithBatch:
             url="x",
             labels=(WORKFLOW_NEW,),
         )
-        with patch.object(client, "get_issue", new=AsyncMock(return_value=unclaimed)), \
-             patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
-             patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
+        with (
+            patch.object(client, "get_issue", new=AsyncMock(return_value=unclaimed)),
+            patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))),
+            patch.object(client, "_run_checked", new=AsyncMock(return_value="")),
+        ):
             bid = await client.claim_with_batch("issue", 5)
         assert bid == compute_batch_id_for_number("issue", 5)
 
@@ -143,9 +172,11 @@ class TestClaimWithBatch:
     async def test_claim_pr_uses_pr_view(self):
         client = GitHubClient("owner/name")
         pr = PrRef(number=7, title="t", url="u", labels=(REVIEW_PENDING,))
-        with patch.object(client, "get_pr", new=AsyncMock(return_value=pr)), \
-             patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
-             patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
+        with (
+            patch.object(client, "get_pr", new=AsyncMock(return_value=pr)),
+            patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))),
+            patch.object(client, "_run_checked", new=AsyncMock(return_value="")),
+        ):
             bid = await client.claim_with_batch("pr", 7)
         assert bid is not None
 
@@ -167,6 +198,7 @@ class TestEnsureLabels:
         # Resume feature (issue #254): ensure_pipeline_labels must create the
         # ~workflow:bloqueada label so the block flow can apply it.
         from deile.orchestration.pipeline.labels import WORKFLOW_BLOCKED
+
         client = GitHubClient("owner/name")
         created: list = []
 
@@ -193,9 +225,13 @@ class TestEnsureLabelOnClaim:
 
     async def test_claim_creates_batch_label_before_adding(self):
         from unittest.mock import AsyncMock, patch
+
         client = GitHubClient("owner/name")
         unclaimed = IssueRef(
-            number=42, title="brand new", url="x", labels=(WORKFLOW_NEW,),
+            number=42,
+            title="brand new",
+            url="x",
+            labels=(WORKFLOW_NEW,),
         )
         calls = []
 
@@ -207,9 +243,11 @@ class TestEnsureLabelOnClaim:
             calls.append(args)
             return ""
 
-        with patch.object(client, "get_issue", new=AsyncMock(return_value=unclaimed)), \
-             patch.object(client, "_run", side_effect=fake_run), \
-             patch.object(client, "_run_checked", side_effect=fake_run_checked):
+        with (
+            patch.object(client, "get_issue", new=AsyncMock(return_value=unclaimed)),
+            patch.object(client, "_run", side_effect=fake_run),
+            patch.object(client, "_run_checked", side_effect=fake_run_checked),
+        ):
             bid = await client.claim_with_batch("issue", 42)
 
         assert bid is not None
@@ -223,7 +261,10 @@ class TestEnsureLabelOnClaim:
         using a spy that records every invocation."""
         client = GitHubClient("owner/name")
         unclaimed_pr = PrRef(
-            number=11, title="pr title", url="u", labels=(REVIEW_PENDING,),
+            number=11,
+            title="pr title",
+            url="u",
+            labels=(REVIEW_PENDING,),
             head_ref="auto/issue-11",
         )
         calls = []
@@ -236,33 +277,41 @@ class TestEnsureLabelOnClaim:
             calls.append(("_run_checked", *args))
             return ""
 
-        with patch.object(client, "get_pr", new=AsyncMock(return_value=unclaimed_pr)), \
-             patch.object(client, "_run", side_effect=fake_run), \
-             patch.object(client, "_run_checked", side_effect=fake_run_checked):
+        with (
+            patch.object(client, "get_pr", new=AsyncMock(return_value=unclaimed_pr)),
+            patch.object(client, "_run", side_effect=fake_run),
+            patch.object(client, "_run_checked", side_effect=fake_run_checked),
+        ):
             bid = await client.claim_with_batch("pr", 11)
 
         assert bid is not None
 
         # Locate the _ensure_label call (label create) and the add_labels call.
         ensure_idx = next(
-            (i for i, c in enumerate(calls) if c[0] == "_run" and "label" in c and "create" in c),
+            (
+                i
+                for i, c in enumerate(calls)
+                if c[0] == "_run" and "label" in c and "create" in c
+            ),
             None,
         )
         # add_labels now POSTs to the REST issues/labels endpoint (avoids the
         # read:org scope that ``gh pr edit`` demands), so match the api call.
         add_idx = next(
             (
-                i for i, c in enumerate(calls)
-                if c[0] == "_run_checked" and "api" in c
+                i
+                for i, c in enumerate(calls)
+                if c[0] == "_run_checked"
+                and "api" in c
                 and any(isinstance(x, str) and x.endswith("/labels") for x in c)
             ),
             None,
         )
         assert ensure_idx is not None, f"_ensure_label not called; calls={calls}"
         assert add_idx is not None, f"add_labels not called; calls={calls}"
-        assert ensure_idx < add_idx, (
-            f"_ensure_label (idx={ensure_idx}) must precede add_labels (idx={add_idx})"
-        )
+        assert (
+            ensure_idx < add_idx
+        ), f"_ensure_label (idx={ensure_idx}) must precede add_labels (idx={add_idx})"
 
 
 # ----- MentionTrigger (issue #253) ----------------------------------------
@@ -302,18 +351,24 @@ class TestMentionTrigger:
 
     def test_target_kind_from_issue_comment(self):
         comment = CommentRef(
-            comment_id=1, body="x", html_url="https://github.com/o/r/issues/5#c1",
+            comment_id=1,
+            body="x",
+            html_url="https://github.com/o/r/issues/5#c1",
             issue_url="https://api.github.com/repos/o/r/issues/5",
-            author="u", kind="issue",
+            author="u",
+            kind="issue",
         )
         t = MentionTrigger(trigger_type="comment", comment=comment)
         assert t.target_kind == "issue"
 
     def test_target_kind_from_pr_comment(self):
         comment = CommentRef(
-            comment_id=2, body="x", html_url="https://github.com/o/r/pull/8#discussion",
+            comment_id=2,
+            body="x",
+            html_url="https://github.com/o/r/pull/8#discussion",
             issue_url="https://api.github.com/repos/o/r/pulls/8",
-            author="u", kind="pr_review",
+            author="u",
+            kind="pr_review",
         )
         t = MentionTrigger(trigger_type="comment", comment=comment)
         assert t.target_kind == "pr"
@@ -330,10 +385,12 @@ class TestMentionTrigger:
 
     def test_target_number_from_comment_url(self):
         comment = CommentRef(
-            comment_id=3, body="x",
+            comment_id=3,
+            body="x",
             html_url="https://github.com/o/r/issues/123#issuecomment-456",
             issue_url="https://api.github.com/repos/o/r/issues/123",
-            author="u", kind="issue",
+            author="u",
+            kind="issue",
         )
         t = MentionTrigger(trigger_type="comment", comment=comment)
         assert t.target_number == 123
@@ -351,10 +408,18 @@ class TestMentionTrigger:
 class TestListIssuesAssignedTo:
     async def test_parses_assigned_issues(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {"number": 10, "title": "bug", "url": "u",
-             "labels": [], "body": "b", "state": "open"},
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 10,
+                    "title": "bug",
+                    "url": "u",
+                    "labels": [],
+                    "body": "b",
+                    "state": "open",
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             issues = await client.list_issues_assigned_to("deile-one")
         assert len(issues) == 1
@@ -362,8 +427,11 @@ class TestListIssuesAssignedTo:
 
     async def test_gh_error_returns_empty(self):
         client = GitHubClient("owner/name")
-        with patch.object(client, "_run_checked",
-                          new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err"))):
+        with patch.object(
+            client,
+            "_run_checked",
+            new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err")),
+        ):
             issues = await client.list_issues_assigned_to("deile-one")
         assert issues == []
 
@@ -371,11 +439,20 @@ class TestListIssuesAssignedTo:
 class TestListPrsAssignedTo:
     async def test_parses_assigned_prs(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {"number": 20, "title": "feat", "url": "u",
-             "labels": [], "headRefName": "auto/issue-20",
-             "baseRefName": "main", "state": "open", "isDraft": False},
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 20,
+                    "title": "feat",
+                    "url": "u",
+                    "labels": [],
+                    "headRefName": "auto/issue-20",
+                    "baseRefName": "main",
+                    "state": "open",
+                    "isDraft": False,
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             prs = await client.list_prs_assigned_to("deile-one")
         assert len(prs) == 1
@@ -383,8 +460,11 @@ class TestListPrsAssignedTo:
 
     async def test_gh_error_returns_empty(self):
         client = GitHubClient("owner/name")
-        with patch.object(client, "_run_checked",
-                          new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err"))):
+        with patch.object(
+            client,
+            "_run_checked",
+            new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err")),
+        ):
             prs = await client.list_prs_assigned_to("deile-one")
         assert prs == []
 
@@ -392,12 +472,20 @@ class TestListPrsAssignedTo:
 class TestListPrsWithReviewRequests:
     async def test_parses_review_requested_prs(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {"number": 30, "title": "pr", "url": "u",
-             "labels": [{"name": "bug"}],
-             "headRefName": "feat/x", "baseRefName": "main",
-             "state": "open", "isDraft": False},
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 30,
+                    "title": "pr",
+                    "url": "u",
+                    "labels": [{"name": "bug"}],
+                    "headRefName": "feat/x",
+                    "baseRefName": "main",
+                    "state": "open",
+                    "isDraft": False,
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             prs = await client.list_prs_with_review_requests("deile-one")
         assert len(prs) == 1
@@ -406,12 +494,18 @@ class TestListPrsWithReviewRequests:
     async def test_single_object_normalized_to_list(self):
         """gh api --jq returns a single dict when 1 match; must be normalized."""
         client = GitHubClient("owner/name")
-        payload = json.dumps({
-            "number": 31, "title": "single", "url": "u",
-            "labels": [{"name": "enhancement"}],
-            "headRefName": "feat/y", "baseRefName": "main",
-            "state": "open", "isDraft": False,
-        })
+        payload = json.dumps(
+            {
+                "number": 31,
+                "title": "single",
+                "url": "u",
+                "labels": [{"name": "enhancement"}],
+                "headRefName": "feat/y",
+                "baseRefName": "main",
+                "state": "open",
+                "isDraft": False,
+            }
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             prs = await client.list_prs_with_review_requests("deile-one")
         assert len(prs) == 1
@@ -420,12 +514,20 @@ class TestListPrsWithReviewRequests:
     async def test_string_labels_normalized(self):
         """String labels like ["bug", "feat"] must be normalized to [{name: ...}]."""
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {"number": 32, "title": "string labels", "url": "u",
-             "labels": ["bug", "feat"],
-             "headRefName": "feat/z", "baseRefName": "main",
-             "state": "open", "isDraft": False},
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 32,
+                    "title": "string labels",
+                    "url": "u",
+                    "labels": ["bug", "feat"],
+                    "headRefName": "feat/z",
+                    "baseRefName": "main",
+                    "state": "open",
+                    "isDraft": False,
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             prs = await client.list_prs_with_review_requests("deile-one")
         assert len(prs) == 1
@@ -433,8 +535,11 @@ class TestListPrsWithReviewRequests:
 
     async def test_gh_error_returns_empty(self):
         client = GitHubClient("owner/name")
-        with patch.object(client, "_run_checked",
-                          new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err"))):
+        with patch.object(
+            client,
+            "_run_checked",
+            new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err")),
+        ):
             prs = await client.list_prs_with_review_requests("deile-one")
         assert prs == []
 
@@ -442,12 +547,26 @@ class TestListPrsWithReviewRequests:
 class TestSearchItemsMentioning:
     async def test_separates_issues_from_prs(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {"number": 5, "title": "issue", "url": "https://github.com/o/r/issues/5",
-             "labels": [], "body": "@deile-one", "state": "open"},
-            {"number": 6, "title": "pr", "url": "https://github.com/o/r/pull/6",
-             "labels": [], "body": "@deile-one", "state": "open"},
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 5,
+                    "title": "issue",
+                    "url": "https://github.com/o/r/issues/5",
+                    "labels": [],
+                    "body": "@deile-one",
+                    "state": "open",
+                },
+                {
+                    "number": 6,
+                    "title": "pr",
+                    "url": "https://github.com/o/r/pull/6",
+                    "labels": [],
+                    "body": "@deile-one",
+                    "state": "open",
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             issues, prs = await client.search_items_mentioning("@deile-one")
         assert len(issues) == 1
@@ -457,8 +576,11 @@ class TestSearchItemsMentioning:
 
     async def test_gh_error_returns_empty(self):
         client = GitHubClient("owner/name")
-        with patch.object(client, "_run_checked",
-                          new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err"))):
+        with patch.object(
+            client,
+            "_run_checked",
+            new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err")),
+        ):
             issues, prs = await client.search_items_mentioning("@deile-one")
         assert issues == []
         assert prs == []
@@ -521,17 +643,20 @@ class TestParseGhJqOutput:
         # `get_logger`, o que quebra captura via fixture caplog. Mock
         # direto é determinístico independente da ordem dos testes.
         from deile.orchestration.pipeline import github_client as gh
+
         with patch.object(gh.logger, "warning") as warn:
             out = _parse_gh_jq_output(
-                '{"valid": true}\nNOT_JSON_AT_ALL\n', log_label="myfn",
+                '{"valid": true}\nNOT_JSON_AT_ALL\n',
+                log_label="myfn",
             )
         assert out == [{"valid": True}]
         warn.assert_called_once()
         # `log_label` aparece como o primeiro %-arg da chamada de warning.
         call_args = warn.call_args
         positional = call_args.args
-        assert "myfn" in positional, \
-            f"esperava log_label 'myfn' nos args do warning; recebi {positional}"
+        assert (
+            "myfn" in positional
+        ), f"esperava log_label 'myfn' nos args do warning; recebi {positional}"
 
     def test_mixed_array_and_object_in_ndjson(self):
         # Caso patológico (não esperado de --jq mas defensivo): mistura array+objeto
@@ -544,7 +669,8 @@ class TestParseGhJqOutput:
     def test_non_dict_non_list_skipped(self):
         # `gh --jq` não emite scalars hoje, mas se vier "true" ou número, ignora
         out = _parse_gh_jq_output(
-            '{"a": 1}\ntrue\n42\n{"b": 2}', log_label="t",
+            '{"a": 1}\ntrue\n42\n{"b": 2}',
+            log_label="t",
         )
         assert out == [{"a": 1}, {"b": 2}]
 
@@ -562,25 +688,30 @@ class TestListPrsWithReviewRequestsBugFix:
         # NDJSON real reproduzido em produção (gh api --jq sempre emite
         # objeto-por-linha quando o filtro produz N>1 items)
         pr_a = {
-            "number": 297, "title": "PR A",
+            "number": 297,
+            "title": "PR A",
             "url": "https://github.com/owner/name/pull/297",
             "labels": ["~review:pendente"],
             "headRefName": "auto/issue-1",
             "baseRefName": "main",
-            "state": "open", "isDraft": False,
+            "state": "open",
+            "isDraft": False,
         }
         pr_b = {
-            "number": 298, "title": "PR B",
+            "number": 298,
+            "title": "PR B",
             "url": "https://github.com/owner/name/pull/298",
             "labels": [],
             "headRefName": "auto/issue-2",
             "baseRefName": "main",
-            "state": "open", "isDraft": False,
+            "state": "open",
+            "isDraft": False,
         }
         ndjson_payload = json.dumps(pr_a) + "\n" + json.dumps(pr_b) + "\n"
 
-        with patch.object(client, "_run_checked",
-                          new=AsyncMock(return_value=ndjson_payload)):
+        with patch.object(
+            client, "_run_checked", new=AsyncMock(return_value=ndjson_payload)
+        ):
             prs = await client.list_prs_with_review_requests("deile-one")
 
         assert len(prs) == 2, "BUG: NDJSON quebrava antes do fix"
@@ -590,22 +721,24 @@ class TestListPrsWithReviewRequestsBugFix:
     async def test_single_review_request_returned_as_object(self):
         client = GitHubClient("owner/name")
         pr = {
-            "number": 297, "title": "PR A",
+            "number": 297,
+            "title": "PR A",
             "url": "https://github.com/owner/name/pull/297",
             "labels": [],
             "headRefName": "auto/issue-1",
             "baseRefName": "main",
-            "state": "open", "isDraft": False,
+            "state": "open",
+            "isDraft": False,
         }
-        with patch.object(client, "_run_checked",
-                          new=AsyncMock(return_value=json.dumps(pr))):
+        with patch.object(
+            client, "_run_checked", new=AsyncMock(return_value=json.dumps(pr))
+        ):
             prs = await client.list_prs_with_review_requests("deile-one")
         assert len(prs) == 1
         assert prs[0].number == 297
 
     async def test_zero_review_requests_returns_empty(self):
         client = GitHubClient("owner/name")
-        with patch.object(client, "_run_checked",
-                          new=AsyncMock(return_value="")):
+        with patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
             prs = await client.list_prs_with_review_requests("deile-one")
         assert prs == []

@@ -24,18 +24,49 @@ logger = logging.getLogger(__name__)
 # Ordem define a prioridade de exibição.
 _QUICK_START_CANDIDATES = [
     {"nome": "help", "acao": "Listar todos os comandos", "descricao": "Ajuda completa"},
-    {"nome": "status", "acao": "Checar status do sistema", "descricao": "Visão geral do DEILE"},
-    {"nome": "version", "acao": "Exibir versão e build", "descricao": "Informações de versão"},
-    {"nome": "plan", "acao": "Cria e executa fluxos autônomos", "descricao": "Iniciar fluxo autônomo"},
-    {"nome": "memory", "acao": "Ver memória da sessão", "descricao": "Estado da memória"},
-    {"nome": "permissions", "acao": "Gerenciar permissões", "descricao": "Configuração de segurança"},
-    {"nome": "cost", "acao": "Ver custos e tokens", "descricao": "Uso e custo estimado"},
-    {"nome": "context", "acao": "Ver contexto atual", "descricao": "Contexto da sessão"},
+    {
+        "nome": "status",
+        "acao": "Checar status do sistema",
+        "descricao": "Visão geral do DEILE",
+    },
+    {
+        "nome": "version",
+        "acao": "Exibir versão e build",
+        "descricao": "Informações de versão",
+    },
+    {
+        "nome": "plan",
+        "acao": "Cria e executa fluxos autônomos",
+        "descricao": "Iniciar fluxo autônomo",
+    },
+    {
+        "nome": "memory",
+        "acao": "Ver memória da sessão",
+        "descricao": "Estado da memória",
+    },
+    {
+        "nome": "permissions",
+        "acao": "Gerenciar permissões",
+        "descricao": "Configuração de segurança",
+    },
+    {
+        "nome": "cost",
+        "acao": "Ver custos e tokens",
+        "descricao": "Uso e custo estimado",
+    },
+    {
+        "nome": "context",
+        "acao": "Ver contexto atual",
+        "descricao": "Contexto da sessão",
+    },
 ]
 
 _WORKFLOWS = [
     ("Análise e refatoração", "/find 'TODO|FIXME' → /plan create → /run"),
-    ("Fluxo de desenvolvimento", "/bash 'git status' → /plan create 'Deploy' → /approve"),
+    (
+        "Fluxo de desenvolvimento",
+        "/bash 'git status' → /plan create 'Deploy' → /approve",
+    ),
     ("Segurança e monitoramento", "/permissions → /logs security → /sandbox on"),
     ("Gestão de sessão", "/memory status → /export → /cls reset"),
 ]
@@ -53,6 +84,7 @@ _DICAS = [
 def _get_version() -> str:
     try:
         from deile.__version__ import __version__
+
         return __version__
     except Exception as exc:
         logger.debug("Não foi possível obter versão: %s", exc)
@@ -62,6 +94,7 @@ def _get_version() -> str:
 def _get_active_features() -> list[str]:
     try:
         from deile.__version__ import FEATURES
+
         return [k for k, v in FEATURES.items() if v]
     except Exception as exc:
         logger.debug("Não foi possível obter features: %s", exc)
@@ -72,9 +105,13 @@ def _get_active_model(context: CommandContext) -> str:
     try:
         agent = context.agent
         if agent is not None:
-            router = getattr(agent, "model_router", None) or getattr(agent, "tier_router", None)
+            router = getattr(agent, "model_router", None) or getattr(
+                agent, "tier_router", None
+            )
             if router is not None:
-                model = getattr(router, "current_model", None) or getattr(router, "default_model", None)
+                model = getattr(router, "current_model", None) or getattr(
+                    router, "default_model", None
+                )
                 if model:
                     return str(model)
         return "—"
@@ -87,6 +124,7 @@ def _get_quick_start_verified(context: CommandContext) -> list[dict[str, str]]:
     """Retorna candidates filtrados pelos que existem no CommandRegistry."""
     try:
         from deile.commands.registry import get_command_registry
+
         registry = get_command_registry(context.config_manager)
         registered = {cmd.name for cmd in registry.get_all_commands()}
         return [c for c in _QUICK_START_CANDIDATES if c["nome"] in registered]
@@ -100,6 +138,7 @@ class WelcomeCommand(DirectCommand):
 
     def __init__(self) -> None:
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="welcome",
             description="Exibe mensagem de boas-vindas e guia de início rápido.",

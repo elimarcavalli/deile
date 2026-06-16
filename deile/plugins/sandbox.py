@@ -42,7 +42,9 @@ class PluginSandbox:
             logger.error(f"Erro ao registrar plugin {plugin_id}: {e}")
             return False
 
-    async def execute_in_sandbox(self, plugin_id: str, method: str, *args, **kwargs) -> Any:
+    async def execute_in_sandbox(
+        self, plugin_id: str, method: str, *args, **kwargs
+    ) -> Any:
         """Despacha método do plugin diretamente (sem contenção)."""
         if plugin_id not in self._isolated_plugins:
             raise Exception(f"Plugin {plugin_id} não está registrado")

@@ -20,7 +20,7 @@ __all__ = [
     "HotLoader",
     "DependencyResolver",
     "PluginSandbox",
-    "PluginMarketplace"
+    "PluginMarketplace",
 ]
 
 __version__ = "2.0.0"

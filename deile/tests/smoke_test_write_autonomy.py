@@ -107,8 +107,7 @@ async def main() -> int:
         text = response.content or ""
         print(f"[deile] {text}")
         tool_calls = [
-            (r.metadata or {}).get("function_name", "?")
-            for r in response.tool_results
+            (r.metadata or {}).get("function_name", "?") for r in response.tool_results
         ]
         print(f"[tools] {tool_calls}")
 

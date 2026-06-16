@@ -66,8 +66,7 @@ def test_run_tests_exported_by_registry():
     assert isinstance(registry.get("run_tests"), Tool)
     assert any(t["name"] == "run_tests" for t in registry.get_anthropic_tools())
     assert any(
-        f["function"]["name"] == "run_tests"
-        for f in registry.get_openai_functions()
+        f["function"]["name"] == "run_tests" for f in registry.get_openai_functions()
     )
 
 

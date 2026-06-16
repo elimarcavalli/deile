@@ -15,6 +15,7 @@ from deile.core.models.tier import ModelTier
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def provider() -> GeminiProvider:
     """Bare GeminiProvider instance bypassing __init__ side-effects (mirrors existing tests).
@@ -40,6 +41,7 @@ def provider() -> GeminiProvider:
 # ---------------------------------------------------------------------------
 # Identity — provider_id and tier inherit from base correctly
 # ---------------------------------------------------------------------------
+
 
 def test_provider_name(provider):
     assert provider.provider_name == "gemini"
@@ -72,11 +74,14 @@ def test_pricing_is_none(provider):
 # generate_stream() — yields UnifiedStreamEvent, not raw strings
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_generate_stream_yields_unified_events(provider):
     mock_response = MagicMock()
     mock_response.content = "Hello World test"
-    mock_response.usage = MagicMock(prompt_tokens=5, completion_tokens=3, cached_tokens=0, cost_estimate=0.0)
+    mock_response.usage = MagicMock(
+        prompt_tokens=5, completion_tokens=3, cached_tokens=0, cost_estimate=0.0
+    )
     mock_response.usage.prompt_tokens = 5
     mock_response.usage.completion_tokens = 3
     mock_response.usage.cached_tokens = 0
@@ -89,6 +94,7 @@ async def test_generate_stream_yields_unified_events(provider):
         events.append(ev)
 
     from deile.core.models.stream_events import UnifiedStreamEvent
+
     assert all(isinstance(ev, UnifiedStreamEvent) for ev in events)
 
     text_events = [e for e in events if e.type == StreamEventType.TEXT_DELTA]
@@ -105,11 +111,18 @@ async def test_generate_stream_yields_unified_events(provider):
 # chat_with_tools() — unified signature -> (text, results, usage)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_unified_chat_with_tools_returns_triple(provider):
     """Unified chat_with_tools must return (str, list, ModelUsage)."""
     provider.create_chat_session = AsyncMock(return_value=MagicMock())
-    provider._gemini_chat_with_tools = AsyncMock(return_value=("answer", [], __import__('deile.core.models.base', fromlist=['ModelUsage']).ModelUsage()))
+    provider._gemini_chat_with_tools = AsyncMock(
+        return_value=(
+            "answer",
+            [],
+            __import__("deile.core.models.base", fromlist=["ModelUsage"]).ModelUsage(),
+        )
+    )
 
     text, tool_results, usage = await provider.chat_with_tools(
         messages=[ModelMessage(role="user", content="hello")],
@@ -120,13 +133,20 @@ async def test_unified_chat_with_tools_returns_triple(provider):
     assert isinstance(text, str)
     assert isinstance(tool_results, list)
     from deile.core.models.base import ModelUsage
+
     assert isinstance(usage, ModelUsage)
 
 
 @pytest.mark.asyncio
 async def test_unified_chat_with_tools_text_passes_through(provider):
     provider.create_chat_session = AsyncMock(return_value=MagicMock())
-    provider._gemini_chat_with_tools = AsyncMock(return_value=("Paris is the capital", [], __import__('deile.core.models.base', fromlist=['ModelUsage']).ModelUsage()))
+    provider._gemini_chat_with_tools = AsyncMock(
+        return_value=(
+            "Paris is the capital",
+            [],
+            __import__("deile.core.models.base", fromlist=["ModelUsage"]).ModelUsage(),
+        )
+    )
 
     text, _, _ = await provider.chat_with_tools(
         messages=[ModelMessage(role="user", content="Capital of France?")],
@@ -138,6 +158,7 @@ async def test_unified_chat_with_tools_text_passes_through(provider):
 # ---------------------------------------------------------------------------
 # _messages_to_gemini_user_input() helper
 # ---------------------------------------------------------------------------
+
 
 def test_messages_to_gemini_user_input_last_user(provider):
     messages = [
@@ -158,6 +179,7 @@ def test_messages_to_gemini_user_input_empty(provider):
 # ---------------------------------------------------------------------------
 # _process_messages_for_gemini() helper — ModelMessage -> SDK contents
 # ---------------------------------------------------------------------------
+
 
 def test_process_messages_for_gemini_maps_roles_and_skips_system(provider):
     """Google GenAI SDK accepts ONLY 'user' and 'model' as roles —
@@ -193,6 +215,7 @@ def test_process_messages_for_gemini_stringifies_other_content(provider):
 # ---------------------------------------------------------------------------
 # _extract_system() helper
 # ---------------------------------------------------------------------------
+
 
 def test_extract_system_prefers_explicit_instruction(provider):
     messages = [ModelMessage(role="system", content="from_msg")]

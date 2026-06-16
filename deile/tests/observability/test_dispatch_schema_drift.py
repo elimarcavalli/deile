@@ -15,27 +15,32 @@ from __future__ import annotations
 
 import pytest
 
-from deile.observability.dispatch_export import (emit_dispatch_completed,
-                                                 emit_dispatch_failed,
-                                                 emit_dispatch_model_resolved,
-                                                 emit_dispatch_progress,
-                                                 emit_dispatch_received,
-                                                 emit_dispatch_tool_burst,
-                                                 emit_forge_pr_open,
-                                                 emit_forge_pr_review,
-                                                 emit_git_commit,
-                                                 emit_git_push)
-from deile.observability.dispatch_schema import (ATTR_SCHEMA_VERSION,
-                                                 SCHEMA_VERSION,
-                                                 DispatchCompletedAttrs,
-                                                 DispatchFailedAttrs,
-                                                 DispatchModelResolvedAttrs,
-                                                 DispatchProgressAttrs,
-                                                 DispatchReceivedAttrs,
-                                                 DispatchToolBurstAttrs,
-                                                 ForgePrOpenAttrs,
-                                                 ForgePrReviewAttrs,
-                                                 GitCommitAttrs, GitPushAttrs)
+from deile.observability.dispatch_export import (
+    emit_dispatch_completed,
+    emit_dispatch_failed,
+    emit_dispatch_model_resolved,
+    emit_dispatch_progress,
+    emit_dispatch_received,
+    emit_dispatch_tool_burst,
+    emit_forge_pr_open,
+    emit_forge_pr_review,
+    emit_git_commit,
+    emit_git_push,
+)
+from deile.observability.dispatch_schema import (
+    ATTR_SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    DispatchCompletedAttrs,
+    DispatchFailedAttrs,
+    DispatchModelResolvedAttrs,
+    DispatchProgressAttrs,
+    DispatchReceivedAttrs,
+    DispatchToolBurstAttrs,
+    ForgePrOpenAttrs,
+    ForgePrReviewAttrs,
+    GitCommitAttrs,
+    GitPushAttrs,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -204,7 +209,9 @@ def test_forge_pr_open_schema_keys_present_in_span(in_memory_exporter):
     assert child is not None
     span_keys = set(child.attributes.keys())
     for key in ForgePrOpenAttrs.expected_keys():
-        assert key in span_keys, f"schema key '{key}' ausente no child span forge.pr_open"
+        assert (
+            key in span_keys
+        ), f"schema key '{key}' ausente no child span forge.pr_open"
 
 
 # ── forge.pr_review ───────────────────────────────────────────────────────
@@ -220,4 +227,6 @@ def test_forge_pr_review_schema_keys_present_in_span(in_memory_exporter):
     assert child is not None
     span_keys = set(child.attributes.keys())
     for key in ForgePrReviewAttrs.expected_keys():
-        assert key in span_keys, f"schema key '{key}' ausente no child span forge.pr_review"
+        assert (
+            key in span_keys
+        ), f"schema key '{key}' ausente no child span forge.pr_review"

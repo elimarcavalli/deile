@@ -70,7 +70,9 @@ def discover_skills_sync(
     overrides: List[Tuple[str, Path, Path]] = []
 
     for entry in default_scan_order(
-        project_dir=project_dir, user_home=user_home, extra_paths=extra_paths,
+        project_dir=project_dir,
+        user_home=user_home,
+        extra_paths=extra_paths,
     ):
         if not entry.directory.is_dir():
             continue
@@ -80,17 +82,21 @@ def discover_skills_sync(
             except OSError as exc:
                 logger.warning(
                     "skills: cannot read skill file %s (%s: %s); skipped",
-                    md_path, type(exc).__name__, exc,
+                    md_path,
+                    type(exc).__name__,
+                    exc,
                 )
                 continue
             except UnicodeDecodeError as exc:
                 logger.warning(
                     "skills: skill file %s is not valid UTF-8 (%s); skipped",
-                    md_path, exc,
+                    md_path,
+                    exc,
                 )
                 continue
             skill = parse_skill_text(
-                text, md_path,
+                text,
+                md_path,
                 source=entry.source,
                 kind=entry.kind,
                 force_uppercase_name=entry.force_uppercase_name,
@@ -98,7 +104,9 @@ def discover_skills_sync(
             if skill is None:
                 continue
             if skill.name in merged:
-                overrides.append((skill.name, merged[skill.name].source_path, skill.source_path))
+                overrides.append(
+                    (skill.name, merged[skill.name].source_path, skill.source_path)
+                )
             merged[skill.name] = skill
 
     return list(merged.values()), overrides

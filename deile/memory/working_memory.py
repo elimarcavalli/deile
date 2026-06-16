@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class WorkingMemoryEntry:
     """Entrada da working memory"""
+
     entry_id: str
     content: str
     entry_type: str  # 'interaction', 'context', 'temp_data'
@@ -51,7 +52,7 @@ class WorkingMemoryEntry:
             "access_count": self.access_count,
             "last_accessed": self.last_accessed,
             "metadata": self.metadata,
-            "tags": list(self.tags)
+            "tags": list(self.tags),
         }
 
 
@@ -67,7 +68,7 @@ class WorkingMemory:
 
     def __init__(self, max_size: int = 8000, ttl: int = 3600):
         self.max_size = max_size  # Máximo de caracteres total
-        self.default_ttl = ttl    # TTL padrão em segundos
+        self.default_ttl = ttl  # TTL padrão em segundos
 
         # Storage ordenado (LRU)
         self._entries: OrderedDict[str, WorkingMemoryEntry] = OrderedDict()
@@ -75,7 +76,7 @@ class WorkingMemory:
 
         # Índices para busca rápida
         self._type_index: Dict[str, Set[str]] = {}  # type -> set of entry_ids
-        self._tag_index: Dict[str, Set[str]] = {}   # tag -> set of entry_ids
+        self._tag_index: Dict[str, Set[str]] = {}  # tag -> set of entry_ids
 
         # Task de limpeza automática
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -87,7 +88,7 @@ class WorkingMemory:
             "entries_accessed": 0,
             "entries_evicted": 0,
             "entries_expired": 0,
-            "searches_performed": 0
+            "searches_performed": 0,
         }
 
         logger.debug("WorkingMemory inicializada")
@@ -109,7 +110,7 @@ class WorkingMemory:
         entry_type: str = "context",
         ttl: Optional[int] = None,
         tags: Set[str] = None,
-        metadata: Dict[str, Any] = None
+        metadata: Dict[str, Any] = None,
     ) -> str:
         """Armazena conteúdo na working memory
 
@@ -124,7 +125,9 @@ class WorkingMemory:
             str: ID da entrada criada
         """
         # Gera ID baseado no conteúdo e timestamp
-        content_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()[:8]
+        content_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()[
+            :8
+        ]
         entry_id = f"{entry_type}_{content_hash}_{int(time.time())}"
 
         # Cria entrada
@@ -135,7 +138,7 @@ class WorkingMemory:
             timestamp=time.time(),
             ttl=ttl or self.default_ttl,
             metadata=metadata or {},
-            tags=tags or set()
+            tags=tags or set(),
         )
 
         # Verifica se há espaço
@@ -149,15 +152,14 @@ class WorkingMemory:
         self._update_indices(entry)
 
         self._stats["entries_created"] += 1
-        logger.debug(f"Entrada armazenada na working memory: {entry_id} ({len(content)} chars)")
+        logger.debug(
+            f"Entrada armazenada na working memory: {entry_id} ({len(content)} chars)"
+        )
 
         return entry_id
 
     async def store_interaction(
-        self,
-        user_input: str,
-        agent_response: str,
-        context: Dict[str, Any] = None
+        self, user_input: str, agent_response: str, context: Dict[str, Any] = None
     ) -> str:
         """Armazena uma interação completa
 
@@ -169,11 +171,14 @@ class WorkingMemory:
         Returns:
             str: ID da entrada da interação
         """
-        interaction_content = json.dumps({
-            "user_input": user_input,
-            "agent_response": agent_response,
-            "context": context or {}
-        }, ensure_ascii=False)
+        interaction_content = json.dumps(
+            {
+                "user_input": user_input,
+                "agent_response": agent_response,
+                "context": context or {},
+            },
+            ensure_ascii=False,
+        )
 
         return await self.store(
             content=interaction_content,
@@ -182,8 +187,8 @@ class WorkingMemory:
             metadata={
                 "user_input_length": len(user_input),
                 "agent_response_length": len(agent_response),
-                "interaction_timestamp": time.time()
-            }
+                "interaction_timestamp": time.time(),
+            },
         )
 
     async def retrieve(self, entry_id: str) -> Optional[WorkingMemoryEntry]:
@@ -210,7 +215,7 @@ class WorkingMemory:
         query: str,
         max_results: int = 10,
         entry_type: str = None,
-        tags: Set[str] = None
+        tags: Set[str] = None,
     ) -> List[Dict[str, Any]]:
         """Busca entradas na working memory
 
@@ -284,25 +289,24 @@ class WorkingMemory:
             # Registra acesso
             entry.access()
 
-            results.append({
-                "entry_id": entry.entry_id,
-                "content": entry.content,
-                "entry_type": entry.entry_type,
-                "score": score,
-                "age_seconds": entry.age_seconds,
-                "access_count": entry.access_count,
-                "tags": list(entry.tags),
-                "metadata": entry.metadata
-            })
+            results.append(
+                {
+                    "entry_id": entry.entry_id,
+                    "content": entry.content,
+                    "entry_type": entry.entry_type,
+                    "score": score,
+                    "age_seconds": entry.age_seconds,
+                    "access_count": entry.access_count,
+                    "tags": list(entry.tags),
+                    "metadata": entry.metadata,
+                }
+            )
 
         logger.debug(f"Busca na working memory: '{query}' -> {len(results)} resultados")
         return results
 
     async def update_with_feedback(
-        self,
-        entry_id: str,
-        feedback_type: str,
-        feedback_data: Dict[str, Any]
+        self, entry_id: str, feedback_type: str, feedback_data: Dict[str, Any]
     ) -> bool:
         """Atualiza entrada com feedback
 
@@ -322,11 +326,9 @@ class WorkingMemory:
         if "feedback" not in entry.metadata:
             entry.metadata["feedback"] = []
 
-        entry.metadata["feedback"].append({
-            "type": feedback_type,
-            "data": feedback_data,
-            "timestamp": time.time()
-        })
+        entry.metadata["feedback"].append(
+            {"type": feedback_type, "data": feedback_data, "timestamp": time.time()}
+        )
 
         # Ajusta TTL baseado no feedback
         if feedback_type == "positive":
@@ -383,7 +385,7 @@ class WorkingMemory:
             "entries_by_type": type_counts,
             "total_tags": len(self._tag_index),
             "stats": self._stats.copy(),
-            "is_initialized": self._is_initialized
+            "is_initialized": self._is_initialized,
         }
 
     async def _ensure_space(self, needed_space: int) -> None:
@@ -453,7 +455,9 @@ class WorkingMemory:
 
         if removed_count > 0:
             self._stats["entries_expired"] += removed_count
-            logger.debug(f"Removidas {removed_count} entradas expiradas da working memory")
+            logger.debug(
+                f"Removidas {removed_count} entradas expiradas da working memory"
+            )
 
         return removed_count
 

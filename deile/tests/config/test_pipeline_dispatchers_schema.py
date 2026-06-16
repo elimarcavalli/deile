@@ -18,8 +18,12 @@ from __future__ import annotations
 
 import pytest
 
-from deile.config.settings import (Settings, _apply_env_overrides,
-                                   _apply_nested_dict, _to_optional_dispatcher)
+from deile.config.settings import (
+    Settings,
+    _apply_env_overrides,
+    _apply_nested_dict,
+    _to_optional_dispatcher,
+)
 
 
 class TestDispatcherValidator:
@@ -48,12 +52,15 @@ class TestDispatcherValidator:
     def test_strips_surrounding_whitespace(self):
         assert _to_optional_dispatcher("  deile-worker  ") == "deile-worker"
 
-    @pytest.mark.parametrize("bad", [
-        "garbage-worker",
-        "anthropic",        # provedor, não dispatcher
-        "openai",
-        "random_value",
-    ])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "garbage-worker",
+            "anthropic",  # provedor, não dispatcher
+            "openai",
+            "random_value",
+        ],
+    )
     def test_rejects_invalid(self, bad):
         with pytest.raises(ValueError):
             _to_optional_dispatcher(bad)
@@ -83,15 +90,17 @@ class TestApplyOverrides:
 
     def test_writes_per_stage_fields_from_nested_json(self):
         s = Settings()
-        s.apply_overrides({
-            "pipeline": {
-                "dispatchers": {
-                    "implement": "claude-worker",
-                    "pr_review": "claude-worker",
-                    "classify": "deile-worker",
+        s.apply_overrides(
+            {
+                "pipeline": {
+                    "dispatchers": {
+                        "implement": "claude-worker",
+                        "pr_review": "claude-worker",
+                        "classify": "deile-worker",
+                    }
                 }
             }
-        })
+        )
         assert s.pipeline_dispatcher_implement == "claude-worker"
         assert s.pipeline_dispatcher_pr_review == "claude-worker"
         assert s.pipeline_dispatcher_classify == "deile-worker"
@@ -104,14 +113,16 @@ class TestApplyOverrides:
         que canonicaliza no momento da resolução. Garante compat com #330
         e mantém zero side-effects no caminho da persistência."""
         s = Settings()
-        s.apply_overrides({
-            "pipeline": {
-                "dispatchers": {
-                    "implement": "claude_code",  # legacy alias
-                    "classify": "deile_worker",  # legacy alias
+        s.apply_overrides(
+            {
+                "pipeline": {
+                    "dispatchers": {
+                        "implement": "claude_code",  # legacy alias
+                        "classify": "deile_worker",  # legacy alias
+                    }
                 }
             }
-        })
+        )
         assert s.pipeline_dispatcher_implement == "claude_code"
         assert s.pipeline_dispatcher_classify == "deile_worker"
 
@@ -120,14 +131,15 @@ class TestApplyOverrides:
         # Pré-seta um valor válido pra provar que o reject não clobbera.
         s.pipeline_dispatcher_implement = "deile-worker"
         with caplog.at_level("WARNING", logger="deile.config.settings"):
-            s.apply_overrides({
-                "pipeline": {"dispatchers": {"implement": "garbage-worker"}}
-            })
+            s.apply_overrides(
+                {"pipeline": {"dispatchers": {"implement": "garbage-worker"}}}
+            )
         # Valor anterior preservado.
         assert s.pipeline_dispatcher_implement == "deile-worker"
         # E o warning foi emitido (safety net do caminho strict).
-        assert any("pipeline.dispatchers.implement" in r.message
-                   for r in caplog.records)
+        assert any(
+            "pipeline.dispatchers.implement" in r.message for r in caplog.records
+        )
 
 
 class TestNestedDictLoader:
@@ -137,14 +149,17 @@ class TestNestedDictLoader:
 
     def test_per_stage_keys_round_trip(self):
         s = Settings()
-        _apply_nested_dict(s, {
-            "pipeline": {
-                "dispatchers": {
-                    "refine": "claude-worker",
-                    "follow_ups": "deile-worker",
+        _apply_nested_dict(
+            s,
+            {
+                "pipeline": {
+                    "dispatchers": {
+                        "refine": "claude-worker",
+                        "follow_ups": "deile-worker",
+                    }
                 }
-            }
-        })
+            },
+        )
         assert s.pipeline_dispatcher_refine == "claude-worker"
         assert s.pipeline_dispatcher_follow_ups == "deile-worker"
 

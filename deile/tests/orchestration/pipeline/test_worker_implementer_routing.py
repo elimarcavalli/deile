@@ -35,6 +35,7 @@ def _make_monitor():
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
     from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+
     monitor.forge = SimpleNamespace(
         config=ForgeConfig(
             kind=ForgeKind.GITHUB,
@@ -52,7 +53,9 @@ def _issue(number=42, labels=()):
 
 def _pr(number=100):
     return SimpleNamespace(
-        number=number, title="t", head_ref=f"auto/issue-{number}",
+        number=number,
+        title="t",
+        head_ref=f"auto/issue-{number}",
         url=f"https://github.com/elimarcavalli/deile/pull/{number}",
     )
 

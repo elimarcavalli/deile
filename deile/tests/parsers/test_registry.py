@@ -89,8 +89,8 @@ async def test_no_enabled_parsers_fails(registry: ParserRegistry):
 
 @pytest.mark.unit
 async def test_priority_order_in_list_all(registry: ParserRegistry):
-    registry.register(DiffParser())       # priority 70
-    registry.register(CommandParser())    # priority 90
+    registry.register(DiffParser())  # priority 70
+    registry.register(CommandParser())  # priority 90
     names = [p.name for p in registry.list_all()]
     assert names == ["command_parser", "diff_parser"]
 

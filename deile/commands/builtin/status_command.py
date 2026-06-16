@@ -16,12 +16,24 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (emit_audit_event, error_panel, get_memory_manager,
-                      indisponivel, split_args, success_panel, warning_panel,
-                      wrap_command_errors)
-from ._status_collectors import (collect_health_info, collect_models_info,
-                                 collect_performance_info, collect_system_info,
-                                 collect_tools_info, collect_usage_summary)
+from ._shared import (
+    emit_audit_event,
+    error_panel,
+    get_memory_manager,
+    indisponivel,
+    split_args,
+    success_panel,
+    warning_panel,
+    wrap_command_errors,
+)
+from ._status_collectors import (
+    collect_health_info,
+    collect_models_info,
+    collect_performance_info,
+    collect_system_info,
+    collect_tools_info,
+    collect_usage_summary,
+)
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",
@@ -32,7 +44,9 @@ _PROVIDER_HOSTS: Dict[str, str] = {
 }
 
 
-async def _probe_host(host: str, port: int = 443, timeout: float = 5.0) -> Tuple[bool, float]:
+async def _probe_host(
+    host: str, port: int = 443, timeout: float = 5.0
+) -> Tuple[bool, float]:
     start = time.monotonic()
     try:
         loop = asyncio.get_running_loop()
@@ -57,6 +71,7 @@ class StatusCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="status",
             description="Complete system status, health monitoring and connectivity information.",
@@ -91,6 +106,7 @@ class StatusCommand(DirectCommand):
 
     def _emit_audit_event(self, context: CommandContext) -> None:
         from ...security.audit_logger import AuditEventType, SeverityLevel
+
         emit_audit_event(
             event_type=AuditEventType.COMMAND_EXECUTED,
             severity=SeverityLevel.INFO,
@@ -109,8 +125,20 @@ class StatusCommand(DirectCommand):
         tools_info = collect_tools_info()
         health_info = collect_health_info()
 
-        left_column = Columns([self._create_system_panel(system_info), self._create_tools_panel(tools_info)], equal=True)
-        right_column = Columns([self._create_models_panel(models_info), self._create_health_panel(health_info)], equal=True)
+        left_column = Columns(
+            [
+                self._create_system_panel(system_info),
+                self._create_tools_panel(tools_info),
+            ],
+            equal=True,
+        )
+        right_column = Columns(
+            [
+                self._create_models_panel(models_info),
+                self._create_health_panel(health_info),
+            ],
+            equal=True,
+        )
 
         usage_panel = Panel(
             Text(
@@ -128,7 +156,9 @@ class StatusCommand(DirectCommand):
             border_style="dim",
         )
 
-        return CommandResult.success_result(Group(left_column, right_column, usage_panel), "rich")
+        return CommandResult.success_result(
+            Group(left_column, right_column, usage_panel), "rich"
+        )
 
     # ------------------------------------------------------------------
     # Panel builders (overview) — collectors live in _status_collectors
@@ -158,7 +188,9 @@ class StatusCommand(DirectCommand):
             f"🏢 Provedor: {info.get('active_provider', '?')}\n"
             f"📊 Provedores: {info.get('total_providers', 0)}"
         )
-        return Panel(Text(content, style="cyan"), title="🤖 Modelos IA", border_style="cyan")
+        return Panel(
+            Text(content, style="cyan"), title="🤖 Modelos IA", border_style="cyan"
+        )
 
     def _create_tools_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
@@ -175,7 +207,11 @@ class StatusCommand(DirectCommand):
 
     def _create_health_panel(self, info: Dict[str, Any]) -> Panel:
         status = info.get("overall_status", "desconhecido")
-        color_map = {"saudável": ("🟢", "green"), "atenção": ("🟡", "yellow"), "crítico": ("🔴", "red")}
+        color_map = {
+            "saudável": ("🟢", "green"),
+            "atenção": ("🟡", "yellow"),
+            "crítico": ("🔴", "red"),
+        }
         icon, color = color_map.get(status, ("⚪", "dim"))
         content = (
             f"{icon} Status: {status.title()}\n"
@@ -185,7 +221,9 @@ class StatusCommand(DirectCommand):
             f"⏱️  Uptime: {info.get('uptime', '?')}"
         )
         if info.get("warnings"):
-            content += "\n\n⚠️ Avisos:\n" + "".join(f"  • {w}\n" for w in info["warnings"])
+            content += "\n\n⚠️ Avisos:\n" + "".join(
+                f"  • {w}\n" for w in info["warnings"]
+            )
         else:
             content += "\n\n✨ Todos os sistemas normais"
         return Panel(Text(content, style=color), title="🩺 Saúde", border_style=color)
@@ -196,19 +234,31 @@ class StatusCommand(DirectCommand):
 
     async def _show_system_status(self, context: CommandContext) -> CommandResult:
         info = collect_system_info()
-        table = Table(title="💻 Informações Detalhadas do Sistema", show_header=True, header_style="bold green")
+        table = Table(
+            title="💻 Informações Detalhadas do Sistema",
+            show_header=True,
+            header_style="bold green",
+        )
         table.add_column("Componente", style="cyan")
         table.add_column("Valor", style="white")
         table.add_column("Detalhes", style="dim")
         if "error" not in info:
             table.add_row("Versão DEILE", info["deile_version"], "Versão atual")
             table.add_row("Python", info["python_version"], sys.executable)
-            table.add_row("SO", f"{info['platform']} {info['platform_release']}", info["platform_version"][:30])
+            table.add_row(
+                "SO",
+                f"{info['platform']} {info['platform_release']}",
+                info["platform_version"][:30],
+            )
             table.add_row("Arquitetura", info["architecture"], "")
             table.add_row("Hostname", info["hostname"], "")
             table.add_row("Uptime", info["uptime"], "")
             table.add_row("CPUs", str(info["cpu_count"]), "")
-            table.add_row("Memória Total", f"{info['memory_total'] // (1024**3):.1f} GB", f"{info['memory_percent']:.1f}% usada")
+            table.add_row(
+                "Memória Total",
+                f"{info['memory_total'] // (1024**3):.1f} GB",
+                f"{info['memory_percent']:.1f}% usada",
+            )
             table.add_row("Disco", f"{info['disk_usage']:.1f}%", "Diretório atual")
         return CommandResult.success_result(table, "rich")
 
@@ -220,10 +270,15 @@ class StatusCommand(DirectCommand):
         try:
             from ...core.models.router import get_model_router
             from ...core.models.tier_router import get_tier_router
+
             router = get_model_router()
             tier_router = get_tier_router()
 
-            table = Table(title="🤖 Provedores de IA Registrados", show_header=True, header_style="bold cyan")
+            table = Table(
+                title="🤖 Provedores de IA Registrados",
+                show_header=True,
+                header_style="bold cyan",
+            )
             table.add_column("Chave", style="cyan")
             table.add_column("Provedor", style="white")
             table.add_column("Modelo", style="green")
@@ -244,7 +299,9 @@ class StatusCommand(DirectCommand):
             return CommandResult.success_result(table, "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                error_panel(f"Erro ao obter informações de modelos: {exc}", title="🤖 Modelos"),
+                error_panel(
+                    f"Erro ao obter informações de modelos: {exc}", title="🤖 Modelos"
+                ),
                 "rich",
             )
 
@@ -255,6 +312,7 @@ class StatusCommand(DirectCommand):
     async def _show_tools_status(self, context: CommandContext) -> CommandResult:
         try:
             from ...tools.registry import get_tool_registry
+
             registry = get_tool_registry()
             stats = registry.get_stats()
             enabled_names = {t.name for t in registry.list_enabled()}
@@ -313,11 +371,17 @@ class StatusCommand(DirectCommand):
 
         if usage.get("status") == "not_initialized":
             return CommandResult.success_result(
-                warning_panel(indisponivel("MemoryManager não inicializado"), title="💾 Memória"),
+                warning_panel(
+                    indisponivel("MemoryManager não inicializado"), title="💾 Memória"
+                ),
                 "rich",
             )
 
-        table = Table(title="💾 Uso de Memória por Camada", show_header=True, header_style="bold blue")
+        table = Table(
+            title="💾 Uso de Memória por Camada",
+            show_header=True,
+            header_style="bold blue",
+        )
         table.add_column("Camada", style="cyan")
         table.add_column("Entradas", style="green", justify="right")
         table.add_column("Tamanho (MB)", style="yellow", justify="right")
@@ -326,10 +390,14 @@ class StatusCommand(DirectCommand):
         for layer_name, layer_stats in components.items():
             entries = layer_stats.get("entries", layer_stats.get("total_entries", "?"))
             size_mb = layer_stats.get("memory_mb", 0)
-            table.add_row(layer_name.replace("_", " ").title(), str(entries), f"{size_mb:.3f}")
+            table.add_row(
+                layer_name.replace("_", " ").title(), str(entries), f"{size_mb:.3f}"
+            )
 
         total_mb = usage.get("total_memory_mb", 0)
-        summary = Panel(Text(f"Total estimado: {total_mb:.3f} MB", style="dim"), border_style="dim")
+        summary = Panel(
+            Text(f"Total estimado: {total_mb:.3f} MB", style="dim"), border_style="dim"
+        )
         return CommandResult.success_result(Group(table, summary), "rich")
 
     # ------------------------------------------------------------------
@@ -339,6 +407,7 @@ class StatusCommand(DirectCommand):
     async def _show_plans_status(self, context: CommandContext) -> CommandResult:
         try:
             from ...orchestration.plan_manager import get_plan_manager
+
             plan_manager = get_plan_manager()
             active_plans = plan_manager.iter_active_plans()
             all_plans = await plan_manager.list_plans()
@@ -379,6 +448,7 @@ class StatusCommand(DirectCommand):
     async def _show_connectivity_status(self, context: CommandContext) -> CommandResult:
         try:
             from ...core.models.router import get_model_router
+
             router = get_model_router()
             provider_ids = {key.split(":", 1)[0] for key in router.providers.keys()}
         except Exception:
@@ -405,7 +475,11 @@ class StatusCommand(DirectCommand):
             for pid, r in zip(pids, raw)
         }
 
-        table = Table(title="🌐 Conectividade com Provedores", show_header=True, header_style="bold cyan")
+        table = Table(
+            title="🌐 Conectividade com Provedores",
+            show_header=True,
+            header_style="bold cyan",
+        )
         table.add_column("Provedor", style="cyan")
         table.add_column("Host", style="dim")
         table.add_column("Status", style="green")
@@ -428,16 +502,24 @@ class StatusCommand(DirectCommand):
         perf_info = collect_performance_info()
         usage_info = collect_usage_summary(session_id)
 
-        table = Table(title="📊 Performance do Sistema", show_header=True, header_style="bold green")
+        table = Table(
+            title="📊 Performance do Sistema",
+            show_header=True,
+            header_style="bold green",
+        )
         table.add_column("Métrica", style="cyan")
         table.add_column("Valor", style="white")
 
         table.add_row("CPU (%)", f"{perf_info.get('cpu_percent', 0):.1f}%")
         table.add_row("Memória usada (%)", f"{perf_info.get('memory_percent', 0):.1f}%")
-        table.add_row("Memória disponível", f"{perf_info.get('memory_available_mb', 0)} MB")
+        table.add_row(
+            "Memória disponível", f"{perf_info.get('memory_available_mb', 0)} MB"
+        )
         table.add_row("Requisições na sessão", str(usage_info.get("request_count", 0)))
         table.add_row("Tokens na sessão", str(usage_info.get("total_tokens", 0)))
-        table.add_row("Custo na sessão (USD)", f"${usage_info.get('total_cost', 0.0):.6f}")
+        table.add_row(
+            "Custo na sessão (USD)", f"${usage_info.get('total_cost', 0.0):.6f}"
+        )
 
         return CommandResult.success_result(table, "rich")
 

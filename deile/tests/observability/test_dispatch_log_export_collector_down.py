@@ -19,6 +19,7 @@ class TestCollectorDown:
     def test_drop_counter_increments_on_emit_failure(self, monkeypatch):
         """Falha no emit → _log_drop_counter incrementa."""
         from deile.observability import reset_dispatch_log_export
+
         reset_dispatch_log_export()
 
         import deile.observability.dispatch_log_export as dle
@@ -30,6 +31,7 @@ class TestCollectorDown:
     def test_drop_log_throttled_to_once_per_60s(self, monkeypatch, caplog):
         """Drop log emitido no máximo 1×/60s."""
         from deile.observability import reset_dispatch_log_export
+
         reset_dispatch_log_export()
 
         import deile.observability.dispatch_log_export as dle
@@ -59,6 +61,7 @@ class TestCollectorDown:
     def test_3_failures_in_200s_one_log_line(self, monkeypatch, caplog):
         """3 falhas em 200s → exatamente 1 linha de log (throttled)."""
         from deile.observability import reset_dispatch_log_export
+
         reset_dispatch_log_export()
 
         import deile.observability.dispatch_log_export as dle
@@ -81,7 +84,8 @@ class TestCollectorDown:
 
         # Count log lines
         log_lines = [
-            line for line in caplog.text.splitlines()
+            line
+            for line in caplog.text.splitlines()
             if "dispatch.otlp_log_drop" in line
         ]
         # Should have at most 2 (one for each throttle period trigger)
@@ -91,6 +95,7 @@ class TestCollectorDown:
     def test_drop_counter_resets_after_log(self, monkeypatch, caplog):
         """Após log ser emitido, counter é resetado."""
         from deile.observability import reset_dispatch_log_export
+
         reset_dispatch_log_export()
 
         import deile.observability.dispatch_log_export as dle
@@ -113,8 +118,11 @@ class TestCollectorDown:
 
     def test_emit_failure_uses_drop_counter(self, monkeypatch, caplog):
         """Falha no emit_log_record usa _record_log_drop."""
-        from deile.observability import (reset_dispatch_log_export,
-                                         reset_observability_config)
+        from deile.observability import (
+            reset_dispatch_log_export,
+            reset_observability_config,
+        )
+
         reset_dispatch_log_export()
 
         import deile.observability.dispatch_log_export as dle

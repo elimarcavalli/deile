@@ -39,11 +39,16 @@ def _make_manager(tmp_path: Path) -> SettingsManager:
 class TestPaths:
     def test_global_settings_path_in_home(self, tmp_path):
         mgr = _make_manager(tmp_path)
-        assert mgr.global_settings_path == tmp_path / "home" / ".deile" / "settings.json"
+        assert (
+            mgr.global_settings_path == tmp_path / "home" / ".deile" / "settings.json"
+        )
 
     def test_project_settings_path_in_project(self, tmp_path):
         mgr = _make_manager(tmp_path)
-        assert mgr.project_settings_path == tmp_path / "project" / ".deile" / "settings.json"
+        assert (
+            mgr.project_settings_path
+            == tmp_path / "project" / ".deile" / "settings.json"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +96,9 @@ class TestListSkillsPaths:
     def test_missing_skills_paths_key_returns_empty(self, tmp_path):
         mgr = _make_manager(tmp_path)
         mgr.global_settings_path.parent.mkdir(parents=True, exist_ok=True)
-        mgr.global_settings_path.write_text(json.dumps({"other_key": "value"}), encoding="utf-8")
+        mgr.global_settings_path.write_text(
+            json.dumps({"other_key": "value"}), encoding="utf-8"
+        )
         assert mgr.list_skills_paths("global") == []
 
     def test_invalid_scope_raises(self, tmp_path):
@@ -281,7 +288,9 @@ class TestGetLayer:
 
     def test_returns_full_dict(self, tmp_path):
         mgr = _make_manager(tmp_path)
-        _write_layer(mgr, "global", {"logging": {"level": "INFO"}, "skills_paths": ["/x"]})
+        _write_layer(
+            mgr, "global", {"logging": {"level": "INFO"}, "skills_paths": ["/x"]}
+        )
         layer = mgr.get_layer("global")
         assert layer == {"logging": {"level": "INFO"}, "skills_paths": ["/x"]}
 
@@ -410,7 +419,9 @@ class TestSetSetting:
 
     def test_preserves_unrelated_existing_keys(self, tmp_path):
         mgr = _make_manager(tmp_path)
-        _write_layer(mgr, "global", {"skills_paths": ["/x"], "logging": {"to_file": True}})
+        _write_layer(
+            mgr, "global", {"skills_paths": ["/x"], "logging": {"to_file": True}}
+        )
         mgr.set_setting("logging.level", "DEBUG", scope="global")
         data = json.loads(mgr.global_settings_path.read_text())
         assert data == {

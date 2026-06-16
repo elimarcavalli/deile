@@ -10,9 +10,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deile.commands.builtin.model_command import ModelCommand
-from deile.core.interfaces.selector import (InteractiveSelector,
-                                            SelectorNotSupported,
-                                            SelectorOption)
+from deile.core.interfaces.selector import (
+    InteractiveSelector,
+    SelectorNotSupported,
+    SelectorOption,
+)
 
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
 
@@ -20,6 +22,7 @@ _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.y
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_context(args: str = "", session_id: str = "sess-test") -> MagicMock:
     ctx = MagicMock()
@@ -31,6 +34,7 @@ def _make_context(args: str = "", session_id: str = "sess-test") -> MagicMock:
 # ---------------------------------------------------------------------------
 # /model list
 # ---------------------------------------------------------------------------
+
 
 class TestModelList:
     @pytest.mark.asyncio
@@ -50,6 +54,7 @@ class TestModelList:
     @pytest.mark.asyncio
     async def test_list_includes_all_models(self):
         from deile.core.models.catalog import ModelCatalog
+
         catalog = ModelCatalog.from_yaml(_YAML_PATH)
         handles = catalog.list_all()
 
@@ -61,6 +66,7 @@ class TestModelList:
     @pytest.mark.asyncio
     async def test_list_result_is_rich_table(self):
         from rich.table import Table
+
         cmd = ModelCommand()
         result = await cmd.execute(_make_context("list"))
         assert isinstance(result.content, Table)
@@ -76,6 +82,7 @@ class TestModelList:
 # ---------------------------------------------------------------------------
 # /model current
 # ---------------------------------------------------------------------------
+
 
 class TestModelCurrent:
     @pytest.mark.asyncio
@@ -107,6 +114,7 @@ class TestModelCurrent:
 # /model use
 # ---------------------------------------------------------------------------
 
+
 class TestModelUse:
     @pytest.mark.asyncio
     async def test_use_forces_model(self):
@@ -114,7 +122,9 @@ class TestModelUse:
         ctx = _make_context("use anthropic:claude-opus-4-8")
         result = await cmd.execute(ctx)
         assert result.success
-        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-opus-4-8"
+        assert (
+            ctx.session.context_data.get("forced_model") == "anthropic:claude-opus-4-8"
+        )
 
     @pytest.mark.asyncio
     async def test_use_auto_clears_forced(self):
@@ -189,7 +199,9 @@ class TestModelUse:
             provider_name="anthropic",
         )
         ctx.agent = SimpleNamespace(
-            model_router=SimpleNamespace(providers={"anthropic:claude-opus-4-8": flagship})
+            model_router=SimpleNamespace(
+                providers={"anthropic:claude-opus-4-8": flagship}
+            )
         )
         result = await cmd.execute(ctx)
         assert result.success is False
@@ -207,23 +219,30 @@ class TestModelUse:
             provider_name="anthropic",
         )
         ctx.agent = SimpleNamespace(
-            model_router=SimpleNamespace(providers={"anthropic:claude-haiku-4-5": haiku})
+            model_router=SimpleNamespace(
+                providers={"anthropic:claude-haiku-4-5": haiku}
+            )
         )
         result = await cmd.execute(ctx)
         assert result.success is True
-        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-haiku-4-5"
+        assert (
+            ctx.session.context_data.get("forced_model") == "anthropic:claude-haiku-4-5"
+        )
 
 
 # ---------------------------------------------------------------------------
 # /model strategy
 # ---------------------------------------------------------------------------
 
+
 class TestModelStrategy:
     @pytest.mark.asyncio
     async def test_strategy_task_optimized(self):
         cmd = ModelCommand()
-        with patch("deile.commands.builtin.model_command.get_tier_router"), \
-             patch("deile.commands.builtin.model_command.reset_tier_router"):
+        with (
+            patch("deile.commands.builtin.model_command.get_tier_router"),
+            patch("deile.commands.builtin.model_command.reset_tier_router"),
+        ):
             result = await cmd.execute(_make_context("strategy task_optimized"))
         assert result.success
         assert result.metadata.get("strategy") == "task_optimized"
@@ -231,8 +250,10 @@ class TestModelStrategy:
     @pytest.mark.asyncio
     async def test_strategy_cost_optimized(self):
         cmd = ModelCommand()
-        with patch("deile.commands.builtin.model_command.get_tier_router"), \
-             patch("deile.commands.builtin.model_command.reset_tier_router"):
+        with (
+            patch("deile.commands.builtin.model_command.get_tier_router"),
+            patch("deile.commands.builtin.model_command.reset_tier_router"),
+        ):
             result = await cmd.execute(_make_context("strategy cost_optimized"))
         assert result.success
         assert result.metadata.get("strategy") == "cost_optimized"
@@ -248,18 +269,25 @@ class TestModelStrategy:
 # /model cost
 # ---------------------------------------------------------------------------
 
+
 class TestModelCost:
     @pytest.mark.asyncio
     async def test_cost_empty_session_returns_zero(self, tmp_path):
-        from deile.storage.usage_repository import (UsageRepository,
-                                                    reset_usage_repository)
+        from deile.storage.usage_repository import (
+            UsageRepository,
+            reset_usage_repository,
+        )
+
         reset_usage_repository()
 
         repo = UsageRepository(db_path=tmp_path / "test.db")
         cmd = ModelCommand()
         ctx = _make_context("cost", session_id="empty-sess")
 
-        with patch("deile.commands.builtin.model_command.get_usage_repository", return_value=repo):
+        with patch(
+            "deile.commands.builtin.model_command.get_usage_repository",
+            return_value=repo,
+        ):
             result = await cmd.execute(ctx)
 
         assert result.success
@@ -267,27 +295,41 @@ class TestModelCost:
 
     @pytest.mark.asyncio
     async def test_cost_aggregates_correctly(self, tmp_path):
-        from deile.storage.usage_repository import (UsageRecord,
-                                                    UsageRepository,
-                                                    reset_usage_repository)
+        from deile.storage.usage_repository import (
+            UsageRecord,
+            UsageRepository,
+            reset_usage_repository,
+        )
+
         reset_usage_repository()
 
         repo = UsageRepository(db_path=tmp_path / "test.db")
-        repo.record(UsageRecord(
-            provider_id="anthropic", model_id="claude-opus-4-8",
-            tier="tier_1", session_id="my-sess",
-            cost_usd=0.10,
-        ))
-        repo.record(UsageRecord(
-            provider_id="openai", model_id="gpt-4o",
-            tier="tier_1", session_id="my-sess",
-            cost_usd=0.20,
-        ))
+        repo.record(
+            UsageRecord(
+                provider_id="anthropic",
+                model_id="claude-opus-4-8",
+                tier="tier_1",
+                session_id="my-sess",
+                cost_usd=0.10,
+            )
+        )
+        repo.record(
+            UsageRecord(
+                provider_id="openai",
+                model_id="gpt-4o",
+                tier="tier_1",
+                session_id="my-sess",
+                cost_usd=0.20,
+            )
+        )
 
         cmd = ModelCommand()
         ctx = _make_context("cost", session_id="my-sess")
 
-        with patch("deile.commands.builtin.model_command.get_usage_repository", return_value=repo):
+        with patch(
+            "deile.commands.builtin.model_command.get_usage_repository",
+            return_value=repo,
+        ):
             result = await cmd.execute(ctx)
 
         assert result.success
@@ -298,18 +340,25 @@ class TestModelCost:
 # /model budget
 # ---------------------------------------------------------------------------
 
+
 class TestModelBudget:
     @pytest.mark.asyncio
     async def test_budget_loads_from_yaml(self, tmp_path):
-        from deile.storage.usage_repository import (UsageRepository,
-                                                    reset_usage_repository)
+        from deile.storage.usage_repository import (
+            UsageRepository,
+            reset_usage_repository,
+        )
+
         reset_usage_repository()
         repo = UsageRepository(db_path=tmp_path / "test.db")
 
         cmd = ModelCommand()
         ctx = _make_context("budget")
 
-        with patch("deile.commands.builtin.model_command.get_usage_repository", return_value=repo):
+        with patch(
+            "deile.commands.builtin.model_command.get_usage_repository",
+            return_value=repo,
+        ):
             result = await cmd.execute(ctx)
 
         assert result.success
@@ -361,7 +410,9 @@ class TestModelSelect:
         ctx = _make_context("select anthropic:claude-opus-4-8")
         result = await cmd.execute(ctx)
         assert result.success
-        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-opus-4-8"
+        assert (
+            ctx.session.context_data.get("forced_model") == "anthropic:claude-opus-4-8"
+        )
         # Picker must NOT have been opened — interactive selector untouched.
         assert len(sel.calls) == 0
 
@@ -383,6 +434,7 @@ class TestModelSelect:
         # tags the fallback so callers can distinguish the path and the user
         # gets a caption explaining why interactive mode is unavailable.
         from rich.table import Table
+
         assert isinstance(result.content, Table)
         assert result.content.caption is not None
         assert "no TTY" in str(result.content.caption)
@@ -441,7 +493,9 @@ class TestModelSelect:
         ctx = _make_context("select")
         result = await cmd.execute(ctx)
         assert result.success is True
-        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-haiku-4-5"
+        assert (
+            ctx.session.context_data.get("forced_model") == "anthropic:claude-haiku-4-5"
+        )
 
     @pytest.mark.asyncio
     async def test_select_alias_pick(self):
@@ -455,7 +509,9 @@ class TestModelSelect:
 
     @pytest.mark.asyncio
     async def test_select_denied_when_override_locked(self):
-        sel = _StubSelector(supported=True, choice=SelectorOption(label="x", value="x:y"))
+        sel = _StubSelector(
+            supported=True, choice=SelectorOption(label="x", value="x:y")
+        )
         cmd = ModelCommand(selector=sel)
         ctx = _make_context("select")
         ctx.session.context_data = {
@@ -505,6 +561,7 @@ class TestModelSelect:
     @pytest.mark.asyncio
     async def test_select_options_match_catalog_size(self):
         from deile.core.models.catalog import ModelCatalog
+
         catalog = ModelCatalog.from_yaml(_YAML_PATH)
         sel = _StubSelector(supported=True, choice=None)
         cmd = ModelCommand(selector=sel)
@@ -515,6 +572,7 @@ class TestModelSelect:
 # ---------------------------------------------------------------------------
 # Unknown sub-command
 # ---------------------------------------------------------------------------
+
 
 class TestModelUnknown:
     @pytest.mark.asyncio

@@ -12,6 +12,7 @@ All transactions use parameterised queries; the only ``f"…{where_sql}…"``
 strings build their clauses from hardcoded literals (timestamp/category
 filters) — every value is bound via the ``params`` list.
 """
+
 from __future__ import annotations
 
 import logging
@@ -124,8 +125,16 @@ class CostRepository:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    entry_id, timestamp, category, subcategory, amount,
-                    currency, description, metadata_json, session_id, user_id,
+                    entry_id,
+                    timestamp,
+                    category,
+                    subcategory,
+                    amount,
+                    currency,
+                    description,
+                    metadata_json,
+                    session_id,
+                    user_id,
                 ),
             )
 
@@ -183,7 +192,14 @@ class CostRepository:
                 (alert_type, category, period, current_amount, limit_amount, threshold_percentage)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (alert_type, category, period, current_amount, limit_amount, threshold_percentage),
+                (
+                    alert_type,
+                    category,
+                    period,
+                    current_amount,
+                    limit_amount,
+                    threshold_percentage,
+                ),
             )
 
     def summary_aggregates(
@@ -191,7 +207,9 @@ class CostRepository:
         start_timestamp: float,
         end_timestamp: float,
         category: Optional[str] = None,
-    ) -> Tuple[float, int, List[Tuple[str, float]], List[Tuple[str, str, float, str, float]]]:
+    ) -> Tuple[
+        float, int, List[Tuple[str, float]], List[Tuple[str, str, float, str, float]]
+    ]:
         """Return aggregates for the period.
 
         ``(total_amount, entry_count, by_category, top_expenses)`` where:

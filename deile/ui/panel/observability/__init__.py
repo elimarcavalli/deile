@@ -23,5 +23,11 @@ For the HTTP client and screen renderers, see the sibling modules:
 """
 
 from deile.ui.panel.observability.jsonl_parser import (  # noqa: F401
-    AssistantTurn, ClaudeJsonlParser, ToolResultTurn, ToolUseTurn, Turn,
-    UnknownTurn, UserTurn)
+    AssistantTurn,
+    ClaudeJsonlParser,
+    ToolResultTurn,
+    ToolUseTurn,
+    Turn,
+    UnknownTurn,
+    UserTurn,
+)

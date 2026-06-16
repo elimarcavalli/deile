@@ -28,6 +28,7 @@ def test_get_tracer_returns_no_op_when_disabled(monkeypatch):
     monkeypatch.setenv("DEILE_OBSERVABILITY_DISABLED", "true")
     reset_tracer()
     from deile.observability import reset_observability_config
+
     reset_observability_config()
     tracer = get_tracer()
     assert isinstance(tracer, NoOpTracer)
@@ -62,6 +63,7 @@ def test_no_op_tracer_llm_call_does_not_raise():
 
 def test_turn_span_records_required_attributes(in_memory_exporter):
     from deile.observability import get_tracer
+
     with get_tracer().turn(
         session_id="s1",
         turn_number=7,
@@ -83,6 +85,7 @@ def test_turn_span_records_required_attributes(in_memory_exporter):
 
 def test_tool_span_named_with_tool_prefix(in_memory_exporter):
     from deile.observability import get_tracer
+
     with get_tracer().tool("execute_bash", args_size=64):
         pass
     spans = in_memory_exporter.get_finished_spans()
@@ -94,6 +97,7 @@ def test_tool_span_named_with_tool_prefix(in_memory_exporter):
 
 def test_llm_call_span_carries_provider_and_model(in_memory_exporter):
     from deile.observability import get_tracer
+
     with get_tracer().llm_call(provider="openai", model="gpt-4o") as span:
         span.set_attribute("llm.tokens.in", 100)
         span.set_attribute("llm.tokens.out", 50)
@@ -112,6 +116,7 @@ def test_span_records_status_error_on_exception(in_memory_exporter):
     from opentelemetry.trace import StatusCode
 
     from deile.observability import get_tracer
+
     with pytest.raises(RuntimeError):
         with get_tracer().tool("broken_tool"):
             raise RuntimeError("boom")
@@ -126,6 +131,7 @@ def test_no_secrets_in_turn_span_attributes(in_memory_exporter):
     """Regra crítica (pilar 08): nenhum prompt/args/conteúdo no span."""
     secret_prompt = "MEU SEGREDO super privado API_KEY=sk-abcdef123"
     from deile.observability import get_tracer
+
     with get_tracer().turn(
         session_id="s1",
         turn_number=1,
@@ -143,6 +149,7 @@ def test_no_secrets_in_turn_span_attributes(in_memory_exporter):
 def test_no_secrets_in_tool_span_attributes(in_memory_exporter):
     secret_args = '{"path": "/etc/passwd", "API_KEY": "sk-leaky"}'
     from deile.observability import get_tracer
+
     with get_tracer().tool("read_file", args_size=len(secret_args)):
         pass
     spans = in_memory_exporter.get_finished_spans()
@@ -156,19 +163,24 @@ def test_no_secrets_in_tool_span_attributes(in_memory_exporter):
 
 def test_otlp_tracer_shutdown_is_idempotent(in_memory_exporter):
     from deile.observability import get_tracer
+
     tracer = get_tracer()
     tracer.shutdown()
     tracer.shutdown()  # não pode levantar
 
 
-def test_instance_attrs_attached_to_turn_span(in_memory_exporter, monkeypatch, tmp_path):
+def test_instance_attrs_attached_to_turn_span(
+    in_memory_exporter, monkeypatch, tmp_path
+):
     """resource attributes do InstanceState (issue #303 fase 1) viram span attrs."""
     monkeypatch.setenv("DEILE_RUNTIME_DIR", str(tmp_path))
     from deile.runtime import instance_state as runtime_mod
+
     runtime_mod.reset_instance_state()
     try:
         runtime_mod.get_instance_state(role="cli")
         from deile.observability import get_tracer
+
         with get_tracer().turn(session_id="s1", turn_number=1):
             pass
         spans = in_memory_exporter.get_finished_spans()

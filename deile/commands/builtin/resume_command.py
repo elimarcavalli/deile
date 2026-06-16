@@ -131,7 +131,9 @@ class ResumeCommand(DirectCommand):
         target_sid = str(choice.value)
         stored = hist_store.load(target_sid)
         if stored is None:
-            return CommandResult.error_result(f"Conversa {target_sid!r} não encontrada em disco.")
+            return CommandResult.error_result(
+                f"Conversa {target_sid!r} não encontrada em disco."
+            )
 
         history = stored.get("history", [])
 

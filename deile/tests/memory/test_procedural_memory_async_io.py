@@ -40,7 +40,9 @@ async def test_patterns_round_trip_through_disk(tmp_path: Path) -> None:
     pm2 = ProceduralMemory(storage_dir=tmp_path, min_frequency=1)
     await pm2.initialize()
     relevant = await pm2.get_relevant_patterns("anything")
-    assert any(p["pattern"] == "input_len_100" and p["frequency"] == 2 for p in relevant)
+    assert any(
+        p["pattern"] == "input_len_100" and p["frequency"] == 2 for p in relevant
+    )
     await pm2.shutdown()
 
 

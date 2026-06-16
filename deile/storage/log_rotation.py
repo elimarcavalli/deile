@@ -108,7 +108,7 @@ class HourlyDailyDirRotatingHandler(TimedRotatingFileHandler):
             filename=filename,
             when="H",
             interval=1,
-            backupCount=0,        # GC próprio (multi-day folders)
+            backupCount=0,  # GC próprio (multi-day folders)
             encoding=encoding,
             delay=delay,
             utc=utc,
@@ -140,7 +140,7 @@ class HourlyDailyDirRotatingHandler(TimedRotatingFileHandler):
         prefix = self.baseFilename + "."
         if not default_name.startswith(prefix):
             return default_name
-        suffix = default_name[len(prefix):]
+        suffix = default_name[len(prefix) :]
         # Esperado: "YYYY-MM-DD_HH" — splitamos no underscore.
         parts = suffix.split("_")
         if len(parts) != 2 or len(parts[0]) != 10 or len(parts[1]) != 2:
@@ -216,6 +216,7 @@ class HourlyDailyDirRotatingHandler(TimedRotatingFileHandler):
 # disponíveis (current + arquivados). Não é parte do logging Pythonic;
 # mora aqui por proximidade do schema.
 # --------------------------------------------------------------------------
+
 
 def list_archived_log_files(logs_root: Path) -> List[Path]:
     """Retorna paths de arquivos rotacionados (ordem cronológica asc).

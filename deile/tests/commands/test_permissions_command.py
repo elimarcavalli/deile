@@ -11,8 +11,12 @@ from rich.console import Console
 
 from deile.commands.base import CommandContext
 from deile.commands.builtin.permissions_command import PermissionsCommand
-from deile.security.permissions import (PermissionLevel, PermissionManager,
-                                        PermissionRule, ResourceType)
+from deile.security.permissions import (
+    PermissionLevel,
+    PermissionManager,
+    PermissionRule,
+    ResourceType,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,8 +41,10 @@ def _fresh_pm(config_path: Path | None = None) -> PermissionManager:
 def _cmd_with_pm(pm: PermissionManager) -> PermissionsCommand:
     cmd = PermissionsCommand.__new__(PermissionsCommand)
     from deile.config.manager import CommandConfig
+
     config = CommandConfig(name="permissions", description="test")
     from deile.commands.base import DirectCommand
+
     DirectCommand.__init__(cmd, config)
     cmd.permission_manager = pm
     return cmd
@@ -77,6 +83,7 @@ class TestShowUsesGetRuleById:
 
     async def test_show_unknown_id_raises(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         cmd = _cmd_with_pm(pm)
         with pytest.raises(CommandError):
@@ -100,6 +107,7 @@ class TestEnableUsesGetRuleById:
 
     async def test_enable_unknown_id_raises(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         cmd = _cmd_with_pm(pm)
         with pytest.raises(CommandError):
@@ -122,6 +130,7 @@ class TestDisableUsesGetRuleById:
 
     async def test_disable_unknown_id_raises(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         cmd = _cmd_with_pm(pm)
         with pytest.raises(CommandError):
@@ -139,7 +148,9 @@ class TestAddRuleCreatesAndPersists:
         pm = _fresh_pm(config_path=config_path)
         cmd = _cmd_with_pm(pm)
 
-        result = await cmd.execute(_ctx("add my_rule MyRule file r'.*\\.txt' write write_file"))
+        result = await cmd.execute(
+            _ctx("add my_rule MyRule file r'.*\\.txt' write write_file")
+        )
         assert result.success is True
         assert pm.get_rule_by_id("my_rule") is not None
         assert config_path.exists(), "add must persist rules to disk"
@@ -155,6 +166,7 @@ class TestAddRuleCreatesAndPersists:
 
     async def test_add_duplicate_id_raises(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         _add_test_rule(pm, "existing_rule")
         cmd = _cmd_with_pm(pm)
@@ -163,6 +175,7 @@ class TestAddRuleCreatesAndPersists:
 
     async def test_add_invalid_type_raises(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         cmd = _cmd_with_pm(pm)
         with pytest.raises(CommandError, match="inválido"):
@@ -170,6 +183,7 @@ class TestAddRuleCreatesAndPersists:
 
     async def test_add_invalid_level_raises(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         cmd = _cmd_with_pm(pm)
         with pytest.raises(CommandError, match="inválido"):
@@ -207,6 +221,7 @@ class TestRemoveRuleDeletesAndPersists:
 
     async def test_remove_unknown_rule_raises(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         cmd = _cmd_with_pm(pm)
         with pytest.raises(CommandError):
@@ -225,7 +240,11 @@ class TestAuditLogReadsFromAuditLogger:
         result = await cmd.execute(_ctx("audit"))
         assert result.success is True
         rendered = _render(result.content)
-        assert "Auditoria" in rendered or "auditoria" in rendered or "evento" in rendered.lower()
+        assert (
+            "Auditoria" in rendered
+            or "auditoria" in rendered
+            or "evento" in rendered.lower()
+        )
 
     async def test_audit_renders_without_crash(self):
         pm = _fresh_pm()
@@ -275,6 +294,7 @@ class TestSandboxActivatesRealFlag:
 
     async def test_sandbox_invalid_mode_raises(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         cmd = _cmd_with_pm(pm)
         with pytest.raises(CommandError):
@@ -313,7 +333,9 @@ class TestPersistenceAcrossRestart:
         await cmd1.execute(_ctx(f"remove {rule.id} --confirm"))
 
         pm2 = PermissionManager(config_path=config_path)
-        assert pm2.get_rule_by_id(rule.id) is None, "removed rule must not reappear after restart"
+        assert (
+            pm2.get_rule_by_id(rule.id) is None
+        ), "removed rule must not reappear after restart"
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +345,13 @@ class TestPersistenceAcrossRestart:
 
 class TestEveryMutationEmitsAuditEvent:
     async def _count_security_events(self) -> int:
-        from deile.security.audit_logger import (AuditEventType,
-                                                 get_audit_logger)
-        return sum(1 for e in get_audit_logger().recent_events if e.event_type == AuditEventType.SECURITY_POLICY_CHANGED)
+        from deile.security.audit_logger import AuditEventType, get_audit_logger
+
+        return sum(
+            1
+            for e in get_audit_logger().recent_events
+            if e.event_type == AuditEventType.SECURITY_POLICY_CHANGED
+        )
 
     async def test_add_emits_audit_event(self, tmp_path):
         pm = _fresh_pm(config_path=tmp_path / "permissions.yaml")
@@ -478,6 +504,7 @@ class TestOverviewAndList:
 
     async def test_missing_required_arg_err(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         cmd = _cmd_with_pm(pm)
         with pytest.raises(CommandError):
@@ -485,6 +512,7 @@ class TestOverviewAndList:
 
     async def test_unknown_action_raises_command_error(self):
         from deile.core.exceptions import CommandError
+
         pm = _fresh_pm()
         cmd = _cmd_with_pm(pm)
         with pytest.raises(CommandError):

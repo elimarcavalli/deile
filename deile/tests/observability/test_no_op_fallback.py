@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile.observability import (NoOpMetrics, NoOpTracer, get_metrics,
-                                 get_tracer)
+from deile.observability import NoOpMetrics, NoOpTracer, get_metrics, get_tracer
 
 pytestmark = pytest.mark.unit
 
@@ -31,7 +30,9 @@ def test_no_op_path_smokes_full_api():
     """Toda a API pública é callable em modo no-op sem erro."""
     t = get_tracer()
     m = get_metrics()
-    with t.turn(session_id="s", turn_number=1, persona="dev", model="x", input_length=10) as span:
+    with t.turn(
+        session_id="s", turn_number=1, persona="dev", model="x", input_length=10
+    ) as span:
         span.set_attribute("a", "b")
         span.add_event("e", attributes={"k": "v"})
         with t.tool("read_file", args_size=10) as ts:
@@ -51,8 +52,12 @@ def test_no_op_path_smokes_full_api():
 def test_kill_switch_forces_no_op_even_with_endpoint(monkeypatch):
     monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://x:4317")
     monkeypatch.setenv("DEILE_OBSERVABILITY_DISABLED", "true")
-    from deile.observability import (reset_metrics, reset_observability_config,
-                                     reset_tracer)
+    from deile.observability import (
+        reset_metrics,
+        reset_observability_config,
+        reset_tracer,
+    )
+
     reset_observability_config()
     reset_tracer()
     reset_metrics()

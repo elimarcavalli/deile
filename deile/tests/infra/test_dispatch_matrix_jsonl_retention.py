@@ -30,6 +30,7 @@ if str(_INFRA_K8S) not in sys.path:
 @pytest.fixture
 def view_demo():
     from _panel import DispatchMatrixView
+
     return DispatchMatrixView(data=None)
 
 
@@ -44,7 +45,9 @@ def view_with_data():
         for s in ("classify", "refine", "implement", "pr_review", "follow_ups")
     ]
     data.stage_dispatch.get_claude_worker_status.return_value = ClaudeWorkerStatus(
-        deployment_applied=False, pod_ready=False, logged_in_email=None,
+        deployment_applied=False,
+        pod_ready=False,
+        logged_in_email=None,
     )
     data.context = MagicMock()
     data.context.namespace = "deile"
@@ -62,6 +65,7 @@ def app_stub():
 # [J] abre o prompt; 'j' minúsculo NÃO (continua navegação DOWN)
 # --------------------------------------------------------------------------- #
 
+
 def test_J_uppercase_opens_retention_prompt(view_demo, app_stub):
     view_demo.cursor_row = 0
     view_demo.handle_key("J", app_stub)
@@ -74,13 +78,14 @@ def test_j_lowercase_is_navigation_not_retention(view_demo, app_stub):
     """Regressão: 'j' minúsculo é DOWN (vim); só 'J' abre o prompt."""
     view_demo.cursor_row = 0
     view_demo.handle_key("j", app_stub)
-    assert view_demo.mode is None          # não abriu modal
-    assert view_demo.cursor_row == 1        # navegou para baixo
+    assert view_demo.mode is None  # não abriu modal
+    assert view_demo.cursor_row == 1  # navegou para baixo
 
 
 # --------------------------------------------------------------------------- #
 # _handle_retention_prompt_key
 # --------------------------------------------------------------------------- #
+
 
 def test_retention_prompt_digit_input(view_demo, app_stub):
     view_demo._open_retention_prompt()
@@ -124,13 +129,14 @@ def test_retention_prompt_enter_applies_demo(view_demo, app_stub):
 
 def test_retention_prompt_enter_empty_applies_clear(view_demo, app_stub):
     view_demo._open_retention_prompt()
-    view_demo.handle_key("\r", app_stub)   # buffer vazio → _apply_retention(None)
+    view_demo.handle_key("\r", app_stub)  # buffer vazio → _apply_retention(None)
     assert view_demo.mode is None
 
 
 # --------------------------------------------------------------------------- #
 # _apply_retention
 # --------------------------------------------------------------------------- #
+
 
 def test_apply_retention_demo_mode(view_demo):
     view_demo._apply_retention("30")
@@ -147,7 +153,7 @@ def test_apply_retention_no_kubectl(view_with_data):
 
 def test_apply_retention_invalid_value(view_with_data):
     with patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"):
-        view_with_data._apply_retention("0")   # < 1 → inválido
+        view_with_data._apply_retention("0")  # < 1 → inválido
     assert view_with_data.last_ok is False
     assert "inválido" in (view_with_data.last_msg or "").lower()
 
@@ -163,8 +169,10 @@ def test_apply_retention_success_sets_both_targets(view_with_data):
         m.stderr = ""
         return m
 
-    with patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"), \
-         patch("subprocess.run", side_effect=fake_run):
+    with (
+        patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
         view_with_data._apply_retention("45")
 
     assert view_with_data.last_ok is True
@@ -182,8 +190,10 @@ def test_apply_retention_clear_removes_override(view_with_data):
         m.stderr = ""
         return m
 
-    with patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"), \
-         patch("subprocess.run", side_effect=fake_run):
+    with (
+        patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
         view_with_data._apply_retention(None)
 
     assert view_with_data.last_ok is True
@@ -193,6 +203,7 @@ def test_apply_retention_clear_removes_override(view_with_data):
 def test_apply_retention_cron_notfound_is_skipped_not_failed(view_with_data):
     """CronJob ausente (NotFound) é PULADO — deployment ok → sucesso geral.
     O cron de cleanup nem sempre está aplicado; só o deployment é obrigatório."""
+
     def fake_run(cmd, **kw):
         m = MagicMock()
         flat = " ".join(cmd)
@@ -204,8 +215,10 @@ def test_apply_retention_cron_notfound_is_skipped_not_failed(view_with_data):
             m.stderr = ""
         return m
 
-    with patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"), \
-         patch("subprocess.run", side_effect=fake_run):
+    with (
+        patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
         view_with_data._apply_retention("30")
 
     assert view_with_data.last_ok is True
@@ -215,6 +228,7 @@ def test_apply_retention_cron_notfound_is_skipped_not_failed(view_with_data):
 
 def test_apply_retention_hard_failure_on_deployment(view_with_data):
     """Falha REAL no deployment (não-NotFound) → last_ok False."""
+
     def fake_run(cmd, **kw):
         m = MagicMock()
         flat = " ".join(cmd)
@@ -226,8 +240,10 @@ def test_apply_retention_hard_failure_on_deployment(view_with_data):
             m.stderr = ""
         return m
 
-    with patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"), \
-         patch("subprocess.run", side_effect=fake_run):
+    with (
+        patch("_panel.kubectl_bin", return_value="/usr/bin/kubectl"),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
         view_with_data._apply_retention("30")
 
     assert view_with_data.last_ok is False
@@ -238,8 +254,10 @@ def test_apply_retention_hard_failure_on_deployment(view_with_data):
 # Render: modal retention_prompt aparece
 # --------------------------------------------------------------------------- #
 
+
 def test_render_retention_prompt_modal_visible(view_demo, app_stub):
     from rich.console import Console
+
     view_demo.handle_key("J", app_stub)
     console = Console(width=120)
     renderable = view_demo.render(app_stub)

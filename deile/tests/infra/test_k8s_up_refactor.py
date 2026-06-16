@@ -32,6 +32,7 @@ import deploy  # noqa: E402
 # DeploymentProfile
 # ============================================================================
 
+
 class TestDeploymentProfile:
     def test_valid_names_accepted(self):
         for name in ("pipeline-only", "full", "claude-only"):
@@ -51,7 +52,10 @@ class TestDeploymentProfile:
     def test_full_deployments(self):
         p = deploy.DeploymentProfile("full")
         assert set(p.deployments) == {
-            "deilebot", "deile-worker", "deile-shell", "deile-pipeline"
+            "deilebot",
+            "deile-worker",
+            "deile-shell",
+            "deile-pipeline",
         }
 
     def test_claude_only_deployments(self):
@@ -106,6 +110,7 @@ class TestDeploymentProfile:
 # _persist_env_key
 # ============================================================================
 
+
 class TestPersistEnvKey:
     def test_updates_existing_key(self, tmp_path, monkeypatch):
         env_file = tmp_path / ".env"
@@ -153,6 +158,7 @@ class TestPersistEnvKey:
 # _ensure_persisted_token
 # ============================================================================
 
+
 class TestEnsurePersistedToken:
     def test_returns_existing_value(self, tmp_path, monkeypatch):
         env_file = tmp_path / ".env"
@@ -189,15 +195,20 @@ class TestEnsurePersistedToken:
 # _k8s_up_resolve_profile
 # ============================================================================
 
+
 class TestK8sUpResolveProfile:
     def test_cli_flag_takes_precedence(self):
         env = {"DEILE_K8S_DEPLOY_PROFILE": "full"}
-        p, explicit = deploy._k8s_up_resolve_profile(["--profile", "pipeline-only"], env)
+        p, explicit = deploy._k8s_up_resolve_profile(
+            ["--profile", "pipeline-only"], env
+        )
         assert p.name == "pipeline-only"
         assert explicit is True
 
     def test_env_dict_used_when_no_flag(self):
-        p, explicit = deploy._k8s_up_resolve_profile([], {"DEILE_K8S_DEPLOY_PROFILE": "claude-only"})
+        p, explicit = deploy._k8s_up_resolve_profile(
+            [], {"DEILE_K8S_DEPLOY_PROFILE": "claude-only"}
+        )
         assert p.name == "claude-only"
         assert explicit is True
 
@@ -219,7 +230,9 @@ class TestK8sUpResolveProfile:
         assert explicit is True  # operator typed something — intent was explicit
 
     def test_invalid_env_falls_back_to_full(self, capsys):
-        p, explicit = deploy._k8s_up_resolve_profile([], {"DEILE_K8S_DEPLOY_PROFILE": "bogus"})
+        p, explicit = deploy._k8s_up_resolve_profile(
+            [], {"DEILE_K8S_DEPLOY_PROFILE": "bogus"}
+        )
         assert p.name == "full"
         assert explicit is True  # env var was set — intent was explicit
 
@@ -227,6 +240,7 @@ class TestK8sUpResolveProfile:
 # ============================================================================
 # k8s_up integration (all subprocess mocked)
 # ============================================================================
+
 
 def _make_fake_apply_secret():
     applied = []
@@ -270,10 +284,14 @@ class TestK8sUpPipelineOnlyProfile:
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
-        rc = deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
+        rc = deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "pipeline-only"],
+            }
+        )
         assert rc == 0
         secret_names = [name for name, _ in applied]
         assert "bot-secrets" not in secret_names
@@ -300,17 +318,25 @@ class TestK8sUpPipelineOnlyProfile:
 
         monkeypatch.setattr(deploy, "_run", fake_run)
         # Only create manifest files that pipeline-only needs
-        for name in ("15-bot-config.yaml", "47-deile-runtime-config.yaml",
-                     "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml",
-                     "46-deile-pipeline-deployment.yaml"):
+        for name in (
+            "15-bot-config.yaml",
+            "47-deile-runtime-config.yaml",
+            "41-worker-pvc.yaml",
+            "45-deile-worker-deployment.yaml",
+            "46-deile-pipeline-deployment.yaml",
+        ):
             (tmp_path / name).write_text("---")
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
-        deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
+        deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "pipeline-only"],
+            }
+        )
         assert "20-bot-deployment.yaml" not in applied_manifests
         assert "19-bot-data-pvc.yaml" not in applied_manifests
         assert "35-deile-interactive.yaml" not in applied_manifests
@@ -329,10 +355,14 @@ class TestK8sUpFullProfileRequiresDiscord:
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
-        rc = deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "full"],
-        })
+        rc = deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "full"],
+            }
+        )
         assert rc != 0
 
     def test_full_profile_succeeds_with_discord(self, tmp_path, monkeypatch):
@@ -355,10 +385,14 @@ class TestK8sUpFullProfileRequiresDiscord:
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
-        rc = deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "full"],
-        })
+        rc = deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "full"],
+            }
+        )
         assert rc == 0
 
 
@@ -383,10 +417,14 @@ class TestK8sUpGitLabToken:
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
-        deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
+        deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "pipeline-only"],
+            }
+        )
         deile_secrets = next(kv for name, kv in applied if name == "deile-secrets")
         assert deile_secrets.get("GITLAB_TOKEN") == "glpat-secret"
 
@@ -410,10 +448,14 @@ class TestK8sUpGitLabToken:
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
-        deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
+        deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "pipeline-only"],
+            }
+        )
         deile_secrets = next(kv for name, kv in applied if name == "deile-secrets")
         assert deile_secrets.get("GITLAB_TOKEN") == "glpat-alias"
 
@@ -437,10 +479,14 @@ class TestK8sUpPipelineStatusBearer:
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
-        deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
+        deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "pipeline-only"],
+            }
+        )
         secret_names = [name for name, _ in applied]
         assert "pipeline-status-bearer" in secret_names
 
@@ -468,12 +514,18 @@ class TestK8sUpPipelineStatusBearer:
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
-        deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
+        deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "pipeline-only"],
+            }
+        )
         ps_secret = next(kv for name, kv in applied if name == "pipeline-status-bearer")
-        assert "AUTH_TOKEN" not in ps_secret, "Key must be PIPELINE_STATUS_BEARER_TOKEN, not AUTH_TOKEN"
+        assert (
+            "AUTH_TOKEN" not in ps_secret
+        ), "Key must be PIPELINE_STATUS_BEARER_TOKEN, not AUTH_TOKEN"
         assert ps_secret.get("PIPELINE_STATUS_BEARER_TOKEN") == "my-status-tok"
 
 
@@ -491,10 +543,14 @@ class TestK8sUpTokenPersistence:
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
-        deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
+        deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "pipeline-only"],
+            }
+        )
         content = env_file.read_text()
         assert "DEILE_BOT_AUTH_TOKEN=" in content
         assert "DEILE_WORKER_BEARER_TOKEN=" in content
@@ -520,20 +576,20 @@ class TestK8sUpTokenPersistence:
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
 
         args = {
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
+            "yes": True,
+            "dry_run": False,
+            "k8s_namespace": None,
+            "extra": ["--profile", "pipeline-only"],
         }
         deploy.k8s_up(args)
         deploy.k8s_up(args)
 
         # Extract worker-bearer tokens from both runs
         run1_worker = next(
-            kv["AUTH_TOKEN"] for name, kv in applied_runs[:3]
-            if name == "worker-bearer"
+            kv["AUTH_TOKEN"] for name, kv in applied_runs[:3] if name == "worker-bearer"
         )
         run2_worker = next(
-            kv["AUTH_TOKEN"] for name, kv in applied_runs[3:]
-            if name == "worker-bearer"
+            kv["AUTH_TOKEN"] for name, kv in applied_runs[3:] if name == "worker-bearer"
         )
         assert run1_worker == run2_worker
 
@@ -542,27 +598,34 @@ class TestK8sUpTokenPersistence:
 # _assert_bearer_sync
 # ============================================================================
 
+
 class TestAssertBearerSync:
     def test_noop_when_kubectl_returns_empty(self, monkeypatch):
         import subprocess as _sp
+
         def fake_run(cmd, **kw):
             class R:
                 returncode = 1
                 stdout = ""
+
             return R()
+
         monkeypatch.setattr(_sp, "run", fake_run)
         deploy._assert_bearer_sync("/fake/kubectl", "deile")
 
     def test_noop_when_tokens_match(self, monkeypatch):
         import base64
         import subprocess as _sp
+
         tok = base64.b64encode(b"same-token").decode()
 
         def fake_run(cmd, **kw):
             class R:
                 returncode = 0
                 stdout = tok
+
             return R()
+
         monkeypatch.setattr(_sp, "run", fake_run)
         deploy._assert_bearer_sync("/fake/kubectl", "deile")
 
@@ -574,10 +637,13 @@ class TestAssertBearerSync:
             # cmd = [kubectl, "-n", ns, "get", "secret", secret_name, "-o", ...]
             secret = cmd[5]
             val = b"token-A" if secret == "worker-bearer" else b"token-B"
+
             class R:
                 returncode = 0
                 stdout = base64.b64encode(val).decode()
+
             return R()
+
         monkeypatch.setattr(_sp, "run", fake_run)
         with pytest.raises(SystemExit, match="divergentes"):
             deploy._assert_bearer_sync("/fake/kubectl", "deile")
@@ -587,8 +653,11 @@ class TestAssertBearerSync:
 # DEILE_FORGE_KIND warning
 # ============================================================================
 
+
 class TestK8sUpForgeKindWarning:
-    def test_warns_when_only_gitlab_token_and_no_forge_kind(self, tmp_path, monkeypatch):
+    def test_warns_when_only_gitlab_token_and_no_forge_kind(
+        self, tmp_path, monkeypatch
+    ):
         env_file = tmp_path / ".env"
         env_file.write_text(
             "ANTHROPIC_API_KEY=sk-ant-test\n"
@@ -610,13 +679,17 @@ class TestK8sUpForgeKindWarning:
         warnings = []
         monkeypatch.setattr(deploy.ui, "warn", lambda msg: warnings.append(msg))
 
-        deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
-        assert any("DEILE_FORGE_KIND" in w for w in warnings), (
-            "Expected warning about DEILE_FORGE_KIND when only GITLAB_TOKEN is present"
+        deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "pipeline-only"],
+            }
         )
+        assert any(
+            "DEILE_FORGE_KIND" in w for w in warnings
+        ), "Expected warning about DEILE_FORGE_KIND when only GITLAB_TOKEN is present"
 
     def test_no_warn_when_forge_kind_gitlab_set(self, tmp_path, monkeypatch):
         env_file = tmp_path / ".env"
@@ -641,8 +714,12 @@ class TestK8sUpForgeKindWarning:
         warnings = []
         monkeypatch.setattr(deploy.ui, "warn", lambda msg: warnings.append(msg))
 
-        deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
+        deploy.k8s_up(
+            {
+                "yes": True,
+                "dry_run": False,
+                "k8s_namespace": None,
+                "extra": ["--profile", "pipeline-only"],
+            }
+        )
         assert not any("DEILE_FORGE_KIND" in w for w in warnings)

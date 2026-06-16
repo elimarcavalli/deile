@@ -22,6 +22,7 @@ dispatch e carrega progresso do worker DEILE em-flight) — é
 complementar e foca em PERSISTIR a identidade do trabalho (task_id +
 session_id do claude) entre dispatches separados.
 """
+
 from __future__ import annotations
 
 import json
@@ -138,8 +139,9 @@ class DispatchLedger:
                 self._file_sig = None
             data = json.loads(raw)
         except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("ledger %s corrupted/unreadable, starting empty: %s",
-                           self._path, exc)
+            logger.warning(
+                "ledger %s corrupted/unreadable, starting empty: %s", self._path, exc
+            )
             self._cache = {"version": LEDGER_SCHEMA_VERSION, "dispatches": {}}
             return self._cache
         if not isinstance(data, dict) or "dispatches" not in data:
@@ -187,8 +189,9 @@ class DispatchLedger:
         garante serializabilidade JSON. Ausente ou ``None`` → não grava o campo.
         """
         if not key or not task_id:
-            logger.warning("ledger.record: skipping empty key=%r or task_id=%r",
-                           key, task_id)
+            logger.warning(
+                "ledger.record: skipping empty key=%r or task_id=%r", key, task_id
+            )
             return
         data = self._load()
         now = int(time.time())

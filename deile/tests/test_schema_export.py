@@ -8,8 +8,15 @@ exercised indirectly before.
 from __future__ import annotations
 
 from deile.tools import schema_export
-from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
-                              ToolResult, ToolSchema, ToolStatus)
+from deile.tools.base import (
+    SecurityLevel,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+    ToolStatus,
+)
 from deile.tools.cron_create_tool import _resolve_schedule
 from deile.tools.cron_tool_base import unexpected_error
 
@@ -55,6 +62,7 @@ def _tool(name: str, level: SecurityLevel) -> _MinimalTool:
 # is_security_level_allowed
 # ---------------------------------------------------------------------------
 
+
 def test_security_level_allowed_within_max():
     assert schema_export.is_security_level_allowed(
         SecurityLevel.SAFE, SecurityLevel.MODERATE
@@ -77,19 +85,26 @@ def test_security_level_disallowed_above_max():
 # iter_authorized_tools
 # ---------------------------------------------------------------------------
 
+
 def test_iter_authorized_only_filters_disabled():
     tools = {"a": _tool("a", SecurityLevel.SAFE), "b": _tool("b", SecurityLevel.SAFE)}
-    names = {t.name for t in schema_export.iter_authorized_tools(
-        tools, enabled={"a"}, authorized_only=True, security_level=None
-    )}
+    names = {
+        t.name
+        for t in schema_export.iter_authorized_tools(
+            tools, enabled={"a"}, authorized_only=True, security_level=None
+        )
+    }
     assert names == {"a"}
 
 
 def test_iter_authorized_only_false_keeps_disabled():
     tools = {"a": _tool("a", SecurityLevel.SAFE), "b": _tool("b", SecurityLevel.SAFE)}
-    names = {t.name for t in schema_export.iter_authorized_tools(
-        tools, enabled=set(), authorized_only=False, security_level=None
-    )}
+    names = {
+        t.name
+        for t in schema_export.iter_authorized_tools(
+            tools, enabled=set(), authorized_only=False, security_level=None
+        )
+    }
     assert names == {"a", "b"}
 
 
@@ -98,16 +113,22 @@ def test_iter_security_level_filters_above_max():
         "safe": _tool("safe", SecurityLevel.SAFE),
         "danger": _tool("danger", SecurityLevel.DANGEROUS),
     }
-    names = {t.name for t in schema_export.iter_authorized_tools(
-        tools, enabled={"safe", "danger"},
-        authorized_only=True, security_level=SecurityLevel.SAFE,
-    )}
+    names = {
+        t.name
+        for t in schema_export.iter_authorized_tools(
+            tools,
+            enabled={"safe", "danger"},
+            authorized_only=True,
+            security_level=SecurityLevel.SAFE,
+        )
+    }
     assert names == {"safe"}
 
 
 # ---------------------------------------------------------------------------
 # per-provider exporters
 # ---------------------------------------------------------------------------
+
 
 def test_exporters_agree_on_count():
     tools = {"a": _tool("a", SecurityLevel.SAFE), "b": _tool("b", SecurityLevel.SAFE)}
@@ -123,17 +144,28 @@ def test_exporters_respect_security_level():
         "danger": _tool("danger", SecurityLevel.DANGEROUS),
     }
     enabled = {"safe", "danger"}
-    assert len(schema_export.get_anthropic_tools(
-        tools, enabled, security_level=SecurityLevel.SAFE
-    )) == 1
-    assert len(schema_export.get_openai_functions(
-        tools, enabled, security_level=SecurityLevel.SAFE
-    )) == 1
+    assert (
+        len(
+            schema_export.get_anthropic_tools(
+                tools, enabled, security_level=SecurityLevel.SAFE
+            )
+        )
+        == 1
+    )
+    assert (
+        len(
+            schema_export.get_openai_functions(
+                tools, enabled, security_level=SecurityLevel.SAFE
+            )
+        )
+        == 1
+    )
 
 
 # ---------------------------------------------------------------------------
 # cron_tool_base.unexpected_error
 # ---------------------------------------------------------------------------
+
 
 def test_unexpected_error_shape():
     exc = RuntimeError("boom")
@@ -147,6 +179,7 @@ def test_unexpected_error_shape():
 # ---------------------------------------------------------------------------
 # cron_create_tool._resolve_schedule
 # ---------------------------------------------------------------------------
+
 
 def test_resolve_schedule_cron_only_passthrough():
     cron, run_at, error = _resolve_schedule(None, "*/5 * * * *", None)

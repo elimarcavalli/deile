@@ -5,18 +5,18 @@ from typing import Any, Dict, Optional
 
 class DEILEError(Exception):
     """Exceção base do DEILE"""
-    
+
     def __init__(
-        self, 
-        message: str, 
+        self,
+        message: str,
         error_code: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(message)
         self.message = message
         self.error_code = error_code
         self.context = context or {}
-    
+
     def __str__(self) -> str:
         if self.error_code:
             return f"[{self.error_code}] {self.message}"
@@ -25,13 +25,8 @@ class DEILEError(Exception):
 
 class ToolError(DEILEError):
     """Erro relacionado à execução de Tools"""
-    
-    def __init__(
-        self, 
-        message: str, 
-        tool_name: Optional[str] = None,
-        **kwargs
-    ):
+
+    def __init__(self, message: str, tool_name: Optional[str] = None, **kwargs):
         super().__init__(message, **kwargs)
         self.tool_name = tool_name
         if tool_name:
@@ -40,13 +35,13 @@ class ToolError(DEILEError):
 
 class ParserError(DEILEError):
     """Erro relacionado ao parsing de entrada"""
-    
+
     def __init__(
-        self, 
-        message: str, 
+        self,
+        message: str,
         input_text: Optional[str] = None,
         parser_name: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(message, **kwargs)
         self.input_text = input_text
@@ -59,13 +54,8 @@ class ParserError(DEILEError):
 
 class ModelError(DEILEError):
     """Erro relacionado aos modelos de IA"""
-    
-    def __init__(
-        self, 
-        message: str, 
-        model_name: Optional[str] = None,
-        **kwargs
-    ):
+
+    def __init__(self, message: str, model_name: Optional[str] = None, **kwargs):
         super().__init__(message, **kwargs)
         self.model_name = model_name
         if model_name:
@@ -74,13 +64,8 @@ class ModelError(DEILEError):
 
 class ConfigurationError(DEILEError):
     """Erro de configuração do sistema"""
-    
-    def __init__(
-        self, 
-        message: str, 
-        config_key: Optional[str] = None,
-        **kwargs
-    ):
+
+    def __init__(self, message: str, config_key: Optional[str] = None, **kwargs):
         super().__init__(message, **kwargs)
         self.config_key = config_key
         if config_key:
@@ -89,13 +74,13 @@ class ConfigurationError(DEILEError):
 
 class ValidationError(DEILEError):
     """Erro de validação de dados"""
-    
+
     def __init__(
-        self, 
-        message: str, 
+        self,
+        message: str,
         field_name: Optional[str] = None,
         field_value: Optional[Any] = None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(message, **kwargs)
         self.field_name = field_name
@@ -109,12 +94,7 @@ class ValidationError(DEILEError):
 class CommandError(DEILEError):
     """Erro relacionado à execução de comandos slash"""
 
-    def __init__(
-        self,
-        message: str,
-        command_name: Optional[str] = None,
-        **kwargs
-    ):
+    def __init__(self, message: str, command_name: Optional[str] = None, **kwargs):
         super().__init__(message, **kwargs)
         self.command_name = command_name
         if command_name:
@@ -135,13 +115,9 @@ class DEILEInstallError(DEILEError):
         message: str,
         step: Optional[str] = None,
         sanitized_path: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ):
-        super().__init__(
-            message,
-            error_code="DEILE_INSTALL_FAILED",
-            **kwargs
-        )
+        super().__init__(message, error_code="DEILE_INSTALL_FAILED", **kwargs)
         self.step = step
         self.sanitized_path = sanitized_path
         if step:
@@ -162,7 +138,7 @@ class PathContainmentError(DEILEError):
         message: str,
         path: Optional[str] = None,
         safe_roots: Optional[list] = None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(message, error_code="PATH_CONTAINMENT_VIOLATION", **kwargs)
         self.path = path
@@ -183,7 +159,7 @@ class PersonaError(DEILEError):
         operation: Optional[str] = None,
         recovery_suggestion: Optional[str] = None,
         error_code: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ):
         # Input validation
         if not isinstance(message, str):
@@ -205,12 +181,12 @@ class PersonaError(DEILEError):
     def to_dict(self) -> Dict[str, Any]:
         """Convert error to dictionary for logging/serialization"""
         base_dict = {
-            'message': self.message,
-            'error_code': self.error_code,
-            'context': self.context,
-            'persona_id': self.persona_id,
-            'operation': self.operation,
-            'recovery_suggestion': self.recovery_suggestion
+            "message": self.message,
+            "error_code": self.error_code,
+            "context": self.context,
+            "persona_id": self.persona_id,
+            "operation": self.operation,
+            "recovery_suggestion": self.recovery_suggestion,
         }
         return base_dict
 
@@ -219,18 +195,14 @@ class PersonaLoadError(PersonaError):
     """Erro ao carregar ou inicializar persona"""
 
     def __init__(
-        self,
-        message: str,
-        persona_id: str,
-        config_path: Optional[str] = None,
-        **kwargs
+        self, message: str, persona_id: str, config_path: Optional[str] = None, **kwargs
     ):
         super().__init__(
             message,
             persona_id=persona_id,
             operation="load_persona",
             error_code="PERSONA_LOAD_FAILED",
-            **kwargs
+            **kwargs,
         )
         self.config_path = config_path
         if config_path:
@@ -240,44 +212,31 @@ class PersonaLoadError(PersonaError):
 class PersonaSwitchError(PersonaError):
     """Erro ao alternar entre personas"""
 
-    def __init__(
-        self,
-        message: str,
-        from_persona: str,
-        to_persona: str,
-        **kwargs
-    ):
+    def __init__(self, message: str, from_persona: str, to_persona: str, **kwargs):
         super().__init__(
             message,
             persona_id=to_persona,
             operation="switch_persona",
             error_code="PERSONA_SWITCH_FAILED",
-            **kwargs
+            **kwargs,
         )
         self.from_persona = from_persona
         self.to_persona = to_persona
-        self.context.update({
-            "from_persona": from_persona,
-            "to_persona": to_persona
-        })
+        self.context.update({"from_persona": from_persona, "to_persona": to_persona})
 
 
 class PersonaConfigError(PersonaError):
     """Erro na configuração da persona"""
 
     def __init__(
-        self,
-        message: str,
-        persona_id: str,
-        config_key: Optional[str] = None,
-        **kwargs
+        self, message: str, persona_id: str, config_key: Optional[str] = None, **kwargs
     ):
         super().__init__(
             message,
             persona_id=persona_id,
             operation="validate_config",
             error_code="PERSONA_CONFIG_INVALID",
-            **kwargs
+            **kwargs,
         )
         self.config_key = config_key
         if config_key:
@@ -287,19 +246,13 @@ class PersonaConfigError(PersonaError):
 class PersonaExecutionError(PersonaError):
     """Erro durante execução de capacidade da persona"""
 
-    def __init__(
-        self,
-        message: str,
-        persona_id: str,
-        capability: str,
-        **kwargs
-    ):
+    def __init__(self, message: str, persona_id: str, capability: str, **kwargs):
         super().__init__(
             message,
             persona_id=persona_id,
             operation=f"execute_capability:{capability}",
             error_code="PERSONA_EXECUTION_FAILED",
-            **kwargs
+            **kwargs,
         )
         self.capability = capability
         self.context["capability"] = capability
@@ -313,14 +266,14 @@ class PersonaInitializationError(PersonaError):
         message: str,
         persona_id: str,
         initialization_step: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(
             message,
             persona_id=persona_id,
             operation="initialize_persona",
             error_code="PERSONA_INIT_FAILED",
-            **kwargs
+            **kwargs,
         )
         self.initialization_step = initialization_step
         if initialization_step:
@@ -331,18 +284,14 @@ class PersonaIntegrationError(PersonaError):
     """Erro na integração da persona com outros sistemas DEILE"""
 
     def __init__(
-        self,
-        message: str,
-        persona_id: str,
-        integration_component: str,
-        **kwargs
+        self, message: str, persona_id: str, integration_component: str, **kwargs
     ):
         super().__init__(
             message,
             persona_id=persona_id,
             operation=f"integrate_with:{integration_component}",
             error_code="PERSONA_INTEGRATION_FAILED",
-            **kwargs
+            **kwargs,
         )
         self.integration_component = integration_component
         self.context["integration_component"] = integration_component

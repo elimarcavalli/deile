@@ -1,4 +1,5 @@
 """Tests: atomic write and overwrite confirmation for panel export (#547)."""
+
 from __future__ import annotations
 
 import os
@@ -37,9 +38,11 @@ class TestWriteAtomic:
         target = tmp_path / "out.json"
         replaced = []
         orig_replace = os.replace
+
         def mock_replace(src, dst):
             replaced.append((src, dst))
             orig_replace(src, dst)
+
         with patch.object(os, "replace", side_effect=mock_replace):
             panel._write_atomic(b"hello", target)
         assert len(replaced) == 1
@@ -49,10 +52,12 @@ class TestWriteAtomic:
         target = tmp_path / "out.json"
         tmp_paths = []
         orig_mkstemp = __import__("tempfile").mkstemp
+
         def mock_mkstemp(dir=None, **kw):
             fd, path = orig_mkstemp(dir=dir, **kw)
             tmp_paths.append(Path(path))
             return fd, path
+
         with patch("tempfile.mkstemp", side_effect=mock_mkstemp):
             panel._write_atomic(b"data", target)
         assert len(tmp_paths) == 1

@@ -32,7 +32,7 @@ class PluginFileHandler(FileSystemEventHandler):
         if event.is_directory:
             return
 
-        if event.src_path.endswith(('.py', '.json')):
+        if event.src_path.endswith((".py", ".json")):
             # Identifica plugin baseado no path
             plugin_path = Path(event.src_path)
             plugin_dir = None
@@ -45,7 +45,9 @@ class PluginFileHandler(FileSystemEventHandler):
 
             if plugin_dir:
                 plugin_id = plugin_dir.name
-                logger.info(f"Arquivo modificado em plugin {plugin_id}: {event.src_path}")
+                logger.info(
+                    f"Arquivo modificado em plugin {plugin_id}: {event.src_path}"
+                )
                 coro = self.plugin_manager.reload_plugin(plugin_id)
                 if self._loop.is_closed():
                     logger.warning(
@@ -88,9 +90,7 @@ class HotLoader:
             self._observer = Observer()
             handler = PluginFileHandler(self.plugin_manager, self._loop)
             self._observer.schedule(
-                handler,
-                str(self.plugin_manager.plugins_dir),
-                recursive=True
+                handler, str(self.plugin_manager.plugins_dir), recursive=True
             )
             self._observer.start()
             self._is_active = True

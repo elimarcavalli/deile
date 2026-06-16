@@ -9,15 +9,20 @@ from unittest.mock import AsyncMock, MagicMock
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.implementer import WorkOutcome
-from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
-                                                 REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING,
-                                                 WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW, WORKFLOW_PR,
-                                                 WORKFLOW_REVIEWED)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor,
-                                                  _extract_pr_url)
+from deile.orchestration.pipeline.labels import (
+    REVIEW_CONCLUDED,
+    REVIEW_IN_PROGRESS,
+    REVIEW_PENDING,
+    WORKFLOW_IMPLEMENTING,
+    WORKFLOW_NEW,
+    WORKFLOW_PR,
+    WORKFLOW_REVIEWED,
+)
+from deile.orchestration.pipeline.monitor import (
+    PipelineConfig,
+    PipelineMonitor,
+    _extract_pr_url,
+)
 from deile.orchestration.pipeline.worktree_manager import Worktree
 
 
@@ -37,10 +42,12 @@ def _make_monitor(
     )
     github = MagicMock()
     github.ensure_pipeline_labels = AsyncMock()
-    github.list_issues_with_label = AsyncMock(side_effect=lambda label, **_: {
-        WORKFLOW_NEW: list(issues_new or []),
-        WORKFLOW_REVIEWED: list(issues_reviewed or []),
-    }.get(label, []))
+    github.list_issues_with_label = AsyncMock(
+        side_effect=lambda label, **_: {
+            WORKFLOW_NEW: list(issues_new or []),
+            WORKFLOW_REVIEWED: list(issues_reviewed or []),
+        }.get(label, [])
+    )
     github.list_open_prs = AsyncMock(return_value=list(prs or []))
     github.claim_with_batch = AsyncMock(return_value="abc12345")
     github.transition_issue = AsyncMock()
@@ -51,18 +58,21 @@ def _make_monitor(
 
     worktrees = MagicMock()
     worktrees.create_branch_worktree = AsyncMock(
-        return_value=Worktree(path=Path("/tmp/fake/.worktrees/x"),
-                              branch="x", base_repo=Path("/tmp/fake"))
+        return_value=Worktree(
+            path=Path("/tmp/fake/.worktrees/x"), branch="x", base_repo=Path("/tmp/fake")
+        )
     )
 
     claude = MagicMock()
-    claude.run = AsyncMock(return_value=ClaudeRunResult(
-        returncode=claude_rc,
-        stdout=claude_stdout,
-        stderr="",
-        duration_seconds=0.1,
-        cmd=("claude", "-p", "x"),
-    ))
+    claude.run = AsyncMock(
+        return_value=ClaudeRunResult(
+            returncode=claude_rc,
+            stdout=claude_stdout,
+            stderr="",
+            duration_seconds=0.1,
+            cmd=("claude", "-p", "x"),
+        )
+    )
 
     github.list_unclassified_issues = AsyncMock(return_value=[])
     github.get_pr_body = AsyncMock(return_value="")
@@ -76,10 +86,18 @@ def _make_monitor(
 
     notifier = MagicMock()
     for attr in (
-        "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "implementation_parked", "pr_picked_up",
-        "pr_reviewed", "issue_auto_classified", "follow_ups_processed", "error",
-        "pr_auto_classified", "mention_processed",
+        "issue_picked_up",
+        "issue_reviewed",
+        "implementation_started",
+        "implementation_finished",
+        "implementation_parked",
+        "pr_picked_up",
+        "pr_reviewed",
+        "issue_auto_classified",
+        "follow_ups_processed",
+        "error",
+        "pr_auto_classified",
+        "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
 
@@ -91,12 +109,18 @@ def _make_monitor(
     # decide por ground-truth (``get_pr`` None ⇒ merged). ``implement`` segue
     # fire-and-forget igual; o merge é sinalizado por ``claude_stdout``.
     implementer_stub = _FakeFireAndForgetImplementer(
-        claude_stdout=claude_stdout, claude_rc=claude_rc,
+        claude_stdout=claude_stdout,
+        claude_rc=claude_rc,
     )
 
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier,
-        review_callback=review_callback, implementer=implementer_stub,
+        cfg,
+        github=github,
+        worktrees=worktrees,
+        claude=claude,
+        notifier=notifier,
+        review_callback=review_callback,
+        implementer=implementer_stub,
     )
     return monitor, notifier
 
@@ -117,6 +141,7 @@ class _FakeFireAndForgetImplementer:
         from pathlib import Path as _P
 
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         self._stdout = claude_stdout
         self._rc = claude_rc
         self._ledger = DispatchLedger(
@@ -133,32 +158,52 @@ class _FakeFireAndForgetImplementer:
         task_id = f"rev-{self._seq:04d}"
         if resume:
             # Caminho resume bloqueante preservado — devolve outcome estruturado.
-            ended = "concluido" if ("merged" in self._stdout.lower() and self._ok()) else "incompleto"
+            ended = (
+                "concluido"
+                if ("merged" in self._stdout.lower() and self._ok())
+                else "incompleto"
+            )
             return WorkOutcome(
-                ok=self._ok(), text=self._stdout,
-                error="" if self._ok() else "boom", ended=ended, task_id=task_id,
+                ok=self._ok(),
+                text=self._stdout,
+                error="" if self._ok() else "boom",
+                ended=ended,
+                task_id=task_id,
             )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         if self._ok():
             self._ledger.record(
                 DispatchLedger.key_for_pr(pr.number),
-                task_id=task_id, session_id="", stage="pr_review",
+                task_id=task_id,
+                session_id="",
+                stage="pr_review",
             )
-        return WorkOutcome(ok=self._ok(), text="", error="" if self._ok() else "boom", task_id=task_id)
+        return WorkOutcome(
+            ok=self._ok(), text="", error="" if self._ok() else "boom", task_id=task_id
+        )
 
     async def implement(self, monitor, issue, *, resume: bool = False):
         self._seq += 1
         task_id = f"impl-{self._seq:04d}"
-        return WorkOutcome(ok=self._ok(), text="", error="" if self._ok() else "boom", task_id=task_id)
+        return WorkOutcome(
+            ok=self._ok(), text="", error="" if self._ok() else "boom", task_id=task_id
+        )
 
     async def mention(self, monitor, ref, **kwargs):
-        return WorkOutcome(ok=self._ok(), text=self._stdout, error="" if self._ok() else "boom")
+        return WorkOutcome(
+            ok=self._ok(), text=self._stdout, error="" if self._ok() else "boom"
+        )
 
     async def critique(self, monitor, issue):
-        return WorkOutcome(ok=self._ok(), text=self._stdout, error="" if self._ok() else "boom")
+        return WorkOutcome(
+            ok=self._ok(), text=self._stdout, error="" if self._ok() else "boom"
+        )
 
     async def refine(self, monitor, issue):
-        return WorkOutcome(ok=self._ok(), text=self._stdout, error="" if self._ok() else "boom")
+        return WorkOutcome(
+            ok=self._ok(), text=self._stdout, error="" if self._ok() else "boom"
+        )
 
     async def get_resume_info(self, task_id, *, endpoint_url=None):
         return {
@@ -176,8 +221,10 @@ class _FakeFireAndForgetImplementer:
 
 class TestExtractPrUrl:
     def test_extracts_pr_url(self):
-        assert _extract_pr_url("see https://github.com/o/r/pull/9") == \
-            "https://github.com/o/r/pull/9"
+        assert (
+            _extract_pr_url("see https://github.com/o/r/pull/9")
+            == "https://github.com/o/r/pull/9"
+        )
 
     def test_returns_none_when_no_url(self):
         assert _extract_pr_url("nothing here") is None
@@ -202,7 +249,9 @@ class TestStage1Review:
 
     async def test_skips_already_claimed(self):
         claimed = IssueRef(
-            number=1, title="t", url="u",
+            number=1,
+            title="t",
+            url="u",
             labels=(WORKFLOW_NEW, "~batch:dead0000"),
         )
         monitor, notifier = _make_monitor(issues_new=[claimed])
@@ -230,7 +279,9 @@ class TestStage2Implement:
         # Ground truth (PR detection, em_pr transition, notification) is
         # handled by reconcile_implementing_issues on subsequent ticks.
         rev = IssueRef(
-            number=2, title="impl me", url="u",
+            number=2,
+            title="impl me",
+            url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
         )
         monitor, notifier = _make_monitor(
@@ -252,7 +303,9 @@ class TestStage2Implement:
         # em_implementacao) still happens, but the em_pr transition is now
         # done by reconcile_implementing_issues on a subsequent tick.
         rev = IssueRef(
-            number=2, title="impl me", url="u",
+            number=2,
+            title="impl me",
+            url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
         )
         monitor, notifier = _make_monitor(
@@ -265,7 +318,8 @@ class TestStage2Implement:
         calls = monitor.github.transition_issue.call_args_list
         # The only transition is the atomic claim out of the candidate queue.
         assert calls[0].kwargs == {
-            "from_label": WORKFLOW_REVIEWED, "to_label": WORKFLOW_IMPLEMENTING
+            "from_label": WORKFLOW_REVIEWED,
+            "to_label": WORKFLOW_IMPLEMENTING,
         }
         # No em_pr transition — that happens in reconcile on next tick.
         for call in calls:
@@ -274,7 +328,9 @@ class TestStage2Implement:
 
     async def test_skips_reviewed_without_batch(self):
         rev = IssueRef(
-            number=2, title="t", url="u",
+            number=2,
+            title="t",
+            url="u",
             labels=(WORKFLOW_REVIEWED,),  # no batch claim
         )
         monitor, notifier = _make_monitor(issues_reviewed=[rev])
@@ -289,7 +345,9 @@ class TestStage2Implement:
         # carries revisada-era labels. Without the claim guard the same issue
         # was re-dispatched every tick.
         claimed = IssueRef(
-            number=2, title="t", url="u",
+            number=2,
+            title="t",
+            url="u",
             labels=(WORKFLOW_REVIEWED, WORKFLOW_IMPLEMENTING, "~batch:abc12345"),
         )
         monitor, notifier = _make_monitor(issues_reviewed=[claimed])
@@ -305,7 +363,9 @@ class TestStage2Implement:
         # the reconcile stage checks ground truth. Parking happens via the
         # reaper if the worker never opens a PR.
         rev = IssueRef(
-            number=2, title="vague meta issue", url="u",
+            number=2,
+            title="vague meta issue",
+            url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
         )
         monitor, notifier = _make_monitor(
@@ -328,7 +388,9 @@ class TestStage2Implement:
         # Issue #373: fire-and-forget dispatch — failure is logged but
         # parking is handled by reconcile/reaper on subsequent ticks.
         rev = IssueRef(
-            number=2, title="t", url="u",
+            number=2,
+            title="t",
+            url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
         )
         monitor, notifier = _make_monitor(
@@ -356,7 +418,9 @@ class TestReconcileImplementingIssues:
         to em_pr, stats.issues_implemented must increment, and
         implementation_finished notification must fire."""
         impl_issue = IssueRef(
-            number=99, title="working", url="u",
+            number=99,
+            title="working",
+            url="u",
             labels=(WORKFLOW_IMPLEMENTING, "~by:default"),
         )
         monitor, notifier = _make_monitor()
@@ -379,7 +443,9 @@ class TestReconcileImplementingIssues:
         await monitor.tick()
         # Must transition to em_pr.
         monitor.github.transition_issue.assert_called_with(
-            99, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR,
+            99,
+            from_label=WORKFLOW_IMPLEMENTING,
+            to_label=WORKFLOW_PR,
         )
         # Stats must reflect the completion.
         assert monitor.stats.issues_implemented == 1
@@ -390,7 +456,9 @@ class TestReconcileImplementingIssues:
         """When has_open_pr_for_issue returns False, the issue must stay
         in em_implementacao (no transition, no notification)."""
         impl_issue = IssueRef(
-            number=99, title="still working", url="u",
+            number=99,
+            title="still working",
+            url="u",
             labels=(WORKFLOW_IMPLEMENTING, "~by:default"),
         )
         monitor, notifier = _make_monitor()
@@ -416,8 +484,11 @@ class TestReconcileImplementingIssues:
     async def test_reconcile_skips_blocked_issues(self):
         """Issues with ~workflow:bloqueada must be skipped by reconcile."""
         from deile.orchestration.pipeline.labels import WORKFLOW_BLOCKED
+
         impl_issue = IssueRef(
-            number=99, title="blocked", url="u",
+            number=99,
+            title="blocked",
+            url="u",
             labels=(WORKFLOW_IMPLEMENTING, WORKFLOW_BLOCKED, "~by:default"),
         )
         monitor, notifier = _make_monitor()
@@ -441,7 +512,9 @@ class TestReconcileImplementingIssues:
     async def test_reconcile_skips_already_em_pr(self):
         """Issues already in ~workflow:em_pr must be skipped."""
         impl_issue = IssueRef(
-            number=99, title="done", url="u",
+            number=99,
+            title="done",
+            url="u",
             labels=(WORKFLOW_IMPLEMENTING, WORKFLOW_PR, "~by:default"),
         )
         monitor, notifier = _make_monitor()
@@ -468,8 +541,11 @@ class TestReconcileImplementingIssues:
         Default identity (shard_count=1) owns everything via title hash,
         so we use a non-default identity to test ownership filtering."""
         from deile.orchestration.pipeline.identity import MonitorIdentity
+
         impl_issue = IssueRef(
-            number=99, title="not mine", url="u",
+            number=99,
+            title="not mine",
+            url="u",
             labels=(WORKFLOW_IMPLEMENTING, "~by:other-monitor"),
         )
         monitor, notifier = _make_monitor()
@@ -498,7 +574,9 @@ class TestReconcileImplementingIssues:
         implement claims new ones."""
         # An issue in em_implementacao with a PR ready to be detected.
         impl_issue = IssueRef(
-            number=42, title="completed", url="u",
+            number=42,
+            title="completed",
+            url="u",
             labels=(WORKFLOW_IMPLEMENTING, "~by:default"),
         )
         monitor, notifier = _make_monitor()
@@ -519,28 +597,39 @@ class TestReconcileImplementingIssues:
         await monitor.tick()
         # Reconcile must have transitioned the issue to em_pr.
         monitor.github.transition_issue.assert_called_with(
-            42, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR,
+            42,
+            from_label=WORKFLOW_IMPLEMENTING,
+            to_label=WORKFLOW_PR,
         )
         assert monitor.stats.issues_implemented == 1
         notifier.implementation_finished.assert_called_once_with(42, None)
 
 
 def _setup_pr_merge_groundtruth(
-    monitor, pr_number: int, *, head_ref: str = "auto/issue-2",
-    title: str = "prt", url: str = "https://x/pull/10",
+    monitor,
+    pr_number: int,
+    *,
+    head_ref: str = "auto/issue-2",
+    title: str = "prt",
+    url: str = "https://x/pull/10",
 ) -> None:
     """Após o dispatch fresh (tick 1), o reconcile do tick 2 detecta MERGE por
     ground-truth: ``get_pr(n)`` devolve None (PR não mais aberta). A PR segue
     listada em ``em_andamento`` (com ledger entry) pro reconcile pegá-la."""
     in_progress = PrRef(
-        number=pr_number, title=title, url=url,
-        labels=(REVIEW_IN_PROGRESS,), head_ref=head_ref,
+        number=pr_number,
+        title=title,
+        url=url,
+        labels=(REVIEW_IN_PROGRESS,),
+        head_ref=head_ref,
     )
     monitor.github.list_open_prs = AsyncMock(return_value=[in_progress])
     monitor.github.get_pr = AsyncMock(return_value=None)  # merged → não-aberta
 
 
-async def _review_to_merge(monitor, pr_number: int, *, head_ref: str = "auto/issue-2") -> None:
+async def _review_to_merge(
+    monitor, pr_number: int, *, head_ref: str = "auto/issue-2"
+) -> None:
     """Dirige o fluxo review fresh → reconcile-merge em dois ticks."""
     await monitor.tick()
     _setup_pr_merge_groundtruth(monitor, pr_number, head_ref=head_ref)
@@ -551,8 +640,13 @@ class TestStage3PrReview:
     async def test_picks_up_unclaimed_open_pr(self):
         # Fire-and-forget (issue #373): tick 1 despacha fresh (pr_picked_up);
         # tick 2 reconcilia por ground-truth (PR merged) → pr_reviewed.
-        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
-                   labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
+        pr = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_PENDING,),
+            head_ref="auto/issue-2",
+        )
         monitor, notifier = _make_monitor(prs=[pr], claude_stdout="merged.")
         monitor.config.enable_review = False
         monitor.config.enable_implement = False
@@ -565,8 +659,9 @@ class TestStage3PrReview:
         assert monitor.stats.prs_reviewed == 1
 
     async def test_skips_drafts(self):
-        pr = PrRef(number=10, title="t", url="u", labels=(),
-                   head_ref="x", is_draft=True)
+        pr = PrRef(
+            number=10, title="t", url="u", labels=(), head_ref="x", is_draft=True
+        )
         monitor, notifier = _make_monitor(prs=[pr])
         monitor.config.enable_review = False
         monitor.config.enable_implement = False
@@ -574,8 +669,9 @@ class TestStage3PrReview:
         notifier.pr_picked_up.assert_not_called()
 
     async def test_skips_concluded_prs(self):
-        pr = PrRef(number=10, title="t", url="u",
-                   labels=(REVIEW_CONCLUDED,), head_ref="x")
+        pr = PrRef(
+            number=10, title="t", url="u", labels=(REVIEW_CONCLUDED,), head_ref="x"
+        )
         monitor, notifier = _make_monitor(prs=[pr])
         monitor.config.enable_review = False
         monitor.config.enable_implement = False
@@ -583,8 +679,9 @@ class TestStage3PrReview:
         notifier.pr_picked_up.assert_not_called()
 
     async def test_skips_in_progress_prs(self):
-        pr = PrRef(number=10, title="t", url="u",
-                   labels=(REVIEW_IN_PROGRESS,), head_ref="x")
+        pr = PrRef(
+            number=10, title="t", url="u", labels=(REVIEW_IN_PROGRESS,), head_ref="x"
+        )
         monitor, notifier = _make_monitor(prs=[pr])
         monitor.config.enable_review = False
         monitor.config.enable_implement = False
@@ -599,6 +696,7 @@ class TestLifecycle:
         await monitor.start()
         # Allow the first tick to fire.
         import asyncio
+
         await asyncio.sleep(0.05)
         await monitor.stop()
         assert monitor.stats.ticks >= 1
@@ -624,6 +722,7 @@ class TestIdentityAwareSelection:
         # Pick a title that hashes to shard 1 (we'll make monitor be shard 0).
         # Iterate to find one.
         from deile.orchestration.pipeline.identity import MonitorIdentity
+
         a = MonitorIdentity(monitor_id="a", shard_index=0, shard_count=2)
         # Find a title that shard 0 does NOT own.
         title = None
@@ -666,6 +765,7 @@ class TestIdentityAwareSelection:
 # PID lock auto-enable for non-default identity
 # ---------------------------------------------------------------------------
 
+
 def _make_minimal_monitor(
     tmp_path,
     *,
@@ -673,8 +773,7 @@ def _make_minimal_monitor(
     use_pid_lock: bool = False,
 ):
     """Build a PipelineMonitor with all I/O mocked, using ``tmp_path`` as repo."""
-    from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                      PipelineMonitor)
+    from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
     from deile.orchestration.pipeline.worktree_manager import Worktree
 
     cfg = PipelineConfig(
@@ -698,16 +797,27 @@ def _make_minimal_monitor(
     )
 
     notifier = MagicMock()
-    for attr in ("issue_picked_up", "issue_reviewed", "implementation_started",
-                 "implementation_finished", "pr_picked_up", "pr_reviewed",
-                 "issue_auto_classified", "follow_ups_processed", "error",
-                 "pr_auto_classified", "mention_processed"):
+    for attr in (
+        "issue_picked_up",
+        "issue_reviewed",
+        "implementation_started",
+        "implementation_finished",
+        "pr_picked_up",
+        "pr_reviewed",
+        "issue_auto_classified",
+        "follow_ups_processed",
+        "error",
+        "pr_auto_classified",
+        "mention_processed",
+    ):
         setattr(notifier, attr, AsyncMock())
 
     schedule_store = MagicMock()
-    schedule_store.load = MagicMock(return_value=MagicMock(
-        recurring=[], oneshot=[], compute_pending=MagicMock(return_value=[])
-    ))
+    schedule_store.load = MagicMock(
+        return_value=MagicMock(
+            recurring=[], oneshot=[], compute_pending=MagicMock(return_value=[])
+        )
+    )
 
     return PipelineMonitor(
         cfg,
@@ -754,13 +864,17 @@ class TestPidLockAutoEnable:
 # Ownership label stamped on claimed PRs
 # ---------------------------------------------------------------------------
 
+
 class TestPrOwnershipLabel:
     async def test_claimed_pr_gets_ownership_label(self):
         """After a PR is claimed in stage 3, the monitor's ownership label must
         be stamped on the PR — mirroring stage 1 issue behaviour."""
         pr = PrRef(
-            number=77, title="my pr", url="https://x/pull/77",
-            labels=(REVIEW_PENDING,), head_ref="auto/issue-5",
+            number=77,
+            title="my pr",
+            url="https://x/pull/77",
+            labels=(REVIEW_PENDING,),
+            head_ref="auto/issue-5",
         )
         monitor, notifier = _make_monitor(prs=[pr])
         monitor.config.enable_review = False
@@ -770,21 +884,27 @@ class TestPrOwnershipLabel:
         # ownership label must have been added
         ownership = monitor.identity.ownership_label()
         add_labels_calls = monitor.github.add_labels.call_args_list
-        ownership_calls = [c for c in add_labels_calls if ownership in (c.args[2] if c.args else [])]
-        assert ownership_calls, (
-            f"expected add_labels call with {ownership!r}; calls were: {add_labels_calls}"
-        )
+        ownership_calls = [
+            c for c in add_labels_calls if ownership in (c.args[2] if c.args else [])
+        ]
+        assert (
+            ownership_calls
+        ), f"expected add_labels call with {ownership!r}; calls were: {add_labels_calls}"
 
 
 # ---------------------------------------------------------------------------
 # Stage 4: follow-up issue creation
 # ---------------------------------------------------------------------------
 
+
 class TestStage4FollowUps:
     def _merged_pr(self) -> PrRef:
         return PrRef(
-            number=55, title="fix: parser", url="https://github.com/o/r/pull/55",
-            labels=(REVIEW_PENDING,), head_ref="auto/issue-10",
+            number=55,
+            title="fix: parser",
+            url="https://github.com/o/r/pull/55",
+            labels=(REVIEW_PENDING,),
+            head_ref="auto/issue-10",
         )
 
     async def test_stage4_not_called_when_not_merged(self):
@@ -809,7 +929,9 @@ class TestStage4FollowUps:
     async def test_stage4_runs_after_merge(self):
         """When claude stdout contains 'merged', stage 4 fetches PR body + comments."""
         pr = self._merged_pr()
-        monitor, _ = _make_monitor(prs=[pr], claude_stdout="PR merged successfully", claude_rc=0)
+        monitor, _ = _make_monitor(
+            prs=[pr], claude_stdout="PR merged successfully", claude_rc=0
+        )
         monitor.config.enable_review = False
         monitor.config.enable_implement = False
         await _review_to_merge(monitor, 55, head_ref="auto/issue-10")
@@ -938,11 +1060,13 @@ class TestForgeErrorCounter:
     def test_forge_errors_starts_at_zero(self):
         """O campo forge_errors deve existir e iniciar em 0."""
         from deile.orchestration.pipeline.monitor import _Stats
+
         s = _Stats()
         assert s.forge_errors == 0
 
     def test_forge_errors_can_be_incremented(self):
         from deile.orchestration.pipeline.monitor import _Stats
+
         s = _Stats()
         s.forge_errors += 1
         assert s.forge_errors == 1
@@ -952,6 +1076,7 @@ class TestForgeErrorCounter:
         import warnings
 
         from deile.orchestration.pipeline.monitor import _Stats
+
         s = _Stats()
         s.forge_errors = 3
         with warnings.catch_warnings(record=True) as w:
@@ -966,6 +1091,7 @@ class TestForgeErrorCounter:
         import warnings
 
         from deile.orchestration.pipeline.monitor import _Stats
+
         s = _Stats()
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -990,7 +1116,8 @@ def test_publish_status_state_integrates_with_real_state(monkeypatch):
     repo_root = _Path(__file__).resolve().parents[4]
     server_path = repo_root / "infra" / "k8s" / "pipeline_status_server.py"
     spec = importlib.util.spec_from_file_location(
-        "pipeline_status_server_pub_test", str(server_path),
+        "pipeline_status_server_pub_test",
+        str(server_path),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -1004,6 +1131,7 @@ def test_publish_status_state_integrates_with_real_state(monkeypatch):
     monitor._stats.ticks = 4
     monitor._stats.errors = 1
     import time as _time
+
     monitor._publish_status_state(state, _time.monotonic() - 0.5)
 
     snap = state.snapshot_status()
@@ -1028,7 +1156,9 @@ class TestTickSummary:
         """A tick with no work must still emit a summary (all-zero counters)."""
         monitor, _ = _make_monitor()
         monitor.config.enable_classify = False
-        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+        with caplog.at_level(
+            logging.INFO, logger="deile.orchestration.pipeline.monitor"
+        ):
             await monitor.tick()
         records = [r for r in caplog.records if "tick #" in r.message]
         assert len(records) == 1, f"expected 1 tick-summary record, got {len(records)}"
@@ -1039,8 +1169,7 @@ class TestTickSummary:
 
     async def test_tick_summary_reflects_classify_delta(self, caplog):
         """Classifying one issue must show classified=1 in the summary."""
-        new_issue = IssueRef(number=1, title="t", url="u",
-                             labels=("bug",))
+        new_issue = IssueRef(number=1, title="t", url="u", labels=("bug",))
         monitor, _ = _make_monitor()
         monitor.config.enable_classify = True
         monitor.config.enable_review = False
@@ -1049,7 +1178,9 @@ class TestTickSummary:
         monitor.github.list_unclassified_issues = AsyncMock(
             return_value=[new_issue],
         )
-        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+        with caplog.at_level(
+            logging.INFO, logger="deile.orchestration.pipeline.monitor"
+        ):
             await monitor.tick()
         records = [r for r in caplog.records if "tick #" in r.message]
         assert len(records) == 1
@@ -1058,10 +1189,11 @@ class TestTickSummary:
 
     async def test_tick_summary_reflects_review_delta(self, caplog):
         """Reviewing one issue must show reviewed=1 in the summary."""
-        new_issue = IssueRef(number=1, title="t", url="u",
-                             labels=(WORKFLOW_NEW,))
+        new_issue = IssueRef(number=1, title="t", url="u", labels=(WORKFLOW_NEW,))
         monitor, _ = _make_monitor(issues_new=[new_issue])
-        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+        with caplog.at_level(
+            logging.INFO, logger="deile.orchestration.pipeline.monitor"
+        ):
             await monitor.tick()
         records = [r for r in caplog.records if "tick #" in r.message]
         assert len(records) == 1
@@ -1073,7 +1205,9 @@ class TestTickSummary:
         # incremented by reconcile_implementing_issues on subsequent ticks.
         # A fresh dispatch increments dispatched but not implemented.
         rev = IssueRef(
-            number=2, title="impl me", url="u",
+            number=2,
+            title="impl me",
+            url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
         )
         monitor, _ = _make_monitor(
@@ -1082,7 +1216,9 @@ class TestTickSummary:
         )
         monitor.config.enable_review = False
         monitor.config.enable_pr_review = False
-        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+        with caplog.at_level(
+            logging.INFO, logger="deile.orchestration.pipeline.monitor"
+        ):
             await monitor.tick()
         records = [r for r in caplog.records if "tick #" in r.message]
         assert len(records) == 1
@@ -1095,8 +1231,13 @@ class TestTickSummary:
         """Concluir uma review (merge detectado no reconcile) deve mostrar
         dispatched=1 no resumo. Fire-and-forget (issue #373): o contador
         ``prs_reviewed`` só sobe no reconcile (tick 2), não no dispatch fresh."""
-        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
-                   labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
+        pr = PrRef(
+            number=10,
+            title="prt",
+            url="https://x/pull/10",
+            labels=(REVIEW_PENDING,),
+            head_ref="auto/issue-2",
+        )
         monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged.")
         monitor.config.enable_review = False
         monitor.config.enable_implement = False
@@ -1104,7 +1245,9 @@ class TestTickSummary:
         await monitor.tick()
         _setup_pr_merge_groundtruth(monitor, 10)
         # Tick 2: reconcile detecta merge → prs_reviewed++ → dispatched=1.
-        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+        with caplog.at_level(
+            logging.INFO, logger="deile.orchestration.pipeline.monitor"
+        ):
             await monitor.tick()
         records = [r for r in caplog.records if "tick #" in r.message]
         assert len(records) == 1
@@ -1132,14 +1275,16 @@ class TestTickSummary:
         monitor.github.list_open_prs = AsyncMock(
             side_effect=Exception("gh api down"),
         )
-        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+        with caplog.at_level(
+            logging.INFO, logger="deile.orchestration.pipeline.monitor"
+        ):
             await monitor.tick()
         records = [r for r in caplog.records if "tick #" in r.message]
         assert len(records) == 1
         msg = records[0].message
-        assert "backlog=unavailable" in msg, (
-            f"expected backlog=unavailable when forge fails, got: {msg}"
-        )
+        assert (
+            "backlog=unavailable" in msg
+        ), f"expected backlog=unavailable when forge fails, got: {msg}"
 
     async def test_tick_summary_includes_backlog_counts(self, caplog):
         """When forge responds, the summary must include backlog issue/PR counts."""
@@ -1157,11 +1302,17 @@ class TestTickSummary:
         # Override with a forge that returns known backlog counts.
         monitor.forge.list_issues_with_label = AsyncMock(
             side_effect=lambda label, **_: {
-                WORKFLOW_NEW: [IssueRef(number=1, title="a", url="u", labels=(WORKFLOW_NEW,))],
+                WORKFLOW_NEW: [
+                    IssueRef(number=1, title="a", url="u", labels=(WORKFLOW_NEW,))
+                ],
                 WORKFLOW_REVIEWED: [],
                 WORKFLOW_IMPLEMENTING: [
-                    IssueRef(number=2, title="b", url="u", labels=(WORKFLOW_IMPLEMENTING,)),
-                    IssueRef(number=3, title="c", url="u", labels=(WORKFLOW_IMPLEMENTING,)),
+                    IssueRef(
+                        number=2, title="b", url="u", labels=(WORKFLOW_IMPLEMENTING,)
+                    ),
+                    IssueRef(
+                        number=3, title="c", url="u", labels=(WORKFLOW_IMPLEMENTING,)
+                    ),
                 ],
             }.get(label, []),
         )
@@ -1170,14 +1321,16 @@ class TestTickSummary:
                 PrRef(number=10, title="p", url="u", labels=(), head_ref="x"),
             ],
         )
-        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+        with caplog.at_level(
+            logging.INFO, logger="deile.orchestration.pipeline.monitor"
+        ):
             await monitor.tick()
         records = [r for r in caplog.records if "tick #" in r.message]
         assert len(records) == 1
         msg = records[0].message
-        assert "backlog={issues:3 prs:1}" in msg, (
-            f"expected backlog={{issues:3 prs:1}}, got: {msg}"
-        )
+        assert (
+            "backlog={issues:3 prs:1}" in msg
+        ), f"expected backlog={{issues:3 prs:1}}, got: {msg}"
 
     async def test_tick_summary_records_count_isolated_from_external_handlers(
         self, caplog
