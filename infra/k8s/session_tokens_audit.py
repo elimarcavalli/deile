@@ -989,6 +989,9 @@ def render_table(console, sessions: list, top: int | None, start: int = 0,
                   f"{s['tool_calls']:>5} {fmt_age(s.get('created_s')):>7}  {title_of(s)[:50]}")
         return
     from rich.table import Table
+    from rich.markup import escape as _esc  # texto livre da sessão pode conter
+    #   colchetes (`[/backlog|...]`, `[stage]`) que o Rich parsearia como tag →
+    #   MarkupError. Escapamos só os cells de texto livre (título/última resposta).
     pvc = page_rows[0]["pvc"] if page_rows else (rows[0]["pvc"] if rows else "?")
     rng = (f"  (linhas {start + 1}–{start + len(page_rows)} de {len(rows)})"
            if count is not None else "")
@@ -1042,8 +1045,8 @@ def render_table(console, sessions: list, top: int | None, start: int = 0,
             kind_cell,
             f"{s['cost_usd']:.4f}",
             model_label(s, dim=True),
-            title_of(s) + err_flag,
-            last_response_cell(s),
+            _esc(title_of(s)) + err_flag,
+            _esc(last_response_cell(s)),
             issue_pr_cell(s),
             f"[{gstyle}]{st}[/{gstyle}]",
             wl_cell,
