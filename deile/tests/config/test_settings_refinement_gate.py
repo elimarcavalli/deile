@@ -16,7 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.config.settings import Settings, reset_settings
+from deile.config.settings import (Settings, _apply_env_overrides,
+                                    reset_settings)
 
 
 @pytest.fixture(autouse=True)
@@ -85,3 +86,59 @@ class TestRefinementGateDecoupling:
         cfg = build_default_pipeline_config()
 
         assert cfg.enable_refinement_gate is True
+
+
+class TestRefinementGateEnvParse:
+    """Parse do env var VIVO via ``_env_bool`` (issue #85).
+
+    Ao contrário do espelho ``enable_resume`` (cujo env var foi REMOVIDO na #309
+    fase 3), ``DEILE_PIPELINE_REFINEMENT_GATE`` está registrado em
+    ``_ENV_OVERRIDES`` — então o parse ``"0"``/``"true"``/``"on"`` → bool é
+    exercido de fato, fechando a malha que os testes acima (que setam o field
+    direto no ``Settings``) deixavam aberta.
+    """
+
+    def test_env_zero_turns_gate_off(self, monkeypatch):
+        """DEILE_PIPELINE_REFINEMENT_GATE=0 → field False."""
+        monkeypatch.setenv("DEILE_PIPELINE_REFINEMENT_GATE", "0")
+        s = Settings()
+        _apply_env_overrides(s)
+        assert s.pipeline_refinement_gate is False
+
+    def test_env_true_keeps_gate_on(self, monkeypatch):
+        """DEILE_PIPELINE_REFINEMENT_GATE=true → field True."""
+        monkeypatch.setenv("DEILE_PIPELINE_REFINEMENT_GATE", "true")
+        s = Settings()
+        _apply_env_overrides(s)
+        assert s.pipeline_refinement_gate is True
+
+    def test_env_on_is_lenient_truthy(self, monkeypatch):
+        """_env_bool é leniente: "on" também liga (paridade com os demais bools)."""
+        monkeypatch.setenv("DEILE_PIPELINE_REFINEMENT_GATE", "on")
+        s = Settings()
+        _apply_env_overrides(s)
+        assert s.pipeline_refinement_gate is True
+
+    def test_env_unset_preserves_default_true(self, monkeypatch):
+        """Sem o env var, o default (True) é preservado."""
+        monkeypatch.delenv("DEILE_PIPELINE_REFINEMENT_GATE", raising=False)
+        s = Settings()
+        _apply_env_overrides(s)
+        assert s.pipeline_refinement_gate is True
+
+
+class TestRefinementGateSettingsJson:
+    """Override via ``settings.json`` (``pipeline.refinement_gate`` → ``_to_bool``)."""
+
+    def test_apply_overrides_off(self):
+        s = Settings()
+        s.apply_overrides({"pipeline": {"refinement_gate": False}})
+        assert s.pipeline_refinement_gate is False
+
+    def test_apply_overrides_bool_string_coercion(self):
+        s = Settings()
+        s.apply_overrides({"pipeline": {"refinement_gate": "false"}})
+        assert s.pipeline_refinement_gate is False
+
+    def test_default_is_on(self):
+        assert Settings().pipeline_refinement_gate is True
