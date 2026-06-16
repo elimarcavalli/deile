@@ -141,18 +141,6 @@ jobs:
           pip install -e ".[test,otel]"
           pip install pytest-cov pytest-xdist pytest-mock coverage
 
-      - name: Lint with ruff (if available)
-        run: |
-          pip install ruff || echo "Ruff not available, skipping lint"
-          ruff check . || echo "Ruff check completed with issues"
-        continue-on-error: true
-
-      - name: Type check with mypy (if available)
-        run: |
-          pip install mypy || echo "mypy not available, skipping type check"
-          mypy deile/ || echo "mypy check completed with issues"
-        continue-on-error: true
-
       # Gate de cobertura: medido 87% em 2026-06-15; gate em 85% com margem.
       # --cov-fail-under=85 é o gate real — o CI falha se a cobertura cair abaixo.
       - name: Run tests
@@ -174,10 +162,12 @@ jobs:
           fail_ci_if_error: false
 
   # ──────────────────────────────────────────────────────────────────────────
-  # QUALIDADE DE CÓDIGO — advisory (continue-on-error: permanece)
+  # QUALIDADE DE CÓDIGO — GATING; bloqueia merge em regressão
+  #
+  # Ratchet: cada gate só pode encolher (erros/violações só podem diminuir).
   # ──────────────────────────────────────────────────────────────────────────
   code-quality:
-    name: Code quality (advisory)
+    name: Code quality (GATING)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -194,27 +184,60 @@ jobs:
 
       - name: Install quality tools
         run: |
-          pip install -r requirements.txt
-          pip install flake8 black isort radon
+          pip install black==26.5.1 isort==8.0.1 ruff==0.15.17 radon interrogate mypy mypy-baseline
 
-      - name: Check code formatting with Black
-        run: |
-          black --check --diff deile/
-        continue-on-error: true
+      # --- GATE: formatação (falha se código não está normalizado) ---
+      # Baseline: 817 arquivos reformatados no commit de normalização.
+      # Verde significa que nenhum arquivo saiu do padrão desde então.
+      - name: Gate — black --check (GATING)
+        run: black --check deile/
 
-      - name: Check import sorting with isort
-        run: |
-          isort --check-only --diff deile/
-        continue-on-error: true
+      # --- GATE: ordenação de imports ---
+      - name: Gate — isort --check-only (GATING)
+        run: isort --check-only deile/
 
-      - name: Calculate code complexity
-        run: |
-          radon cc deile/ -a
-        continue-on-error: true
+      # --- GATE: linting E/F/W (config em pyproject.toml [tool.ruff.lint]) ---
+      # Baseline: 62 violações ignoradas por categoria (E741/E402/E501/F841).
+      # Ratchet: a lista ignore só pode encolher.
+      - name: Gate — ruff check (GATING)
+        run: ruff check deile/
 
-      - name: Generate complexity report
+      # --- GATE: complexidade ciclomática ---
+      # Baseline medido em 2026-06-16: média A (3.24). Teto: B (avg ≤ 10.0).
+      # Ratchet: ao atingir A consistentemente, abaixe o teto para ≤ 5.
+      - name: Gate — radon CC média ≤ B (GATING)
         run: |
-          radon mi deile/
+          AVG=$(radon cc deile/ -a | tail -1 | grep -oE '[0-9]+\.[0-9]+')
+          echo "Complexidade ciclomática média: $AVG"
+          python3 -c "
+          avg = float('$AVG')
+          if avg > 10.0:
+              raise SystemExit(f'Complexidade média {avg:.2f} excede teto B (10.0). Refatore antes de mergear.')
+          print(f'OK: complexidade média {avg:.2f} dentro do teto B (10.0)')
+          "
+
+      # --- GATE: mypy via mypy-baseline ---
+      # Baseline: 617 erros registrados em mypy-baseline.txt (2026-06-16).
+      # Gate falha APENAS em erros novos (erros do baseline passam).
+      # Para atualizar o baseline após correções:
+      #   mypy deile/ --ignore-missing-imports | mypy-baseline sync
+      # Ratchet: mypy-baseline.txt só pode encolher (menos linhas = menos erros).
+      - name: Install project deps (mypy precisa dos stubs/tipos)
+        run: pip install -e ".[test,otel]" -q
+
+      - name: Gate — mypy apenas erros novos vs baseline (GATING)
+        run: mypy deile/ --ignore-missing-imports | mypy-baseline filter
+
+      # --- GATE: cobertura de docstrings ---
+      # Baseline medido em 2026-06-16: 39.9%. Threshold: 39% (margem 1 ponto).
+      # Config em pyproject.toml [tool.interrogate] (fail-under no CI).
+      # Ratchet: só pode aumentar.
+      - name: Gate — interrogate docstring coverage ≥ 39% (GATING)
+        run: interrogate deile/ --config pyproject.toml --fail-under 39
+
+      # --- Radon MI — informativo apenas (não bloqueia) ---
+      - name: Info — radon MI (não bloqueia)
+        run: radon mi deile/ --min B
         continue-on-error: true
 
   # ──────────────────────────────────────────────────────────────────────────
@@ -441,10 +464,17 @@ jobs:
           "
 
   # ──────────────────────────────────────────────────────────────────────────
-  # DOCUMENTAÇÃO — advisory
+  # DOCUMENTAÇÃO — GATING; bloqueia merge em inconsistência doc↔código
+  #
+  # Gates:
+  #   1. validate_doc_consistency.py: invariantes arquiteturais (cross-refs,
+  #      gate de cobertura no ci.yml, pytest presente). Ver scripts/.
+  #   2. pymarkdown: lint de Markdown nos docs de system_design.
+  #   3. markdown-link-check: dead links nos docs (continua em advisory para
+  #      links externos — pode quebrar por rate-limit/timeout externo).
   # ──────────────────────────────────────────────────────────────────────────
   documentation:
-    name: Documentation (advisory)
+    name: Documentation (GATING)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -459,20 +489,28 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install documentation tools
-        run: |
-          pip install -r requirements.txt
-          pip install sphinx sphinx-rtd-theme || echo "Sphinx not configured"
+      - name: Install doc tools
+        run: pip install pymarkdownlnt
 
-      - name: Validate documentation files
-        run: |
-          find docs/ -name "*.md" -exec echo "Checking {}" \; -exec head -5 {} \; || echo "No docs directory"
-          ls -la docs/ || echo "No docs directory found"
+      # --- GATE: consistência doc↔código (GATING) ---
+      # Verifica: --cov-fail-under está no ci.yml (não no pytest.ini),
+      # links relativos entre docs/system_design/ resolvem, pytest presente.
+      - name: Gate — consistência doc↔código (GATING)
+        run: python3 scripts/validate_doc_consistency.py
 
-      - name: Check README
+      # --- Advisory: lint de Markdown nos docs (não bloqueia no momento) ---
+      # Baseline de violações existentes em 2026-06-16: ~40 (MD028/MD031/MD032/
+      # MD040/MD038/MD022/MD024/MD004 nos docs de system_design/). O gate de lint
+      # de Markdown é advisory até que os docs sejam normalizados em PR dedicada.
+      # Ratchet: ao zerar as violações, remover o continue-on-error e converter
+      # em gate real. Regras desativadas permanentemente:
+      #   MD013 (linha longa) — tabelas são necessariamente largas
+      #   MD033 (HTML inline) — usado em alguns docs
+      #   MD041 (primeiro elemento não é H1) — docs de suporte
+      - name: Info — pymarkdown lint docs/system_design/ (advisory)
         run: |
-          test -f README.md && echo "README.md exists" || echo "No README.md found"
-          test -f README_NEW_ARCHITECTURE.md && echo "Architecture README exists" || echo "No architecture README"
+          pymarkdown --config .pymarkdown scan docs/system_design/
+        continue-on-error: true
 
   # ──────────────────────────────────────────────────────────────────────────
   # NOTIFICAÇÃO DE FALHA
@@ -480,7 +518,7 @@ jobs:
   notify-on-failure:
     name: Notify on failure
     runs-on: ubuntu-latest
-    needs: [test, secret-scan, security-scan, code-quality, functional-tests]
+    needs: [test, secret-scan, security-scan, code-quality, functional-tests, documentation]
     if: failure()
     permissions:
       contents: read
@@ -497,7 +535,7 @@ jobs:
     name: Deployment ready
     runs-on: ubuntu-latest
     needs:
-      [test, secret-scan, security-scan, code-quality, functional-tests, build-and-package]
+      [test, secret-scan, security-scan, code-quality, functional-tests, build-and-package, documentation]
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
     permissions:
       contents: read
