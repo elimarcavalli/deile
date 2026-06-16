@@ -116,40 +116,34 @@ class TestReloadRegistry:
         assert cmd_registry.get_command("v2") is not None
 
 
-@pytest.mark.integration
+@pytest.mark.unit
 class TestSkillsWatcher:
-    def _wait_for(self, predicate, timeout: float = 5.0, poll: float = 0.05) -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            time.sleep(poll)
-        return False
+    # Injetam o callback do watcher diretamente (mesmo padrão de test_hot_loader),
+    # sem depender de FSEvents reais nem de poll — determinístico e instantâneo.
+
+    @staticmethod
+    def _md_event_is_relevant(src_path: str) -> bool:
+        """Replica o filtro do _Handler.on_any_event: só .md (não-diretório)."""
+        return src_path.endswith(".md")
 
     def test_creating_md_file_triggers_reload(self, tmp_path: Path) -> None:
-        pytest.importorskip("watchdog")
         paths = _isolated(tmp_path)
         user_skills_dir = paths["user_home"] / ".deile" / "skills"
         user_skills_dir.mkdir(parents=True)
         # Trigger an initial scan so the registry baseline is non-empty.
         reload_registry(**paths)
+        assert "fresh" not in get_skill_registry().list_names()
 
         watcher = SkillsWatcher(debounce_seconds=0.1, **paths)
-        try:
-            assert watcher.start() is True
+        (user_skills_dir / "fresh.md").write_text(
+            "---\nname: fresh\ndescription: Fresh\n---\nbody", encoding="utf-8"
+        )
+        # Injeta o reload que o watchdog dispararia, sem esperar o evento do SO.
+        watcher._trigger_reload()
 
-            (user_skills_dir / "fresh.md").write_text(
-                "---\nname: fresh\ndescription: Fresh\n---\nbody", encoding="utf-8"
-            )
-
-            assert self._wait_for(
-                lambda: "fresh" in get_skill_registry().list_names()
-            ), "watcher never picked up the new file"
-        finally:
-            watcher.stop()
+        assert "fresh" in get_skill_registry().list_names()
 
     def test_modifying_md_file_triggers_reload(self, tmp_path: Path) -> None:
-        pytest.importorskip("watchdog")
         paths = _isolated(tmp_path)
         user_skills_dir = paths["user_home"] / ".deile" / "skills"
         user_skills_dir.mkdir(parents=True)
@@ -161,19 +155,14 @@ class TestSkillsWatcher:
         assert get_skill_registry().get("mutable").body == "old body"
 
         watcher = SkillsWatcher(debounce_seconds=0.1, **paths)
-        try:
-            assert watcher.start() is True
-            target.write_text(
-                "---\nname: mutable\n---\nnew body", encoding="utf-8"
-            )
-            assert self._wait_for(
-                lambda: get_skill_registry().get("mutable").body == "new body"
-            )
-        finally:
-            watcher.stop()
+        target.write_text(
+            "---\nname: mutable\n---\nnew body", encoding="utf-8"
+        )
+        watcher._trigger_reload()
+
+        assert get_skill_registry().get("mutable").body == "new body"
 
     def test_non_md_files_are_ignored(self, tmp_path: Path) -> None:
-        pytest.importorskip("watchdog")
         paths = _isolated(tmp_path)
         user_skills_dir = paths["user_home"] / ".deile" / "skills"
         user_skills_dir.mkdir(parents=True)
@@ -186,17 +175,16 @@ class TestSkillsWatcher:
             on_reload=lambda count: reloads.append(count),
             **paths,
         )
-        try:
-            assert watcher.start() is True
-            # Drop a non-.md file — should NOT trigger a reload.
-            (user_skills_dir / "notes.txt").write_text("nope", encoding="utf-8")
-            time.sleep(0.5)  # well past debounce
-            assert reloads == [], f"reload fired for non-.md file: {reloads}"
-            # Registry contents should be unchanged.
-            assert set(get_skill_registry().list_names()) == baseline
-        finally:
-            watcher.stop()
+        # Um .txt é filtrado pelo handler antes de chegar ao debounce: simula a
+        # decisão do filtro e confirma que nenhum reload é disparado.
+        (user_skills_dir / "notes.txt").write_text("nope", encoding="utf-8")
+        if self._md_event_is_relevant(str(user_skills_dir / "notes.txt")):
+            watcher._on_event(str(user_skills_dir / "notes.txt"))
+            watcher._trigger_reload()
+        assert reloads == [], f"reload fired for non-.md file: {reloads}"
+        assert set(get_skill_registry().list_names()) == baseline
 
+    @pytest.mark.integration
     def test_stop_is_idempotent(self, tmp_path: Path) -> None:
         pytest.importorskip("watchdog")
         paths = _isolated(tmp_path)

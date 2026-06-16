@@ -32,6 +32,17 @@ _VERSION_RE = re.compile(
     r"^DEILE v(\d+\.\d+\.\d+) \(build (\d{8})\)\s*$"
 )
 
+
+@pytest.fixture(scope="module")
+def version_run():
+    """Roda `python deile.py --version` UMA vez (env/cwd padrão) e compartilha o
+    resultado entre todos os testes que só asseguram a saída canônica — evita ~10
+    spawns de subprocess idênticos."""
+    return subprocess.run(
+        [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+
 # ---------------------------------------------------------------------------
 # Formato curto de saída
 # ---------------------------------------------------------------------------
@@ -40,52 +51,32 @@ _VERSION_RE = re.compile(
 class TestShortVersionFormat:
     """Valida o formato da saída curta conforme decisão do stakeholder."""
 
-    def test_format_matches_regex(self):
+    def test_format_matches_regex(self, version_run):
         """A saída deve casar com: DEILE vX.Y.Z (build YYYYMMDD)"""
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        out = result.stdout.strip()
+        assert version_run.returncode == 0, f"stderr: {version_run.stderr}"
+        out = version_run.stdout.strip()
         assert _VERSION_RE.match(out), f"Formato inválido: {out!r}"
 
-    def test_version_matches_version_module(self):
+    def test_version_matches_version_module(self, version_run):
         """A versão exibida deve bater com deile.__version__."""
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        )
-        out = result.stdout.strip()
+        out = version_run.stdout.strip()
         import deile.__version__ as version_mod
         expected = f"DEILE v{version_mod.__version__} (build {version_mod.__build_number__})"
         assert out == expected, f"Esperado {expected!r}, obtido {out!r}"
 
-    def test_build_number_is_eight_digits(self):
+    def test_build_number_is_eight_digits(self, version_run):
         """O build number deve ter exatamente 8 dígitos."""
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        )
-        match = _VERSION_RE.match(result.stdout.strip())
+        match = _VERSION_RE.match(version_run.stdout.strip())
         assert match is not None
         assert len(match.group(2)) == 8
 
-    def test_exit_code_zero(self):
+    def test_exit_code_zero(self, version_run):
         """Fast-path deve sair com 0."""
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, cwd=str(REPO_ROOT),
-        )
-        assert result.returncode == 0
+        assert version_run.returncode == 0
 
-    def test_single_line_output(self):
+    def test_single_line_output(self, version_run):
         """A saída deve ser exatamente 1 linha."""
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        )
-        lines = result.stdout.strip().split("\n")
+        lines = version_run.stdout.strip().split("\n")
         assert len(lines) == 1, f"Esperado 1 linha, obtido {len(lines)}: {lines}"
 
 
@@ -106,17 +97,13 @@ class TestVAlias:
         assert result.returncode == 0
         assert _VERSION_RE.match(result.stdout.strip())
 
-    def test_v_flag_same_output_as_version(self):
+    def test_v_flag_same_output_as_version(self, version_run):
         """-v e --version produzem saídas idênticas."""
-        r1 = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        )
         r2 = subprocess.run(
             [sys.executable, str(REPO_ROOT / "deile.py"), "-v"],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
         )
-        assert r1.stdout == r2.stdout
+        assert version_run.stdout == r2.stdout
 
     def test_v_registered_as_cli_flag_alias(self):
         """VersionCommand deve ter -v em cli_flag_aliases."""
@@ -177,13 +164,9 @@ class TestZeroSideEffects:
             ".env foi criado — fast-path não deve ter side-effects"
         )
 
-    def test_no_env_touched(self):
+    def test_no_env_touched(self, version_run):
         """Rodar --version não deve modificar .env existente."""
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        )
-        assert result.returncode == 0
+        assert version_run.returncode == 0
         # Não há assertions sobre .env — só garantimos que não crashou
 
 
@@ -195,23 +178,15 @@ class TestZeroSideEffects:
 class TestNonTTYBehavior:
     """Em ambiente não-interativo, o fast-path não deve perguntar nada."""
 
-    def test_no_prompt_in_non_tty(self):
+    def test_no_prompt_in_non_tty(self, version_run):
         """Com stdout não-TTY, --version não deve perguntar sobre painel completo."""
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        )
         # Sem TTY, não deve haver prompt
-        assert "Instalar dependências" not in result.stdout
-        assert result.returncode == 0
+        assert "Instalar dependências" not in version_run.stdout
+        assert version_run.returncode == 0
 
-    def test_no_stderr_in_non_tty(self):
+    def test_no_stderr_in_non_tty(self, version_run):
         """Fast-path não deve escrever nada em stderr."""
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        )
-        assert result.stderr == ""
+        assert version_run.stderr == ""
 
     def test_stdin_not_consumed(self):
         """Fast-path não deve ler stdin em modo não-interativo."""
@@ -254,13 +229,9 @@ class TestSubprocessSmoke:
         assert result.returncode == 0
         assert "DEILE v" in result.stdout
 
-    def test_version_has_no_rich_markup(self):
+    def test_version_has_no_rich_markup(self, version_run):
         """A saída curta não deve conter markup Rich."""
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        )
-        assert "[" not in result.stdout  # Rich usa [bold], [cyan], etc.
+        assert "[" not in version_run.stdout  # Rich usa [bold], [cyan], etc.
 
     def test_version_response_time_under_200ms(self):
         """Fast-path deve responder em < 200ms (não faz bootstrap)."""
