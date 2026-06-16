@@ -731,7 +731,7 @@ python3 -m pytest deile/tests/path/test_x.py -v   # um arquivo
 
 O CI virou gate real (hardening em 3 etapas) — todas as Actions são **SHA-pinadas** e cada job tem `permissions: contents: read`:
 
-**Etapa 1/3 — segurança & supply-chain (#729):**
+**Etapa 1/3 — segurança & supply-chain (#732):**
 - **`test`** — roda a **suíte real** `deile/tests/` paralela (`pytest-xdist -n auto`) com **`--cov-fail-under=85`** (cobertura medida: 87%). Antes apontava para `tests/` (inexistente) e mascarava o exit code — CI verde era teatro (corrigido em #724).
 - **`secret-scan`** — `gitleaks` (full-history) com allowlist de FPs em `.gitleaks.toml` (restrita aos arquivos de teste que usam segredos fake).
 - **`security-scan`** — `bandit -lll` (só HIGH, zero achados legados) + `pip-audit` sem mascarar.
@@ -739,7 +739,11 @@ O CI virou gate real (hardening em 3 etapas) — todas as Actions são **SHA-pin
 **Etapa 2/3 — build, artefato & smoke (#733):**
 - **`functional-tests`** (advisory → **gating**) — builda o wheel, instala em venv limpo e valida `deile --version`/`--help` (exit 0) + import dos registries core.
 - **`build-and-package`** (advisory → **gating**) — wheel + sdist, `twine check`, smoke de install-from-wheel, **todos os extras resolvidos offline** (`[test]`, `[otel]`, `[scheduler]`, `[webhook]`, `[ui]`) em venvs isolados, **Docker build** da imagem `deile-stack:local` (buildx + cache GHA) e smoke de import dos módulos críticos dos pods. `performance-tests` (que coletava 0 benchmarks — teatro) foi **removido**.
-- **`deployment-ready`** passa a **exigir** `secret-scan`, `security-scan`, `functional-tests` e `build-and-package`.
+- **`deployment-ready`** passa a **exigir** `secret-scan`, `security-scan`, `functional-tests`, `build-and-package`, `code-quality` e `documentation`.
+
+**Etapa 3/3 — qualidade de código (#736):**
+- **`code-quality`** (advisory → **gating**) — dois gates sem reformatação (formatação/mypy ficam para a issue #735 de pós-reformat): `interrogate deile/ --fail-under=39` (cobertura de docstrings ≥ 39%; baseline 39,9% em 2026-06-16; ratchet: só pode aumentar) + `radon cc deile/ -a` com falha se a complexidade ciclomática média ≥ 10,0 (nota B→C; baseline A/3,24 em 2026-06-16). `mypy` corre em modo advisory (`continue-on-error: true`) até o gate real no #735.
+- **`documentation`** (sempre presente) — `scripts/validate_doc_consistency.py` verifica invariantes doc↔código (`--cov-fail-under` no `ci.yml` e não no `pytest.ini`, cross-refs de `docs/system_design/` para arquivos existentes, presença do gate de testes); `pymarkdown` corre em modo advisory (~40 violações legadas, gate real após limpeza sistemática).
 
 ---
 

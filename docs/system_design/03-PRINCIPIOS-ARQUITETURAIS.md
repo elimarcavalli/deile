@@ -126,7 +126,7 @@
 
 | Regra | Detalhe |
 |---|---|
-| Configuração | `pytest.ini` define `testpaths=deile/tests` e `--cov-fail-under=80` |
+| Configuração | `pytest.ini` define `testpaths=deile/tests`; **`--cov-fail-under` está no CI** (`ci.yml` job `test`, gate real `--cov-fail-under=85`) — ausente do `pytest.ini` para não bloquear runs locais de subconjunto (invariante verificado por `scripts/validate_doc_consistency.py`) |
 | Async | `asyncio_mode=auto` — testes async não precisam de `@pytest.mark.asyncio` |
 | Markers | Registrados em `pytest.ini` sob `markers:`; `--strict-markers` ativo (registrar antes de usar) |
 
