@@ -324,6 +324,53 @@ class PermissionManager:
         except Exception as e:
             logger.error(f"Failed to save permission rules to {config_path}: {e}")
     
+    def load_org_rules(self, org_config_root: Path) -> None:
+        """Carrega regras de permissão da camada ORG a partir de ``org_config_root/permissions.yaml``.
+
+        Regras de org têm prioridade **maior** que as defaults (priority < 10)
+        e são estritamente monotônicas — só apertem, nunca afrouxam. A org pode
+        negar ou exigir aprovação; não pode conceder além do que o baseline permite.
+        """
+        permissions_file = org_config_root / "permissions.yaml"
+        if not permissions_file.exists():
+            return
+        try:
+            with open(permissions_file, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            if not isinstance(config, dict):
+                logger.warning(
+                    "permissions: org permissions.yaml em %s não é um mapping; ignorado",
+                    permissions_file,
+                )
+                return
+            rules_config = config.get("permission_rules", [])
+            loaded = 0
+            for rule_data in rules_config:
+                org_priority = rule_data.get("priority", 5)
+                rule = PermissionRule(
+                    id=f"org__{rule_data['id']}",
+                    name=rule_data["name"],
+                    description=rule_data.get("description", ""),
+                    resource_type=ResourceType(rule_data["resource_type"]),
+                    resource_pattern=rule_data["resource_pattern"],
+                    tool_names=rule_data["tool_names"],
+                    permission_level=PermissionLevel(rule_data["permission_level"]),
+                    conditions=rule_data.get("conditions", {}),
+                    priority=org_priority,
+                    enabled=rule_data.get("enabled", True),
+                )
+                self.add_rule(rule)
+                loaded += 1
+            logger.info(
+                "permissions: %d regras de org carregadas de %s",
+                loaded, permissions_file,
+            )
+        except Exception as exc:
+            logger.error(
+                "permissions: falha ao carregar regras de org de %s: %s",
+                permissions_file, exc,
+            )
+
     def get_rule_by_id(self, rule_id: str) -> Optional[PermissionRule]:
         """Get rule by ID"""
         for rule in self.rules:
