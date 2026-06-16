@@ -1,0 +1,27 @@
+# Configuração do gitleaks — allowlist de falsos positivos legados
+#
+# CONTEXTO: varredura inicial (2026-06-15) detectou 86 "achados" — todos
+# concentrados em 9 arquivos de teste que usam strings fake propositalmente
+# (ex.: "glpat-abcdefghij1234567890", "sk-from-env-12345") para provar que o
+# scanner de segredos DO PRÓPRIO PROJETO os detecta. Nenhum segredo real.
+#
+# POLÍTICA: a allowlist abaixo cobre SOMENTE esses paths de teste.
+# Qualquer achado fora desses paths, ou novo arquivo não listado aqui,
+# BLOQUEIA o CI — comportamento desejado.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Strings fake em testes unitários — propositalmente parecidas com segredos para validar o scanner de segredos do projeto"
+paths = [
+  '''deile/tests/infra/test_dispatch_logger\.py''',
+  '''deile/tests/infra/test_claude_install\.py''',
+  '''deile/tests/infra/test_k8s_setup\.py''',
+  '''deile/tests/infra/test_wrapper_dual_forge\.py''',
+  '''deile/tests/observability/test_dispatch_export\.py''',
+  '''deile/tests/observability/test_tracer\.py''',
+  '''deile/tests/security/test_secrets_scanner_bot\.py''',
+  '''deile/tests/security/test_secrets_scanner_gitlab\.py''',
+  '''deile/tests/test_autonomy_integration\.py''',
+]
