@@ -203,6 +203,39 @@ def _reset_settings_singleton():
     reset_settings()
 
 
+@pytest.fixture(autouse=True)
+def _reset_global_singletons():
+    """Reset os singletons lazy de processo antes/depois de cada teste.
+
+    Cada um é um global de módulo com ``reset_X()`` que zera a instância (recriada
+    sob demanda no próximo ``get_X()``). Sem este reset hermético central, um teste
+    que muta o singleton vaza o estado pro próximo — a causa-raiz reincidente das
+    falhas ordering-dependent (#432/#471/#499). O ``_CIRCUIT_BREAKER`` do
+    deile_worker_client, com estado OPEN vazado, recusava dispatch em testes
+    vítimas (ex.: test_dispatch_deile_task: "circuit breaker open — worker
+    degraded") sob seeds aleatórias do pytest-randomly.
+
+    NOTA: o ``SkillRegistry`` NÃO é resetado aqui — o ``SkillsWatcher`` segura uma
+    referência à instância, e zerar o singleton entre testes orfanaria o watcher
+    (quebra test_watcher). Isolar o registry exige tratar o watcher junto — fica
+    para um fix dedicado.
+    """
+    from deile.core.models.tier_router import reset_tier_router
+    from deile.events.event_bus import reset_event_bus
+    from deile.infrastructure.deile_worker_client import reset_circuit_breaker
+    from deile.storage.usage_repository import reset_usage_repository
+
+    def _reset_all():
+        reset_tier_router()
+        reset_event_bus()
+        reset_usage_repository()
+        reset_circuit_breaker()
+
+    _reset_all()
+    yield
+    _reset_all()
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_audit_logger(tmp_path_factory):
     """Point the global ``AuditLogger`` at a session-scoped temp dir.
