@@ -375,7 +375,9 @@ Quando uma issue recebe `~workflow:nova` (ou o bot é atribuído/mencionado), o 
 - **Portão de refinamento** — toda issue nova é **criticada por escopo** por uma persona escolhida pelo tipo: `intent → analyst`, `feature`/`refactor` → `architect`, `bug → debugger`. Issues **VAGAS** ganham `refinar` + estado de refino e são reescritas (corpo, comentários, bracket `[TIPO]` do título) **até 5 voltas** (contador durável via label `~refine:N`). Um gap de alto impacto pode pausar em `~workflow:aguardando_stakeholder` com 2–3 opções sugeridas — o humano remove a label para retomar.
 - **Decomposição** — intents que passam são quebrados em issues derivadas pelo `architect` (default anti-flood: **agregar numa única** issue com checklist `- [ ]`; só dividir com independência provada).
 - **PRs/MRs** — `~review:pendente` → `~review:em_andamento` → `~review:concluida`.
-- **Locks & marcadores** — `~batch:<sha8>` (claim, só quando há mais de um monitor); `~mention:processado` (idempotência); `~workflow:bloqueada` (bloqueio duro, exclui do auto-resume).
+- **Estado terminal & GC** — `~workflow:concluida` é aplicada **automaticamente** pelo GC (`run_terminal_gc`) a issues fechadas (idempotente, nunca manual — issue #587).
+- **Locks & marcadores** — `~batch:<sha8>` (claim distribuído, só quando há mais de um monitor); `~by:<id>` (dono do claim); `~mention:processado` (idempotência de menção); `~follow_ups:processed` (idempotência do estágio de follow-ups num PR mergeado); `~workflow:bloqueada` (bloqueio duro, exclui do auto-resume).
+- **Contadores duráveis** (sobrevivem a restart) — `~refine:N` (voltas do portão de refinamento, teto 5); `~attempt:N` (re-claims do **reaper** sobre trabalho stuck — em `N ≥ reaper_max_attempts`, default 3, **bloqueia** em vez de liberar); `~prioridade:0..3` (reordena a seleção de candidatos — menor primeiro; sem label = por último; PRs herdam da issue vinculada).
 
 ### 🧭 As 5 etapas — cada uma roteável de forma independente
 
@@ -727,12 +729,17 @@ python3 -m pytest deile/tests/path/test_x.py -v   # um arquivo
 
 ### 🚦 Gates de CI (`.github/workflows/ci.yml`)
 
-O CI virou gate real (etapa 1/3 do hardening, #729) — todas as Actions são SHA-pinadas e cada job tem `permissions: contents: read`:
+O CI virou gate real (hardening em 3 etapas) — todas as Actions são **SHA-pinadas** e cada job tem `permissions: contents: read`:
 
+**Etapa 1/3 — segurança & supply-chain (#729):**
 - **`test`** — roda a **suíte real** `deile/tests/` paralela (`pytest-xdist -n auto`) com **`--cov-fail-under=85`** (cobertura medida: 87%). Antes apontava para `tests/` (inexistente) e mascarava o exit code — CI verde era teatro (corrigido em #724).
 - **`secret-scan`** — `gitleaks` (full-history) com allowlist de FPs em `.gitleaks.toml` (restrita aos arquivos de teste que usam segredos fake).
 - **`security-scan`** — `bandit -lll` (só HIGH, zero achados legados) + `pip-audit` sem mascarar.
-- **`deployment-ready`** passa a **exigir** `secret-scan` e `security-scan`.
+
+**Etapa 2/3 — build, artefato & smoke (#733):**
+- **`functional-tests`** (advisory → **gating**) — builda o wheel, instala em venv limpo e valida `deile --version`/`--help` (exit 0) + import dos registries core.
+- **`build-and-package`** (advisory → **gating**) — wheel + sdist, `twine check`, smoke de install-from-wheel, **todos os extras resolvidos offline** (`[test]`, `[otel]`, `[scheduler]`, `[webhook]`, `[ui]`) em venvs isolados, **Docker build** da imagem `deile-stack:local` (buildx + cache GHA) e smoke de import dos módulos críticos dos pods. `performance-tests` (que coletava 0 benchmarks — teatro) foi **removido**.
+- **`deployment-ready`** passa a **exigir** `secret-scan`, `security-scan`, `functional-tests` e `build-and-package`.
 
 ---
 
