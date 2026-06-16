@@ -180,12 +180,18 @@ def test_show_welcome_box_is_not_full_terminal_width_when_room_for_compact() -> 
 
 
 @pytest.mark.unit
-def test_show_welcome_does_not_set_console_explicit_width() -> None:
+def test_show_welcome_does_not_set_console_explicit_width(monkeypatch) -> None:
     """A `Console` viva do `ConsoleUIManager` não deve travar `_width`.
 
     Se `_width` for setado no construtor, `Console.size` retorna esse valor
     em vez de chamar `os.get_terminal_size()` — quebra a adaptação a resize.
     """
+    # ``COLUMNS``/``LINES`` no ambiente são lidos pelo Rich para ``_width`` no
+    # construtor (com ``force_terminal=True``); o pytest-xdist seta ``COLUMNS``
+    # nos workers, o que mascararia este teste. Limpamos para validar de fato
+    # que a PRODUÇÃO não passa ``width=`` — independente do ambiente.
+    monkeypatch.delenv("COLUMNS", raising=False)
+    monkeypatch.delenv("LINES", raising=False)
     # ``ConsoleUIManager.__init__`` instancia o ``Console`` real. Verificamos
     # diretamente que o construtor não passa ``width=`` para Rich.
     from deile.ui.console_ui import ConsoleUIManager as _UI
