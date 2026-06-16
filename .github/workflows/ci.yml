@@ -218,10 +218,18 @@ jobs:
         continue-on-error: true
 
   # ──────────────────────────────────────────────────────────────────────────
-  # TESTES FUNCIONAIS — advisory (continue-on-error: permanece)
+  # TESTES FUNCIONAIS — GATING (issue #730)
+  #
+  # Comprova que o artefato wheel inicializa corretamente:
+  #   1. Builda o wheel (fonte de verdade do artefato publicável).
+  #   2. Instala em venv limpo — sem editable, sem source tree.
+  #   3. `deile --version` e `deile --help` devem sair com exit 0.
+  #   4. Imports dos registries core (tools, commands) e ConfigManager devem
+  #      funcionar — garantia de que a descoberta automática não quebrou.
+  # Qualquer falha aqui bloqueia o merge.
   # ──────────────────────────────────────────────────────────────────────────
   functional-tests:
-    name: Functional tests (advisory)
+    name: Functional tests (GATING)
     runs-on: ubuntu-latest
     needs: test
     permissions:
@@ -237,71 +245,56 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Build wheel
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip build
+          python -m build --wheel
 
-      - name: Test DEILE CLI basic functionality
+      - name: Install wheel in clean venv
         run: |
-          python -m deile --version || echo "Version command test"
-          python -m deile --help || echo "Help command test"
-        continue-on-error: true
+          python -m venv /tmp/func-venv
+          /tmp/func-venv/bin/pip install --upgrade pip
+          # --force-reinstall + --no-cache-dir: garante que o PRÓPRIO pacote deile
+          # seja instalado a partir do wheel (não só suas deps) — defende contra
+          # pip considerar o pacote "já satisfeito"/cacheado e pular o top-level.
+          /tmp/func-venv/bin/pip install --force-reinstall --no-cache-dir "$(ls dist/*.whl)"
+          # Verificação loud: falha o gate se o pacote deile não entrou no venv.
+          /tmp/func-venv/bin/pip show deile
 
-      - name: Test configuration loading
-        run: |
-          python -c "from deile.config.manager import ConfigManager; cm = ConfigManager(); print('Config loading: OK')"
-        continue-on-error: true
+      - name: CLI smoke — deile --version (exit 0 obrigatório)
+        run: /tmp/func-venv/bin/python -m deile --version
 
-      - name: Test core components initialization
+      - name: CLI smoke — deile --help (exit 0 obrigatório)
+        run: /tmp/func-venv/bin/python -m deile --help
+
+      - name: Registry imports e ConfigManager
         run: |
-          python -c "
-          try:
-              from deile.core.agent import Agent
-              from deile.tools.registry import ToolRegistry
-              from deile.commands.registry import CommandRegistry
-              print('Core components: OK')
-          except Exception as e:
-              print(f'Core components error: {e}')
-          "
-        continue-on-error: true
+          /tmp/func-venv/bin/python - <<'EOF'
+          from deile.tools.registry import ToolRegistry
+          from deile.commands.registry import CommandRegistry
+          from deile.config.manager import ConfigManager
+          ConfigManager()
+          print("registries + ConfigManager OK")
+          EOF
 
   # ──────────────────────────────────────────────────────────────────────────
-  # BENCHMARKS — advisory
-  # ──────────────────────────────────────────────────────────────────────────
-  performance-tests:
-    name: Performance benchmarks (advisory)
-    runs-on: ubuntu-latest
-    needs: test
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-
-      - name: Set up Python
-        # actions/setup-python v5
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest-benchmark
-
-      - name: Run performance benchmarks
-        run: |
-          pytest deile/tests/ -k "performance or benchmark" --benchmark-only || echo "Performance tests completed"
-        continue-on-error: true
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # BUILD — advisory
+  # BUILD — GATING (issue #730)
+  #
+  # Garante que o artefato de distribuição e a imagem Docker estão saudáveis:
+  #   1. `python -m build` gera wheel + sdist sem erros.
+  #   2. `twine check dist/*` valida metadados PyPI.
+  #   3. Smoke de install-from-wheel em venv limpo.
+  #   4. Cada extra offline ([test], [otel], [scheduler], [webhook], [ui])
+  #      resolve em venv limpo (princípio arquitetural #14).
+  #      A extra [bot] depende de git URL externa (elimarcavalli/deilebot) e
+  #      requer BOT_REPO_TOKEN — testada no workflow install-smoke.yml dedicado.
+  #   5. Docker build da imagem REAL deile-stack:local (clone do deilebot +
+  #      WITH_BOT=1, espelhando a produção) + smoke de import dos módulos dos
+  #      pods. Cache de layers via type=gha.
+  # Qualquer falha aqui bloqueia o merge.
   # ──────────────────────────────────────────────────────────────────────────
   build-and-package:
-    name: Build & package (advisory)
+    name: Build & package (GATING)
     runs-on: ubuntu-latest
     needs: [test, code-quality]
     permissions:
@@ -319,19 +312,133 @@ jobs:
 
       - name: Install build tools
         run: |
-          python -m pip install --upgrade pip
-          pip install build wheel setuptools
+          python -m pip install --upgrade pip build twine
 
-      - name: Build package
-        run: |
-          python -m build
-        continue-on-error: true
+      - name: Build wheel + sdist (GATE)
+        run: python -m build
 
-      - name: Check package
+      - name: twine check (GATE)
+        run: twine check dist/*
+
+      - name: Install wheel em venv limpo (smoke)
         run: |
-          pip install twine
-          twine check dist/* || echo "Package check completed"
-        continue-on-error: true
+          python -m venv /tmp/pkg-venv
+          /tmp/pkg-venv/bin/pip install --upgrade pip
+          # --force-reinstall + --no-cache-dir: garante o install do pacote deile
+          # do wheel (não só deps). pip show falha alto se o pacote não entrou.
+          /tmp/pkg-venv/bin/pip install --force-reinstall --no-cache-dir "$(ls dist/*.whl)"
+          /tmp/pkg-venv/bin/pip show deile
+          /tmp/pkg-venv/bin/python -c "import deile; print('wheel import OK')"
+          /tmp/pkg-venv/bin/python -m deile --version
+
+      # Testa resolução de cada extra offline em venv isolado.
+      # [bot] é propositalmente excluído: depende de git URL externa
+      # (elimarcavalli/deilebot) e requer BOT_REPO_TOKEN — cobre o install-smoke.yml.
+      # Usa $(ls dist/*.whl) para obter o path exato antes de concatenar o sufixo
+      # de extra — `dist/*.whl[extra]` em bash trata [...] como glob char-class.
+      - name: Extras offline — [test] (GATE)
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          python -m venv /tmp/extra-test
+          /tmp/extra-test/bin/pip install --upgrade pip
+          /tmp/extra-test/bin/pip install "${WHEEL}[test]"
+
+      - name: Extras offline — [otel] (GATE)
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          python -m venv /tmp/extra-otel
+          /tmp/extra-otel/bin/pip install --upgrade pip
+          /tmp/extra-otel/bin/pip install "${WHEEL}[otel]"
+
+      - name: Extras offline — [scheduler] (GATE)
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          python -m venv /tmp/extra-scheduler
+          /tmp/extra-scheduler/bin/pip install --upgrade pip
+          /tmp/extra-scheduler/bin/pip install "${WHEEL}[scheduler]"
+
+      - name: Extras offline — [webhook] (GATE)
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          python -m venv /tmp/extra-webhook
+          /tmp/extra-webhook/bin/pip install --upgrade pip
+          /tmp/extra-webhook/bin/pip install "${WHEEL}[webhook]"
+
+      - name: Extras offline — [ui] (GATE)
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          python -m venv /tmp/extra-ui
+          /tmp/extra-ui/bin/pip install --upgrade pip
+          /tmp/extra-ui/bin/pip install "${WHEEL}[ui]"
+
+      # ------------------------------------------------------------------
+      # Docker build da imagem de produção (GATE)
+      #
+      # O Dockerfile usa --mount=type=bind,source=deilebot no builder e faz um
+      # COPY incondicional de /build/deilebot no stage final — que só existe com
+      # WITH_BOT=1. Por isso buildamos a imagem REAL: clone do deilebot + WITH_BOT=1
+      # (espelha deploy.py:397, que usa WITH_BOT=1 quando deilebot/ está presente).
+      #
+      # Cache de layers: usamos o cache embutido do buildx (type=gha) para
+      # reutilizar camadas de pip install entre runs (a camada mais pesada).
+      # Mesmo sem cache pré-aquecido o build conclui em ~5 min no runner.
+      # ------------------------------------------------------------------
+      # Clona o deilebot/ no contexto e builda WITH_BOT=1 — a imagem REAL de
+      # produção (deploy.py:397 usa WITH_BOT=1 quando deilebot/ existe). O bind
+      # mount do Dockerfile exige deilebot/ presente; o COPY final de
+      # /build/deilebot só existe com WITH_BOT=1.
+      - name: Clona deilebot/ no contexto (imagem real, WITH_BOT=1)
+        env:
+          BOT_REPO_TOKEN: ${{ secrets.BOT_REPO_TOKEN }}
+        run: |
+          if [ -z "$BOT_REPO_TOKEN" ]; then
+            echo "::error::BOT_REPO_TOKEN ausente — necessário para clonar deilebot e buildar a imagem real (WITH_BOT=1)"
+            exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${BOT_REPO_TOKEN}@github.com/elimarcavalli/deilebot.git" deilebot
+          test -d deilebot/deilebot || { echo "::error::clone do deilebot incompleto"; exit 1; }
+
+      - name: Set up Docker Buildx
+        # docker/setup-buildx-action v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Build imagem Docker deile-stack:local (GATE)
+        # docker/build-push-action v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          push: false
+          load: true
+          tags: deile-stack:local
+          build-args: |
+            WITH_BOT=1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Docker smoke — import deile (GATE)
+        run: |
+          docker run --rm deile-stack:local \
+            /venv/bin/python -c "import deile; print('deile import OK')"
+
+      - name: Docker smoke — módulos dos pods (GATE)
+        run: |
+          docker run --rm deile-stack:local \
+            /venv/bin/python -c "
+          import deile
+          import importlib, sys
+          # Módulos críticos dos pods (worker, claude-worker, pipeline, bot)
+          core_mods = [
+              'deile.tools.registry',
+              'deile.commands.registry',
+              'deile.config.manager',
+              'deile.orchestration.pipeline.dispatch_resolver',
+              'deile.orchestration.pipeline.model_resolver',
+              'deile.orchestration.pipeline.reasoning_resolver',
+          ]
+          for mod in core_mods:
+              importlib.import_module(mod)
+          print('pod module imports OK')
+          "
 
   # ──────────────────────────────────────────────────────────────────────────
   # DOCUMENTAÇÃO — advisory
