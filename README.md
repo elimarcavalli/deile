@@ -113,8 +113,8 @@ python3 deile.py
 python3 -m venv .venv
 source .venv/bin/activate              # macOS/Linux  (.venv\Scripts\activate no Windows)
 pip install -r requirements.txt
-cp .env.example .env                   # ~450 linhas, seções comentadas
-# preencha ao menos uma chave: ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY / GOOGLE_API_KEY
+cp .env.example .env                   # ~540 linhas, seções comentadas
+# preencha ao menos uma chave: ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY / GOOGLE_API_KEY / OPENROUTER_API_KEY
 python3 deile.py
 ```
 
@@ -221,6 +221,9 @@ Definição em `deile/config/model_providers.yaml`. Provedores só são registra
 | OpenAI | `OpenAIProvider` | `OPENAI_API_KEY` | `openai` |
 | DeepSeek | `DeepSeekProvider` ⟵ estende `OpenAIProvider` | `DEEPSEEK_API_KEY` | `openai` (endpoint `api.deepseek.com/v1`) |
 | Gemini | `GeminiProvider` | `GOOGLE_API_KEY` | `google-genai` |
+| **OpenRouter** | `OpenRouterProvider` ⟵ estende `OpenAIProvider` | `OPENROUTER_API_KEY` | `openai` (endpoint `openrouter.ai/api/v1`) |
+
+> 🌐 **OpenRouter (Decisão #50)** é um **gateway OpenAI-compatible**: uma chave dá acesso a todos os modelos (slug `openrouter:vendor/model`, com `/` no model_id). O **custo é autoritativo** — vem do campo `usage.cost` da própria resposta (`extra_body={"usage":{"include":true}}`), com a tabela do YAML só como fallback (sem undercount). ⚠️ Privacidade: o prompt é roteado a provedores terceiros (hop documentado no YAML).
 
 ### 🧮 Roteamento — dois roteadores coexistem
 
@@ -248,6 +251,8 @@ Fonte única em `deile/core/models/reasoning.py`. O DEILE adota o **vocabulário
 
 Configurável em três níveis: **global** (`DEILE_REASONING_EFFORT` / `/reasoning` no CLI), **por etapa do pipeline** (`DEILE_PIPELINE_REASONING_<STAGE>`) e na coluna *Reasoning* do painel TUI.
 
+🔒 **Hard override por sessão** (`/reasoning use <nível>`): grava `forced_reasoning_effort` no contexto da sessão e **vence a injeção per-turn do worker**, estabelecendo a precedência **forced > session > global > provider default**. `/reasoning use clear` remove o override (idempotente); `/reasoning use auto` força o default do provider (não é clear). O slot soft (`/reasoning <nível>`) segue inalterado.
+
 ---
 
 ## 🎭 Sistema de personas
@@ -255,7 +260,7 @@ Configurável em três níveis: **global** (`DEILE_REASONING_EFFORT` / `/reasoni
 Personas são MD-driven: editar o Markdown muda o comportamento, sem tocar em Python.
 
 - 📚 **Library** (`deile/personas/library/*.yaml`): `analyst`, `architect`, `debugger`, `developer`, `reviewer` (nome/id/capacidades).
-- 📝 **Instruções** (`deile/personas/instructions/*.md`): `analyst`, `architect`, `debugger`, `developer`, `reviewer`, `discord_developer`, `monitor`, `fallback` (a prosa que entra no system prompt).
+- 📝 **Instruções** (`deile/personas/instructions/*.md`): `analyst`, `architect`, `debugger`, `developer`, `reviewer`, `discord_developer`, `monitor`, `monitor_qa`, `fallback` (a prosa que entra no system prompt).
 
 O pipeline escolhe a persona pelo tipo da issue/etapa — `analyst` refina intents, `architect` arquiteta features/refactors, `debugger` investiga bugs e `reviewer` revisa PRs. A persona `monitor` fica **fora** desse despacho por tipo: supervisiona o namespace K8s na Fase B do pod `deile-monitor` (o tick mecânico do pipeline é determinístico, sem LLM).
 
@@ -378,9 +383,11 @@ Quando uma issue recebe `~workflow:nova` (ou o bot é atribuído/mencionado), o 
 
 | Eixo | Por etapa | Global | Onde |
 |---|---|---|---|
-| 👷 **Worker** | `DEILE_PIPELINE_DISPATCH_<STAGE>` | `DEILE_PIPELINE_DISPATCH_MODE` (default `deile-worker`) | `dispatch_resolver.py` |
+| 👷 **Worker** | `DEILE_PIPELINE_DISPATCH_<STAGE>` | `DEILE_PIPELINE_DISPATCH_MODE` (built-in default `deile-worker`) | `dispatch_resolver.py` |
 | 🧠 **Modelo** | `DEILE_PIPELINE_MODEL_<STAGE>` | `DEILE_PREFERRED_MODEL` | `model_resolver.py` |
 | 🤔 **Reasoning** | `DEILE_PIPELINE_REASONING_<STAGE>` | `DEILE_REASONING_EFFORT` | `reasoning_resolver.py` |
+
+> 📌 O *default built-in* do resolver é `deile-worker`, mas o **manifest do pipeline** (`46-deile-pipeline-deployment.yaml`) agora **versiona `DEILE_PIPELINE_DISPATCH_MODE=claude`** (all-claude-worker) + `DEILE_PIPELINE_MAX_PARALLEL=2` como default em produção — antes esse routing vinha de `kubectl set env` e qualquer `kubectl apply` o resetava (causando drift/CrashLoop). `max_parallel=2` alinha ao cap de concorrência do claude-worker (acima disso só gera `409` + churn de label).
 
 Cada etapa aponta para um worker da frota:
 
@@ -396,7 +403,7 @@ Cada etapa aponta para um worker da frota:
 | **Qualquer trigger sobre uma PR/MR** | Brief **unificado** `pr_unified`: o worker abre a PR, descobre o estado real (papel autor/assignee/reviewer; HEAD vs último review; threads abertas; comentários dirigidos a mim) e age — revisa, comenta, atende thread ou mergeia. PR **open** → push direto; **merged/closed** → branch derivada `auto/<orig>-followup-<sha>` + nova PR |
 | **Issue** + comentário | Faz o que o comentário pede (one-shot sob persona `developer`); se a issue está num gate ativo, o próprio gate relê o comentário |
 
-> 🔒 **Quality-gate:** o **brief unificado de PR** exige a **suíte completa verde** (`python3 -m pytest deile/tests/ -q`) antes de approve/merge; o **implementador** roda só os testes impactados (`-p no:cov`) e delega a suíte completa ao revisor. O brief confronta entrega vs pedido — testes verdes não substituem requisito faltante.
+> 🔒 **Quality-gate (adaptativo ao CI, #85):** o **brief unificado de PR** detecta se o repo-alvo tem CI e adapta o portão de regressão — **com CI**, o revisor exige todos os checks 100% verdes (corrige e dá push até passar) e **não** roda a suíte in-pod (o CI é o portão); **sem CI**, ele roda a **suíte completa** ele mesmo (`python3 -m pytest deile/tests/ -q`). Além disso, o estágio `review_one_open_pr` consulta `forge.get_ci_status(pr)` **antes de despachar**: com o CI ainda `pending`, **pula o dispatch neste tick** (sem gastar tentativa) e reconcilia no próximo — evitando redispachar a review a cada ~60s enquanto o CI roda por minutos. O **implementador** roda só os testes impactados (`-p no:cov`) e delega a suíte/CI ao revisor. O brief confronta entrega vs pedido (claim-vs-código, completude vs ACs, qualidade dos testes, escopo, segurança, design) — verde não substitui requisito faltante.
 
 ### ♻️ Resume sob demanda
 
@@ -472,10 +479,26 @@ Todos os pods compartilham uma **única imagem** `deile-stack:local` (`imagePull
 | `deile-worker` | `:8766` | Roda **DEILE Python in-process**; alvo de dispatch HTTP do pipeline |
 | `claude-worker` | `:8767` | Roda **`claude -p`** em worktrees isolados; auth via `CLAUDE_CODE_OAUTH_TOKEN` env (Secret `claude-credentials`, token ~1 ano — issue #603) |
 | `deile-pipeline` | `:8768` (status, in-process) | O **monitor de forge** — não recebe dispatch (sem Service de ingestão de tarefas); expõe só o Service read-only `deile-pipeline-status` p/ o painel. No mais, só "chama pra fora" |
-| `deile-monitor` | `:8769` | **Supervisor determinístico do cluster** (vigias V1–V8); distinto do pipeline. Expõe um control-plane on-demand (status sem-LLM, ordens, Q&A read-only) consumido pelo `deilebot` |
+| `deile-monitor` | `:8769` | **Supervisor determinístico do cluster** (vigias V1–V8); distinto do pipeline. Expõe um control-plane on-demand (status sem-LLM, ordens, Q&A read-only via persona `monitor_qa` — o único pod que vê kubectl + forge + `/state`) consumido pelo `deilebot` |
 | `deile-shell` | — | Sandbox `kubectl exec`-only, toolset cheio; prompt vem do humano |
 
-> **➕ Frota de CLI workers (opcional, on-demand).** Além dos 6 pods core, qualquer CLI de codificação vira um pod-worker despachável (Service próprio, portas derivadas do `default_port` de cada adapter em `infra/k8s/cli_adapters/`). Nascem `replicas:0` (scale-to-zero, custo zero ocioso) e são instalados sob demanda (`deploy.py k8s cli-worker-install <kind>`). Para o catálogo de workers disponíveis, abra `ls infra/k8s/cli_adapters/`. Ver Decisão #51.
+#### ➕ Frota de CLI workers plugáveis (Decisão #51)
+
+Além dos 6 pods core, **qualquer CLI de codificação headless** vira um pod-worker despachável. Cada um roda o **server genérico** `cli_worker_server.py` (sobre `_worker_core.py` — lease, heartbeat, subprocess one-shot, gate pós-run de commit+push+test) dirigido por **um adapter** `infra/k8s/cli_adapters/<kind>.py` (Protocol `CliAdapter`). O auto-discovery monta `ADAPTERS` como **fonte única** que dirige resolver, painel e geração de manifest/NetworkPolicy — **adicionar worker = escrever o adapter, nenhum consumidor é editado** (`test_worker_registry_drives_everything.py`). Todos nascem `replicas:0` (scale-to-zero, custo zero ocioso) e são escalados 0→1 sob demanda (`cli_worker_scaler.py`).
+
+| Worker | Porta | CLI / auth | Resume nativo | Commit |
+|---|---|---|---|---|
+| `opencode-worker` | `:8771` | opencode · env (`OPENROUTER_API_KEY`) | `run --session` | brief_driven |
+| `codex-worker` | `:8772` | codex · env (`OPENAI_API_KEY`); OAuth opt-in (`DEILE_CODEX_AUTH=oauth`) | `exec resume` | brief_driven |
+| `qwen-worker` | `:8773` | qwen · env (tríade OpenAI-compat) | `--resume` | brief_driven |
+| `aider-worker` | `:8774` | aider · env (`OPENROUTER_API_KEY`/`DEEPSEEK_API_KEY`) | `--restore-chat-history` | **cli_autocommit** (`--no-attribute-*`) |
+| `goose-worker` | `:8775` | goose · env (`OPENROUTER_API_KEY`/`OPENAI_API_KEY`) | named-session `--resume` | brief_driven |
+
+- **Success gate, não exit-code:** `WorkResult.ok = adapter.parse_output(...).ok AND` o gate pós-run (novo commit + push, ou suíte verde quando o brief exige) — exit-codes de CLI são pouco confiáveis. `git_strategy`: `brief_driven` (o brief dirige `git add/commit/push`) vs `cli_autocommit` (o aider commita sozinho, sem atribuição).
+- **Resume nativo (anti-sangria de custo, #445):** cada worker retoma sua **sessão nativa no mesmo workdir** em vez de re-gastar tokens; o manifest provisiona PVC `<kind>-worker-home` + CronJob de cleanup. Erro de provider (402/429) é classificado **INCOMPLETE** para o pipeline retomar.
+- **Custo central (#638):** o worker devolve um bloco `usage` no `/v1/dispatch`; o pipeline (long-lived) grava 1 registro no `UsageRepository` (SQLite central) por modelo — sobrevive ao scale-to-zero, que o ledger por-PVC não fazia (ledger JSONL fica como fallback local). Tela `[T]okens` do painel lê o store central primeiro.
+- **Antigravity** existe só como **gate documentado** (`cli_adapters/antigravity.py` não exporta `ADAPTER` → auto-discovery ignora): closed-source + auth headless inviável; só sai do gate com spike provando Vertex SA.
+- **Buildar/instalar:** `deploy.py k8s build-cli-workers [--kind <k>]` (imagem única `Dockerfile.cli-worker`, multi-stage) → `cli-worker-install <kind>` (auth por env) **ou** `cli-worker-login <kind>` (adapters OAuth-capable, ex.: codex). Provider de workers OpenAI-compat (qwen) via a convenção `DEILE_CLI_<KIND>_ENV_<VAR>` no `.env`.
 
 > **`deile-monitor`** roda um tick em duas fases: **Fase A** é uma varredura mecânica **sem LLM** (8 vigias: saúde OAuth, pods em erro, issues órfãs, PRs `auto/*` com tentativa N/3, aguardando-stakeholder, Jobs falhos, saúde do pipeline, coleta de follow-ups); **Fase B** só aciona a persona `monitor` quando candidatos sobrevivem à Fase A. Em regime estável, **não gasta token**. Tick default a cada 30 min. Tem RBAC dedicado (`deile-monitor-sa`).
 
@@ -495,7 +518,7 @@ Imprime um plano antes de qualquer ação mutante; `--yes` pula o prompt, `--dry
 | Bootstrap claude-worker (token ~1 ano) | `... k8s claude-setup-token` (preferido — issue #603; renovar ~1×/ano re-rodando o verb) |
 | Bootstrap/renovar via OAuth legado (DEPRECATED) | `... k8s claude-login [--switch\|--no-interactive]` / `... k8s claude-renew` |
 | **Frota CLI:** buildar imagem(ns) per-tool | `... k8s build-cli-workers [--kind <k>]` (via `Dockerfile.cli-worker`) |
-| **Frota CLI:** gerar manifest / instalar / login OAuth / remover | `... k8s gen-worker <kind>` · `... k8s cli-worker-install <kind>` · `... k8s cli-worker-login <kind> [--switch\|--no-interactive]` · `... k8s cli-worker-uninstall <kind>` |
+| **Frota CLI:** gerar manifest / instalar / login OAuth / remover | `... k8s gen-worker <kind>` · `... k8s cli-worker-install <kind>` · `... k8s cli-worker-login <kind> [--switch\|--no-interactive\|--in-pod]` · `... k8s cli-worker-uninstall <kind>` |
 | Clonar repo no `deile-shell` | `... k8s clone <owner/repo>` |
 | Listar namespaces DEILE | `... k8s list` |
 | **Teardown** (apaga o namespace + dados) | `... k8s down` |
@@ -503,6 +526,13 @@ Imprime um plano antes de qualquer ação mutante; `--yes` pula o prompt, `--dry
 ### 🧱 A imagem
 
 Multi-stage sobre **Python 3.11 (slim)**. Instala, em camadas verificáveis: `gh`, **`glab` 1.45.0 (SHA256 conferido)**, `kubectl` v1.31.4, `procps`, `tini` (reaper de zumbis) e o **`claude` CLI pinado em `2.1.158`** (via npm). O DEILE Python e os servidores (`wrapper.py`, `worker_server.py`, `claude_worker_server.py`) são copiados como `0555` (read-only em runtime).
+
+### 🧩 Personalização versionada dos workers (issue #515)
+
+Os pods `claude-worker` e `deile-worker` recebem **CLAUDE.md/DEILE.md + skills/commands** injetados de forma **versionada e idempotente**, sem instalação em runtime (a NetworkPolicy é default-deny no egress) e sem tocar no código do harness. A fonte canônica vive em `infra/k8s/agents/<worker>/`; os ConfigMaps `claude-worker-agents` e `deile-worker-agents` são derivados dela:
+
+- **claude-worker** — initContainer `inject-agents` (idempotente por `cmp -s`, `set -eu`) copia do ConfigMap para o PVC `/home/claude/.claude/` (`CLAUDE.md`, skill `brainstorm` pinada por commit, command `plan.md`).
+- **deile-worker** — ConfigMap montado read-only em `/etc/deile/agents/` (skill nativa `deile-systematic-debug`); `worker-settings.json` aponta `deile_md.user_path`/`skills_paths` para lá.
 
 ### 🛡️ Defesas aplicadas em todos os pods
 
@@ -638,7 +668,9 @@ Arquitetura hexagonal por camadas, com **registries** para artefatos extensívei
 ## ⚙️ Configuração
 
 ### 🔑 Variáveis de ambiente
-A referência canônica é o [`.env.example`](.env.example) (~450 linhas, seções comentadas): chaves de LLM, forges, bot, workers, pipeline (dispatch/model/reasoning por etapa), subagents, cron, OpenTelemetry, status server, etc. **A leitura de config deve passar por `get_settings()`** (`deile/config/settings.py`) — é um princípio arquitetural; alguns módulos do pipeline ainda leem `os.environ` direto (gap conhecido).
+A referência canônica é o [`.env.example`](.env.example) (~540 linhas, seções comentadas): chaves de LLM, forges, bot, workers, pipeline (dispatch/model/reasoning por etapa), subagents, cron, OpenTelemetry, status server, etc. **A leitura de config deve passar por `get_settings()`** (`deile/config/settings.py`) — é um princípio arquitetural; alguns módulos do pipeline ainda leem `os.environ` direto (gap conhecido).
+
+> 🧩 **Injeção de env por worker da frota:** a convenção `DEILE_CLI_<KIND>_ENV_<VARNAME>=<valor>` no `.env` injeta `<VARNAME>` no Deployment do worker `<kind>` ao renderizar o manifest. Sensíveis (terminam em `_API_KEY`/`_TOKEN` ou casam `auth_env_keys`) viram `secretKeyRef` no Secret `cli-worker-keys`; não-sensíveis (ex.: `OPENAI_BASE_URL`, `OPENAI_MODEL`) entram como literal. É assim que se aponta um worker OpenAI-compat (qwen) para Dashscope/OpenRouter/OpenAI. OAuth opt-in por worker via `DEILE_<KIND>_AUTH=oauth`.
 
 ### 🗂️ Settings em camadas
 `~/.deile/settings.json` é resolvido em três camadas com precedência **project > user > profile**: profile (preset) → user (`~/.deile/settings.json`) → project (`<cwd>/.deile/settings.json`, com opt-in via `trust.project_layer_dirs`). Ajuste por `/settings set <chave> <valor>` no CLI.
@@ -691,7 +723,16 @@ python3 -m pytest deile/tests/ -q          # suíte completa (resumo)
 python3 -m pytest deile/tests/path/test_x.py -v   # um arquivo
 ```
 
-> ℹ️ O `deile/tests/` mistura **pytest tests** (`test_*.py`, coletados) e **scripts standalone** (`*_test.py`, `smoke_test_*.py`) rodados manualmente. Testes que consomem token real ficam em `deile/tests/might/` (opt-in, fora da suíte padrão). **Não há `--cov-fail-under` ativo no `pytest.ini`** — a cobertura é medida sob demanda, não como gate bloqueante na config atual.
+> ℹ️ O `deile/tests/` mistura **pytest tests** (`test_*.py`, coletados) e **scripts standalone** (`*_test.py`, `smoke_test_*.py`) rodados manualmente. Testes que consomem token real ficam em `deile/tests/might/` (opt-in, fora da suíte padrão). O **`pytest.ini` não tem `--cov-fail-under`** — o gate de cobertura é aplicado **só no CI**.
+
+### 🚦 Gates de CI (`.github/workflows/ci.yml`)
+
+O CI virou gate real (etapa 1/3 do hardening, #729) — todas as Actions são SHA-pinadas e cada job tem `permissions: contents: read`:
+
+- **`test`** — roda a **suíte real** `deile/tests/` paralela (`pytest-xdist -n auto`) com **`--cov-fail-under=85`** (cobertura medida: 87%). Antes apontava para `tests/` (inexistente) e mascarava o exit code — CI verde era teatro (corrigido em #724).
+- **`secret-scan`** — `gitleaks` (full-history) com allowlist de FPs em `.gitleaks.toml` (restrita aos arquivos de teste que usam segredos fake).
+- **`security-scan`** — `bandit -lll` (só HIGH, zero achados legados) + `pip-audit` sem mascarar.
+- **`deployment-ready`** passa a **exigir** `secret-scan` e `security-scan`.
 
 ---
 
