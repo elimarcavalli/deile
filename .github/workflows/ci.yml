@@ -254,13 +254,18 @@ jobs:
         run: |
           python -m venv /tmp/func-venv
           /tmp/func-venv/bin/pip install --upgrade pip
-          /tmp/func-venv/bin/pip install "$(ls dist/*.whl)"
+          # --force-reinstall + --no-cache-dir: garante que o PRÓPRIO pacote deile
+          # seja instalado a partir do wheel (não só suas deps) — defende contra
+          # pip considerar o pacote "já satisfeito"/cacheado e pular o top-level.
+          /tmp/func-venv/bin/pip install --force-reinstall --no-cache-dir "$(ls dist/*.whl)"
+          # Verificação loud: falha o gate se o pacote deile não entrou no venv.
+          /tmp/func-venv/bin/pip show deile
 
       - name: CLI smoke — deile --version (exit 0 obrigatório)
-        run: /tmp/func-venv/bin/deile --version
+        run: /tmp/func-venv/bin/python -m deile --version
 
       - name: CLI smoke — deile --help (exit 0 obrigatório)
-        run: /tmp/func-venv/bin/deile --help
+        run: /tmp/func-venv/bin/python -m deile --help
 
       - name: Registry imports e ConfigManager
         run: |
@@ -321,9 +326,12 @@ jobs:
         run: |
           python -m venv /tmp/pkg-venv
           /tmp/pkg-venv/bin/pip install --upgrade pip
-          /tmp/pkg-venv/bin/pip install "$(ls dist/*.whl)"
+          # --force-reinstall + --no-cache-dir: garante o install do pacote deile
+          # do wheel (não só deps). pip show falha alto se o pacote não entrou.
+          /tmp/pkg-venv/bin/pip install --force-reinstall --no-cache-dir "$(ls dist/*.whl)"
+          /tmp/pkg-venv/bin/pip show deile
           /tmp/pkg-venv/bin/python -c "import deile; print('wheel import OK')"
-          /tmp/pkg-venv/bin/deile --version
+          /tmp/pkg-venv/bin/python -m deile --version
 
       # Testa resolução de cada extra offline em venv isolado.
       # [bot] é propositalmente excluído: depende de git URL externa
