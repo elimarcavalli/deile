@@ -169,11 +169,11 @@ class PipelineConfig:
     # agora operam sobre OR dos três TTLs; cada ramo auto-pula quando seu
     # próprio TTL é <= 0.
     reaper_arch_hard_seconds: int = 2 * 60 * 60  # 2h
-    # The refinement gate (critique → refine loop → decompose) is worker-only:
-    # it dispatches type-specific personas (analyst/architect/debugger) to the
-    # deile-worker. On the legacy Claude path it is OFF, so ``review`` keeps its
-    # old no-op transition and refine/decompose no-op. Resolved from dispatch_mode
-    # in ``build_default_pipeline_config`` (mirrors ``enable_resume``).
+    # Gate de refino/decomposição (crítica → loop de refino → decompose) — comportamento
+    # do pipeline, independente do dispatch_mode. O executor é decidido em runtime pelo
+    # dispatch_resolver; este flag decide SE o pipeline refina/decompõe. Resolvido a
+    # partir de ``settings.pipeline_refinement_gate`` (default ON) em
+    # ``build_default_pipeline_config``; dispatch_mode apenas seleciona o executor (issue #85).
     enable_refinement_gate: bool = False
 
 
@@ -275,7 +275,7 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
         resume_budget=int(settings.pipeline_resume_budget),
         refine_max_attempts=int(settings.pipeline_refine_max_attempts),
         max_parallel=max_parallel,
-        enable_refinement_gate=(not is_claude_mode(dispatch_mode)),
+        enable_refinement_gate=bool(settings.pipeline_refinement_gate),
     )
 
 

@@ -404,6 +404,7 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.resume_max_attempts": ("pipeline_resume_max_attempts", _to_pos_int),
     "pipeline.resume_budget": ("pipeline_resume_budget", _to_nonneg_int),
     # Refinement gate + parallel decomposition (issue #257)
+    "pipeline.refinement_gate": ("pipeline_refinement_gate", _to_bool),
     "pipeline.refine_max_attempts": ("pipeline_refine_max_attempts", _to_pos_int),
     "pipeline.max_parallel": ("pipeline_max_parallel", _to_pos_int_or_auto),
     # Per-stage model override (issue #305) — see _MODEL_SLUG_RE / resolver.
@@ -633,6 +634,8 @@ class Settings:
     pipeline_resume_interval: int = 0
     pipeline_resume_max_attempts: int = 10
     pipeline_resume_budget: int = 0
+    # Gate de refino/decomposição — independente do dispatch_mode; ver issue #85.
+    pipeline_refinement_gate: bool = True
     pipeline_refine_max_attempts: int = 5
     pipeline_max_parallel: int = 2
 
@@ -1335,6 +1338,8 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     ("DEILE_PIPELINE_BASE_PATH",             "pipeline_base_path",             _resolved_path),
     # Pipeline dispatch mode global (kept — still in use in cluster env vars)
     ("DEILE_PIPELINE_DISPATCH_MODE",         "pipeline_dispatch_mode",         str),
+    # Gate de refino/decomposição — independente do dispatch_mode (issue #85).
+    ("DEILE_PIPELINE_REFINEMENT_GATE",       "pipeline_refinement_gate",       _env_bool),
     # Current knob — pipeline autostart.
     ("DEILE_PIPELINE_AUTOSTART",             "pipeline_autostart",             _env_bool),
     # Kubernetes namespace — used by CLI commands like /pods (issue #414).
