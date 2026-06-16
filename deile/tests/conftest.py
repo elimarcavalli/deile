@@ -210,19 +210,33 @@ def _reset_global_singletons():
     Cada um é um global de módulo com ``reset_X()`` que zera a instância (recriada
     sob demanda no próximo ``get_X()``). Sem este reset hermético central, um teste
     que muta o singleton vaza o estado pro próximo — a causa-raiz reincidente das
-    falhas ordering-dependent (#432/#471/#499). O ``_CIRCUIT_BREAKER`` do
+    falhas ordering-dependent (#432/#471/#499/#728). O ``_CIRCUIT_BREAKER`` do
     deile_worker_client, com estado OPEN vazado, recusava dispatch em testes
     vítimas (ex.: test_dispatch_deile_task: "circuit breaker open — worker
     degraded") sob seeds aleatórias do pytest-randomly.
 
-    NOTA: o ``SkillRegistry`` NÃO é resetado aqui — o ``SkillsWatcher`` segura uma
-    referência à instância, e zerar o singleton entre testes orfanaria o watcher
-    (quebra test_watcher). Isolar o registry exige tratar o watcher junto — fica
-    para um fix dedicado.
+    SkillRegistry (#728 fix dedicado): testes em ``test_context_manager_deile_md.py``
+    e ``test_preference_injection.py`` chamam ``_build_fallback_system_instruction`` /
+    ``_build_system_instruction`` sem patchear ``bootstrap_skills``, o que popula o
+    singleton com as skills bundled (python/typescript/tdd + skills do ~/.claude/commands
+    do operador). Como esses arquivos não tinham ``_reset_registry`` próprio, o estado
+    vazava para testes subsequentes em ``test_context_manager_integration.py``:
+    ``test_active_skill_is_omitted_from_catalog`` esperava catálogo vazio (1 skill
+    registrada, excluída por estar ativa) mas encontrava typescript+tdd residuais →
+    "## Available Skills" aparecia no prompt.
+
+    Solução: ``reset_skill_registry()`` é idempotente e segura aqui porque:
+    (a) nenhum daemon SkillsWatcher está rodando durante os testes (test_watcher.py
+    usa watchers inline sem background threads, ou para-os explicitamente antes de
+    retornar); (b) test_watcher.py já tem seu próprio ``_reset_registry`` autouse —
+    dois resets consecutivos são idempotentes; (c) nenhum teste chama
+    ``bootstrap_skills_with_handle(hot_reload=True)`` que criaria um watcher de
+    longa duração.
     """
     from deile.core.models.tier_router import reset_tier_router
     from deile.events.event_bus import reset_event_bus
     from deile.infrastructure.deile_worker_client import reset_circuit_breaker
+    from deile.skills.registry import reset_skill_registry
     from deile.storage.usage_repository import reset_usage_repository
 
     def _reset_all():
@@ -230,6 +244,7 @@ def _reset_global_singletons():
         reset_event_bus()
         reset_usage_repository()
         reset_circuit_breaker()
+        reset_skill_registry()
 
     _reset_all()
     yield

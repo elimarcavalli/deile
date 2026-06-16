@@ -1041,7 +1041,7 @@ def _local_process_rows(data: Optional[PanelData]) -> List[PodRow]:
 
 
 def _claude_worker_cell(
-    data: PanelData, pod_name: str,
+    data: PanelData, pod_name: str, running: bool = False,
 ) -> Tuple[Optional[float], str, str, bool, str, Optional[float]]:
     """Doing-now de um pod claude-worker pela VERDADE (probe), não por log.
 
@@ -1049,14 +1049,17 @@ def _claude_worker_cell(
 
     Precedência (requisito #1 da proposta):
     1. ``claude_truth`` (exec/proc) — ``claude -p`` vivo NESTE pod = busy.
-    2. probe falhou → ``— (pod down)`` (degradação graciosa).
+    2. probe falhou → ``— (probe indisponível)`` se o pod está ``Running`` pelo
+       k8s (a falha é do probe, não do pod), senão ``— (pod down)``. Nunca
+       afirmar "pod down" sobre um pod que o k8s reporta vivo.
     3. idle explícito; ``last_activity`` = última task concluída (+custo) do
        log do worker, quando disponível — histórico, não estado-atual.
     """
     truth = (data.claude_truth.get().get(pod_name)
              if data.claude_truth is not None else None)
     if truth is None or not truth.probe_ok:
-        return None, "—", "— (pod down)", False, "●", None
+        label = "— (probe indisponível)" if running else "— (pod down)"
+        return None, "—", label, False, "●", None
     if truth.claude_running:
         d = truth.dispatches[0]
         bits = [d.summary]
@@ -1158,7 +1161,8 @@ def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodR
             busy = (age_s is not None and age_s < 60)
             icon = "⚡" if busy else "●"
         elif p.role == "claude-worker":
-            age_s, last, doing, busy, icon, stale_s = _claude_worker_cell(data, p.name)
+            age_s, last, doing, busy, icon, stale_s = _claude_worker_cell(
+                data, p.name, running=(p.status == "Running"))
         else:
             age_s = None
             last = "—"
