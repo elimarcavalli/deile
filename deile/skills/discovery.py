@@ -5,9 +5,10 @@ Scan order (lowest to highest priority — later sources override earlier):
 1. **Bundled** — ``deile/skills/library/**/*.md``
 2. **User** — ``~/.deile/skills/*.md``
 3. **User-Claude** — ``~/.claude/commands/*.md`` (UPPERCASE names, ``kind=command``)
-4. **Project** — ``<cwd>/.deile/skills/*.md``
-5. **Project-Claude** — ``<cwd>/.claude/commands/*.md`` (UPPERCASE names)
-6. **Extras** — paths added via ``SettingsManager.get_all_skills_paths()``
+4. **Org** — paths from ``Settings.org_skills_paths`` (above user, below project)
+5. **Project** — ``<cwd>/.deile/skills/*.md``
+6. **Project-Claude** — ``<cwd>/.claude/commands/*.md`` (UPPERCASE names)
+7. **Extras** — paths added via ``SettingsManager.get_all_skills_paths()``
 """
 
 from __future__ import annotations
@@ -42,8 +43,13 @@ def default_scan_order(
     project_dir: Optional[Path] = None,
     user_home: Optional[Path] = None,
     extra_paths: Iterable[Path] = (),
+    org_paths: Iterable[Path] = (),
 ) -> List[ScanEntry]:
-    """Return the canonical scan order — lowest to highest priority."""
+    """Return the canonical scan order — lowest to highest priority.
+
+    ``org_paths`` are inserted between user-claude and project, giving org
+    skills higher priority than user but lower priority than project (issue #741).
+    """
     project = project_dir or Path.cwd()
     home = user_home or Path.home()
 
@@ -51,6 +57,10 @@ def default_scan_order(
         ScanEntry(_BUNDLED_LIBRARY_DIR, "bundled", "skill", False),
         ScanEntry(home / ".deile" / "skills", "user", "skill", False),
         ScanEntry(home / ".claude" / "commands", "user", "command", True),
+    ]
+    for org_path in org_paths:
+        order.append(ScanEntry(Path(org_path), "org", "skill", False))
+    order += [
         ScanEntry(project / ".deile" / "skills", "project", "skill", False),
         ScanEntry(project / ".claude" / "commands", "project", "command", True),
     ]
@@ -64,6 +74,7 @@ def discover_skills_sync(
     project_dir: Optional[Path] = None,
     user_home: Optional[Path] = None,
     extra_paths: Iterable[Path] = (),
+    org_paths: Iterable[Path] = (),
 ) -> Tuple[List[Skill], List[Tuple[str, Path, Path]]]:
     """Sync discovery. Returns ``(skills, overrides)``."""
     merged: dict = {}
@@ -71,6 +82,7 @@ def discover_skills_sync(
 
     for entry in default_scan_order(
         project_dir=project_dir, user_home=user_home, extra_paths=extra_paths,
+        org_paths=org_paths,
     ):
         if not entry.directory.is_dir():
             continue
@@ -109,6 +121,7 @@ async def discover_skills(
     project_dir: Optional[Path] = None,
     user_home: Optional[Path] = None,
     extra_paths: Iterable[Path] = (),
+    org_paths: Iterable[Path] = (),
 ) -> Tuple[List[Skill], List[Tuple[str, Path, Path]]]:
     """Async wrapper — runs ``discover_skills_sync`` off-thread."""
     return await asyncio.to_thread(
@@ -116,4 +129,5 @@ async def discover_skills(
         project_dir=project_dir,
         user_home=user_home,
         extra_paths=extra_paths,
+        org_paths=org_paths,
     )

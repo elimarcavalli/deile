@@ -640,6 +640,26 @@ except FileNotFoundError:
     )
 
 
+def _load_org_tool_allow_list() -> frozenset:
+    """Lê o allow-list de tools da org a partir de ``Settings.org_tool_allow_list``.
+
+    Retorna um frozenset vazio quando não há configuração de org — o comportamento
+    é então idêntico ao baseline (nenhuma interseção aplicada). Qualquer falha de
+    import ou leitura é absorvida e logada, nunca falha-aberta.
+    """
+    try:
+        from deile.config.settings import get_settings
+        allow = get_settings().org_tool_allow_list
+        if allow:
+            return frozenset(allow)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        print(
+            f"wrapper: falha ao ler org_tool_allow_list das Settings: {exc}",
+            file=sys.stderr,
+        )
+    return frozenset()
+
+
 def _install_tool_whitelist(role: str) -> None:
     """Disable every tool outside the messaging whitelist after auto-discover.
 
@@ -657,12 +677,27 @@ def _install_tool_whitelist(role: str) -> None:
     The whitelist enforcement is tied to ``self.tool_registry`` (the agent's
     own registry, which may be a custom instance in tests) rather than the
     global singleton, so the policy is consistent regardless of constructor.
+
+    Monotonicidade (issue #741): se ``Settings.org_tool_allow_list`` for
+    não-vazio, o whitelist efetivo é a *interseção* com o allow-list da org —
+    nunca a *união*. Sem allow-list de org, comportamento idêntico ao baseline.
     """
     import asyncio as _asyncio
 
     import deile.core.agent as agent_mod
 
-    whitelist = _messaging_tool_whitelist()
+    role_whitelist = _messaging_tool_whitelist()
+    org_allow = _load_org_tool_allow_list()
+    # Monotonicidade: org só estreita, nunca amplia.
+    whitelist = role_whitelist & org_allow if org_allow else role_whitelist
+    if org_allow:
+        narrowed = role_whitelist - whitelist
+        if narrowed:
+            print(
+                f"wrapper({role}): org allow-list removeu {len(narrowed)} tool(s): "
+                f"{sorted(narrowed)}",
+                file=sys.stderr,
+            )
     original_init: Callable = agent_mod.DeileAgent.initialize
 
     async def _harden_after_initialize(self, *args, **kwargs):

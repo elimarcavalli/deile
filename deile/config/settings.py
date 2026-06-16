@@ -472,6 +472,15 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     # Apply via apply_overrides() which is called after _apply_nested_dict in
     # each layer function. Empty list sentinel = "use V1 default".
     "panel.activity_sources": ("panel_activity_sources", _to_activity_sources),
+    # Org layer (issue #740 / #741): camada ORG de configuração.
+    # ``org.skills_paths`` — diretórios de skills da org (entre user e project).
+    # ``org.config_root``  — raiz do diretório de configuração da org
+    #                        (contém permissions.yaml, allow_list.yaml etc.).
+    # ``org.tool_allow_list`` — conjunto de nomes de tools permitidos pela org;
+    #                           o whitelist efetivo é a interseção com o papel.
+    "org.skills_paths": ("org_skills_paths", _to_str_list),
+    "org.config_root": ("org_config_root", _to_optional_path),
+    "org.tool_allow_list": ("org_tool_allow_list", _to_str_list),
 }
 
 
@@ -772,6 +781,12 @@ class Settings:
     # Perfil e skills (lidos via SettingsManager, mantidos aqui para conveniência)
     profile_name: str = "autonomous_agent"
     skills_paths: List[str] = field(default_factory=list)
+
+    # Org layer (issue #740 / #741): camada ORG de configuração.
+    # Sem config de org, comportamento byte-idêntico ao atual em todas as frentes.
+    org_skills_paths: List[str] = field(default_factory=list)
+    org_config_root: Optional[Path] = None
+    org_tool_allow_list: List[str] = field(default_factory=list)
 
     # Trust boundary (issue #125)
     # `trust.project_layer_dirs` — allowlist of absolute directories whose
@@ -1172,6 +1187,8 @@ _LIST_ATTRS: frozenset = frozenset({
     "blocked_directories",
     "skills_paths",
     "enabled_tool_categories",
+    "org_skills_paths",
+    "org_tool_allow_list",
 })
 
 
