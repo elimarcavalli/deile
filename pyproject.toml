@@ -116,3 +116,15 @@ exclude = ["deilebot*", "tests*"]
 
 [tool.setuptools.package-data]
 "deile.core.schemas" = ["*.json"]
+
+[tool.interrogate]
+ignore-init-method = true
+ignore-init-module = true
+ignore-magic = true
+ignore-semiprivate = true
+ignore-private = true
+ignore-module = true
+# Baseline medido em 2026-06-16: 39.9% (gate em ci.yml: --fail-under=39).
+# Ratchet: só pode aumentar — suba 1 ponto do threshold a cada ciclo de limpeza de docstrings.
+verbose = 0
+quiet = true

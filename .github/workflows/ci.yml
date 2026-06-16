@@ -174,10 +174,11 @@ jobs:
           fail_ci_if_error: false
 
   # ──────────────────────────────────────────────────────────────────────────
-  # QUALIDADE DE CÓDIGO — advisory (continue-on-error: permanece)
+  # QUALIDADE DE CÓDIGO — gates reais de docstring + complexidade ciclomática;
+  # formatação (black/isort/ruff) e mypy são do #735 (pós-reformat).
   # ──────────────────────────────────────────────────────────────────────────
   code-quality:
-    name: Code quality (advisory)
+    name: Code quality
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -194,27 +195,42 @@ jobs:
 
       - name: Install quality tools
         run: |
-          pip install -r requirements.txt
-          pip install flake8 black isort radon
+          pip install interrogate radon mypy
 
-      - name: Check code formatting with Black
+      # GATE: cobertura de docstrings ≥ 39% (baseline 39.9% medido em 2026-06-16).
+      # Configurado via [tool.interrogate] em pyproject.toml.
+      # Ratchet: só pode aumentar — suba 1 ponto por ciclo de limpeza.
+      - name: Interrogate — cobertura de docstrings (GATING)
         run: |
-          black --check --diff deile/
-        continue-on-error: true
+          interrogate deile/ --fail-under=39
 
-      - name: Check import sorting with isort
+      # GATE: complexidade ciclomática média ≤ B (teto 10.0).
+      # Baseline medido em 2026-06-16: A (3.24). Falha se a média cruzar o teto B.
+      - name: Radon CC — complexidade ciclomática (GATING)
         run: |
-          isort --check-only --diff deile/
-        continue-on-error: true
+          OUTPUT=$(radon cc deile/ -a)
+          echo "$OUTPUT"
+          # Extrai o valor numérico da média e falha se >= 10.0 (nota B → C)
+          AVG=$(echo "$OUTPUT" | grep "Average complexity" | grep -oE '[0-9]+\.[0-9]+')
+          if [ -z "$AVG" ]; then
+            echo "::error::Não foi possível extrair a média de complexidade do radon"
+            exit 1
+          fi
+          python3 -c "
+          avg = float('$AVG')
+          print(f'Complexidade média: {avg:.4f}')
+          if avg >= 10.0:
+              print(f'::error::Complexidade média {avg:.4f} excede o teto B (10.0) — refatore antes de mergear')
+              exit(1)
+          print('OK: complexidade dentro do teto B')
+          "
 
-      - name: Calculate code complexity
+      # ADVISORY — mypy com --ignore-missing-imports.
+      # NÃO gateia: baseline de 3.11 com erros de tipo legados; gate real com
+      # baseline completo na issue #735 (pós-reformat).
+      - name: mypy — verificação de tipos (advisory — NÃO gateia; gate real no #735)
         run: |
-          radon cc deile/ -a
-        continue-on-error: true
-
-      - name: Generate complexity report
-        run: |
-          radon mi deile/
+          mypy deile/ --ignore-missing-imports || true
         continue-on-error: true
 
   # ──────────────────────────────────────────────────────────────────────────
@@ -441,10 +457,10 @@ jobs:
           "
 
   # ──────────────────────────────────────────────────────────────────────────
-  # DOCUMENTAÇÃO — advisory
+  # DOCUMENTAÇÃO — gate de consistência doc↔código + pymarkdown advisory
   # ──────────────────────────────────────────────────────────────────────────
   documentation:
-    name: Documentation (advisory)
+    name: Documentation
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -461,18 +477,21 @@ jobs:
 
       - name: Install documentation tools
         run: |
-          pip install -r requirements.txt
-          pip install sphinx sphinx-rtd-theme || echo "Sphinx not configured"
+          pip install pymarkdownlnt
 
-      - name: Validate documentation files
+      # GATE: invariantes doc↔código (cross-refs de system_design, cov-fail-under
+      # no ci.yml, gate de testes presente).
+      - name: Validate doc consistency (GATING)
         run: |
-          find docs/ -name "*.md" -exec echo "Checking {}" \; -exec head -5 {} \; || echo "No docs directory"
-          ls -la docs/ || echo "No docs directory found"
+          python3 scripts/validate_doc_consistency.py
 
-      - name: Check README
+      # ADVISORY — ~40 violações legadas de Markdown; não gateia.
+      # Configurado via .pymarkdown na raiz do repo.
+      # Gate real planejado após limpeza sistemática dos docs (issue #735).
+      - name: pymarkdown lint (advisory — NÃO gateia; ~40 violações legadas)
         run: |
-          test -f README.md && echo "README.md exists" || echo "No README.md found"
-          test -f README_NEW_ARCHITECTURE.md && echo "Architecture README exists" || echo "No architecture README"
+          pymarkdown scan docs/ || true
+        continue-on-error: true
 
   # ──────────────────────────────────────────────────────────────────────────
   # NOTIFICAÇÃO DE FALHA
@@ -480,7 +499,7 @@ jobs:
   notify-on-failure:
     name: Notify on failure
     runs-on: ubuntu-latest
-    needs: [test, secret-scan, security-scan, code-quality, functional-tests]
+    needs: [test, secret-scan, security-scan, code-quality, documentation, functional-tests]
     if: failure()
     permissions:
       contents: read
@@ -497,7 +516,7 @@ jobs:
     name: Deployment ready
     runs-on: ubuntu-latest
     needs:
-      [test, secret-scan, security-scan, code-quality, functional-tests, build-and-package]
+      [test, secret-scan, security-scan, code-quality, documentation, functional-tests, build-and-package]
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
     permissions:
       contents: read
