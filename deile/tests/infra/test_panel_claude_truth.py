@@ -260,6 +260,17 @@ def test_claude_worker_cell_pod_down():
     assert not busy and doing == "— (pod down)" and stale is None
 
 
+def test_claude_worker_cell_probe_fail_but_running():
+    # Probe falhou mas o k8s reporta o pod Running: a falha é do probe, não do
+    # pod. Nunca afirmar "pod down" sobre um pod vivo — mostra "probe
+    # indisponível". Regressão do falso "(pod down)" no dashboard.
+    truth = pd.ClaudeWorkerTruth(pod_name="p", probe_ok=False)
+    data = _FakeData(truth_map={"p": truth})
+    age, last, doing, busy, icon, stale = pnl._claude_worker_cell(
+        data, "p", running=True)
+    assert not busy and doing == "— (probe indisponível)" and stale is None
+
+
 def test_claude_worker_cell_idle_with_last_completed():
     truth = pd.ClaudeWorkerTruth(pod_name="p", probe_ok=True,
                                  claude_running=False)
