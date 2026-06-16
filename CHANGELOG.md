@@ -5,13 +5,15 @@ All notable changes to the DEILE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] - 2026-06-13 — DEILE-One (frota multi-CLI + endurecimento de produção)
+## [1.1.0] - 2026-06-16 — DEILE-One (frota multi-CLI + endurecimento de CI + produção)
 
 > Sucede a `1.0.0` (linha de base clássica). Entrega a **frota multi-CLI** plugável,
 > fecha os gaps de produção da frota (custo central, allowlist enforçada, baseline de
 > testes limpo), completa os três sinais OTLP do dispatch (traces + logs + métricas),
-> migra a auth do `claude-worker` para token de ~1 ano, e faz uma rodada de auditoria
-> de endurecimento nos subsistemas plugáveis (tools/commands/parsers/memory/storage).
+> migra a auth do `claude-worker` para token de ~1 ano, faz uma rodada de auditoria
+> de endurecimento nos subsistemas plugáveis (tools/commands/parsers/memory/storage),
+> e endurece o CI de teatro para gates reais (suíte real com `-n auto`, reset hermético
+> de singletons, secret-scan, security-scan, functional/build/docker, code-quality).
 
 ### Added
 - **Frota de CLI workers plugáveis (Decisão #51, #614)** — além de `deile-worker` e `claude-worker`, qualquer CLI de codificação vira um worker despachável escrevendo **um adapter** (`infra/k8s/cli_adapters/<kind>.py`) que satisfaz o Protocol `CliAdapter` (`infra/k8s/cli_adapters/base.py`). O auto-discovery em `cli_adapters/__init__.py` monta `ADAPTERS = {kind: adapter}` como **fonte única**, que dirige `dispatch_resolver`, painel e geração de manifest/NetworkPolicy — adicionar worker não edita nenhum consumidor.
@@ -21,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Custo durável por-PVC + auditoria de frota (#614)** — `cli_worker_server` colhe o custo de cada sessão para um ledger durável (`<root>/.cost-ledger.jsonl`, dedup por `task_id`) antes de podar o log volumoso; `infra/k8s/jsonl_cost.py` é a fonte única de preço, `infra/k8s/fleet_progress_parse.py` a dos parsers de `.progress` por kind, e `infra/k8s/fleet_tokens_audit.py` (tela `[T]okens`) agrega tokens/custo por worker × modelo.
 - **Scale-to-zero on-demand (#614)** — workers nascem `replicas:0` (custo zero ocioso); `cli_worker_scaler.py` escala 0→1 sob demanda com cooldown. Gerador `infra/k8s/_cli_worker_gen.py` + template `infra/k8s/manifests/templates/cli-worker.yaml.tmpl` (manifests gerados são efêmeros/gitignored).
 - **Verbos novos do `deploy.py` (#614)** — `k8s build-cli-workers [--kind <k>]` (imagem via `Dockerfile.cli-worker` multi-stage), `k8s gen-worker <kind>`, `k8s cli-worker-install <kind>`, `k8s cli-worker-login <kind>`, `k8s cli-worker-uninstall <kind>`.
+- **CI-gate determinístico no pipeline (#f3f4e07)** — `review_one_open_pr` consulta `forge.get_ci_status(pr)` **antes** de despachar a review; enquanto o CI estiver `pending`, o dispatch é pulado neste tick e reconciliado no próximo — evita redispachar a review a cada ~60s enquanto o CI corre por minutos (sem gastar tentativa no reaper).
 - **Bloco `usage` estruturado no `/v1/dispatch` (#638)** — `WorkResult` ganha `tokens_by_model`/`model`, preenchidos server-side pelo parser único `fleet_progress_parse`; o resume-info também expõe o uso.
 - **Custo central da frota no `UsageRepository` (#638)** — novo `deile/orchestration/pipeline/fleet_cost_recorder.py`: o pipeline (componente longevo) faz PUSH de 1 registro por modelo no SQLite central (caminho `wait` direto; fire-and-forget capturado no reconcile via resume-info, dedup por task_id). Sobrevive ao scale-to-zero/`force-delete`, que o ledger por-PVC não sobrevivia; a tela `[T]okens` lê o store central primeiro.
 - **Métricas OTLP do dispatch (#455)** — `deile/observability/dispatch_metrics.py` (MeterProvider isolado, kill-switch, drop counter throttled): `deile.dispatch.total`/`.failed.total`/`.duration_ms`/`.tool_burst.total`, `deile.forge.pr_review.total`, `deile.git.push.total` — todas com labels de cardinalidade limitada. Completa a trinca traces (#443) + logs (#454) + métricas.
@@ -31,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Auth do `claude-worker` via `claude setup-token` (#603, Decisão #52)** — verb `deploy.py k8s claude-setup-token` + hotkey `[T]` no painel; token de ~1 ano em `CLAUDE_CODE_OAUTH_TOKEN` injetado por env var via Secret K8s.
 
 ### Changed
+- **CI endurece de teatro para gates reais (hardening em 3 etapas):**
+  - **Etapa 0/3 (#724)** — `fix(ci)`: job `test` apontava para `tests/` (inexistente) e mascarava o exit-code; corrigido para rodar a **suíte real** `deile/tests/` e propagar o exit-code sem maquiagem.
+  - **Etapa 0/3 (#727)** — `perf(ci)`: paraleliza a suíte com `pytest-xdist -n auto` (todos os cores disponíveis; `pytest-cov` combina a cobertura entre workers); acelera testes lentos com mocks de I/O e limites de amostra.
+  - **Etapa 0/3 (#728)** — `test`: reset hermético dos singletons lazy (`ToolRegistry`, `CommandRegistry`, `SkillRegistry`, `CronStore`, `ForgeRouter`, `PipelineStatusState`) no `conftest.py` raiz, eliminando poluição de ordem entre testes de módulos distintos.
+  - **Etapa 1/3 (#732)** — `ci`: gating de segurança & supply-chain — `secret-scan` (gitleaks full-history + allowlist de FPs em `.gitleaks.toml`), `security-scan` (`bandit -lll` HIGH-only + `pip-audit --ignore-vuln GHSA-6w46-j5rx-g56g`), gate de cobertura `--cov-fail-under=85` (medido 87% em 2026-06-15); todas as Actions SHA-pinadas + `permissions: contents: read` por job.
+  - **Etapa 2/3 (#733)** — `ci`: gating de build, artefato & smoke — `functional-tests` (wheel → venv limpo → `deile --version`/`--help` + import dos registries), `build-and-package` (wheel+sdist, `twine check`, extras offline `[test,otel,scheduler,webhook,ui]` em venvs isolados, **Docker build real** `deile-stack:local` com `WITH_BOT=1` + cache GHA, smoke de import dos módulos dos pods); `deployment-ready` exige `secret-scan`, `security-scan`, `functional-tests`, `build-and-package`, `code-quality`, `documentation`. `performance-tests` (coletava 0 benchmarks — teatro) removido.
+  - **Etapa 3/3 (#736)** — `ci(quality)`: gate de qualidade de código — `interrogate deile/ --fail-under=39` (cobertura de docstrings ≥ 39%; baseline 39,9% medido em 2026-06-16; ratchet: só pode aumentar) + `radon cc deile/ -a` (complexidade ciclomática média ≤ B/10.0; baseline A/3,24 medido em 2026-06-16); formatação (black/isort/ruff) e mypy estão em issue #735 (pós-reformat); mypy é advisory no CI atual.
+- **Routing `all-claude-worker` versionado no manifest do pipeline (#c7e5466c)** — `DEILE_PIPELINE_DISPATCH_MODE=claude` + `DEILE_PIPELINE_MAX_PARALLEL=2` agora vivem no `46-deile-pipeline-deployment.yaml` em vez de serem setados via `kubectl set env` ad-hoc (que resetava a cada `kubectl apply` causando drift/CrashLoop). `max_parallel=2` alinha ao cap de concorrência do claude-worker.
 - **Painel TUI** — `DispatchMatrixView` (`[d]`) passa a matriz de estágios × {Worker, Model, Reasoning}; tela `[T]okens` vira auditoria da frota.
 - **Auth do claude-worker migrada (#603)** — remove o OAuth de ~8h (credentials.json + flock + initContainer `bootstrap-creds` + CronJob de renovação 4h) em favor do token de ~1 ano. `claude-login`/`claude-renew` ficam **DEPRECATED**. Billing: a partir de 15/jun/2026, uso via `claude -p` em planos de assinatura consome crédito mensal de Agent SDK separado do interativo.
 - **Endurecimento server-side do `deile-worker` (#620)** — graceful shutdown (SIGTERM dreva tasks com timeout, 503 durante shutdown, hard-deadline `os._exit`), métricas, idempotência, rate-limit, validação de schema; client-side retry + circuit breaker (AC4/AC5).
@@ -42,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`fix(panel)`: kill-409 auditado como `allowed` (#678)** — alinha ao cleanup-409 (ação despachada ao servidor é allowed; `failed` só p/ timeout/conn/5xx).
 
 ### Fixed
+- **Path traversal em `WorktreeTool._remove` e `WorktreeManager.create_branch_worktree` (#721)** — validação dos paths de worktree contra o diretório base para prevenir travessia de diretório em entradas de branch arbitrárias.
+- **`fix(k8s)`: validar deployment contra allowlist em `_cmd_restart` (#720)** — o handler de restart do monitor aceitava qualquer nome de deployment; agora valida contra a allowlist de deployments gerenciáveis.
+- **`fix(pipeline)`: guard `DISPATCH_SKIPPED_STILL_RUNNING` no caminho mention sticky (#719)** — evita race condition onde um despacho ativo era sobreposto por um dispatch de menção no mesmo tick.
+- **`fix(config)`: guard cost-cap converter contra NaN e Infinity** — `resolve_stage_cost_cap_usd` convertia silenciosamente valores inválidos; guard explícito com fallback para `None`.
+- **`fix(security)`: redact cmd array no path default de `sessions_command_handler`** — o path de fallback emitia o array de comando sem redação, expondo argumentos sensíveis nos logs.
+- **`fix(memory)`: preserve `stored_at` em `store_knowledge` quando já setado** — sobrescrevia timestamps de entradas pré-existentes na memória semântica.
+- **`fix(security)`: âncora padrões da whitelist para prevenir falsos negativos por substring** — padrões sem âncora aceitavam prefixos/sufixos inválidos como matches válidos.
+- **`fix(memory)`: sincroniza `_tag_index` quando `update_with_feedback` adiciona tags (#723)** — tags adicionadas via feedback não eram indexadas, tornando buscas por tag silenciosamente incompletas.
 - **Custo Gemini gravado como zero em silêncio (#661)** — `GeminiProvider._compute_cost` não existia (nome certo: `estimate_cost`); o `AttributeError` era engolido pelo fail-open, zerando o custo de toda request Gemini. Implementado + WARNING em cost=0 com tokens faturados (#665).
 - **TOCTOU no cleanup de workdir de pod morto (#649)** — o guard de #520 re-admitia o workdir olhando só a idade do heartbeat, ignorando o registro de presença (#495).
 - **Guards de redispatch de reviewer + cap de concorrência (#668)** — menção de reviewer gateada por `~mention:processado`; honra `~workflow:bloqueada` no filtro de candidatos; cap de reviews por `max_parallel`; cap global de claude concorrentes via contagem de leases vivos no PVC (cross-pod), substituindo a frágil soma-de-labels.
@@ -56,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Strip real de `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` do subprocess do `claude -p` (#603)** — antes estava só na docstring; venciam o `CLAUDE_CODE_OAUTH_TOKEN` na precedência e cobravam via API. Guard anti-`--bare` (bare mode não lê o token).
 
 ### Dependencies
-- Bumps: `idna` 3.17→3.18 (#635), `tqdm` 4.67.3→4.68.1 (#636), `wcwidth` 0.7.0→0.8.1 (#637).
+- Bumps: `idna` 3.17→3.18 (#635), `tqdm` 4.67.3→4.68.1 (#636), `wcwidth` 0.7.0→0.8.1 (#637), `tqdm` 4.68.1→4.68.2 (#726).
 
 ## [1.0.0] - 2026-06-08
 
