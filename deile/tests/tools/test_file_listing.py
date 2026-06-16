@@ -13,8 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from deile.tools._file_listing import (_MAX_DIRS_SHOWN, _MAX_FILES_SHOWN,
-                                       _collect_entries, _render_tree)
+from deile.tools._file_listing import (
+    _MAX_DIRS_SHOWN,
+    _MAX_FILES_SHOWN,
+    _collect_entries,
+    _render_tree,
+)
 
 # ---------------------------------------------------------------------------
 # _collect_entries — single file / directory walk / gitignore filter

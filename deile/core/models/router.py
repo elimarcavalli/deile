@@ -6,8 +6,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..exceptions import ModelError
 from .base import ModelProvider
-from .routing_strategies import (ModelMetrics, RoutingContext, RoutingStrategy,
-                                 RoutingStrategySelector)
+from .routing_strategies import (
+    ModelMetrics,
+    RoutingContext,
+    RoutingStrategy,
+    RoutingStrategySelector,
+)
 from .tier import ModelTier
 from .tier_router import get_tier_router
 
@@ -16,14 +20,14 @@ logger = logging.getLogger(__name__)
 
 class ModelRouter:
     """Roteador inteligente de modelos de IA
-    
+
     Responsável por:
     - Seleção automática do melhor modelo para cada tarefa
     - Balanceamento de carga entre modelos
     - Otimização de custo e performance
     - Fallback automático em caso de falha
     """
-    
+
     def __init__(
         self,
         default_strategy: RoutingStrategy = RoutingStrategy.TASK_OPTIMIZED,
@@ -47,34 +51,33 @@ class ModelRouter:
         self._selector = RoutingStrategySelector()
 
         # Funções de decisão customizáveis
-        self.custom_routing_functions: List[Callable[[RoutingContext, List[ModelProvider]], Optional[ModelProvider]]] = []
+        self.custom_routing_functions: List[
+            Callable[[RoutingContext, List[ModelProvider]], Optional[ModelProvider]]
+        ] = []
 
         # (f"ModelRouter initialized with strategy: {default_strategy.value}")
-    
+
     def register_provider(
-        self, 
-        provider: ModelProvider, 
-        priority: int = 0,
-        cost_per_token: float = 0.0
+        self, provider: ModelProvider, priority: int = 0, cost_per_token: float = 0.0
     ) -> None:
         """Registra um provedor de modelo
-        
+
         Args:
             provider: Instância do provedor
             priority: Prioridade (maior = preferência)
             cost_per_token: Custo por token para otimização
         """
         provider_key = f"{provider.provider_name}:{provider.model_name}"
-        
+
         if provider_key in self.providers:
             logger.warning(f"Provider {provider_key} already registered, replacing")
-        
+
         self.providers[provider_key] = provider
         self.metrics[provider_key] = ModelMetrics(cost_per_token=cost_per_token)
         self._circuit_breaker_status[provider_key] = False
-        
+
         # (f"Registered model provider: {provider_key}")
-    
+
     def unregister_provider(self, provider_key: str) -> bool:
         """Remove um provedor"""
         if provider_key in self.providers:
@@ -84,7 +87,7 @@ class ModelRouter:
             # (f"Unregistered provider: {provider_key}")
             return True
         return False
-    
+
     async def select_provider(
         self,
         context: Optional[Dict[str, Any]] = None,
@@ -93,15 +96,15 @@ class ModelRouter:
         tier: Optional[ModelTier] = None,
     ) -> ModelProvider:
         """Seleciona o melhor provedor para o contexto dado
-        
+
         Args:
             context: Contexto da requisição
             session: Sessão do agente
             routing_context: Contexto específico de roteamento
-            
+
         Returns:
             ModelProvider: Provedor selecionado
-            
+
         Raises:
             ModelError: Se nenhum provedor está disponível
         """
@@ -117,31 +120,39 @@ class ModelRouter:
                     if provider.provider_id not in tier_router.registered_providers():
                         tier_router.register_provider(provider)
                 selected = tier_router.select(tier)
-                logger.debug("TierRouter selected provider_id=%s for tier=%s", selected.provider_id, tier.value)
+                logger.debug(
+                    "TierRouter selected provider_id=%s for tier=%s",
+                    selected.provider_id,
+                    tier.value,
+                )
                 return selected
             except Exception as exc:
-                logger.warning("TierRouter.select failed (%s), falling back to legacy routing", exc)
+                logger.warning(
+                    "TierRouter.select failed (%s), falling back to legacy routing", exc
+                )
                 # Fall through to legacy routing below
 
         # Obtém provedores disponíveis
         available_providers = await self._get_available_providers()
-        
+
         # Debug logging
         logger.debug(f"Total providers: {len(self.providers)}")
         logger.debug(f"Available providers: {len(available_providers)}")
         for key, provider in self.providers.items():
-            logger.debug(f"Provider {key}: circuit_breaker={self._circuit_breaker_status.get(key, False)}")
-        
+            logger.debug(
+                f"Provider {key}: circuit_breaker={self._circuit_breaker_status.get(key, False)}"
+            )
+
         if not available_providers:
             raise ModelError(
-                f"No model providers available. Total: {len(self.providers)}, Available: {len(available_providers)}", 
-                error_code="NO_PROVIDERS"
+                f"No model providers available. Total: {len(self.providers)}, Available: {len(available_providers)}",
+                error_code="NO_PROVIDERS",
             )
-        
+
         # Cria contexto de roteamento se não fornecido
         if routing_context is None:
             routing_context = self._create_routing_context(context, session)
-        
+
         # Aplica funções de roteamento customizadas primeiro
         for custom_func in self.custom_routing_functions:
             try:
@@ -151,23 +162,27 @@ class ModelRouter:
                     return selected
             except Exception as e:
                 logger.warning(f"Custom routing function failed: {e}")
-        
+
         # Aplica estratégia de roteamento padrão
         selected_provider = self._selector.select(
             self.strategy, routing_context, available_providers, self.metrics
         )
-        
+
         if not selected_provider:
             # Fallback: primeiro provedor disponível
             selected_provider = available_providers[0]
             logger.warning("Using fallback provider selection")
-        
-        provider_key = f"{selected_provider.provider_name}:{selected_provider.model_name}"
+
+        provider_key = (
+            f"{selected_provider.provider_name}:{selected_provider.model_name}"
+        )
         self.metrics[provider_key].record_request()
-        
-        logger.debug(f"Selected provider: {provider_key} (strategy: {self.strategy.value})")
+
+        logger.debug(
+            f"Selected provider: {provider_key} (strategy: {self.strategy.value})"
+        )
         return selected_provider
-    
+
     async def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do router"""
         provider_stats = {}
@@ -179,20 +194,20 @@ class ModelRouter:
                 "error_rate": metrics.error_rate,
                 "success_rate": metrics.success_rate,
                 "circuit_breaker_open": self._circuit_breaker_status.get(key, False),
-                "last_used": metrics.last_used
+                "last_used": metrics.last_used,
             }
-        
+
         return {
             "strategy": self.strategy.value,
             "total_providers": len(self.providers),
             "available_providers": len(await self._get_available_providers()),
             "circuit_breaker_enabled": self.circuit_breaker_enabled,
             "fallback_enabled": self.fallback_enabled,
-            "provider_stats": provider_stats
+            "provider_stats": provider_stats,
         }
-    
+
     # Métodos privados
-    
+
     async def _get_available_providers(self) -> List[ModelProvider]:
         """Obtém provedores disponíveis (não bloqueados por circuit breaker)"""
         available = []
@@ -200,27 +215,25 @@ class ModelRouter:
             # Verifica circuit breaker
             if self._circuit_breaker_status.get(key, False):
                 continue
-            
+
             # Sempre considera disponível se está registrado (simplificação inicial)
             available.append(provider)
-        
+
         return available
-    
+
     def _create_routing_context(
-        self, 
-        context: Optional[Dict[str, Any]], 
-        session: Optional[Any]
+        self, context: Optional[Dict[str, Any]], session: Optional[Any]
     ) -> RoutingContext:
         """Cria contexto de roteamento a partir do contexto geral"""
         user_input = ""
         estimated_tokens = 0
-        
+
         if context:
             if isinstance(context, dict):
                 messages = context.get("messages", [])
                 if messages:
                     last_message = messages[-1]
-                    if hasattr(last_message, 'content'):
+                    if hasattr(last_message, "content"):
                         user_input = last_message.content
                     elif isinstance(last_message, dict):
                         user_input = last_message.get("content", "")
@@ -229,21 +242,25 @@ class ModelRouter:
                 estimated_tokens = context.get("estimated_tokens", len(user_input) // 4)
             else:
                 user_input = str(context)
-        
+
         return RoutingContext(
             user_input=user_input,
             estimated_tokens=estimated_tokens,
-            session_data=session.context_data if session and hasattr(session, 'context_data') else {}
+            session_data=(
+                session.context_data
+                if session and hasattr(session, "context_data")
+                else {}
+            ),
         )
-    
+
     async def _health_check_if_needed(self) -> None:
         """Executa health check se necessário"""
         current_time = time.time()
         if current_time - self._last_health_check < self.health_check_interval:
             return
-        
+
         self._last_health_check = current_time
-        
+
         # Health check de todos os provedores
         for key, provider in self.providers.items():
             try:

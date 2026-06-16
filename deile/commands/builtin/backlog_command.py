@@ -23,9 +23,14 @@ from rich.table import Table
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._backlog_collectors import (_SEM_REVIEW, _SEM_WORKFLOW, ISSUE_BUCKETS,
-                                  PR_BUCKETS, BacklogData,
-                                  collect_backlog_data)
+from ._backlog_collectors import (
+    _SEM_REVIEW,
+    _SEM_WORKFLOW,
+    ISSUE_BUCKETS,
+    PR_BUCKETS,
+    BacklogData,
+    collect_backlog_data,
+)
 from ._git_helpers import ensure_gh_authenticated, ensure_git_repo
 from ._shared import emit_audit_event, wrap_command_errors
 from ._standup_collectors import _resolve_repo_from_git
@@ -33,6 +38,7 @@ from ._standup_collectors import _resolve_repo_from_git
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
+
 
 def _parse_args(args: str) -> Optional[str]:
     """Parse ``/backlog [--repo owner/name]``.
@@ -45,7 +51,7 @@ def _parse_args(args: str) -> Optional[str]:
         return None
     for prefix in ("--repo=", "--repo "):
         if args.startswith(prefix):
-            repo = args[len(prefix):].strip()
+            repo = args[len(prefix) :].strip()
             if not repo or "/" not in repo:
                 raise CommandError(
                     f"Repo inválido: {repo!r}. Use o formato owner/name."
@@ -59,6 +65,7 @@ def _parse_args(args: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
+
 
 def _build_tables(data: BacklogData) -> Group:
     """Build the two Rich tables from *data* and return them as a Group.
@@ -113,6 +120,7 @@ def _build_tables(data: BacklogData) -> Group:
 # Command class
 # ---------------------------------------------------------------------------
 
+
 class BacklogCommand(DirectCommand):
     """Exibe contagens de issues e PRs abertas por estado de workflow."""
 
@@ -122,6 +130,7 @@ class BacklogCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="backlog",
             description=(
@@ -132,9 +141,12 @@ class BacklogCommand(DirectCommand):
         )
         super().__init__(config)
 
-    @wrap_command_errors("backlog", message_template="Falha ao executar /backlog: {exc}")
+    @wrap_command_errors(
+        "backlog", message_template="Falha ao executar /backlog: {exc}"
+    )
     async def execute(self, context: CommandContext) -> CommandResult:
         from ...security.audit_logger import AuditEventType, SeverityLevel
+
         emit_audit_event(
             event_type=AuditEventType.COMMAND_EXECUTED,
             severity=SeverityLevel.INFO,

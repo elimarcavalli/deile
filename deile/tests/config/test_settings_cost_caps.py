@@ -12,8 +12,11 @@ from decimal import Decimal
 
 import pytest
 
-from deile.config.settings import (Settings, _to_optional_positive_decimal,
-                                   reset_settings)
+from deile.config.settings import (
+    Settings,
+    _to_optional_positive_decimal,
+    reset_settings,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -156,7 +159,9 @@ class TestSettingsJsonLoadingCostCap:
 class TestToOptionalPositiveDecimalNonFinite:
     """Regression tests for issue #712: NaN/Infinity must raise ValueError, not crash."""
 
-    @pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "inf", "Inf", "-inf"])
+    @pytest.mark.parametrize(
+        "value", ["NaN", "Infinity", "-Infinity", "inf", "Inf", "-inf"]
+    )
     def test_non_finite_string_raises_value_error(self, value):
         with pytest.raises(ValueError, match="finite"):
             _to_optional_positive_decimal(value)
@@ -164,13 +169,16 @@ class TestToOptionalPositiveDecimalNonFinite:
     @pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "inf"])
     def test_non_finite_string_does_not_raise_invalid_operation(self, value):
         import decimal
+
         try:
             _to_optional_positive_decimal(value)
             pytest.fail("Expected ValueError but got no exception")
         except ValueError:
             pass  # correct
         except decimal.InvalidOperation:
-            pytest.fail("Raised decimal.InvalidOperation instead of ValueError — bug #712")
+            pytest.fail(
+                "Raised decimal.InvalidOperation instead of ValueError — bug #712"
+            )
 
     def test_nan_decimal_direct_raises_value_error(self):
         with pytest.raises(ValueError, match="finite"):

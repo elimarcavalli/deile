@@ -5,6 +5,7 @@ _clean_logging_handlers, and _guard_sys_stdio (with failing-restore) each
 do their job.  A passing run means the fixtures are functioning; a failure
 means the fixture itself is broken.
 """
+
 from __future__ import annotations
 
 import io
@@ -61,7 +62,8 @@ class TestHandlerRestore:
         """_clean_logging_handlers must have removed the handler added in test_a."""
         logger = logging.getLogger(self._LOGGER_NAME)
         leaked = [
-            h for h in logger.handlers
+            h
+            for h in logger.handlers
             if getattr(h, "name", None) == "_deile_test_leak_handler"
         ]
         assert not leaked, (

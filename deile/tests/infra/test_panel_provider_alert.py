@@ -38,11 +38,14 @@ import _panel_data as pd  # noqa: E402
 # Helpers
 # --------------------------------------------------------------------------- #
 
-def _row(name: str, role: str, *, code: Optional[str] = None,
-         **extra) -> "panel.PodRow":
+
+def _row(
+    name: str, role: str, *, code: Optional[str] = None, **extra
+) -> "panel.PodRow":
     return panel.PodRow(
         icon=extra.get("icon", "●"),
-        name=name, role=role,
+        name=name,
+        role=role,
         status=extra.get("status", "Running"),
         age=extra.get("age", "5m"),
         restarts=extra.get("restarts", "0"),
@@ -58,7 +61,10 @@ def _render_grouped(rows) -> str:
     for col in ("icon", "pod", "status", "age", "r", "last", "doing"):
         tbl.add_column(col)
     panel._render_grouped_pods(
-        tbl, rows, panel._restart_text, panel._doing_now_render,
+        tbl,
+        rows,
+        panel._restart_text,
+        panel._doing_now_render,
     )
     console = Console(width=200)
     with console.capture() as cap:
@@ -90,11 +96,18 @@ class _FakeProvider:
 class _FakeData:
     """PanelData mínimo para os helpers de alerta (sem cluster real)."""
 
-    def __init__(self, *, provider_health=None, openrouter=None,
-                 pods=None, workers=None, pipeline=None, github=None):
+    def __init__(
+        self,
+        *,
+        provider_health=None,
+        openrouter=None,
+        pods=None,
+        workers=None,
+        pipeline=None,
+        github=None,
+    ):
         self.provider_health = (
-            _FakeProvider(provider_health) if provider_health is not None
-            else None
+            _FakeProvider(provider_health) if provider_health is not None else None
         )
         self.openrouter_balance = (
             _FakeProvider(openrouter) if openrouter is not None else None
@@ -111,6 +124,7 @@ class _FakeData:
 # --------------------------------------------------------------------------- #
 # ProviderHealthProvider — classificação a partir do log
 # --------------------------------------------------------------------------- #
+
 
 def test_scan_pod_classifies_insufficient_credit(monkeypatch):
     log = (
@@ -183,10 +197,10 @@ def test_provider_health_disabled_is_noop():
 # [1] Pods — grupo/linha VERMELHO + selo
 # --------------------------------------------------------------------------- #
 
+
 def test_grouped_pods_red_on_credit():
     rows = [
-        _row("opencode-worker-a", "opencode-worker",
-             code="INSUFFICIENT_CREDIT"),
+        _row("opencode-worker-a", "opencode-worker", code="INSUFFICIENT_CREDIT"),
     ]
     out = _render_grouped(rows)
     assert "CRÉDITO ESGOTADO" in out
@@ -211,8 +225,7 @@ def test_grouped_pods_credit_wins_over_rate_limit_in_group():
     # Dois pods do mesmo tipo: um rate-limit, um crédito → cabeçalho VERMELHO.
     rows = [
         _row("opencode-worker-a", "opencode-worker", code="RATE_LIMIT"),
-        _row("opencode-worker-b", "opencode-worker",
-             code="INSUFFICIENT_CREDIT"),
+        _row("opencode-worker-b", "opencode-worker", code="INSUFFICIENT_CREDIT"),
     ]
     out = _render_grouped(rows)
     assert "CRÉDITO ESGOTADO" in out  # selo do grupo é o pior caso
@@ -222,9 +235,11 @@ def test_grouped_pods_credit_wins_over_rate_limit_in_group():
 # Banner global
 # --------------------------------------------------------------------------- #
 
+
 def test_banner_red_for_credit():
     err = pd.WorkerProviderError(
-        pod_name="opencode-worker-a", role="opencode-worker",
+        pod_name="opencode-worker-a",
+        role="opencode-worker",
         code="INSUFFICIENT_CREDIT",
     )
     data = _FakeData(provider_health={"opencode-worker-a": err})
@@ -238,7 +253,9 @@ def test_banner_red_for_credit():
 
 def test_banner_yellow_for_rate_limit_only():
     err = pd.WorkerProviderError(
-        pod_name="qwen-worker-a", role="qwen-worker", code="RATE_LIMIT",
+        pod_name="qwen-worker-a",
+        role="qwen-worker",
+        code="RATE_LIMIT",
     )
     data = _FakeData(provider_health={"qwen-worker-a": err})
     banner = panel._provider_alert_banner(data)
@@ -261,7 +278,8 @@ def test_banner_absent_when_provider_missing():
 
 def test_banner_resolves_after_error_clears():
     err = pd.WorkerProviderError(
-        pod_name="opencode-worker-a", role="opencode-worker",
+        pod_name="opencode-worker-a",
+        role="opencode-worker",
         code="INSUFFICIENT_CREDIT",
     )
     data_err = _FakeData(provider_health={"opencode-worker-a": err})
@@ -275,14 +293,17 @@ def test_banner_resolves_after_error_clears():
 # Feed de ALERTS
 # --------------------------------------------------------------------------- #
 
+
 def test_alerts_include_credit_as_crit():
     err = pd.WorkerProviderError(
-        pod_name="opencode-worker-a", role="opencode-worker",
+        pod_name="opencode-worker-a",
+        role="opencode-worker",
         code="INSUFFICIENT_CREDIT",
     )
     data = _FakeData(
         provider_health={"opencode-worker-a": err},
-        pods=[], workers={},
+        pods=[],
+        workers={},
         pipeline=type("PS", (), {"last_action_age_s": None})(),
         github=type("GH", (), {"issues": []})(),
     )
@@ -293,7 +314,9 @@ def test_alerts_include_credit_as_crit():
 
 def test_alerts_rate_limit_is_warn():
     err = pd.WorkerProviderError(
-        pod_name="qwen-worker-a", role="qwen-worker", code="RATE_LIMIT",
+        pod_name="qwen-worker-a",
+        role="qwen-worker",
+        code="RATE_LIMIT",
     )
     data = _FakeData(
         provider_health={"qwen-worker-a": err},
@@ -309,22 +332,40 @@ def test_alerts_rate_limit_is_warn():
 # Saldo proativo OpenRouter
 # --------------------------------------------------------------------------- #
 
+
 def test_openrouter_balance_severity():
-    assert pd.OpenRouterBalance(
-        available=True, total_credits=10.0, total_usage=9.5,
-    ).severity == "crit"  # $0.50 restante
-    assert pd.OpenRouterBalance(
-        available=True, total_credits=10.0, total_usage=7.0,
-    ).severity == "warn"  # $3.00 restante (≤ 2× limiar)
-    assert pd.OpenRouterBalance(
-        available=True, total_credits=10.0, total_usage=1.0,
-    ).severity is None     # $9.00 restante — saudável
+    assert (
+        pd.OpenRouterBalance(
+            available=True,
+            total_credits=10.0,
+            total_usage=9.5,
+        ).severity
+        == "crit"
+    )  # $0.50 restante
+    assert (
+        pd.OpenRouterBalance(
+            available=True,
+            total_credits=10.0,
+            total_usage=7.0,
+        ).severity
+        == "warn"
+    )  # $3.00 restante (≤ 2× limiar)
+    assert (
+        pd.OpenRouterBalance(
+            available=True,
+            total_credits=10.0,
+            total_usage=1.0,
+        ).severity
+        is None
+    )  # $9.00 restante — saudável
     assert pd.OpenRouterBalance(available=False).severity is None
 
 
 def test_openrouter_alert_red_when_low():
     bal = pd.OpenRouterBalance(
-        available=True, total_credits=10.0, total_usage=9.9,
+        available=True,
+        total_credits=10.0,
+        total_usage=9.9,
     )
     data = _FakeData(openrouter=bal)
     alert = panel._openrouter_alert(data)
@@ -334,7 +375,9 @@ def test_openrouter_alert_red_when_low():
 
 def test_openrouter_alert_none_when_healthy():
     bal = pd.OpenRouterBalance(
-        available=True, total_credits=10.0, total_usage=0.0,
+        available=True,
+        total_credits=10.0,
+        total_usage=0.0,
     )
     assert panel._openrouter_alert(_FakeData(openrouter=bal)) is None
 
@@ -348,7 +391,9 @@ def test_openrouter_balance_no_key_is_unavailable(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     # Aponta o resolver para um .env inexistente.
     monkeypatch.setattr(
-        pd, "_read_openrouter_key", lambda: None,
+        pd,
+        "_read_openrouter_key",
+        lambda: None,
     )
     prov = pd.OpenRouterBalanceProvider()
     bal = prov._fetch()
@@ -357,7 +402,9 @@ def test_openrouter_balance_no_key_is_unavailable(monkeypatch, tmp_path):
 
 def test_banner_includes_openrouter_when_zero():
     bal = pd.OpenRouterBalance(
-        available=True, total_credits=5.0, total_usage=5.0,
+        available=True,
+        total_credits=5.0,
+        total_usage=5.0,
     )
     data = _FakeData(provider_health={}, openrouter=bal)
     banner = panel._provider_alert_banner(data)

@@ -5,6 +5,7 @@ Verifies three things:
 2. sandbox_code_execution=True forces sandbox mode in BashExecuteTool.
 3. generate_compliance_reports=True triggers a report file via AuditLogger.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,8 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deile.config.settings import (Settings, _apply_nested_dict,
-                                   _apply_profile_layer)
+from deile.config.settings import Settings, _apply_nested_dict, _apply_profile_layer
 from deile.security.audit_logger import AuditLogger
 
 # ---------------------------------------------------------------------------
@@ -63,8 +63,8 @@ class TestEnterpriseProfileSettings:
         s = Settings()
         s.profile_name = "autonomous_agent"
         _apply_profile_layer(s)
-        assert s.sandbox_code_execution is True   # set in autonomous_agent.yaml
-        assert s.encrypt_logs is False            # not set
+        assert s.sandbox_code_execution is True  # set in autonomous_agent.yaml
+        assert s.encrypt_logs is False  # not set
         assert s.generate_compliance_reports is False
 
     @pytest.mark.unit
@@ -95,6 +95,7 @@ class TestEnterpriseProfileSettings:
 class TestBashToolSandboxEnforcement:
     def _make_ctx(self, sandbox_arg: bool):
         from deile.tools.base import ToolContext
+
         return ToolContext(
             user_input="echo hello",
             parsed_args={
@@ -121,7 +122,9 @@ class TestBashToolSandboxEnforcement:
 
         # When sandbox_code_execution=True the tool must use subprocess (not PTY)
         with patch("deile.tools.bash_tool.get_settings", return_value=mock_settings):
-            with patch.object(tool, "_execute_with_subprocess", side_effect=fake_subprocess):
+            with patch.object(
+                tool, "_execute_with_subprocess", side_effect=fake_subprocess
+            ):
                 with patch.object(tool, "_should_use_pty", return_value=False):
                     tool.execute_sync(ctx)
 
@@ -144,7 +147,9 @@ class TestBashToolSandboxEnforcement:
             return ("hello\n", "", 0, False)
 
         with patch("deile.tools.bash_tool.get_settings", return_value=mock_settings):
-            with patch.object(tool, "_execute_with_subprocess", side_effect=fake_subprocess):
+            with patch.object(
+                tool, "_execute_with_subprocess", side_effect=fake_subprocess
+            ):
                 with patch.object(tool, "_should_use_pty", return_value=False):
                     tool.execute_sync(ctx)
 
@@ -219,7 +224,9 @@ class TestEncryptLogsWarning:
             # Patch `warning` directly on the logger instance so the test is
             # immune to logger-level / handler-configuration state.
             with patch.object(deile_logger, "warning") as mock_warn:
-                with patch("deile.storage.logs._is_encrypt_logs_enabled", return_value=True):
+                with patch(
+                    "deile.storage.logs._is_encrypt_logs_enabled", return_value=True
+                ):
                     logs_mod._ensure_initialized()
         finally:
             # Restore the "deile" logger to the state it was in before we

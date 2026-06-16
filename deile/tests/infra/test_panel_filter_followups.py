@@ -11,12 +11,10 @@ Cobertura:
 from __future__ import annotations
 
 import json
-import re
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
@@ -25,16 +23,17 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 try:
     import regex as _regex  # available when regex>=2024.0 is installed (issue #544)
+
     _HAS_REGEX = True
 except ImportError:
     _regex = None  # type: ignore[assignment]
     _HAS_REGEX = False
 import _panel as panel
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_pod_view() -> panel.PodWatchView:
     view = panel.PodWatchView()
@@ -63,7 +62,7 @@ def _apply_terms(view: panel.PodWatchView, text: str) -> None:
     view._filter_op = op
     if len(terms) == 1:
         k, r, c = terms[0]
-        view._filter_re = (c if k == "regex" else panel._lit_compile(r))
+        view._filter_re = c if k == "regex" else panel._lit_compile(r)
     else:
         view._filter_re = None
 
@@ -71,6 +70,7 @@ def _apply_terms(view: panel.PodWatchView, text: str) -> None:
 # ---------------------------------------------------------------------------
 # Item A — Highlight
 # ---------------------------------------------------------------------------
+
 
 class TestHighlightLiteralMatchSpans:
     """AC-A1: literal 'error' → span reverse on 'ERROR'."""
@@ -103,7 +103,9 @@ class TestHighlightMultipleMatches:
         p = view._log_panel()
         body = p.renderable
         spans_reverse = [s for s in body._spans if "reverse" in str(s.style)]
-        assert len(spans_reverse) == 2, f"Expected 2 reverse spans, got {len(spans_reverse)}"
+        assert (
+            len(spans_reverse) == 2
+        ), f"Expected 2 reverse spans, got {len(spans_reverse)}"
 
 
 class TestHighlightPreservesHiding:
@@ -132,9 +134,9 @@ class TestHighlightMultiTermAllTerms:
         body = p.renderable
         spans_reverse = [s for s in body._spans if "reverse" in str(s.style)]
         # Should have spans for both "ERROR" and "warn"
-        assert len(spans_reverse) >= 2, (
-            f"Expected spans for both terms, got {len(spans_reverse)}"
-        )
+        assert (
+            len(spans_reverse) >= 2
+        ), f"Expected spans for both terms, got {len(spans_reverse)}"
 
 
 class TestHighlightRegexTermTimeoutNoSpans:
@@ -151,13 +153,14 @@ class TestHighlightRegexTermTimeoutNoSpans:
         # reached) forces the engine through ~2^N partitions until the 0.1s
         # budget fires TimeoutError.
         line = "a" * 5000 + "!"
-        terms_info = [("regex", "(a+)+$",
-                       _regex.compile("(a+)+$", _regex.IGNORECASE))]
+        terms_info = [("regex", "(a+)+$", _regex.compile("(a+)+$", _regex.IGNORECASE))]
         t0 = time.monotonic()
         result = panel._highlight_filter_line(line, terms_info)
         elapsed = time.monotonic() - t0
 
-        assert elapsed <= 0.5, f"highlight took {elapsed:.3f}s — expected ≤0.5s (budget 0.1s)"
+        assert (
+            elapsed <= 0.5
+        ), f"highlight took {elapsed:.3f}s — expected ≤0.5s (budget 0.1s)"
         # No reverse spans — falls back to plain text
         spans_reverse = [s for s in result._spans if "reverse" in str(s.style)]
         assert not spans_reverse, "Expected no reverse spans on timeout"
@@ -168,11 +171,14 @@ class TestHighlightRegexTermTimeoutNoSpans:
 # Item B — Persistência
 # ---------------------------------------------------------------------------
 
+
 class TestPersistWritesEntryAtomically:
     """AC-B1: on_unmount writes key/text to JSON; atomic write."""
 
     def test_persist_writes_entry_atomically(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(panel, "_PANEL_FILTERS_PATH", tmp_path / "panel_filters.json")
+        monkeypatch.setattr(
+            panel, "_PANEL_FILTERS_PATH", tmp_path / "panel_filters.json"
+        )
 
         panel._save_panel_filter("pod:ns/pod-a", "error")
 
@@ -181,7 +187,9 @@ class TestPersistWritesEntryAtomically:
         assert data["entries"]["pod:ns/pod-a"]["text"] == "error"
 
     def test_atomic_write_no_partial_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(panel, "_PANEL_FILTERS_PATH", tmp_path / "panel_filters.json")
+        monkeypatch.setattr(
+            panel, "_PANEL_FILTERS_PATH", tmp_path / "panel_filters.json"
+        )
         # Simulate: if write succeeds, file is valid JSON
         panel._save_panel_filter("pod:ns/pod-x", "timeout")
         content = (tmp_path / "panel_filters.json").read_text()
@@ -219,7 +227,10 @@ class TestPersistCorruptFileIsIgnored:
 
     def test_wrong_schema_version_ignored(self, tmp_path, monkeypatch):
         monkeypatch.setattr(panel, "_PANEL_FILTERS_PATH", tmp_path / "pf.json")
-        data = {"schema_version": 99, "entries": {"k": {"text": "x", "saved_at": int(time.time())}}}
+        data = {
+            "schema_version": 99,
+            "entries": {"k": {"text": "x", "saved_at": int(time.time())}},
+        }
         (tmp_path / "pf.json").write_text(json.dumps(data))
         app = _make_app()
         result = panel._load_panel_filter("k", app)
@@ -234,8 +245,9 @@ class TestPersistCapAndStaleness:
         monkeypatch.setattr(panel, "_PANEL_FILTERS_PATH", tmp_path / "pf.json")
         # Write 50 entries with recent timestamps (within the 30-day window)
         now = int(time.time())
-        entries = {f"pod:ns/pod-{i}": {"text": f"f{i}", "saved_at": now - i}
-                   for i in range(50)}
+        entries = {
+            f"pod:ns/pod-{i}": {"text": f"f{i}", "saved_at": now - i} for i in range(50)
+        }
         data = {"schema_version": 1, "entries": entries}
         (tmp_path / "pf.json").write_text(json.dumps(data))
 
@@ -275,7 +287,9 @@ class TestPersistMergePreservesOtherKeys:
         assert "pod:ns/pod-A" in after["entries"], "pod-A must still be present"
         assert "pod:ns/pod-B" in after["entries"]
         assert after["entries"]["pod:ns/pod-A"]["text"] == entry_a_before["text"]
-        assert after["entries"]["pod:ns/pod-A"]["saved_at"] == entry_a_before["saved_at"]
+        assert (
+            after["entries"]["pod:ns/pod-A"]["saved_at"] == entry_a_before["saved_at"]
+        )
 
 
 class TestPersistLiveSessionKeyStable:
@@ -315,17 +329,20 @@ class TestPersistLiveSessionKeyStable:
 # Item C — Multi-filtro AND/OR
 # ---------------------------------------------------------------------------
 
+
 class TestMultiAndOrBasic:
     """AC-C1: AND/OR logic; single term = #460 compat."""
 
     def test_and_shows_only_both(self):
         view = _make_pod_view()
-        view.streamer = _make_streamer([
-            "error and timeout here",
-            "only error here",
-            "only timeout here",
-            "neither",
-        ])
+        view.streamer = _make_streamer(
+            [
+                "error and timeout here",
+                "only error here",
+                "only timeout here",
+                "neither",
+            ]
+        )
         _apply_terms(view, "error AND timeout")
         p = view._log_panel()
         rendered = str(p.renderable)
@@ -335,11 +352,13 @@ class TestMultiAndOrBasic:
 
     def test_or_shows_either(self):
         view = _make_pod_view()
-        view.streamer = _make_streamer([
-            "error line",
-            "warn line",
-            "debug line",
-        ])
+        view.streamer = _make_streamer(
+            [
+                "error line",
+                "warn line",
+                "debug line",
+            ]
+        )
         _apply_terms(view, "error OR warn")
         p = view._log_panel()
         rendered = str(p.renderable)
@@ -393,10 +412,12 @@ class TestMultiQuotedTerm:
 
     def test_quoted_term_filter(self):
         view = _make_pod_view()
-        view.streamer = _make_streamer([
-            "line with a AND b inside",
-            "line without it",
-        ])
+        view.streamer = _make_streamer(
+            [
+                "line with a AND b inside",
+                "line without it",
+            ]
+        )
         _apply_terms(view, '"a AND b"')
         p = view._log_panel()
         rendered = str(p.renderable)
@@ -449,12 +470,13 @@ class TestMultiOver200Chars:
 # Item D — Regex-timeout
 # ---------------------------------------------------------------------------
 
+
 class TestRegexDepDeclared:
     """AC-D1: pyproject.toml declares regex>=2024.0."""
 
     def test_regex_dep_declared(self):
         import tomllib  # Python 3.11+; fallback below
-        import importlib
+
         try:
             import tomllib
         except ImportError:
@@ -465,7 +487,8 @@ class TestRegexDepDeclared:
             with open(pyproject, "rb") as f:
                 data = tomllib.load(f)
         except Exception:
-            import configparser, re as _re
+            import re as _re
+
             text = pyproject.read_text()
             deps = _re.findall(r'"(regex[^"]*)"', text)
             assert any("regex" in d for d in deps), "regex not found in pyproject.toml"
@@ -482,6 +505,7 @@ class TestRegexTimeoutAbortsUnder100ms:
 
     def test_regex_timeout_aborts_under_100ms(self):
         import pytest
+
         if not _HAS_REGEX:
             pytest.skip("regex module not installed — AC-D2 requires regex>=2024.0")
 
@@ -501,6 +525,7 @@ class TestRegexTimeoutAbortsUnder100ms:
 
     def test_parse_filter_expr_compiles_via_regex_module(self):
         import pytest
+
         if not _HAS_REGEX:
             pytest.skip("regex module not installed — requires regex>=2024.0")
 
@@ -514,9 +539,10 @@ class TestRegexTimeoutAbortsUnder100ms:
         # recentes do pacote ``regex`` expõem o Pattern pela extensão C como
         # ``_regex.Pattern`` (``__module__ == "_regex"``); versões antigas como
         # ``regex.Pattern``. Ambos pertencem à lib ``regex`` — aceitar os dois.
-        assert type(compiled).__module__ in ("regex", "_regex"), (
-            f"Expected regex/_regex Pattern, got {type(compiled)}"
-        )
+        assert type(compiled).__module__ in (
+            "regex",
+            "_regex",
+        ), f"Expected regex/_regex Pattern, got {type(compiled)}"
 
 
 class TestRegexNormalPatternStillWorks:
@@ -535,6 +561,7 @@ class TestRegexNormalPatternStillWorks:
 # ---------------------------------------------------------------------------
 # Transversais
 # ---------------------------------------------------------------------------
+
 
 class TestAllItemsOffOutputIdentical:
     """AC-T2: with all items off, output is byte-identical to #460 behavior."""

@@ -6,6 +6,7 @@ codes — all without touching the real network. We use
 ``httpx.MockTransport`` for HTTP responses and ``monkeypatch`` for
 env/file resolution.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,9 +16,16 @@ import pytest
 
 from deile.infrastructure import deile_worker_client as wc
 from deile.infrastructure.deile_worker_client import (
-    DEFAULT_TIMEOUT_S, DeileWorkerClient, DispatchPayload, WorkerDispatchError,
-    _read_token, _resolve_endpoint, _validate_token_charset,
-    reset_circuit_breaker, validate_dispatch_payload)
+    DEFAULT_TIMEOUT_S,
+    DeileWorkerClient,
+    DispatchPayload,
+    WorkerDispatchError,
+    _read_token,
+    _resolve_endpoint,
+    _validate_token_charset,
+    reset_circuit_breaker,
+    validate_dispatch_payload,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -44,11 +52,10 @@ def _isolate_resilience(monkeypatch):
 
 # ----- endpoint resolution -----
 
+
 def test_resolve_endpoint_default(monkeypatch):
     monkeypatch.delenv("DEILE_WORKER_ENDPOINT", raising=False)
-    assert _resolve_endpoint() == (
-        "http://deile-worker.deile.svc.cluster.local:8766"
-    )
+    assert _resolve_endpoint() == ("http://deile-worker.deile.svc.cluster.local:8766")
 
 
 def test_resolve_endpoint_env_override(monkeypatch):
@@ -57,6 +64,7 @@ def test_resolve_endpoint_env_override(monkeypatch):
 
 
 # ----- token resolution -----
+
 
 def test_read_token_from_env(monkeypatch):
     monkeypatch.setenv("DEILE_WORKER_BEARER_TOKEN", " abc-token ")
@@ -92,18 +100,19 @@ def test_read_token_all_empty(monkeypatch):
 
 # ----- token charset validation -----
 
+
 @pytest.mark.parametrize(
     "tok,ok",
     [
         ("ABCdef0123456789", True),
         ("token._-+/=:~with.special", True),
-        ("abc\ndef", False),   # LF -> header injection vector
-        ("abc\rdef", False),   # CR
-        ("abc\x00def", False), # NUL
-        ("abc def", False),    # space — not allowed in bearer charset here
-        ("short", False),      # below 16 char floor
-        ("a" * 15, False),     # one below the floor
-        ("a" * 16, True),      # exact floor — aligned with secrets_scanner
+        ("abc\ndef", False),  # LF -> header injection vector
+        ("abc\rdef", False),  # CR
+        ("abc\x00def", False),  # NUL
+        ("abc def", False),  # space — not allowed in bearer charset here
+        ("short", False),  # below 16 char floor
+        ("a" * 15, False),  # one below the floor
+        ("a" * 16, True),  # exact floor — aligned with secrets_scanner
     ],
 )
 def test_validate_token_charset(tok: str, ok: bool):
@@ -112,10 +121,9 @@ def test_validate_token_charset(tok: str, ok: bool):
 
 # ----- DispatchPayload validation -----
 
+
 def test_payload_valid_minimum():
-    p = DispatchPayload.model_validate(
-        {"brief": "hello", "channel_id": "12345"}
-    )
+    p = DispatchPayload.model_validate({"brief": "hello", "channel_id": "12345"})
     assert p.persona == "developer"
     assert p.wait_for_result is True
 
@@ -142,32 +150,31 @@ def test_payload_accepts_reviewer_persona():
 
 
 def test_payload_strips_brief_whitespace():
-    p = DispatchPayload.model_validate(
-        {"brief": "  do stuff  ", "channel_id": "c"}
-    )
+    p = DispatchPayload.model_validate({"brief": "  do stuff  ", "channel_id": "c"})
     assert p.brief == "do stuff"
 
 
 def test_payload_rejects_too_long_brief():
     with pytest.raises(Exception):
-        DispatchPayload.model_validate(
-            {"brief": "x" * 8001, "channel_id": "c"}
-        )
+        DispatchPayload.model_validate({"brief": "x" * 8001, "channel_id": "c"})
 
 
 def test_payload_accepts_attachments_and_user_message_id():
-    p = DispatchPayload.model_validate({
-        "brief": "b",
-        "channel_id": "c",
-        "user_message_id": "msg-1",
-        "attachments": [{"url": "http://x"}],
-    })
+    p = DispatchPayload.model_validate(
+        {
+            "brief": "b",
+            "channel_id": "c",
+            "user_message_id": "msg-1",
+            "attachments": [{"url": "http://x"}],
+        }
+    )
     body = p.model_dump(exclude_none=True)
     assert body["user_message_id"] == "msg-1"
     assert body["attachments"] == [{"url": "http://x"}]
 
 
 # ----- validate_dispatch_payload -----
+
 
 def test_validate_dispatch_payload_valid_returns_model():
     p = validate_dispatch_payload({"brief": "hello", "channel_id": "12345"})
@@ -196,6 +203,7 @@ def test_validate_dispatch_payload_does_not_leak_input_values():
 
 
 # ----- dispatch error code coverage -----
+
 
 def _good_payload() -> dict:
     return {"brief": "hello world", "channel_id": "12345"}
@@ -388,6 +396,7 @@ def test_default_timeout_is_float():
 
 # ----- get_progress / get_result (issue #257) -----
 
+
 async def _run_get_with_transport(monkeypatch, handler, *, fn, path):
     """Helper: install MockTransport and exercise ``cli.<fn>(task_id)``.
 
@@ -475,7 +484,9 @@ async def test_get_result_timeout(monkeypatch):
 
 async def test_get_progress_non_dict_body(monkeypatch):
     def handler(request):
-        return httpx.Response(200, content=b'"not-a-dict"', headers={"Content-Type": "application/json"})
+        return httpx.Response(
+            200, content=b'"not-a-dict"', headers={"Content-Type": "application/json"}
+        )
 
     with pytest.raises(WorkerDispatchError) as ei:
         await _run_get_with_transport(

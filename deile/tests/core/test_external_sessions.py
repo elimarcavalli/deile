@@ -23,7 +23,9 @@ class TestGetOrCreate:
     async def test_in_memory_creates(self, tmp_path):
         agent = DeileAgent()
         agent._session_store = None
-        s1 = await agent.get_or_create_session("test-1", working_directory=str(tmp_path))
+        s1 = await agent.get_or_create_session(
+            "test-1", working_directory=str(tmp_path)
+        )
         assert s1.session_id == "test-1"
         s2 = await agent.get_or_create_session("test-1")
         assert s1 is s2

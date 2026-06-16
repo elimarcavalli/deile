@@ -32,6 +32,7 @@ import dispatch_logger as dlog  # noqa: E402
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _capture_records(logger_name: str):
     """Context manager that captures log records emitted to *logger_name*."""
     import contextlib
@@ -60,6 +61,7 @@ def _capture_records(logger_name: str):
 
 def _ts_now(offset_s: int = 0) -> str:
     from datetime import timedelta
+
     ts = datetime.now(timezone.utc) - timedelta(seconds=offset_s)
     return ts.strftime("%Y-%m-%dT%H:%M:%S.000000000+00:00")
 
@@ -67,6 +69,7 @@ def _ts_now(offset_s: int = 0) -> str:
 # ---------------------------------------------------------------------------
 # Health-probe throttle
 # ---------------------------------------------------------------------------
+
 
 class TestHealthProbeThrottle:
     def setup_method(self):
@@ -114,17 +117,22 @@ class TestHealthProbeThrottle:
 # dispatch_received
 # ---------------------------------------------------------------------------
 
+
 class TestDispatchReceived:
     def test_emits_correct_event_name(self):
         with _capture_records("deile.dispatch") as records:
-            dlog.dispatch_received(task="aabbccddeeff1122", channel="pipeline-issue-309")
+            dlog.dispatch_received(
+                task="aabbccddeeff1122", channel="pipeline-issue-309"
+            )
         assert len(records) == 1
         msg = records[0].getMessage()
         assert msg.startswith("dispatch.received ")
 
     def test_required_keys_present(self):
         with _capture_records("deile.dispatch") as records:
-            dlog.dispatch_received(task="aabbccddeeff1122", channel="pipeline-issue-309")
+            dlog.dispatch_received(
+                task="aabbccddeeff1122", channel="pipeline-issue-309"
+            )
         msg = records[0].getMessage()
         assert "task=aabbccddeeff1122" in msg
         assert "channel=pipeline-issue-309" in msg
@@ -165,6 +173,7 @@ class TestDispatchReceived:
 # dispatch_completed
 # ---------------------------------------------------------------------------
 
+
 class TestDispatchCompleted:
     def test_emits_correct_event(self):
         with _capture_records("deile.dispatch") as records:
@@ -177,8 +186,11 @@ class TestDispatchCompleted:
     def test_optional_enrichment(self):
         with _capture_records("deile.dispatch") as records:
             dlog.dispatch_completed(
-                task="aabb1122", ok=True,
-                turns=5, cost_usd=0.001234, duration_s=120.5,
+                task="aabb1122",
+                ok=True,
+                turns=5,
+                cost_usd=0.001234,
+                duration_s=120.5,
             )
         msg = records[0].getMessage()
         assert "turns=5" in msg
@@ -190,10 +202,13 @@ class TestDispatchCompleted:
 # dispatch_failed
 # ---------------------------------------------------------------------------
 
+
 class TestDispatchFailed:
     def test_emits_correct_event(self):
         with _capture_records("deile.dispatch") as records:
-            dlog.dispatch_failed(task="aabb1122", reason="outer_timeout", error_code="TASK_TIMEOUT")
+            dlog.dispatch_failed(
+                task="aabb1122", reason="outer_timeout", error_code="TASK_TIMEOUT"
+            )
         msg = records[0].getMessage()
         assert msg.startswith("dispatch.failed ")
         assert "task=aabb1122" in msg
@@ -211,10 +226,13 @@ class TestDispatchFailed:
 # Phase-2 dispatch emitters — smoke tests (defined, tested; not yet wired)
 # ---------------------------------------------------------------------------
 
+
 class TestDispatchProgressEmitters:
     def test_dispatch_model_resolved(self):
         with _capture_records("deile.dispatch") as records:
-            dlog.dispatch_model_resolved(task="t1", model="anthropic:claude-opus-4-8", source="settings")
+            dlog.dispatch_model_resolved(
+                task="t1", model="anthropic:claude-opus-4-8", source="settings"
+            )
         assert records[0].getMessage().startswith("dispatch.model_resolved ")
         assert "model=anthropic:claude-opus-4-8" in records[0].getMessage()
 
@@ -222,8 +240,10 @@ class TestDispatchProgressEmitters:
         """reasoning=<effort> is emitted when the knob is set (issue #441)."""
         with _capture_records("deile.dispatch") as records:
             dlog.dispatch_model_resolved(
-                task="t2", model="anthropic:claude-opus-4-8",
-                source="context_data", reasoning="high",
+                task="t2",
+                model="anthropic:claude-opus-4-8",
+                source="context_data",
+                reasoning="high",
             )
         msg = records[0].getMessage()
         assert "reasoning=high" in msg
@@ -233,7 +253,9 @@ class TestDispatchProgressEmitters:
         """reasoning key is absent (not reasoning=None) when effort is not set."""
         with _capture_records("deile.dispatch") as records:
             dlog.dispatch_model_resolved(
-                task="t3", model="anthropic:claude-sonnet-4-6", source="settings",
+                task="t3",
+                model="anthropic:claude-sonnet-4-6",
+                source="settings",
             )
         msg = records[0].getMessage()
         assert "reasoning=" not in msg
@@ -259,6 +281,7 @@ class TestDispatchProgressEmitters:
 # ---------------------------------------------------------------------------
 # git / forge emitters — smoke tests
 # ---------------------------------------------------------------------------
+
 
 class TestGitForgeEmitters:
     def test_git_commit(self):
@@ -293,6 +316,7 @@ class TestGitForgeEmitters:
 # _panel_data regex backward-compatibility (issue #435)
 # ---------------------------------------------------------------------------
 
+
 class TestPanelDataRegexCompat:
     """WorkerProvider._parse must accept BOTH old (snake) and new (dot) formats."""
 
@@ -305,8 +329,10 @@ class TestPanelDataRegexCompat:
 
     def test_dispatch_received_parsed_as_current_task(self):
         prov = self._build()
-        body = ("dispatch.received task=aabbccddeeff1122 channel=pipeline-issue-309 "
-                "stage=implement kind=implement issue=309 branch=auto/issue-309")
+        body = (
+            "dispatch.received task=aabbccddeeff1122 channel=pipeline-issue-309 "
+            "stage=implement kind=implement issue=309 branch=auto/issue-309"
+        )
         text = f"{_ts_now(2)} {body}"
         state = prov._parse("worker-1", text)
         assert state.current_task is not None
@@ -317,10 +343,12 @@ class TestPanelDataRegexCompat:
 
     def test_dispatch_received_cleared_by_dispatch_completed(self):
         prov = self._build()
-        text = "\n".join([
-            f"{_ts_now(5)} dispatch.received task=aabbccddeeff1122 channel=pipeline-issue-309 issue=309",
-            f"{_ts_now(2)} dispatch.completed task=aabbccddeeff1122 ok=True",
-        ])
+        text = "\n".join(
+            [
+                f"{_ts_now(5)} dispatch.received task=aabbccddeeff1122 channel=pipeline-issue-309 issue=309",
+                f"{_ts_now(2)} dispatch.completed task=aabbccddeeff1122 ok=True",
+            ]
+        )
         state = prov._parse("worker-1", text)
         assert state.current_task is None
         assert state.last_completed is not None
@@ -328,20 +356,22 @@ class TestPanelDataRegexCompat:
 
     def test_dispatch_received_cleared_by_dispatch_failed(self):
         prov = self._build()
-        text = "\n".join([
-            f"{_ts_now(5)} dispatch.received task=aabbccddeeff1122 channel=pipeline-issue-309 issue=309",
-            f"{_ts_now(2)} dispatch.failed task=aabbccddeeff1122 reason=outer_timeout error_code=TASK_TIMEOUT",
-        ])
+        text = "\n".join(
+            [
+                f"{_ts_now(5)} dispatch.received task=aabbccddeeff1122 channel=pipeline-issue-309 issue=309",
+                f"{_ts_now(2)} dispatch.failed task=aabbccddeeff1122 reason=outer_timeout error_code=TASK_TIMEOUT",
+            ]
+        )
         state = prov._parse("worker-1", text)
         assert state.current_task is None
         assert state.last_completed is not None
         assert state.last_completed.outcome == "FAIL"
 
 
-
 # ---------------------------------------------------------------------------
 # AC §9b — format integrity: values stay single-token and bounded
 # ---------------------------------------------------------------------------
+
 
 class TestFormatIntegrity:
     def test_newline_in_value_becomes_literal_backslash_n(self):
@@ -358,7 +388,9 @@ class TestFormatIntegrity:
     def test_carriage_return_in_value_also_normalized(self):
         with _capture_records("deile.dispatch") as records:
             dlog.dispatch_received(
-                task="t", channel="ch", branch="a\rb\r\nc",
+                task="t",
+                channel="ch",
+                branch="a\rb\r\nc",
             )
         msg = records[0].getMessage()
         assert "\r" not in msg
@@ -367,7 +399,9 @@ class TestFormatIntegrity:
     def test_whitespace_in_value_collapsed_to_underscore(self):
         with _capture_records("deile.dispatch") as records:
             dlog.dispatch_received(
-                task="t", channel="ch", branch="feat/with space and more",
+                task="t",
+                channel="ch",
+                branch="feat/with space and more",
             )
         msg = records[0].getMessage()
         # Parser uses (\w+)=(\S+) so the value must be a single token.
@@ -386,6 +420,7 @@ class TestFormatIntegrity:
     def test_parser_kv_regex_survives_sanitized_value(self):
         """The whole point of AC §9b — line stays parseable after weird input."""
         import re as _re
+
         kv = _re.compile(r"(\w+)=(\S+)")
         with _capture_records("deile.dispatch") as records:
             dlog.dispatch_received(
@@ -406,6 +441,7 @@ class TestFormatIntegrity:
 # ---------------------------------------------------------------------------
 # AC §9a — fail-soft: observability never crashes a dispatch
 # ---------------------------------------------------------------------------
+
 
 class TestFailSoft:
     def test_emit_swallows_exceptions_from_logging(self):
@@ -429,17 +465,24 @@ class TestFailSoft:
 # AC §8 — redaction: secrets never reach kubectl logs
 # ---------------------------------------------------------------------------
 
+
 class TestRedaction:
-    @pytest.mark.parametrize("value,must_not_contain", [
-        ("Bearer abc123def456ghi789", "abc123def456ghi789"),
-        ("token=verysecrettoken12345", "verysecrettoken12345"),
-        ("api_key=mysupersecretkey", "mysupersecretkey"),
-        ("api-key:abcdefghij1234567890", "abcdefghij1234567890"),
-        ("authorization=Bearer xyz", "xyz"),
-        ("ghp_abcdefghij1234567890klmnopqrst", "ghp_abcdefghij1234567890klmnopqrst"),
-        ("glpat-abcdefghij1234567890", "glpat-abcdefghij1234567890"),
-        ("sk-abcdefghij1234567890abcdef", "sk-abcdefghij1234567890abcdef"),
-    ])
+    @pytest.mark.parametrize(
+        "value,must_not_contain",
+        [
+            ("Bearer abc123def456ghi789", "abc123def456ghi789"),
+            ("token=verysecrettoken12345", "verysecrettoken12345"),
+            ("api_key=mysupersecretkey", "mysupersecretkey"),
+            ("api-key:abcdefghij1234567890", "abcdefghij1234567890"),
+            ("authorization=Bearer xyz", "xyz"),
+            (
+                "ghp_abcdefghij1234567890klmnopqrst",
+                "ghp_abcdefghij1234567890klmnopqrst",
+            ),
+            ("glpat-abcdefghij1234567890", "glpat-abcdefghij1234567890"),
+            ("sk-abcdefghij1234567890abcdef", "sk-abcdefghij1234567890abcdef"),
+        ],
+    )
     def test_secret_pattern_replaced_with_placeholder(self, value, must_not_contain):
         with _capture_records("deile.dispatch") as records:
             dlog.dispatch_received(task="t", channel="ch", branch=value)
@@ -466,8 +509,11 @@ class TestRedaction:
 # init_logging configures deile.dispatch independently (bug #1)
 # ---------------------------------------------------------------------------
 
+
 class TestDispatchLoggerSurvivesWarningLevel:
-    def test_dispatch_lines_emitted_even_when_root_at_warning(self, tmp_path, monkeypatch):
+    def test_dispatch_lines_emitted_even_when_root_at_warning(
+        self, tmp_path, monkeypatch
+    ):
         """AC §6 — DEILE_LOG_LEVEL=WARNING must NOT silence dispatch.*"""
         from deile.log_mgmt import init_logging
 

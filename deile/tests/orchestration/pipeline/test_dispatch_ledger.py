@@ -1,13 +1,17 @@
 """Tests para :mod:`deile.orchestration.pipeline.dispatch_ledger` (issue #309
 fase 3.5). Cobertura: persistência atomic, leitura/escrita, clear, corrupção,
 versão, env override, key helpers, list_all, cache invalidation."""
+
 from __future__ import annotations
 
 import json
 import time
 
 from deile.orchestration.pipeline.dispatch_ledger import (
-    LEDGER_SCHEMA_VERSION, DispatchLedger, _default_ledger_path)
+    LEDGER_SCHEMA_VERSION,
+    DispatchLedger,
+    _default_ledger_path,
+)
 
 
 def test_key_helpers():
@@ -18,8 +22,12 @@ def test_key_helpers():
 def test_record_then_get_roundtrip(tmp_path):
     ledger = DispatchLedger(path=tmp_path / "l.json")
     ledger.record(
-        "pr:1", task_id="t1", session_id="s1",
-        stage="pr_review", branch="auto/issue-1", worker_kind="claude",
+        "pr:1",
+        task_id="t1",
+        session_id="s1",
+        stage="pr_review",
+        branch="auto/issue-1",
+        worker_kind="claude",
     )
     r = ledger.get("pr:1")
     assert r is not None
@@ -178,12 +186,14 @@ def test_invalidate_cache_re_reads_disk(tmp_path):
 # extra field — campo livre para metadados (ex.: guard de convergência)
 # ------------------------------------------------------------------ #
 
+
 def test_record_with_extra_roundtrip(tmp_path):
     """record com extra → get devolve entry com extra preservado."""
     ledger = DispatchLedger(path=tmp_path / "l.json")
     ledger.record(
         "issue:7",
-        task_id="t7", session_id="s7",
+        task_id="t7",
+        session_id="s7",
         stage="refine",
         extra={"before_body": "corpo antes do refino", "round": 1},
     )
@@ -210,7 +220,8 @@ def test_record_extra_persists_disk_roundtrip(tmp_path):
     ledger1 = DispatchLedger(path=path)
     ledger1.record(
         "issue:42",
-        task_id="t42", session_id="s42",
+        task_id="t42",
+        session_id="s42",
         extra={"before_body": "x", "score": 0.9},
     )
     # Nova instância — sem cache compartilhado.

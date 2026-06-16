@@ -41,17 +41,19 @@ def test_tier_1_patterns_are_complex(patterns):
     """Patterns with tier_1 should have requires_workflow=True or be analysis/workflow."""
     tier_1 = {name: p for name, p in patterns.items() if p.get("tier") == "tier_1"}
     for name, p in tier_1.items():
-        assert p.get("requires_workflow") is True or p.get("category") in ("analysis", "workflow", "troubleshooting"), (
-            f"Pattern '{name}' is tier_1 but doesn't require workflow or complex category"
-        )
+        assert p.get("requires_workflow") is True or p.get("category") in (
+            "analysis",
+            "workflow",
+            "troubleshooting",
+        ), f"Pattern '{name}' is tier_1 but doesn't require workflow or complex category"
 
 
 def test_tier_3_patterns_do_not_require_workflow(patterns):
     tier_3 = {name: p for name, p in patterns.items() if p.get("tier") == "tier_3"}
     for name, p in tier_3.items():
-        assert p.get("requires_workflow") is not True, (
-            f"Pattern '{name}' is tier_3 but requires workflow — inconsistent"
-        )
+        assert (
+            p.get("requires_workflow") is not True
+        ), f"Pattern '{name}' is tier_3 but requires workflow — inconsistent"
 
 
 def test_known_patterns_have_expected_tiers(patterns):

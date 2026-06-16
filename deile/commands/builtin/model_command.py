@@ -11,19 +11,28 @@ from rich.table import Table
 from rich.text import Text
 
 from ...config.manager import CommandConfig
-from ...core.interfaces.selector import (InteractiveSelector,
-                                         SelectorNotSupported, SelectorOption)
+from ...core.interfaces.selector import (
+    InteractiveSelector,
+    SelectorNotSupported,
+    SelectorOption,
+)
 from ...core.models.tier import ModelTier
 from ...core.models.tier_router import get_tier_router, reset_tier_router
 from ...storage.usage_repository import BudgetGuard, get_usage_repository
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._model_views import (build_budget_panel, build_cost_table,
-                           build_current_panel, build_list_table)
+from ._model_views import (
+    build_budget_panel,
+    build_cost_table,
+    build_current_panel,
+    build_list_table,
+)
 from ._shared import error_panel, get_agent, get_session_id, split_args
 
 logger = logging.getLogger(__name__)
 
-_MODEL_PROVIDERS_YAML: Path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
+_MODEL_PROVIDERS_YAML: Path = (
+    Path(__file__).parents[2] / "config" / "model_providers.yaml"
+)
 """Caminho canônico do catalog YAML — antes computado 4x em-método com
 import local de ``Path``, todos resolvendo para o mesmo arquivo."""
 
@@ -126,7 +135,9 @@ EXAMPLES:
             return CommandResult(
                 success=False,
                 content=Panel(
-                    Text(f"Unknown sub-command '{action}'. See /model help.", style="red"),
+                    Text(
+                        f"Unknown sub-command '{action}'. See /model help.", style="red"
+                    ),
                     title="Error",
                     border_style="red",
                 ),
@@ -149,7 +160,9 @@ EXAMPLES:
         handles = catalog.list_all()
         forced = self._get_forced(context)
         table = build_list_table(handles, forced)
-        return CommandResult(success=True, content=table, metadata={"count": len(handles)})
+        return CommandResult(
+            success=True, content=table, metadata={"count": len(handles)}
+        )
 
     # ------------------------------------------------------------------
     # /model select
@@ -165,7 +178,9 @@ EXAMPLES:
         selector = self._resolve_selector()
 
         catalog = ModelCatalog.from_yaml(_MODEL_PROVIDERS_YAML)
-        handles = sorted(catalog.list_all(), key=lambda h: (h.tier.value, h.provider_id, h.model_id))
+        handles = sorted(
+            catalog.list_all(), key=lambda h: (h.tier.value, h.provider_id, h.model_id)
+        )
         forced = self._get_forced(context)
 
         options: List[SelectorOption] = []
@@ -182,12 +197,14 @@ EXAMPLES:
                 f"tier={h.tier.value}  in=${h.pricing.input_per_1m_usd:.2f}/1M  "
                 f"out=${h.pricing.output_per_1m_usd:.2f}/1M  ctx={h.context_window // 1000}K"
             )
-            options.append(SelectorOption(
-                label=label,
-                value=key,
-                description=description,
-                metadata={"provider": h.provider_id, "tier": h.tier.value},
-            ))
+            options.append(
+                SelectorOption(
+                    label=label,
+                    value=key,
+                    description=description,
+                    metadata={"provider": h.provider_id, "tier": h.tier.value},
+                )
+            )
 
         if not options:
             return CommandResult(
@@ -233,6 +250,7 @@ EXAMPLES:
         if self._selector is not None:
             return self._selector
         from deile.infrastructure.selectors import get_default_selector
+
         return get_default_selector()
 
     async def _list_with_fallback_hint(self, context: CommandContext) -> CommandResult:
@@ -273,7 +291,10 @@ EXAMPLES:
             return CommandResult(
                 success=False,
                 content=Panel(
-                    Text("Usage: /model use <provider>:<model_id>  or  /model use auto", style="yellow"),
+                    Text(
+                        "Usage: /model use <provider>:<model_id>  or  /model use auto",
+                        style="yellow",
+                    ),
                     title="Missing argument",
                     border_style="yellow",
                 ),
@@ -292,14 +313,21 @@ EXAMPLES:
                 ctx_data.pop("forced_model", None)
             return CommandResult(
                 success=True,
-                content=Panel(Text("Routing restored to automatic."), title="Model", border_style="green"),
+                content=Panel(
+                    Text("Routing restored to automatic."),
+                    title="Model",
+                    border_style="green",
+                ),
             )
 
         if ":" not in target:
             return CommandResult(
                 success=False,
                 content=Panel(
-                    Text(f"Invalid format '{target}'. Use provider:model_id.", style="red"),
+                    Text(
+                        f"Invalid format '{target}'. Use provider:model_id.",
+                        style="red",
+                    ),
                     title="Error",
                     border_style="red",
                 ),
@@ -324,11 +352,13 @@ EXAMPLES:
                 for p in registered.values()
             )
             if not exact_match:
-                available = sorted({
-                    f"{getattr(p, 'provider_id', '?')}:{getattr(p, 'model_name', '?')}"
-                    for p in registered.values()
-                    if getattr(p, "provider_id", None) == forced_provider_id
-                })
+                available = sorted(
+                    {
+                        f"{getattr(p, 'provider_id', '?')}:{getattr(p, 'model_name', '?')}"
+                        for p in registered.values()
+                        if getattr(p, "provider_id", None) == forced_provider_id
+                    }
+                )
                 return CommandResult(
                     success=False,
                     content=Panel(
@@ -345,7 +375,10 @@ EXAMPLES:
                 )
 
         if hasattr(context, "session") and context.session is not None:
-            if not hasattr(context.session, "context_data") or context.session.context_data is None:
+            if (
+                not hasattr(context.session, "context_data")
+                or context.session.context_data is None
+            ):
                 context.session.context_data = {}
             context.session.context_data["forced_model"] = target
         return CommandResult(
@@ -368,7 +401,10 @@ EXAMPLES:
             return CommandResult(
                 success=False,
                 content=Panel(
-                    Text(f"Unknown strategy '{name}'. Valid: {', '.join(sorted(valid))}", style="red"),
+                    Text(
+                        f"Unknown strategy '{name}'. Valid: {', '.join(sorted(valid))}",
+                        style="red",
+                    ),
                     title="Error",
                     border_style="red",
                 ),
@@ -391,12 +427,14 @@ EXAMPLES:
             try:
                 new_router.register_provider(p)
             except Exception as exc:
-                logger.debug("could not re-register provider on new TierRouter: %s", exc)
+                logger.debug(
+                    "could not re-register provider on new TierRouter: %s", exc
+                )
 
         # Sync the legacy ModelRouter.strategy (consulted when tier classification fails)
         try:
-            from deile.core.models.routing_strategies import \
-                RoutingStrategy as _RS
+            from deile.core.models.routing_strategies import RoutingStrategy as _RS
+
             agent_obj = get_agent(context)
             if agent_obj is None:
                 # Fall back: try common aliases on the context
@@ -408,7 +446,11 @@ EXAMPLES:
 
         return CommandResult(
             success=True,
-            content=Panel(Text(f"Strategy set to '{name}'."), title="Strategy", border_style="green"),
+            content=Panel(
+                Text(f"Strategy set to '{name}'."),
+                title="Strategy",
+                border_style="green",
+            ),
             metadata={"strategy": name},
         )
 
@@ -422,7 +464,9 @@ EXAMPLES:
         total = repo.cost_for_session(session_id)
         records = repo.records_for_session(session_id)
         table = build_cost_table(records, total, session_id)
-        return CommandResult(success=True, content=table, metadata={"total_cost_usd": total})
+        return CommandResult(
+            success=True, content=table, metadata={"total_cost_usd": total}
+        )
 
     # ------------------------------------------------------------------
     # /model budget
@@ -435,7 +479,11 @@ EXAMPLES:
         except Exception:
             return CommandResult(
                 success=False,
-                content=Panel(Text("Could not load budget from YAML."), title="Budget", border_style="yellow"),
+                content=Panel(
+                    Text("Could not load budget from YAML."),
+                    title="Budget",
+                    border_style="yellow",
+                ),
             )
 
         session_id = get_session_id(context, "default")

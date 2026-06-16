@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 class PluginStatus(Enum):
     """Status de um plugin"""
+
     UNKNOWN = "unknown"
     LOADING = "loading"
     LOADED = "loaded"
@@ -26,6 +27,7 @@ class PluginStatus(Enum):
 @dataclass
 class PluginInfo:
     """Informações de um plugin"""
+
     plugin_id: str
     name: str
     version: str
@@ -107,7 +109,7 @@ class PluginManager:
             "plugins_active": 0,
             "plugins_failed": 0,
             "hot_reloads": 0,
-            "last_discovery": 0.0
+            "last_discovery": 0.0,
         }
 
         logger.info("PluginManager inicializado")
@@ -131,7 +133,7 @@ class PluginManager:
         discovered = 0
 
         for plugin_dir in self.plugins_dir.iterdir():
-            if not plugin_dir.is_dir() or plugin_dir.name.startswith('.'):
+            if not plugin_dir.is_dir() or plugin_dir.name.startswith("."):
                 continue
 
             manifest_file = plugin_dir / "plugin.json"
@@ -139,7 +141,7 @@ class PluginManager:
                 continue
 
             try:
-                with open(manifest_file, 'r', encoding='utf-8') as f:
+                with open(manifest_file, "r", encoding="utf-8") as f:
                     manifest = json.load(f)
 
                 plugin_info = PluginInfo(
@@ -151,13 +153,15 @@ class PluginManager:
                     dependencies=manifest.get("dependencies", []),
                     capabilities=manifest.get("capabilities", []),
                     plugin_dir=plugin_dir,
-                    metadata=manifest.get("metadata", {})
+                    metadata=manifest.get("metadata", {}),
                 )
 
                 self._plugins[plugin_info.plugin_id] = plugin_info
                 discovered += 1
 
-                logger.debug(f"Plugin descoberto: {plugin_info.name} v{plugin_info.version}")
+                logger.debug(
+                    f"Plugin descoberto: {plugin_info.name} v{plugin_info.version}"
+                )
 
             except Exception as e:
                 logger.error(f"Erro ao processar plugin em {plugin_dir}: {e}")
@@ -339,11 +343,7 @@ class PluginManager:
 
     async def load_core_plugins(self) -> None:
         """Carrega plugins essenciais do core"""
-        core_plugins = [
-            "memory_plugin",
-            "monitoring_plugin",
-            "collaboration_plugin"
-        ]
+        core_plugins = ["memory_plugin", "monitoring_plugin", "collaboration_plugin"]
 
         for plugin_id in core_plugins:
             if plugin_id in self._plugins:
@@ -357,7 +357,10 @@ class PluginManager:
         for dep in plugin_info.dependencies:
             if dep not in self._plugins:
                 missing.append(dep)
-            elif self._plugins[dep].status not in [PluginStatus.LOADED, PluginStatus.ACTIVE]:
+            elif self._plugins[dep].status not in [
+                PluginStatus.LOADED,
+                PluginStatus.ACTIVE,
+            ]:
                 missing.append(dep)
 
         return missing
@@ -378,15 +381,22 @@ class PluginManager:
     def get_plugins_by_capability(self, capability: str) -> List[PluginInfo]:
         """Retorna plugins que possuem uma capacidade específica"""
         return [
-            plugin for plugin in self._plugins.values()
+            plugin
+            for plugin in self._plugins.values()
             if capability in plugin.capabilities
         ]
 
     async def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do plugin manager"""
-        active_plugins = len([p for p in self._plugins.values() if p.status == PluginStatus.ACTIVE])
-        loaded_plugins = len([p for p in self._plugins.values() if p.status == PluginStatus.LOADED])
-        error_plugins = len([p for p in self._plugins.values() if p.status == PluginStatus.ERROR])
+        active_plugins = len(
+            [p for p in self._plugins.values() if p.status == PluginStatus.ACTIVE]
+        )
+        loaded_plugins = len(
+            [p for p in self._plugins.values() if p.status == PluginStatus.LOADED]
+        )
+        error_plugins = len(
+            [p for p in self._plugins.values() if p.status == PluginStatus.ERROR]
+        )
 
         return {
             "total_plugins": len(self._plugins),
@@ -394,7 +404,7 @@ class PluginManager:
             "loaded_plugins": loaded_plugins,
             "error_plugins": error_plugins,
             "hot_reload_enabled": self._hot_reload_enabled,
-            "stats": self._stats.copy()
+            "stats": self._stats.copy(),
         }
 
     async def shutdown(self) -> None:
@@ -402,7 +412,11 @@ class PluginManager:
         logger.info("Finalizando PluginManager...")
 
         # Desativa todos os plugins ativos
-        active_plugins = [p.plugin_id for p in self._plugins.values() if p.status == PluginStatus.ACTIVE]
+        active_plugins = [
+            p.plugin_id
+            for p in self._plugins.values()
+            if p.status == PluginStatus.ACTIVE
+        ]
         for plugin_id in active_plugins:
             await self.deactivate_plugin(plugin_id)
 

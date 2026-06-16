@@ -1,4 +1,5 @@
 """Tests: path editing modal and path sanitization for panel export (#461/#547)."""
+
 from __future__ import annotations
 
 import sys
@@ -86,8 +87,14 @@ class TestExportPathModal:
             api_errors=[],
             stdout=None,
         )
-        v._history.append({"polled_at": "2026-01-01T00:00:00Z",
-                           "session": None, "command": None, "chat": None})
+        v._history.append(
+            {
+                "polled_at": "2026-01-01T00:00:00Z",
+                "session": None,
+                "command": None,
+                "chat": None,
+            }
+        )
         v.handle_key("E", MagicMock())
         target = tmp_path / "out.json"
         v._export_path_buf = str(target)

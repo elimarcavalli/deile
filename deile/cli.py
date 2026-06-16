@@ -25,8 +25,7 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
-from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
-                                       SWITCH_SESSION_KEY)
+from deile.commands._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 
 # Re-export the self-install layer (moved to deile/cli_install.py for SRP) so
 # the public surface used by tests and external callers stays stable:
@@ -45,7 +44,12 @@ from .cli_install import _wrapper_target_dir  # noqa: F401  (re-export)
 # ── package root (where deile/ lives) ───────────────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
 _PROJECT_ROOT = _PACKAGE_ROOT.parent  # repo root when editable, same when installed
-_ENV_KEY_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
+_ENV_KEY_NAMES = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GOOGLE_API_KEY",
+)
 
 # ── install helpers — module-level constants ─────────────────────────────────
 _TTY = sys.stdout.isatty()
@@ -73,6 +77,7 @@ def _load_dotenv() -> None:
     if env_file:
         try:
             from dotenv import load_dotenv
+
             load_dotenv(env_file)
         except ImportError:
             pass
@@ -115,6 +120,7 @@ def _silence_genai_shutdown_noise() -> None:
 def _silence_logging() -> None:
     """Suppress all logging output for one-shot/CLI dispatch paths."""
     import logging
+
     logging.disable()
 
 
@@ -127,6 +133,7 @@ def _load_exported_env_vars() -> None:
     """
     try:
         from deile.config.env_store import load_exported_vars
+
         load_exported_vars()
     except Exception:
         pass
@@ -247,7 +254,11 @@ def _run_env_recovery() -> bool:
     try:
         for raw in env_path.read_text(encoding="utf-8").splitlines():
             stripped = raw.strip()
-            if "=" in stripped and not stripped.startswith("#") and stripped.split("=", 1)[0].strip() in _ENV_KEY_NAMES:
+            if (
+                "=" in stripped
+                and not stripped.startswith("#")
+                and stripped.split("=", 1)[0].strip() in _ENV_KEY_NAMES
+            ):
                 continue
             kept_lines.append(raw)
     except FileNotFoundError:
@@ -262,17 +273,21 @@ def _run_env_recovery() -> bool:
 
     try:
         from dotenv import load_dotenv as _ld
+
         _ld(env_path, override=True)
     except ImportError:
         for k, v in new_keys.items():
             if v:
                 os.environ[k] = v
 
-    print(f"\n  {_GREEN}✓{_RESET}  {sum(1 for v in new_keys.values() if v)} chave(s) salva(s) em {env_path}\n")
+    print(
+        f"\n  {_GREEN}✓{_RESET}  {sum(1 for v in new_keys.values() if v)} chave(s) salva(s) em {env_path}\n"
+    )
     return True
 
 
 # ── interactive mode ─────────────────────────────────────────────────────────
+
 
 class _DeileCLI:
     """Thin wrapper that reuses the DEILE agent + UI stack."""
@@ -349,7 +364,9 @@ class _DeileCLI:
                 # tools que abrem renderers próprios (dispatch_parallel_
                 # subagents) possam usá-lo. No-op em ambiente sem UI Rich.
                 try:
-                    if hasattr(self.agent, "set_ui_console") and hasattr(self.ui, "console"):
+                    if hasattr(self.agent, "set_ui_console") and hasattr(
+                        self.ui, "console"
+                    ):
                         self.agent.set_ui_console(self.ui.console)
                 except Exception:
                     pass
@@ -368,18 +385,25 @@ class _DeileCLI:
             # status server falha, ``start_async_tasks`` devolve só o
             # heartbeat — comportamento legado preservado.
             self.instance_state.clear_action()
-            self._instance_state_tasks = (
-                await self.instance_state.start_async_tasks()
-            )
+            self._instance_state_tasks = await self.instance_state.start_async_tasks()
             return True
 
         except Exception as exc:
-            self.ui.display_error(
-                f"Falha fatal na inicialização do agente: {exc}"
-            )
+            self.ui.display_error(f"Falha fatal na inicialização do agente: {exc}")
             return False
 
-    _IGNORE_DIRS = frozenset({"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build", ".deile"})
+    _IGNORE_DIRS = frozenset(
+        {
+            "__pycache__",
+            ".git",
+            "node_modules",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+            ".deile",
+        }
+    )
 
     def _get_project_files(self) -> list[str]:
         # ``resolve()`` normalizes ``..`` and symlinks so ``relative_to(wd)``
@@ -416,6 +440,7 @@ class _DeileCLI:
 
     def _persist_session(self, user_input: str) -> None:
         from .cli_session_helpers import persist_session
+
         persist_session(self.default_session, user_input)
 
     def _rollback_history(self, baseline_len: int) -> None:
@@ -423,16 +448,19 @@ class _DeileCLI:
         # apaga mais a entrada user. Mantém + adiciona placeholder
         # assistant. Ver ``mark_turn_cancelled`` em cli_session_helpers.
         from .cli_session_helpers import mark_turn_cancelled
+
         mark_turn_cancelled(self.default_session, baseline_len)
 
     def _check_session_switch(self) -> None:
         from .cli_session_helpers import check_session_switch
+
         new_session = check_session_switch(self.default_session, self.agent, self.ui)
         if new_session is not None:
             self.default_session = new_session
 
     def _replay_history(self, history: list) -> None:
         from .cli_session_helpers import replay_history
+
         replay_history(self.ui, self.default_session, history)
 
     # ANSI sequence: ``\033[A`` = "move cursor up 1 line"; ``\033[2K`` =
@@ -517,6 +545,7 @@ class _DeileCLI:
         # de sub-DEILEs invoca `claim_stdin_for_panel` o cbreak já está
         # ativo e o snapshot atexit restauraria cbreak no shutdown.
         from .ui._stdin_owner import panel_owns_stdin, prime_termios_snapshot
+
         try:
             prime_termios_snapshot(original_termios=saved)
         except Exception:
@@ -558,7 +587,9 @@ class _DeileCLI:
         watcher = threading.Thread(target=_watch, daemon=True)
         watcher.start()
 
-        stream_task = asyncio.ensure_future(self.ui.display_streaming_turn(event_stream))
+        stream_task = asyncio.ensure_future(
+            self.ui.display_streaming_turn(event_stream)
+        )
         esc_task = asyncio.ensure_future(esc_event.wait())
         try:
             done, pending = await asyncio.wait(
@@ -624,10 +655,12 @@ class _DeileCLI:
                     continue
 
                 if user_input.lower() in ("exit", "quit", "q"):
-                    self.ui.display_message(UIMessage(
-                        content="\n[bold yellow]DEILE se despedindo. Até a próxima! :wave:[/bold yellow]",
-                        message_type=MessageType.SYSTEM,
-                    ))
+                    self.ui.display_message(
+                        UIMessage(
+                            content="\n[bold yellow]DEILE se despedindo. Até a próxima! :wave:[/bold yellow]",
+                            message_type=MessageType.SYSTEM,
+                        )
+                    )
                     break
 
                 streaming = getattr(self.settings, "streaming_enabled", True)
@@ -692,22 +725,26 @@ class _DeileCLI:
                 if meta.get("suppress_response_display"):
                     pass  # command renders its own UI via post-switch action
                 elif meta.get("budget_exceeded"):
-                    self.ui.console.print(Panel(
-                        Text(f"{response.content}", style="yellow"),
-                        title="[bold red]Budget Limit Reached[/bold red]",
-                        border_style="red",
-                        subtitle=(
-                            f"provider={meta.get('provider_id', 'n/a')} • "
-                            f"limit={meta.get('limit_type', 'n/a')}"
-                        ),
-                    ))
+                    self.ui.console.print(
+                        Panel(
+                            Text(f"{response.content}", style="yellow"),
+                            title="[bold red]Budget Limit Reached[/bold red]",
+                            border_style="red",
+                            subtitle=(
+                                f"provider={meta.get('provider_id', 'n/a')} • "
+                                f"limit={meta.get('limit_type', 'n/a')}"
+                            ),
+                        )
+                    )
                 elif meta.get("forced_model_not_registered"):
-                    self.ui.console.print(Panel(
-                        Text(f"{response.content}", style="yellow"),
-                        title="[bold red]Forced Model Not Registered[/bold red]",
-                        border_style="red",
-                        subtitle="Use /model use auto to clear the override",
-                    ))
+                    self.ui.console.print(
+                        Panel(
+                            Text(f"{response.content}", style="yellow"),
+                            title="[bold red]Forced Model Not Registered[/bold red]",
+                            border_style="red",
+                            subtitle="Use /model use auto to clear the override",
+                        )
+                    )
                 else:
                     # Comandos pesados (que tipicamente renderizam tabelas
                     # grandes) opt-in para renderização Live por alguns
@@ -716,18 +753,30 @@ class _DeileCLI:
                     # comandos) para evitar churn de 30+ call sites.
                     cmd = response.metadata.get("command_executed", "")
                     live_cmds = {
-                        "status", "logs", "cost", "permissions",
-                        "tools", "plan", "sandbox", "memory",
-                        "help", "tools",
+                        "status",
+                        "logs",
+                        "cost",
+                        "permissions",
+                        "tools",
+                        "plan",
+                        "sandbox",
+                        "memory",
+                        "help",
+                        "tools",
                     }
-                    self.ui.display_response(response.content, {
-                        "execution_time": response.execution_time,
-                        "model_used": response.metadata.get("model_used"),
-                        "live_render": cmd in live_cmds,
-                        "live_render_duration": 2.5,
-                    })
+                    self.ui.display_response(
+                        response.content,
+                        {
+                            "execution_time": response.execution_time,
+                            "model_used": response.metadata.get("model_used"),
+                            "live_render": cmd in live_cmds,
+                            "live_render_duration": 2.5,
+                        },
+                    )
 
-                if response.tool_results and getattr(self.settings, "show_tool_details", False):
+                if response.tool_results and getattr(
+                    self.settings, "show_tool_details", False
+                ):
                     self.ui.console.print("\n[dim]Tool executions:[/dim]")
                     for result in response.tool_results:
                         if result.metadata and "rich_display" in result.metadata:
@@ -735,14 +784,20 @@ class _DeileCLI:
                                 f"[dim]{result.metadata['rich_display']}[/dim]"
                             )
                         else:
-                            icon = "[green]✓[/green]" if result.is_success else "[red]✗[/red]"
+                            icon = (
+                                "[green]✓[/green]"
+                                if result.is_success
+                                else "[red]✗[/red]"
+                            )
                             self.ui.console.print(f"[dim]{icon} {result.message}[/dim]")
 
         except (KeyboardInterrupt, EOFError):
-            self.ui.display_message(UIMessage(
-                content="\n[bold yellow]DEILE se despedindo. Até a próxima! :wave:[/bold yellow]",
-                message_type=MessageType.SYSTEM,
-            ))
+            self.ui.display_message(
+                UIMessage(
+                    content="\n[bold yellow]DEILE se despedindo. Até a próxima! :wave:[/bold yellow]",
+                    message_type=MessageType.SYSTEM,
+                )
+            )
         except Exception as exc:
             self.ui.display_error(f"Ocorreu um erro fatal no loop principal: {exc}")
         finally:
@@ -795,17 +850,22 @@ async def _autostart_pipeline(agent) -> None:  # type: ignore[type-arg]
     session auto-starts the polling loop without a manual ``/pipeline start``.
     """
     import logging as _logging
+
     _log = _logging.getLogger(__name__)
     try:
         from deile.orchestration.pipeline.monitor import (
-            PipelineMonitor, build_default_pipeline_config)
-        from deile.orchestration.pipeline.review_callback import \
-            make_review_callback
+            PipelineMonitor,
+            build_default_pipeline_config,
+        )
+        from deile.orchestration.pipeline.review_callback import make_review_callback
+
         cfg = build_default_pipeline_config()
         monitor = PipelineMonitor(cfg, review_callback=make_review_callback(agent))
         agent.pipeline_monitor = monitor  # type: ignore[attr-defined]
         await monitor.start()
-        _log.info("pipeline autostarted (repo=%s, dispatch=%s)", cfg.repo, cfg.dispatch_mode)
+        _log.info(
+            "pipeline autostarted (repo=%s, dispatch=%s)", cfg.repo, cfg.dispatch_mode
+        )
     except Exception as exc:  # noqa: BLE001 — autostart is best-effort; never abort CLI
         _log.warning("pipeline autostart failed: %s", exc)
 
@@ -822,6 +882,7 @@ def _print_oneshot_content(content) -> None:
         return
     # Rich renderable (Table, Panel, Text, Group, etc.) or list thereof.
     from rich.console import Console
+
     console = Console()
     items = content if isinstance(content, list) else [content]
     for item in items:
@@ -837,6 +898,7 @@ async def _run_oneshot(
     # AC2: re-parent spans under the W3C trace context injected by the bridge.
     try:
         from deile.observability.tracer import activate_traceparent_from_env
+
         activate_traceparent_from_env()
     except Exception:
         pass
@@ -856,6 +918,7 @@ async def _run_oneshot(
     agent = await _construct_agent(model_router, config_manager)
 
     import uuid as _uuid
+
     _session_id = f"oneshot-{_uuid.uuid4().hex[:12]}"
     session = agent.create_session(
         session_id=_session_id,
@@ -883,8 +946,8 @@ async def _run_oneshot(
 
     # AC2: populate usage metadata + write sidecar for cross-repo contract
     try:
-        from deile.core.usage_envelope import (build_usage_envelope,
-                                               write_usage_sidecar)
+        from deile.core.usage_envelope import build_usage_envelope, write_usage_sidecar
+
         _usage_env = build_usage_envelope(session.session_id)
         if response.metadata is None:
             response.metadata = {}
@@ -894,7 +957,11 @@ async def _run_oneshot(
         pass
 
     _print_oneshot_content(response.content)
-    status = response.status.value if hasattr(response.status, "value") else str(response.status)
+    status = (
+        response.status.value
+        if hasattr(response.status, "value")
+        else str(response.status)
+    )
     return 0 if status != "error" else 1
 
 
@@ -973,11 +1040,14 @@ def _run_textual_ui() -> int:
     ``exc_info=True`` — operadores com log file ativo veem o detalhe.
     """
     import logging as _logging
+
     _log = _logging.getLogger(__name__)
     try:
-        from deile.ui.textual_app import (TEXTUAL_INSTALL_HINT,
-                                          ensure_textual_available,
-                                          run_textual_app)
+        from deile.ui.textual_app import (
+            TEXTUAL_INSTALL_HINT,
+            ensure_textual_available,
+            run_textual_app,
+        )
     except ImportError as exc:
         # Caminho raro: ``deile/ui/textual_app.py`` esta no pacote (definido
         # nas extras_packages), mas algum import interno explodiu antes do
@@ -1013,6 +1083,7 @@ def _format_help_with_commands(parser: "argparse.ArgumentParser") -> str:
     base_help = parser.format_help()
     try:
         from deile.commands.registry import get_command_registry
+
         registry = get_command_registry()
         if len(registry) == 0:
             registry.auto_discover_builtin_commands()
@@ -1042,6 +1113,7 @@ def _format_help_with_commands(parser: "argparse.ArgumentParser") -> str:
 
 
 # ── main entry point ─────────────────────────────────────────────────────────
+
 
 def main(argv: Optional[list[str]] = None) -> int:
     """`deile` console_script entry point.
@@ -1075,7 +1147,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         add_help=False,
     )
     parser.add_argument(
-        "-h", "--help",
+        "-h",
+        "--help",
         dest="show_help",
         action="store_true",
         help="Show this help message (with full slash command catalog) and exit.",
@@ -1087,7 +1160,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Force a specific model (e.g. deepseek:deepseek-v4-pro).",
     )
     parser.add_argument(
-        "--reasoning", "--effort",
+        "--reasoning",
+        "--effort",
         dest="reasoning",
         metavar="LEVEL",
         help=(
@@ -1111,24 +1185,28 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--install",
         action="store_true",
         help="Install DEILE so `deile` is reachable from any directory. Prompts for global "
-             "(isolated venv at ~/.deile/venv/) or local (uses <repo>/.venv/). Use --install-mode "
-             "to skip the prompt.",
+        "(isolated venv at ~/.deile/venv/) or local (uses <repo>/.venv/). Use --install-mode "
+        "to skip the prompt.",
     )
     parser.add_argument(
         "--install-mode",
         choices=("global", "local"),
         default=None,
         help="Non-interactive install target for --install. 'global' = isolated venv at "
-             "~/.deile/venv/. 'local' = <repo>/.venv/. Both write a shim to ~/.local/bin/deile.",
+        "~/.deile/venv/. 'local' = <repo>/.venv/. Both write a shim to ~/.local/bin/deile.",
     )
 
     # Auto-generate one --flag per registered slash command (issue #126).
     flag_specs: list = []
     try:
-        from deile.commands.cli_flags import (add_command_flags_to_parser,
-                                              build_cli_flag_specs,
-                                              find_active_spec, get_arg_value)
+        from deile.commands.cli_flags import (
+            add_command_flags_to_parser,
+            build_cli_flag_specs,
+            find_active_spec,
+            get_arg_value,
+        )
         from deile.commands.registry import get_command_registry
+
         registry = get_command_registry()
         if len(registry) == 0:
             registry.auto_discover_builtin_commands()
@@ -1136,6 +1214,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         add_command_flags_to_parser(parser, flag_specs)
     except Exception as exc:  # noqa: BLE001 — never block argparse setup
         import logging as _logging
+
         _logging.getLogger(__name__).warning(
             "Could not register dynamic command flags: %s", exc
         )
@@ -1162,6 +1241,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if getattr(args, "debug", False):
         try:
             from deile.config.settings import get_settings
+
             get_settings().debug_enabled = True
         except Exception:  # noqa: BLE001 — best-effort
             pass
@@ -1174,11 +1254,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     if active_spec is not None:
         _silence_logging()
         cmd_args = get_arg_value(active_spec, args)
-        return asyncio.run(_run_command_flag(
-            command_name=active_spec.command_name,
-            command_args=cmd_args,
-            requires_provider=active_spec.requires_provider,
-        ))
+        return asyncio.run(
+            _run_command_flag(
+                command_name=active_spec.command_name,
+                command_args=cmd_args,
+                requires_provider=active_spec.requires_provider,
+            )
+        )
 
     msg = " ".join(args.message).strip()
     if not msg and not sys.stdin.isatty():
@@ -1201,16 +1283,26 @@ def main(argv: Optional[list[str]] = None) -> int:
             _silence_logging()
             return _run_textual_ui()
         # --debug or --model without a message → fall through to interactive mode.
-        if getattr(args, "debug", False) or args.model or getattr(args, "reasoning", None):
+        if (
+            getattr(args, "debug", False)
+            or args.model
+            or getattr(args, "reasoning", None)
+        ):
             _silence_logging()
             asyncio.run(_DeileCLI().run_interactive())
             return 0
-        parser.error("no message provided (pass as positional arg, via stdin, or use a --flag)")
+        parser.error(
+            "no message provided (pass as positional arg, via stdin, or use a --flag)"
+        )
 
     _silence_logging()
-    return asyncio.run(_run_oneshot(
-        msg, forced_model=args.model, reasoning=getattr(args, "reasoning", None),
-    ))
+    return asyncio.run(
+        _run_oneshot(
+            msg,
+            forced_model=args.model,
+            reasoning=getattr(args, "reasoning", None),
+        )
+    )
 
 
 if __name__ == "__main__":

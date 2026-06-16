@@ -159,7 +159,7 @@ services:
 
 volumes:
   db_data:
-"""
+""",
         }
 
         # Create files
@@ -209,7 +209,8 @@ class Project:
         tests_dir = workspace / "tests"
         tests_dir.mkdir()
         (tests_dir / "__init__.py").write_text("")
-        (tests_dir / "test_app.py").write_text("""\"\"\"Tests for the main application\"\"\"
+        (tests_dir / "test_app.py").write_text(
+            """\"\"\"Tests for the main application\"\"\"
 
 import pytest
 from src.app import App
@@ -222,7 +223,8 @@ def test_app_initialization():
 def test_app_config_loading():
     # Mock test - would need actual config file
     pass
-""")
+"""
+        )
         (tests_dir / "conftest.py").write_text("""\"\"\"Pytest configuration\"\"\"
 
 import pytest
@@ -294,15 +296,16 @@ Creates a new user.
         # Create mock components
         context_manager = Mock(spec=ContextManager)
         context_manager.create_tool_context.return_value = Mock()
-        context_manager.create_tool_context.return_value.working_directory = str(test_project)
+        context_manager.create_tool_context.return_value.working_directory = str(
+            test_project
+        )
         context_manager.create_tool_context.return_value.user_input = ""
         context_manager.create_tool_context.return_value.parsed_args = {}
         context_manager.create_tool_context.return_value.file_list = []
 
         # Create agent with mocked dependencies
         agent = DeileAgent(
-            context_manager=context_manager,
-            working_directory=str(test_project)
+            context_manager=context_manager, working_directory=str(test_project)
         )
 
         return agent
@@ -365,9 +368,11 @@ Creates a new user.
             # Should successfully read a config file
             assert result.status.name == "SUCCESS"
             # Should contain config content
-            assert ("database:" in result.data or
-                   "DATABASE_URL" in result.data or
-                   "build-system" in result.data)
+            assert (
+                "database:" in result.data
+                or "DATABASE_URL" in result.data
+                or "build-system" in result.data
+            )
 
     @pytest.mark.asyncio
     async def test_autonomous_requirements_reading(self, test_project):
@@ -392,9 +397,11 @@ Creates a new user.
 
             # Should successfully read requirements or setup files
             assert result.status.name == "SUCCESS"
-            assert ("pytest" in result.data or
-                   "setuptools" in result.data or
-                   "click" in result.data)
+            assert (
+                "pytest" in result.data
+                or "setuptools" in result.data
+                or "click" in result.data
+            )
 
     @pytest.mark.asyncio
     async def test_autonomous_main_code_reading(self, test_project):
@@ -419,9 +426,11 @@ Creates a new user.
 
             # Should successfully read main.py or app.py
             assert result.status.name == "SUCCESS"
-            assert ("def main" in result.data or
-                   "class App" in result.data or
-                   "__main__" in result.data)
+            assert (
+                "def main" in result.data
+                or "class App" in result.data
+                or "__main__" in result.data
+            )
 
     @pytest.mark.asyncio
     async def test_autonomous_license_reading(self, test_project):
@@ -471,9 +480,11 @@ Creates a new user.
 
             # Should successfully read Dockerfile or docker-compose.yml
             assert result.status.name == "SUCCESS"
-            assert ("FROM python" in result.data or
-                   "version:" in result.data or
-                   "services:" in result.data)
+            assert (
+                "FROM python" in result.data
+                or "version:" in result.data
+                or "services:" in result.data
+            )
 
     @pytest.mark.asyncio
     async def test_autonomous_source_code_reading(self, test_project):
@@ -499,9 +510,11 @@ Creates a new user.
 
             # Should successfully read source files
             assert result.status.name == "SUCCESS"
-            assert ("class App" in result.data or
-                   "class User" in result.data or
-                   "dataclass" in result.data)
+            assert (
+                "class App" in result.data
+                or "class User" in result.data
+                or "dataclass" in result.data
+            )
 
     @pytest.mark.asyncio
     async def test_autonomous_test_code_reading(self, test_project):
@@ -527,9 +540,11 @@ Creates a new user.
 
             # Should successfully read test files
             assert result.status.name == "SUCCESS"
-            assert ("test_" in result.data or
-                   "pytest" in result.data or
-                   "@pytest.fixture" in result.data)
+            assert (
+                "test_" in result.data
+                or "pytest" in result.data
+                or "@pytest.fixture" in result.data
+            )
 
     @pytest.mark.asyncio
     async def test_autonomous_documentation_reading(self, test_project):
@@ -555,19 +570,21 @@ Creates a new user.
 
             # Should successfully read documentation files
             assert result.status.name == "SUCCESS"
-            assert ("API" in result.data or
-                   "Deployment" in result.data or
-                   "Endpoints" in result.data or
-                   "docker" in result.data.lower())
+            assert (
+                "API" in result.data
+                or "Deployment" in result.data
+                or "Endpoints" in result.data
+                or "docker" in result.data.lower()
+            )
 
     @pytest.mark.asyncio
     async def test_autonomous_file_suggestions(self, test_project):
         """Test autonomous file suggestions for ambiguous queries"""
         test_inputs = [
             "read the documentation",  # Should suggest multiple docs
-            "show me the config",      # Should suggest config files
-            "examine the setup",       # Should suggest setup files
-            "read the yaml file"       # Should suggest yaml files
+            "show me the config",  # Should suggest config files
+            "examine the setup",  # Should suggest setup files
+            "read the yaml file",  # Should suggest yaml files
         ]
 
         for user_input in test_inputs:
@@ -584,8 +601,10 @@ Creates a new user.
             # Should either succeed or provide helpful suggestions
             if result.status.name == "ERROR":
                 # Error message should contain suggestions
-                assert ("Sugestões:" in result.message or
-                       "not found" in result.message.lower())
+                assert (
+                    "Sugestões:" in result.message
+                    or "not found" in result.message.lower()
+                )
             else:
                 # Should have successfully resolved to a relevant file
                 assert result.status.name == "SUCCESS"
@@ -600,7 +619,7 @@ Creates a new user.
             "",  # Empty input
             "   ",  # Whitespace only
             "read file without name",
-            "show me"
+            "show me",
         ]
 
         for user_input in edge_cases:
@@ -616,8 +635,8 @@ Creates a new user.
 
             # Should handle gracefully without crashing
             assert result is not None
-            assert hasattr(result, 'status')
-            assert hasattr(result, 'message')
+            assert hasattr(result, "status")
+            assert hasattr(result, "message")
 
             # For clearly non-existent files, should provide helpful error
             if "nonexistent" in user_input or "xyzabc123" in user_input:
@@ -633,11 +652,7 @@ Creates a new user.
 
         import time
 
-        test_inputs = [
-            "read the readme",
-            "show me config.yaml",
-            "examine main.py"
-        ]
+        test_inputs = ["read the readme", "show me config.yaml", "examine main.py"]
 
         for user_input in test_inputs:
             tool = ReadFileTool()
@@ -660,6 +675,7 @@ Creates a new user.
     @pytest.mark.asyncio
     async def test_concurrent_autonomous_operations(self, test_project):
         """Test concurrent autonomous operations"""
+
         async def autonomous_read(user_input):
             tool = ReadFileTool()
 
@@ -676,7 +692,7 @@ Creates a new user.
             autonomous_read("read the readme"),
             autonomous_read("show me config.yaml"),
             autonomous_read("examine main.py"),
-            autonomous_read("read requirements.txt")
+            autonomous_read("read requirements.txt"),
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -743,19 +759,16 @@ class TestAutonomyComplexScenarios:
                 "config/": {
                     "settings.py": "DJANGO_SETTINGS",
                     "database.yaml": "database config",
-                    "redis.conf": "redis configuration"
+                    "redis.conf": "redis configuration",
                 },
                 "src/": {
                     "main.py": "FastAPI application",
-                    "models/": {
-                        "user.py": "User model",
-                        "project.py": "Project model"
-                    },
+                    "models/": {"user.py": "User model", "project.py": "Project model"},
                     "api/": {
                         "auth.py": "Authentication endpoints",
-                        "users.py": "User endpoints"
-                    }
-                }
+                        "users.py": "User endpoints",
+                    },
+                },
             },
             "frontend/": {
                 "README.md": "# Frontend Application",
@@ -764,21 +777,18 @@ class TestAutonomyComplexScenarios:
                     "App.js": "Main React component",
                     "components/": {
                         "Header.js": "Header component",
-                        "Footer.js": "Footer component"
-                    }
-                }
+                        "Footer.js": "Footer component",
+                    },
+                },
             },
             "docs/": {
                 "README.md": "# Documentation",
-                "api/": {
-                    "authentication.md": "Auth docs",
-                    "users.md": "User API docs"
-                },
+                "api/": {"authentication.md": "Auth docs", "users.md": "User API docs"},
                 "deployment/": {
                     "docker.md": "Docker deployment",
-                    "kubernetes.md": "K8s deployment"
-                }
-            }
+                    "kubernetes.md": "K8s deployment",
+                },
+            },
         }
 
         def create_structure(base_path, structure):

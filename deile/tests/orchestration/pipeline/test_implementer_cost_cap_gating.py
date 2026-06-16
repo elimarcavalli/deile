@@ -34,7 +34,9 @@ class _FakeClient:
 def _make_monitor():
     monitor = MagicMock()
     monitor.config = SimpleNamespace(
-        repo="owner/repo", main_branch="main", base_repo_path=Path("/tmp/fake"),
+        repo="owner/repo",
+        main_branch="main",
+        base_repo_path=Path("/tmp/fake"),
         mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
@@ -49,8 +51,11 @@ def _issue(number=1, title="t", body="brief body"):
 def _clean_env(monkeypatch):
     from deile.config.settings import reset_settings
     from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES
+
     for stage in PIPELINE_STAGES:
-        monkeypatch.delenv(f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}", raising=False)
+        monkeypatch.delenv(
+            f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}", raising=False
+        )
     monkeypatch.delenv("DEILE_PIPELINE_COST_CAP_USD", raising=False)
     reset_settings()
     yield
@@ -82,12 +87,15 @@ class TestImplementerCostCapGating:
         mock_estimator = MagicMock()
         mock_estimator.estimate_run_cost.return_value = Decimal("5.00")
 
-        with patch(
-            "deile.storage.usage_repository.get_usage_repository",
-            return_value=MagicMock(),
-        ), patch(
-            "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
-            return_value=mock_estimator,
+        with (
+            patch(
+                "deile.storage.usage_repository.get_usage_repository",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
+                return_value=mock_estimator,
+            ),
         ):
             out = await impl.implement(_make_monitor(), _issue())
 
@@ -106,12 +114,15 @@ class TestImplementerCostCapGating:
         mock_estimator = MagicMock()
         mock_estimator.estimate_run_cost.return_value = Decimal("2.00")
 
-        with patch(
-            "deile.storage.usage_repository.get_usage_repository",
-            return_value=MagicMock(),
-        ), patch(
-            "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
-            return_value=mock_estimator,
+        with (
+            patch(
+                "deile.storage.usage_repository.get_usage_repository",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
+                return_value=mock_estimator,
+            ),
         ):
             out = await impl.implement(_make_monitor(), _issue())
 
@@ -128,12 +139,15 @@ class TestImplementerCostCapGating:
         mock_estimator = MagicMock()
         mock_estimator.estimate_run_cost.side_effect = RuntimeError("db error")
 
-        with patch(
-            "deile.storage.usage_repository.get_usage_repository",
-            return_value=MagicMock(),
-        ), patch(
-            "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
-            return_value=mock_estimator,
+        with (
+            patch(
+                "deile.storage.usage_repository.get_usage_repository",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
+                return_value=mock_estimator,
+            ),
         ):
             out = await impl.implement(_make_monitor(), _issue())
 
@@ -150,12 +164,15 @@ class TestImplementerCostCapGating:
         mock_estimator = MagicMock()
         mock_estimator.estimate_run_cost.return_value = Decimal("7.50")
 
-        with patch(
-            "deile.storage.usage_repository.get_usage_repository",
-            return_value=MagicMock(),
-        ), patch(
-            "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
-            return_value=mock_estimator,
+        with (
+            patch(
+                "deile.storage.usage_repository.get_usage_repository",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
+                return_value=mock_estimator,
+            ),
         ):
             out = await impl.implement(_make_monitor(), _issue())
 

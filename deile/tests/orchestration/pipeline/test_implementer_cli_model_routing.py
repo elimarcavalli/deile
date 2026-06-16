@@ -43,8 +43,7 @@ def cli_worker_adapter(monkeypatch):
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / f"{_CLI_KIND}.py"
     mod_path.write_text(
-        textwrap.dedent(
-            f'''\
+        textwrap.dedent(f"""\
             from cli_adapters.base import BaseCliAdapter, WorkResult
 
 
@@ -57,8 +56,7 @@ def cli_worker_adapter(monkeypatch):
 
 
             ADAPTER = CliRouterAdapter(kind="{_CLI_KIND}", default_port={_CLI_PORT})
-            '''
-        ),
+            """),
         encoding="utf-8",
     )
     cli_adapters.reload_adapters()
@@ -71,13 +69,16 @@ def cli_worker_adapter(monkeypatch):
     # CLI. Aqui o foco é o roteamento do modelo/endpoint, não o scaling — então
     # forçamos READY (worker "já no ar") para o dispatch chegar ao client fake.
     from deile.orchestration.pipeline.cli_worker_scaler import (
-        EnsureReplicaOutcome, ScaleResult)
+        EnsureReplicaOutcome,
+        ScaleResult,
+    )
 
     async def _ready(_dispatcher):
         return EnsureReplicaOutcome(ScaleResult.READY, "test: ready")
 
     monkeypatch.setattr(
-        "deile.orchestration.pipeline.cli_worker_scaler.ensure_replica", _ready,
+        "deile.orchestration.pipeline.cli_worker_scaler.ensure_replica",
+        _ready,
     )
     try:
         yield
@@ -116,14 +117,18 @@ def _make_monitor():
 
     monitor = SimpleNamespace()
     monitor.config = SimpleNamespace(
-        repo="owner/name", main_branch="main", base_repo_path=Path("/tmp/x"),
+        repo="owner/name",
+        main_branch="main",
+        base_repo_path=Path("/tmp/x"),
         mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
     monitor.forge = SimpleNamespace(
         config=ForgeConfig(
-            kind=ForgeKind.GITHUB, host="github.com",
-            project_path="owner/name", cli_path="/usr/bin/gh",
+            kind=ForgeKind.GITHUB,
+            host="github.com",
+            project_path="owner/name",
+            cli_path="/usr/bin/gh",
         ),
     )
     return monitor
@@ -135,7 +140,9 @@ def _issue(number=242, labels=()):
 
 class TestCliModelRouting:
     async def test_cli_worker_stage_sends_cli_model_not_preferred_model(
-        self, cli_worker_adapter, monkeypatch,
+        self,
+        cli_worker_adapter,
+        monkeypatch,
     ):
         """Stage roteado a worker CLI → payload tem ``cli_model`` (string livre),
         sem ``preferred_model``. O MESMO env var de modelo per-stage é lido."""
@@ -151,7 +158,9 @@ class TestCliModelRouting:
         assert "preferred_model" not in client.last_payload
 
     async def test_cli_worker_endpoint_resolves_from_registry(
-        self, cli_worker_adapter, monkeypatch,
+        self,
+        cli_worker_adapter,
+        monkeypatch,
     ):
         """O dispatch vai para o endpoint do worker CLI (env override aqui)."""
         monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_IMPLEMENT", _CLI_DISPATCHER)
@@ -161,7 +170,9 @@ class TestCliModelRouting:
         assert client.last_endpoint == "http://localhost:18796"
 
     async def test_cli_worker_unset_model_omits_both_fields(
-        self, cli_worker_adapter, monkeypatch,
+        self,
+        cli_worker_adapter,
+        monkeypatch,
     ):
         """Sem override de modelo, nem ``cli_model`` nem ``preferred_model`` vão
         no wire — o worker CLI usa o modelo default do adapter/imagem."""
@@ -176,9 +187,7 @@ class TestCliModelRouting:
         """Caminho núcleo intacto: deile-worker recebe ``preferred_model``
         (provider:model) e NUNCA ``cli_model`` — sem regressão da #305."""
         # Sem DISPATCH override → default deile-worker.
-        monkeypatch.setenv(
-            "DEILE_PIPELINE_MODEL_IMPLEMENT", "deepseek:deepseek-v4-pro"
-        )
+        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT", "deepseek:deepseek-v4-pro")
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "done"})
         await WorkerImplementer(client=client).implement(_make_monitor(), _issue())

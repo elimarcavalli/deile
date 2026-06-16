@@ -77,6 +77,7 @@ def detect_follow_ups(pr_body: str, pr_comments: List[str]) -> List[FollowUp]:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _extract_from_text(text: str, results: List[FollowUp], seen: Set[str]) -> None:
     """Scan *text* in two passes:
 

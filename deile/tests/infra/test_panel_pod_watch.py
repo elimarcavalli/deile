@@ -43,21 +43,25 @@ import _panel_data as pd  # noqa: E402
 # _open_path_in_editor — ordem de preferência e fallbacks
 # ---------------------------------------------------------------------------
 
+
 class TestOpenPathInEditor:
     def _which_factory(self, available):
         """Helper: devolve uma função `which(name)` que só conhece
         os binários listados em `available` (dict name -> resolved_path)."""
+
         def _which(name):
             return available.get(name)
+
         return _which
 
     def test_prefers_cursor_when_available(self, tmp_path):
         f = tmp_path / "x.log"
         f.write_text("hello")
         avail = {"cursor": "/usr/local/bin/cursor", "code": "/usr/local/bin/code"}
-        with patch.object(panel.shutil, "which",
-                          side_effect=self._which_factory(avail)), \
-             patch.object(panel.subprocess, "Popen") as popen:
+        with (
+            patch.object(panel.shutil, "which", side_effect=self._which_factory(avail)),
+            patch.object(panel.subprocess, "Popen") as popen,
+        ):
             ok, tool = panel._open_path_in_editor(f)
         assert ok is True
         assert tool == "cursor"
@@ -67,9 +71,10 @@ class TestOpenPathInEditor:
         f = tmp_path / "x.log"
         f.write_text("hello")
         avail = {"code": "/usr/local/bin/code"}
-        with patch.object(panel.shutil, "which",
-                          side_effect=self._which_factory(avail)), \
-             patch.object(panel.subprocess, "Popen") as popen:
+        with (
+            patch.object(panel.shutil, "which", side_effect=self._which_factory(avail)),
+            patch.object(panel.subprocess, "Popen") as popen,
+        ):
             ok, tool = panel._open_path_in_editor(f)
         assert ok is True
         assert tool == "code"
@@ -79,11 +84,12 @@ class TestOpenPathInEditor:
         f = tmp_path / "x.log"
         f.write_text("hello")
         avail = {"open": "/usr/bin/open"}
-        with patch.object(panel.shutil, "which",
-                          side_effect=self._which_factory(avail)), \
-             patch.object(panel, "sys", MagicMock(platform="darwin")), \
-             patch.object(panel.os, "name", "posix"), \
-             patch.object(panel.subprocess, "Popen") as popen:
+        with (
+            patch.object(panel.shutil, "which", side_effect=self._which_factory(avail)),
+            patch.object(panel, "sys", MagicMock(platform="darwin")),
+            patch.object(panel.os, "name", "posix"),
+            patch.object(panel.subprocess, "Popen") as popen,
+        ):
             ok, tool = panel._open_path_in_editor(f)
         assert ok is True
         assert tool == "open -t"
@@ -96,11 +102,12 @@ class TestOpenPathInEditor:
         f = tmp_path / "x.log"
         f.write_text("hello")
         avail = {"xdg-open": "/usr/bin/xdg-open"}
-        with patch.object(panel.shutil, "which",
-                          side_effect=self._which_factory(avail)), \
-             patch.object(panel, "sys", MagicMock(platform="linux")), \
-             patch.object(panel.os, "name", "posix"), \
-             patch.object(panel.subprocess, "Popen") as popen:
+        with (
+            patch.object(panel.shutil, "which", side_effect=self._which_factory(avail)),
+            patch.object(panel, "sys", MagicMock(platform="linux")),
+            patch.object(panel.os, "name", "posix"),
+            patch.object(panel.subprocess, "Popen") as popen,
+        ):
             ok, tool = panel._open_path_in_editor(f)
         assert ok is True
         assert tool == "xdg-open"
@@ -112,10 +119,11 @@ class TestOpenPathInEditor:
         # No Windows: cursor/code ausentes, notepad sempre disponível
         # sem precisar passar por `which`.
         avail = {}
-        with patch.object(panel.shutil, "which",
-                          side_effect=self._which_factory(avail)), \
-             patch.object(panel.os, "name", "nt"), \
-             patch.object(panel.subprocess, "Popen") as popen:
+        with (
+            patch.object(panel.shutil, "which", side_effect=self._which_factory(avail)),
+            patch.object(panel.os, "name", "nt"),
+            patch.object(panel.subprocess, "Popen") as popen,
+        ):
             ok, tool = panel._open_path_in_editor(f)
         assert ok is True
         assert tool == "notepad"
@@ -125,11 +133,12 @@ class TestOpenPathInEditor:
         f = tmp_path / "x.log"
         f.write_text("hello")
         avail = {}  # nada disponível
-        with patch.object(panel.shutil, "which",
-                          side_effect=self._which_factory(avail)), \
-             patch.object(panel, "sys", MagicMock(platform="linux")), \
-             patch.object(panel.os, "name", "posix"), \
-             patch.object(panel.subprocess, "Popen") as popen:
+        with (
+            patch.object(panel.shutil, "which", side_effect=self._which_factory(avail)),
+            patch.object(panel, "sys", MagicMock(platform="linux")),
+            patch.object(panel.os, "name", "posix"),
+            patch.object(panel.subprocess, "Popen") as popen,
+        ):
             ok, tool = panel._open_path_in_editor(f)
         assert ok is False
         assert tool == ""
@@ -140,13 +149,14 @@ class TestOpenPathInEditor:
         quebrado), tentamos `code` antes de cair pra plataforma."""
         f = tmp_path / "x.log"
         f.write_text("hello")
-        avail = {"cursor": "/usr/local/bin/cursor",
-                 "code": "/usr/local/bin/code"}
+        avail = {"cursor": "/usr/local/bin/cursor", "code": "/usr/local/bin/code"}
         # Popen falha pro cursor, sucesso pro code.
-        with patch.object(panel.shutil, "which",
-                          side_effect=self._which_factory(avail)), \
-             patch.object(panel.subprocess, "Popen",
-                          side_effect=[OSError("boom"), MagicMock()]) as popen:
+        with (
+            patch.object(panel.shutil, "which", side_effect=self._which_factory(avail)),
+            patch.object(
+                panel.subprocess, "Popen", side_effect=[OSError("boom"), MagicMock()]
+            ) as popen,
+        ):
             ok, tool = panel._open_path_in_editor(f)
         assert ok is True
         assert tool == "code"
@@ -156,6 +166,7 @@ class TestOpenPathInEditor:
 # ---------------------------------------------------------------------------
 # PodWatchView._resolve_log_path_for_editor — local vs k8s
 # ---------------------------------------------------------------------------
+
 
 class TestResolveLogPath:
     def _make_view_local(self, tmp_path):
@@ -228,6 +239,7 @@ class TestResolveLogPath:
         de path (sem separadores) e que o arquivo final permaneça
         dentro de ``tempfile.gettempdir()``."""
         import tempfile as _tempfile
+
         view = self._make_view_k8s()
         view.pod_name = "../../etc/passwd"  # tentativa de path traversal
         view.streamer = MagicMock()
@@ -253,6 +265,7 @@ class TestResolveLogPath:
 # PodWatchView.handle_key('.') — fluxo completo
 # ---------------------------------------------------------------------------
 
+
 class TestHandleKeyDot:
     def _view_with_local_log(self, tmp_path):
         view = panel.PodWatchView(data=MagicMock())
@@ -265,8 +278,9 @@ class TestHandleKeyDot:
 
     def test_dot_key_success_sets_status(self, tmp_path):
         view = self._view_with_local_log(tmp_path)
-        with patch.object(panel, "_open_path_in_editor",
-                          return_value=(True, "cursor")) as opener:
+        with patch.object(
+            panel, "_open_path_in_editor", return_value=(True, "cursor")
+        ) as opener:
             result = view.handle_key(".", MagicMock())
         assert result.kind == panel.Action.REFRESH
         assert view._status_msg is not None
@@ -276,8 +290,7 @@ class TestHandleKeyDot:
 
     def test_dot_key_failure_sets_status(self, tmp_path):
         view = self._view_with_local_log(tmp_path)
-        with patch.object(panel, "_open_path_in_editor",
-                          return_value=(False, "")):
+        with patch.object(panel, "_open_path_in_editor", return_value=(False, "")):
             view.handle_key(".", MagicMock())
         assert view._status_msg is not None
         assert "nenhum editor" in view._status_msg.lower()
@@ -305,8 +318,7 @@ class TestHandleKeyDot:
 
     def test_status_auto_clears_after_ttl(self, tmp_path):
         view = self._view_with_local_log(tmp_path)
-        with patch.object(panel, "_open_path_in_editor",
-                          return_value=(True, "cursor")):
+        with patch.object(panel, "_open_path_in_editor", return_value=(True, "cursor")):
             view.handle_key(".", MagicMock())
         # Status presente imediatamente após o key press.
         assert view._status_msg is not None
@@ -362,8 +374,9 @@ class TestPodWatchTmpResize:
         view = self._view("worker")
         view.handle_key("t", MagicMock())  # entra no modo
         assert view._awaiting_tmp_preset is True
-        with patch.object(pd, "set_pod_tmp_size",
-                          return_value=(True, "deployment patched")) as setter:
+        with patch.object(
+            pd, "set_pod_tmp_size", return_value=(True, "deployment patched")
+        ) as setter:
             view.handle_key("4", MagicMock())  # preset 4 = 2Gi
         assert view._awaiting_tmp_preset is False
         setter.assert_called_once_with("deile-worker", "2Gi", namespace="deile")
@@ -372,14 +385,15 @@ class TestPodWatchTmpResize:
     def test_preset_uses_role_to_deployment_mapping(self):
         for role, dep in (
             ("pipeline", "deile-pipeline"),
-            ("worker",   "deile-worker"),
-            ("bot",      "deilebot"),
-            ("shell",    "deile-shell"),
+            ("worker", "deile-worker"),
+            ("bot", "deilebot"),
+            ("shell", "deile-shell"),
         ):
             view = self._view(role)
             view.handle_key("t", MagicMock())
-            with patch.object(pd, "set_pod_tmp_size",
-                              return_value=(True, "ok")) as setter:
+            with patch.object(
+                pd, "set_pod_tmp_size", return_value=(True, "ok")
+            ) as setter:
                 view.handle_key("3", MagicMock())  # 1Gi
             assert setter.call_args.args[0] == dep
 
@@ -408,8 +422,9 @@ class TestPodWatchTmpResize:
     def test_setter_failure_surfaces_in_status(self):
         view = self._view("worker")
         view.handle_key("t", MagicMock())
-        with patch.object(pd, "set_pod_tmp_size",
-                          return_value=(False, "kubectl error: boom")):
+        with patch.object(
+            pd, "set_pod_tmp_size", return_value=(False, "kubectl error: boom")
+        ):
             view.handle_key("3", MagicMock())
         assert "FAIL" in view._status_msg
         assert "boom" in view._status_msg
@@ -418,6 +433,7 @@ class TestPodWatchTmpResize:
 # ---------------------------------------------------------------------------
 # Memdebug (--memdebug) — off por default, opcional via flag
 # ---------------------------------------------------------------------------
+
 
 class TestMemdebug:
     def test_off_by_default_returns_empty_string(self):
@@ -431,8 +447,7 @@ class TestMemdebug:
         """`memdebug=True`: o primeiro call faz snapshot e devolve uma
         string `mem: cur ... peak ...`. Calls subsequentes dentro do
         intervalo devolvem o cache, não re-amostram."""
-        app = panel.PanelApp(views={"dashboard": panel.HelpView()},
-                             memdebug=True)
+        app = panel.PanelApp(views={"dashboard": panel.HelpView()}, memdebug=True)
         line = app.memdebug_line()
         assert line.startswith("mem: cur ")
         assert "peak" in line
@@ -441,8 +456,7 @@ class TestMemdebug:
 
     def test_on_records_delta_between_samples(self):
         """Quando o intervalo passa, o segundo sample inclui `Δ60s`."""
-        app = panel.PanelApp(views={"dashboard": panel.HelpView()},
-                             memdebug=True)
+        app = panel.PanelApp(views={"dashboard": panel.HelpView()}, memdebug=True)
         app.memdebug_line()  # primeiro sample (sem delta)
         # Força o "intervalo" passar:
         app._memdebug_last_sample_at = 0.0
@@ -454,9 +468,11 @@ class TestMemdebug:
 # CurrentTask + WorkerProvider — issue #309 fase 2 follow-up
 # ---------------------------------------------------------------------------
 
+
 def _ts_now_str(offset_s: int = 0) -> str:
     """Format helper para timestamps no formato ``kubectl logs --timestamps``."""
     from datetime import timedelta
+
     ts = datetime.now(timezone.utc) - timedelta(seconds=offset_s)
     return ts.strftime("%Y-%m-%dT%H:%M:%S.000000000+00:00")
 
@@ -473,14 +489,17 @@ class TestCurrentTaskTargetLabel:
 
     def test_explicit_issue_number_wins(self):
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-issue-309",
-            started_ts=self._now(), issue_number=309,
+            task_id="abc",
+            channel_id="pipeline-issue-309",
+            started_ts=self._now(),
+            issue_number=309,
         )
         assert ct.target_label == "#309"
 
     def test_pr_channel_renders_pr_prefix(self):
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-pr-291",
+            task_id="abc",
+            channel_id="pipeline-pr-291",
             started_ts=self._now(),
         )
         assert ct.target_label == "PR#291"
@@ -489,14 +508,16 @@ class TestCurrentTaskTargetLabel:
         """Backward compat: pipeline antigo (sem ``issue_number`` no
         payload) ainda renderiza corretamente extraindo do channel_id."""
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-issue-309",
+            task_id="abc",
+            channel_id="pipeline-issue-309",
             started_ts=self._now(),
         )
         assert ct.target_label == "#309"
 
     def test_mention_issue_channel(self):
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-mention-issue-257",
+            task_id="abc",
+            channel_id="pipeline-mention-issue-257",
             started_ts=self._now(),
         )
         assert "mention" in ct.target_label
@@ -504,7 +525,8 @@ class TestCurrentTaskTargetLabel:
 
     def test_mention_pr_channel(self):
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-mention-pr-261",
+            task_id="abc",
+            channel_id="pipeline-mention-pr-261",
             started_ts=self._now(),
         )
         assert "mention" in ct.target_label
@@ -515,14 +537,16 @@ class TestCurrentTaskTargetLabel:
         pipeline-* extraível, mostramos o channel_id truncado pra dar
         algum contexto ao operador."""
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="1234567890123456789",
+            task_id="abc",
+            channel_id="1234567890123456789",
             started_ts=self._now(),
         )
         assert ct.target_label.startswith("channel:")
 
     def test_elapsed_is_non_negative(self):
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="x",
+            task_id="abc",
+            channel_id="x",
             started_ts=datetime.now(timezone.utc),
         )
         assert ct.elapsed_s >= 0
@@ -540,8 +564,10 @@ class TestWorkerProviderCurrentTask:
 
     def test_current_task_extracted_from_dispatch_received(self):
         prov = self._build()
-        body = ("dispatch.received task=abc123def456 channel=pipeline-issue-309 "
-                "stage=implement kind=implement issue=309 branch=auto/issue-309")
+        body = (
+            "dispatch.received task=abc123def456 channel=pipeline-issue-309 "
+            "stage=implement kind=implement issue=309 branch=auto/issue-309"
+        )
         text = f"{_ts_now_str(2)} {body}"
         state = prov._parse("worker-1", text)
         assert state.current_task is not None
@@ -555,11 +581,13 @@ class TestWorkerProviderCurrentTask:
 
     def test_current_task_cleared_after_dispatch_completed(self):
         prov = self._build()
-        text = "\n".join([
-            f"{_ts_now_str(5)} dispatch.received task=abc123def456 "
-            f"channel=pipeline-issue-309 stage=implement issue=309",
-            f"{_ts_now_str(2)} dispatch.completed task=abc123def456 ok=True",
-        ])
+        text = "\n".join(
+            [
+                f"{_ts_now_str(5)} dispatch.received task=abc123def456 "
+                f"channel=pipeline-issue-309 stage=implement issue=309",
+                f"{_ts_now_str(2)} dispatch.completed task=abc123def456 ok=True",
+            ]
+        )
         state = prov._parse("worker-1", text)
         # Pareamento started+completed → current_task = None (idle).
         assert state.current_task is None
@@ -569,13 +597,15 @@ class TestWorkerProviderCurrentTask:
         em workers concurrent), current_task = a started mais recente
         ainda sem completed pareado."""
         prov = self._build()
-        text = "\n".join([
-            f"{_ts_now_str(10)} dispatch.received task=oldoldoldold1 "
-            f"channel=pipeline-issue-100 issue=100",
-            f"{_ts_now_str(8)} dispatch.completed task=oldoldoldold1 ok=True",
-            f"{_ts_now_str(5)} dispatch.received task=newnewnewnew1 "
-            f"channel=pipeline-issue-200 issue=200",
-        ])
+        text = "\n".join(
+            [
+                f"{_ts_now_str(10)} dispatch.received task=oldoldoldold1 "
+                f"channel=pipeline-issue-100 issue=100",
+                f"{_ts_now_str(8)} dispatch.completed task=oldoldoldold1 ok=True",
+                f"{_ts_now_str(5)} dispatch.received task=newnewnewnew1 "
+                f"channel=pipeline-issue-200 issue=200",
+            ]
+        )
         state = prov._parse("worker-1", text)
         assert state.current_task is not None
         assert state.current_task.issue_number == 200
@@ -583,9 +613,7 @@ class TestWorkerProviderCurrentTask:
 
     def test_current_task_none_when_log_has_only_health(self):
         prov = self._build()
-        text = (
-            f'{_ts_now_str(2)} aiohttp.access "GET /v1/health HTTP/1.1" 200 237'
-        )
+        text = f'{_ts_now_str(2)} aiohttp.access "GET /v1/health HTTP/1.1" 200 237'
         state = prov._parse("worker-idle", text)
         assert state.current_task is None
 
@@ -607,7 +635,9 @@ class TestWorkerProviderCurrentTask:
         log normal — só queremos um ponto de "atividade real" por dispatch.
         """
         prov = self._build()
-        body = "dispatch.received task=abc123def456 channel=pipeline-issue-309 issue=309"
+        body = (
+            "dispatch.received task=abc123def456 channel=pipeline-issue-309 issue=309"
+        )
         text = f"{_ts_now_str(2)} {body}"
         state = prov._parse("worker-1", text)
         # last_substantive_ts atualizado pela linha started.
@@ -635,8 +665,9 @@ class TestPodWatchViewCurrentTask:
         pod.node = "worker-node-1"
         view.data.pods.get.return_value = [pod]
         # WorkerState com current_task.
-        wstate = pd.WorkerState(pod_name=view.pod_name, busy=busy,
-                                current_task=current_task)
+        wstate = pd.WorkerState(
+            pod_name=view.pod_name, busy=busy, current_task=current_task
+        )
         view.data.workers.get.return_value = {view.pod_name: wstate}
         view.data.claude_workers = None
         return view
@@ -644,16 +675,20 @@ class TestPodWatchViewCurrentTask:
     def _render_to_text(self, view: "panel.PodWatchView") -> str:
         """Captura o output Rich do header como string plana pra asserts."""
         renderable = view._header_body()
-        console = Console(record=True, width=200, force_terminal=False,
-                          color_system=None)
+        console = Console(
+            record=True, width=200, force_terminal=False, color_system=None
+        )
         console.print(renderable)
         return console.export_text()
 
     def test_busy_worker_with_issue_shows_current_task_line(self):
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-issue-309",
-            started_ts=datetime.now(timezone.utc), stage="implement",
-            issue_number=309, branch="auto/issue-309",
+            task_id="abc",
+            channel_id="pipeline-issue-309",
+            started_ts=datetime.now(timezone.utc),
+            stage="implement",
+            issue_number=309,
+            branch="auto/issue-309",
         )
         view = self._setup_view_with_pod(current_task=ct, busy=True)
         out = self._render_to_text(view)
@@ -664,8 +699,10 @@ class TestPodWatchViewCurrentTask:
 
     def test_busy_worker_with_pr_shows_pr_prefix(self):
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-pr-291",
-            started_ts=datetime.now(timezone.utc), stage="pr_review",
+            task_id="abc",
+            channel_id="pipeline-pr-291",
+            started_ts=datetime.now(timezone.utc),
+            stage="pr_review",
         )
         view = self._setup_view_with_pod(current_task=ct, busy=True)
         out = self._render_to_text(view)
@@ -707,15 +744,17 @@ class TestPodWatchViewCurrentTask:
         Forge-specific PR↔MR é abstraído upstream na camada forge."""
         # Mesma fixture pra dois forge "kinds" — o output é idêntico.
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-issue-309",
-            started_ts=datetime.now(timezone.utc), issue_number=309,
+            task_id="abc",
+            channel_id="pipeline-issue-309",
+            started_ts=datetime.now(timezone.utc),
+            issue_number=309,
         )
         view = self._setup_view_with_pod(current_task=ct, busy=True)
         out = self._render_to_text(view)
         # Não deve aparecer terminologia GitLab nem GitHub específica.
         assert "!309" not in out  # GitLab MR prefix
-        assert "MR" not in out    # GitLab MR vocab
-        assert "#309" in out      # vocabulário unificado
+        assert "MR" not in out  # GitLab MR vocab
+        assert "#309" in out  # vocabulário unificado
 
 
 class TestPodWatchViewRenderSize:
@@ -724,8 +763,10 @@ class TestPodWatchViewRenderSize:
 
     def test_render_includes_current_task_section(self):
         ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-issue-309",
-            started_ts=datetime.now(timezone.utc), issue_number=309,
+            task_id="abc",
+            channel_id="pipeline-issue-309",
+            started_ts=datetime.now(timezone.utc),
+            issue_number=309,
         )
         view = panel.PodWatchView(data=MagicMock())
         view.pod_role = "worker"
@@ -740,21 +781,23 @@ class TestPodWatchViewRenderSize:
         pod.node = "n1"
         view.data.pods.get.return_value = [pod]
         view.data.workers.get.return_value = {
-            view.pod_name: pd.WorkerState(pod_name=view.pod_name,
-                                          busy=True, current_task=ct),
+            view.pod_name: pd.WorkerState(
+                pod_name=view.pod_name, busy=True, current_task=ct
+            ),
         }
         view.data.claude_workers = None
         app = MagicMock()
         app.pause = False  # _head_panel pode consultar
         # Mock _head_panel direto pra não depender do PanelApp completo.
-        with patch.object(panel, "_head_panel",
-                          return_value=panel.Text("HEAD")):
-            with patch.object(panel, "_footer_panel",
-                              return_value=panel.Text("FOOTER")):
+        with patch.object(panel, "_head_panel", return_value=panel.Text("HEAD")):
+            with patch.object(
+                panel, "_footer_panel", return_value=panel.Text("FOOTER")
+            ):
                 layout = view.render(app)
         # Layout deve renderizar sem exceções.
-        console = Console(record=True, width=200, force_terminal=False,
-                          color_system=None, height=40)
+        console = Console(
+            record=True, width=200, force_terminal=False, color_system=None, height=40
+        )
         console.print(layout)
         out = console.export_text()
         assert "#309" in out
@@ -780,8 +823,9 @@ class TestPodWatchViewClaudeWorkerHeader:
         return pod
 
     def _render(self, view: "panel.PodWatchView") -> str:
-        console = Console(record=True, width=200, force_terminal=False,
-                          color_system=None)
+        console = Console(
+            record=True, width=200, force_terminal=False, color_system=None
+        )
         console.print(view._header_body())
         return console.export_text()
 
@@ -799,7 +843,10 @@ class TestPodWatchViewClaudeWorkerHeader:
         view.data.claude_workers.get.return_value = {}
 
         mock_status = pd.ClaudeWorkerPodStatus(
-            lease=None, disk=None, claude_processes=0, anthropic_quota=None,
+            lease=None,
+            disk=None,
+            claude_processes=0,
+            anthropic_quota=None,
         )
         mock_provider = MagicMock()
         mock_provider.get.return_value = mock_status

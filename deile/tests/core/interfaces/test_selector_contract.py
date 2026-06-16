@@ -7,14 +7,18 @@ from typing import Optional, Sequence
 import pytest
 
 from deile.core.exceptions import DEILEError
-from deile.core.interfaces.selector import (InteractiveSelector,
-                                            SelectorNotSupported,
-                                            SelectorOption)
+from deile.core.interfaces.selector import (
+    InteractiveSelector,
+    SelectorNotSupported,
+    SelectorOption,
+)
 
 
 class TestSelectorOption:
     def test_label_and_value_required_positional(self):
-        opt = SelectorOption(label="Anthropic Claude", value="anthropic:claude-opus-4-8")
+        opt = SelectorOption(
+            label="Anthropic Claude", value="anthropic:claude-opus-4-8"
+        )
         assert opt.label == "Anthropic Claude"
         assert opt.value == "anthropic:claude-opus-4-8"
         assert opt.description == ""

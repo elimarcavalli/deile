@@ -37,8 +37,7 @@ class TestIdempotency:
 
     def test_get_dispatch_log_export_same_instance(self):
         """get_dispatch_log_export() retorna o mesmo objeto."""
-        from deile.observability.dispatch_log_export import \
-            get_dispatch_log_export
+        from deile.observability.dispatch_log_export import get_dispatch_log_export
 
         e1 = get_dispatch_log_export()
         e2 = get_dispatch_log_export()
@@ -67,7 +66,9 @@ class TestIdempotency:
             t.join()
 
         assert not errors, f"errors in threads: {errors}"
-        assert all(r is results[0] for r in results), "all threads should get same provider"
+        assert all(
+            r is results[0] for r in results
+        ), "all threads should get same provider"
 
     def test_reset_clears_init_count(self, in_memory_log_exporter):
         """reset_dispatch_log_export() reseta _init_count para 0."""

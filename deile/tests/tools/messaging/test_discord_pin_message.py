@@ -21,7 +21,9 @@ async def test_pin_succeeds(fake_client, fake_permission, fake_audit):
 
 
 async def test_pin_message_not_found_returns_typed_error(fake_permission, fake_audit):
-    fc = FakeBotClient(raise_on={"message_pin": BotClientUpstreamError("nope", code="UPSTREAM_ERROR")})
+    fc = FakeBotClient(
+        raise_on={"message_pin": BotClientUpstreamError("nope", code="UPSTREAM_ERROR")}
+    )
     tool = DiscordPinMessageTool()
     result = await tool.execute(
         make_context(

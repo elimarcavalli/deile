@@ -36,7 +36,10 @@ class TestBodyFor:
     def test_basic_format(self):
         from deile.observability.dispatch_log_export import body_for
 
-        result = body_for("dispatch.received", {"deile.dispatch.task_id": "t1", "deile.dispatch.model": "m1"})
+        result = body_for(
+            "dispatch.received",
+            {"deile.dispatch.task_id": "t1", "deile.dispatch.model": "m1"},
+        )
         assert result.startswith("dispatch.received ")
         assert "deile.dispatch.model=m1" in result
         assert "deile.dispatch.task_id=t1" in result
@@ -76,28 +79,45 @@ class TestSeverityFor:
 
     # Rule 1: dispatch.failed reason=auth_expired → ERROR/17
     def test_failed_auth_expired_error(self):
-        assert self._sev("dispatch.failed", {"deile.dispatch.reason": "auth_expired"}) == ("ERROR", 17)
+        assert self._sev(
+            "dispatch.failed", {"deile.dispatch.reason": "auth_expired"}
+        ) == ("ERROR", 17)
 
     # Rule 2: dispatch.failed other reason → WARN/13
     def test_failed_timeout_warn(self):
-        assert self._sev("dispatch.failed", {"deile.dispatch.reason": "timeout"}) == ("WARN", 13)
+        assert self._sev("dispatch.failed", {"deile.dispatch.reason": "timeout"}) == (
+            "WARN",
+            13,
+        )
 
     def test_failed_no_reason_warn(self):
         assert self._sev("dispatch.failed", {}) == ("WARN", 13)
 
     # Rule 3: dispatch.tool_burst count>50 → WARN/13
     def test_tool_burst_51_warn(self):
-        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 51}) == ("WARN", 13)
+        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 51}) == (
+            "WARN",
+            13,
+        )
 
     def test_tool_burst_100_warn(self):
-        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 100}) == ("WARN", 13)
+        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 100}) == (
+            "WARN",
+            13,
+        )
 
     # Rule 4: dispatch.tool_burst count<=50 → INFO/9
     def test_tool_burst_50_info(self):
-        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 50}) == ("INFO", 9)
+        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 50}) == (
+            "INFO",
+            9,
+        )
 
     def test_tool_burst_0_info(self):
-        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 0}) == ("INFO", 9)
+        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 0}) == (
+            "INFO",
+            9,
+        )
 
     # Rule 5: git.*/forge.* status=fail/error → WARN/13
     def test_git_commit_fail_warn(self):
@@ -107,7 +127,10 @@ class TestSeverityFor:
         assert self._sev("git.push", {"deile.git.status": "error"}) == ("WARN", 13)
 
     def test_forge_pr_open_fail_warn(self):
-        assert self._sev("forge.pr_open", {"deile.forge.status": "fail"}) == ("WARN", 13)
+        assert self._sev("forge.pr_open", {"deile.forge.status": "fail"}) == (
+            "WARN",
+            13,
+        )
 
     # Rule 5 (success): git.*/forge.* status=ok → INFO/9
     def test_git_commit_ok_info(self):
@@ -267,7 +290,9 @@ class TestEmitLogRecord:
         for v in (record.attributes or {}).values():
             assert "ghp_" not in str(v)
 
-    def test_failure_isolation_log_error_does_not_raise(self, in_memory_log_exporter, monkeypatch):
+    def test_failure_isolation_log_error_does_not_raise(
+        self, in_memory_log_exporter, monkeypatch
+    ):
         """Se emit interno lança, emit_log_record captura e não propaga (D5)."""
         from deile.observability import dispatch_log_export
 
@@ -294,8 +319,11 @@ class TestKillSwitch:
     def test_logs_disabled_no_log_records(self, in_memory_log_exporter, monkeypatch):
         """DEILE_OTLP_LOGS_DISABLED=true → nenhum LogRecord emitido."""
         monkeypatch.setenv("DEILE_OTLP_LOGS_DISABLED", "true")
-        from deile.observability import (reset_dispatch_log_export,
-                                         reset_observability_config)
+        from deile.observability import (
+            reset_dispatch_log_export,
+            reset_observability_config,
+        )
+
         reset_observability_config()
         reset_dispatch_log_export()
 
@@ -313,10 +341,13 @@ class TestKillSwitch:
         """DEILE_OTLP_LOGS_DISABLED=true não afeta spans."""
         monkeypatch.setenv("DEILE_OTLP_LOGS_DISABLED", "true")
         from deile.observability import reset_observability_config
+
         reset_observability_config()
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed, emit_dispatch_received)
+            emit_dispatch_completed,
+            emit_dispatch_received,
+        )
 
         emit_dispatch_received("task-kill", session_id="s1")
         emit_dispatch_completed("task-kill", elapsed_s=1.0)
@@ -340,16 +371,20 @@ class TestResourceAttributes:
         monkeypatch.setenv("DEILE_OTLP_SERVICE_NAME", "deile-test")
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
         import deile.observability.dispatch_log_export as dle
-        from deile.observability import (reset_dispatch_log_export,
-                                         reset_observability_config)
+        from deile.observability import (
+            reset_dispatch_log_export,
+            reset_observability_config,
+        )
 
         reset_observability_config()
         reset_dispatch_log_export()
         # Garantir que não há provider injetado por fixture — deixar _build_log_provider rodar
         monkeypatch.setattr(dle, "_log_provider", None)
 
-        from opentelemetry.sdk._logs.export import (InMemoryLogExporter,
-                                                    SimpleLogRecordProcessor)
+        from opentelemetry.sdk._logs.export import (
+            InMemoryLogExporter,
+            SimpleLogRecordProcessor,
+        )
 
         # Substituir _build_log_provider para capturar o resource sem OTLP real
         built_providers = []
@@ -359,15 +394,22 @@ class TestResourceAttributes:
             from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 
             from deile.observability.dispatch_schema import (
-                ATTR_POD, ATTR_ROLE, ATTR_SCHEMA_VERSION, SCHEMA_VERSION,
-                get_pod_metadata)
+                ATTR_POD,
+                ATTR_ROLE,
+                ATTR_SCHEMA_VERSION,
+                SCHEMA_VERSION,
+                get_pod_metadata,
+            )
+
             pod = get_pod_metadata()
-            resource = Resource.create({
-                SERVICE_NAME: config.service_name,
-                ATTR_ROLE: pod["role"],
-                ATTR_POD: pod["pod"],
-                ATTR_SCHEMA_VERSION: SCHEMA_VERSION,
-            })
+            resource = Resource.create(
+                {
+                    SERVICE_NAME: config.service_name,
+                    ATTR_ROLE: pod["role"],
+                    ATTR_POD: pod["pod"],
+                    ATTR_SCHEMA_VERSION: SCHEMA_VERSION,
+                }
+            )
             provider = LoggerProvider(resource=resource)
             exporter = InMemoryLogExporter()
             provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
@@ -390,8 +432,11 @@ class TestSdkAbsent:
     def test_no_op_when_sdk_absent(self, monkeypatch, caplog):
         """Quando SDK ausente, emit_log_record é no-op e emite INFO na primeira chamada."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
-        from deile.observability import (reset_dispatch_log_export,
-                                         reset_observability_config)
+        from deile.observability import (
+            reset_dispatch_log_export,
+            reset_observability_config,
+        )
+
         reset_observability_config()
         reset_dispatch_log_export()
 
@@ -410,12 +455,16 @@ class TestSdkAbsent:
     def test_sdk_absent_warning_emitted_once(self, monkeypatch, caplog):
         """Linha INFO emitida apenas na primeira chamada, não nas subsequentes."""
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
-        from deile.observability import (reset_dispatch_log_export,
-                                         reset_observability_config)
+        from deile.observability import (
+            reset_dispatch_log_export,
+            reset_observability_config,
+        )
+
         reset_observability_config()
         reset_dispatch_log_export()
 
         import deile.observability.dispatch_log_export as dle
+
         monkeypatch.setattr(dle, "otel_logs_available", lambda: False)
 
         with caplog.at_level(logging.INFO, logger=dle._logger.name):
@@ -433,8 +482,7 @@ class TestSdkAbsent:
 
 class TestGetDispatchLogExport:
     def test_returns_same_instance(self):
-        from deile.observability.dispatch_log_export import \
-            get_dispatch_log_export
+        from deile.observability.dispatch_log_export import get_dispatch_log_export
 
         e1 = get_dispatch_log_export()
         e2 = get_dispatch_log_export()
@@ -443,6 +491,7 @@ class TestGetDispatchLogExport:
     def test_emit_delegates_to_emit_log_record(self, monkeypatch):
         """DispatchLogExport.emit() delega a emit_log_record."""
         import deile.observability.dispatch_log_export as dle
+
         calls = []
 
         def fake_emit_log_record(**kwargs):
@@ -451,7 +500,9 @@ class TestGetDispatchLogExport:
         monkeypatch.setattr(dle, "emit_log_record", fake_emit_log_record)
 
         facade = dle.get_dispatch_log_export()
-        facade.emit("dispatch.received", {"k": "v"}, trace_id=1, span_id=2, trace_flags=3)
+        facade.emit(
+            "dispatch.received", {"k": "v"}, trace_id=1, span_id=2, trace_flags=3
+        )
 
         assert len(calls) == 1
         assert calls[0]["event_name"] == "dispatch.received"
@@ -466,8 +517,10 @@ class TestDropCounter:
     def test_drop_counter_throttled(self, monkeypatch, caplog):
         """Exporter raise → drop counter + log ≤1×/60s."""
         import deile.observability.dispatch_log_export as dle
-        from deile.observability import (reset_dispatch_log_export,
-                                         reset_observability_config)
+        from deile.observability import (
+            reset_dispatch_log_export,
+            reset_observability_config,
+        )
 
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")
         reset_observability_config()

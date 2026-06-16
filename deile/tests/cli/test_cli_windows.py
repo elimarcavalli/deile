@@ -50,7 +50,11 @@ class TestStreamWithEscCancelTermiosFallback:
     def test_falls_back_when_termios_absent(self) -> None:
         from deile.cli import _DeileCLI
 
-        real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+        real_import = (
+            __builtins__["__import__"]
+            if isinstance(__builtins__, dict)
+            else __builtins__.__import__
+        )
 
         def _selective_import(name, *args, **kwargs):
             # Make the lazy `import termios` / `import tty` inside
@@ -64,9 +68,7 @@ class TestStreamWithEscCancelTermiosFallback:
         cli.ui.display_streaming_turn = AsyncMock(return_value=None)
 
         with patch("builtins.__import__", side_effect=_selective_import):
-            result = asyncio.run(
-                cli._stream_with_esc_cancel(_empty_stream())
-            )
+            result = asyncio.run(cli._stream_with_esc_cancel(_empty_stream()))
 
         # Function returned False (no cancellation) because the
         # termios import raised ImportError — exactly the Windows
@@ -108,12 +110,15 @@ class TestClearScreenWindows:
     def _make_cli(self):
         """Build a CLI instance without running ``__init__``."""
         from deile.ui.cli import CLI
+
         return CLI.__new__(CLI)
 
     def test_uses_cmd_cls_on_windows(self) -> None:
         cli = self._make_cli()
-        with patch("deile.ui.cli.os.name", "nt"), \
-             patch("deile.ui.cli.subprocess.run") as mock_run:
+        with (
+            patch("deile.ui.cli.os.name", "nt"),
+            patch("deile.ui.cli.subprocess.run") as mock_run,
+        ):
             cli.clear_screen()
 
         mock_run.assert_called_once()
@@ -126,8 +131,10 @@ class TestClearScreenWindows:
         """Negative control — make sure the Windows assertion isn't vacuously
         true."""
         cli = self._make_cli()
-        with patch("deile.ui.cli.os.name", "posix"), \
-             patch("deile.ui.cli.subprocess.run") as mock_run:
+        with (
+            patch("deile.ui.cli.os.name", "posix"),
+            patch("deile.ui.cli.subprocess.run") as mock_run,
+        ):
             cli.clear_screen()
 
         called_args = mock_run.call_args[0][0]

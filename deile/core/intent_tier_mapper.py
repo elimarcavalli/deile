@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from deile.core.intent_analyzer import (IntentAnalysisResult, IntentCategory,
-                                        IntentType)
+from deile.core.intent_analyzer import IntentAnalysisResult, IntentCategory, IntentType
 from deile.core.models.tier import ModelTier
 
 _TYPE_MAP: dict[IntentType, ModelTier] = {
@@ -35,7 +34,12 @@ def classify_tier(result: IntentAnalysisResult) -> ModelTier:
     floor = _CATEGORY_FLOOR.get(result.primary_category)
     if floor is not None:
         # Lower tier value = higher tier (TIER_1 < TIER_2 numerically in enum definition order)
-        tier_order = [ModelTier.TIER_1, ModelTier.TIER_2, ModelTier.TIER_3, ModelTier.TIER_4]
+        tier_order = [
+            ModelTier.TIER_1,
+            ModelTier.TIER_2,
+            ModelTier.TIER_3,
+            ModelTier.TIER_4,
+        ]
         if tier_order.index(tier) > tier_order.index(floor):
             tier = floor
 

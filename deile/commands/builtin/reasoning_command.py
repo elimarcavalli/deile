@@ -19,9 +19,14 @@ from rich.text import Text
 
 from ...config.manager import CommandConfig
 from ...config.settings import get_settings
-from ...core.models.reasoning import (CLAUDE_CODE_EFFORTS, DEEPSEEK_EFFORTS,
-                                      GEMINI_EFFORTS, OPENAI_EFFORTS,
-                                      is_valid_effort, normalize_effort)
+from ...core.models.reasoning import (
+    CLAUDE_CODE_EFFORTS,
+    DEEPSEEK_EFFORTS,
+    GEMINI_EFFORTS,
+    OPENAI_EFFORTS,
+    is_valid_effort,
+    normalize_effort,
+)
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import split_args
 
@@ -39,11 +44,13 @@ class ReasoningCommand(DirectCommand):
     cli_requires_provider = False
 
     def __init__(self) -> None:
-        super().__init__(CommandConfig(
-            name="reasoning",
-            description="Set the reasoning effort for this session (low|medium|high|xhigh|max|...)",
-            aliases=["effort"],
-        ))
+        super().__init__(
+            CommandConfig(
+                name="reasoning",
+                description="Set the reasoning effort for this session (low|medium|high|xhigh|max|...)",
+                aliases=["effort"],
+            )
+        )
         self.category = "ai"
         self.help_text = """
 Reasoning Command — esforço de raciocínio do turno
@@ -151,7 +158,10 @@ EXEMPLOS:
             return CommandResult(
                 success=False,
                 content=Panel(
-                    Text("Usage: /reasoning use <nível>  ou  /reasoning use clear", style="yellow"),
+                    Text(
+                        "Usage: /reasoning use <nível>  ou  /reasoning use clear",
+                        style="yellow",
+                    ),
                     title="Reasoning effort",
                     border_style="yellow",
                 ),
@@ -182,15 +192,20 @@ EXEMPLOS:
         if cd is None:
             return CommandResult(
                 success=False,
-                content=Panel(Text("Sessão indisponível.", style="red"),
-                              title="Error", border_style="red"),
+                content=Panel(
+                    Text("Sessão indisponível.", style="red"),
+                    title="Error",
+                    border_style="red",
+                ),
             )
         cd["forced_reasoning_effort"] = target
         logger.info("forced_reasoning_effort setado em '%s'", target)
         return CommandResult(
             success=True,
             content=Panel(
-                Text(f"Hard override: esforço fixado em '{target}' (vence injeção per-turn do worker)."),
+                Text(
+                    f"Hard override: esforço fixado em '{target}' (vence injeção per-turn do worker)."
+                ),
                 title="Reasoning effort — hard override",
                 border_style="green",
             ),
@@ -206,7 +221,9 @@ EXEMPLOS:
         return CommandResult(
             success=True,
             content=Panel(
-                Text("Hard override removido — esforço volta ao slot SOFT / global / default."),
+                Text(
+                    "Hard override removido — esforço volta ao slot SOFT / global / default."
+                ),
                 title="Reasoning effort — hard override",
                 border_style="green",
             ),
@@ -233,8 +250,11 @@ EXEMPLOS:
         if cd is None:
             return CommandResult(
                 success=False,
-                content=Panel(Text("Sessão indisponível.", style="red"),
-                              title="Error", border_style="red"),
+                content=Panel(
+                    Text("Sessão indisponível.", style="red"),
+                    title="Error",
+                    border_style="red",
+                ),
             )
         cd["reasoning_effort"] = target
         return CommandResult(

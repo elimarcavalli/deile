@@ -54,28 +54,37 @@ def _resolve_namespace() -> str:
     """Return the target namespace, reading from Settings singleton (pilar 03 §7)."""
     try:
         from ...config.settings import get_settings
+
         ns = get_settings().k8s_namespace
         return ns if ns else "deile"
     except Exception:
         return "deile"
 
 
-async def _fetch_pods(kubectl: str, namespace: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+async def _fetch_pods(
+    kubectl: str, namespace: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Run ``kubectl get pods`` and return (parsed_json, error_message)."""
     try:
         proc = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
                 kubectl,
-                "-n", namespace,
-                "get", "pods",
-                "-l", "app=claude-worker",
-                "-o", "json",
+                "-n",
+                namespace,
+                "get",
+                "pods",
+                "-l",
+                "app=claude-worker",
+                "-o",
+                "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             ),
             timeout=_KUBECTL_TIMEOUT,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_KUBECTL_TIMEOUT)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_KUBECTL_TIMEOUT
+        )
     except asyncio.TimeoutError:
         return None, f"kubectl demorou mais de {_KUBECTL_TIMEOUT:.0f}s (timeout)"
     except OSError as exc:
@@ -152,6 +161,7 @@ class PodsCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="pods",
             description="Lista pods claude-worker do namespace ativo (status, ready, restarts, idade).",

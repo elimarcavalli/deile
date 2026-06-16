@@ -39,14 +39,15 @@ from typing import Any, List, Optional, Tuple
 # permission gate, audit emission, secret-key check, fingerprinting,
 # dry-run validation. They are re-exported below for the existing test
 # imports (``from deile.commands.settings_manager import _is_secret_key``).
-from ._settings_security_hooks import \
-    check_settings_write_permission as _check_settings_write_permission
-from ._settings_security_hooks import \
-    emit_settings_audit as _emit_settings_audit
+from ._settings_security_hooks import (
+    check_settings_write_permission as _check_settings_write_permission,
+)
+from ._settings_security_hooks import emit_settings_audit as _emit_settings_audit
 from ._settings_security_hooks import hash_value as _hash_value
 from ._settings_security_hooks import is_secret_key as _is_secret_key
-from ._settings_security_hooks import \
-    validate_against_override_handlers as _validate_against_override_handlers
+from ._settings_security_hooks import (
+    validate_against_override_handlers as _validate_against_override_handlers,
+)
 from ._settings_security_hooks import value_fingerprint as _value_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -230,7 +231,9 @@ class SettingsManager:
         to prevent stack overflow from adversarially crafted input.
         """
         if _depth > 32:
-            logger.warning("settings: deep-merge depth cap hit; returning project subtree")
+            logger.warning(
+                "settings: deep-merge depth cap hit; returning project subtree"
+            )
             return copy.deepcopy(project)
         merged: dict = copy.deepcopy(user)
         for key, project_value in project.items():
@@ -488,9 +491,7 @@ class SettingsManager:
                     "path_fingerprint": _hash_value(str(path)),
                 },
             )
-            logger.warning(
-                "add_skills_path: permission denied in %s scope", scope
-            )
+            logger.warning("add_skills_path: permission denied in %s scope", scope)
             return False, "denied"
 
         # P2-4: only ensure the global dir when actually writing global.
@@ -564,9 +565,7 @@ class SettingsManager:
                     "path_fingerprint": _hash_value(str(path)),
                 },
             )
-            logger.warning(
-                "remove_skills_path: permission denied in %s scope", scope
-            )
+            logger.warning("remove_skills_path: permission denied in %s scope", scope)
             return False, "denied"
 
         settings_path = self._settings_path(scope)
@@ -769,7 +768,11 @@ class SettingsManager:
                 resource_detail=key_path,
                 action="delete",
                 result="refused_secret",
-                details={"key_path": key_path, "scope": scope, "reason": "secret_pattern"},
+                details={
+                    "key_path": key_path,
+                    "scope": scope,
+                    "reason": "secret_pattern",
+                },
             )
             return False
 
@@ -779,7 +782,11 @@ class SettingsManager:
                 resource_detail=key_path,
                 action="delete",
                 result="denied",
-                details={"key_path": key_path, "scope": scope, "reason": "permission_denied"},
+                details={
+                    "key_path": key_path,
+                    "scope": scope,
+                    "reason": "permission_denied",
+                },
             )
             logger.warning(
                 "unset_setting: permission denied for %r in %s scope", key_path, scope
@@ -801,7 +808,11 @@ class SettingsManager:
                         resource_detail=key_path,
                         action="delete",
                         result="allowed",
-                        details={"key_path": key_path, "scope": scope, "was_present": False},
+                        details={
+                            "key_path": key_path,
+                            "scope": scope,
+                            "was_present": False,
+                        },
                     )
                     return True
                 node = node[part]
@@ -811,7 +822,11 @@ class SettingsManager:
                     resource_detail=key_path,
                     action="delete",
                     result="allowed",
-                    details={"key_path": key_path, "scope": scope, "was_present": False},
+                    details={
+                        "key_path": key_path,
+                        "scope": scope,
+                        "was_present": False,
+                    },
                 )
                 return True
             del node[parts[-1]]

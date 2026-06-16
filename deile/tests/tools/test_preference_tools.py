@@ -8,10 +8,13 @@ from unittest.mock import patch
 import pytest
 
 from deile.tools.base import ToolContext
-from deile.tools.preference_tools import (ForgetPreferenceTool,
-                                          ListPreferencesTool,
-                                          RememberPreferenceTool,
-                                          _coerce_value, _resolve_user_id)
+from deile.tools.preference_tools import (
+    ForgetPreferenceTool,
+    ListPreferencesTool,
+    RememberPreferenceTool,
+    _coerce_value,
+    _resolve_user_id,
+)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -20,12 +23,12 @@ from deile.tools.preference_tools import (ForgetPreferenceTool,
 def tmp_prefs_file(tmp_path: Path):
     """Redirect the PreferenceStore backing file to a temp path."""
     prefs_file = tmp_path / "preferences.json"
-    with patch(
-        "deile.preferences.store._PREFS_FILE", prefs_file
-    ), patch(
-        "deile.preferences.store._PREFS_DIR", tmp_path
-    ), patch(
-        "deile.tools.preference_tools.PreferenceStore",
+    with (
+        patch("deile.preferences.store._PREFS_FILE", prefs_file),
+        patch("deile.preferences.store._PREFS_DIR", tmp_path),
+        patch(
+            "deile.tools.preference_tools.PreferenceStore",
+        ),
     ):
         # We use the real store but with patched file paths.
         # So let the PreferenceStore class resolve normally.
@@ -101,11 +104,11 @@ class TestRememberPreference:
     @pytest.mark.asyncio
     async def test_success(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), _bypass_permission():
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            _bypass_permission(),
+        ):
             tool = RememberPreferenceTool()
             ctx = _ctx(user_id="u1", key="theme", value="dark")
             result = await tool.execute(ctx)
@@ -116,11 +119,11 @@ class TestRememberPreference:
     @pytest.mark.asyncio
     async def test_invalid_key_rejected(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), _bypass_permission():
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            _bypass_permission(),
+        ):
             tool = RememberPreferenceTool()
             ctx = _ctx(user_id="u1", key="BadKey!", value="x")
             result = await tool.execute(ctx)
@@ -131,11 +134,11 @@ class TestRememberPreference:
     @pytest.mark.asyncio
     async def test_value_too_long_rejected(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), _bypass_permission():
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            _bypass_permission(),
+        ):
             tool = RememberPreferenceTool()
             ctx = _ctx(user_id="u1", key="x", value="y" * 4097)
             result = await tool.execute(ctx)
@@ -146,10 +149,9 @@ class TestRememberPreference:
     @pytest.mark.asyncio
     async def test_missing_key(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
         ):
             tool = RememberPreferenceTool()
             ctx = _ctx(user_id="u1", value="x")
@@ -161,10 +163,9 @@ class TestRememberPreference:
     @pytest.mark.asyncio
     async def test_missing_value(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
         ):
             tool = RememberPreferenceTool()
             ctx = _ctx(user_id="u1", key="x")
@@ -176,13 +177,13 @@ class TestRememberPreference:
     @pytest.mark.asyncio
     async def test_permission_denied(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), patch(
-            "deile.tools.preference_tools._check_write_permission",
-            return_value=False,
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            patch(
+                "deile.tools.preference_tools._check_write_permission",
+                return_value=False,
+            ),
         ):
             tool = RememberPreferenceTool()
             ctx = _ctx(user_id="u1", key="theme", value="dark")
@@ -194,11 +195,11 @@ class TestRememberPreference:
     @pytest.mark.asyncio
     async def test_boolean_coerced(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), _bypass_permission():
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            _bypass_permission(),
+        ):
             tool = RememberPreferenceTool()
             ctx = _ctx(user_id="u1", key="auto_mode", value="true")
             result = await tool.execute(ctx)
@@ -209,11 +210,11 @@ class TestRememberPreference:
     @pytest.mark.asyncio
     async def test_dot_namespaced_key(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), _bypass_permission():
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            _bypass_permission(),
+        ):
             tool = RememberPreferenceTool()
             ctx = _ctx(user_id="u1", key="subagents.mode", value="manual")
             result = await tool.execute(ctx)
@@ -229,10 +230,9 @@ class TestListPreferences:
     @pytest.mark.asyncio
     async def test_empty(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
         ):
             tool = ListPreferencesTool()
             ctx = _ctx(user_id="u1")
@@ -244,16 +244,14 @@ class TestListPreferences:
     @pytest.mark.asyncio
     async def test_list_all(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), _bypass_permission():
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            _bypass_permission(),
+        ):
             store_tool = RememberPreferenceTool()
             await store_tool.execute(_ctx(user_id="u1", key="theme", value="dark"))
-            await store_tool.execute(
-                _ctx(user_id="u1", key="lang", value="pt")
-            )
+            await store_tool.execute(_ctx(user_id="u1", key="lang", value="pt"))
 
             list_tool = ListPreferencesTool()
             result = await list_tool.execute(_ctx(user_id="u1"))
@@ -266,11 +264,11 @@ class TestListPreferences:
     @pytest.mark.asyncio
     async def test_list_with_prefix(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), _bypass_permission():
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            _bypass_permission(),
+        ):
             store_tool = RememberPreferenceTool()
             await store_tool.execute(
                 _ctx(user_id="u1", key="subagents.mode", value="auto")
@@ -278,14 +276,10 @@ class TestListPreferences:
             await store_tool.execute(
                 _ctx(user_id="u1", key="subagents.count", value="3")
             )
-            await store_tool.execute(
-                _ctx(user_id="u1", key="ui.theme", value="light")
-            )
+            await store_tool.execute(_ctx(user_id="u1", key="ui.theme", value="light"))
 
             list_tool = ListPreferencesTool()
-            result = await list_tool.execute(
-                _ctx(user_id="u1", prefix="subagents")
-            )
+            result = await list_tool.execute(_ctx(user_id="u1", prefix="subagents"))
 
         assert result.is_success
         prefs = result.data["preferences"]
@@ -302,11 +296,11 @@ class TestForgetPreference:
     @pytest.mark.asyncio
     async def test_forget_existing(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), _bypass_permission():
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            _bypass_permission(),
+        ):
             store_tool = RememberPreferenceTool()
             await store_tool.execute(_ctx(user_id="u1", key="theme", value="dark"))
 
@@ -319,11 +313,11 @@ class TestForgetPreference:
     @pytest.mark.asyncio
     async def test_forget_nonexistent_idempotent(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), _bypass_permission():
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            _bypass_permission(),
+        ):
             tool = ForgetPreferenceTool()
             result = await tool.execute(_ctx(user_id="u1", key="ghost"))
 
@@ -334,10 +328,9 @@ class TestForgetPreference:
     @pytest.mark.asyncio
     async def test_missing_key(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
         ):
             tool = ForgetPreferenceTool()
             ctx = _ctx(user_id="u1")
@@ -349,13 +342,13 @@ class TestForgetPreference:
     @pytest.mark.asyncio
     async def test_permission_denied(self, tmp_path: Path):
         prefs_file = tmp_path / "preferences.json"
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ), patch(
-            "deile.tools.preference_tools._check_write_permission",
-            return_value=False,
+        with (
+            patch("deile.preferences.store._PREFS_FILE", prefs_file),
+            patch("deile.preferences.store._PREFS_DIR", tmp_path),
+            patch(
+                "deile.tools.preference_tools._check_write_permission",
+                return_value=False,
+            ),
         ):
             tool = ForgetPreferenceTool()
             ctx = _ctx(user_id="u1", key="theme")
@@ -370,8 +363,7 @@ class TestForgetPreference:
 
 def test_tools_discoverable():
     """All three tools should be auto-discovered via DEFAULT_TOOL_PACKAGES."""
-    from deile.tools.discovery import (DEFAULT_TOOL_PACKAGES,
-                                       discover_tools_in_package)
+    from deile.tools.discovery import DEFAULT_TOOL_PACKAGES, discover_tools_in_package
     from deile.tools.registry import ToolRegistry
 
     assert "deile.tools.preference_tools" in DEFAULT_TOOL_PACKAGES

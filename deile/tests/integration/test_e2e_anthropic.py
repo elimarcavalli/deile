@@ -37,7 +37,9 @@ async def test_anthropic_simple_generate():
     )
     provider = AnthropicProvider(handle, config)
 
-    msgs = [ModelMessage(role="user", content="What is 2+2? Reply with just the number.")]
+    msgs = [
+        ModelMessage(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     response = await provider.generate(msgs)
     assert "4" in response.content
     assert response.usage.prompt_tokens > 0

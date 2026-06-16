@@ -1,12 +1,12 @@
 """Tests for CRON_FIRE and CRON_SKIPPED audit event types (issue #437)."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from deile.security.audit_logger import (AuditEventType, AuditLogger,
-                                         SeverityLevel)
+from deile.security.audit_logger import AuditEventType, AuditLogger, SeverityLevel
 
 
 @pytest.fixture
@@ -47,7 +47,9 @@ class TestCronFireEvent:
 class TestCronSkippedEvent:
     def test_log_cron_skipped_emits_event(self, audit_logger: AuditLogger) -> None:
         initial = audit_logger.event_count()
-        audit_logger.log_cron_skipped(entry_id="job-1", name="daily-renew", reason="no callback")
+        audit_logger.log_cron_skipped(
+            entry_id="job-1", name="daily-renew", reason="no callback"
+        )
         assert audit_logger.event_count() == initial + 1
 
     def test_log_cron_skipped_event_type(self, audit_logger: AuditLogger) -> None:
@@ -76,7 +78,9 @@ class TestAuditEventTypeEnum:
 class TestCronFireFieldParity:
     """AC3: assert exact field names match deilebot contract (name/schedule/payload_hash)."""
 
-    def test_cron_fire_details_keys_are_exactly_name_schedule_payload_hash(self, audit_logger):
+    def test_cron_fire_details_keys_are_exactly_name_schedule_payload_hash(
+        self, audit_logger
+    ):
         audit_logger.log_cron_fire("job-1", "daily-renew", "0 3 * * *", "sha256:abc")
         events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_FIRE)
         ev = events[0]

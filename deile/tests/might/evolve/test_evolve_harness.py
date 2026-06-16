@@ -329,7 +329,9 @@ async def _run_scenario(
     return result
 
 
-async def scenario_01_standalone(agent: DeileAgent, forced_model: Optional[str]) -> ScenarioResult:
+async def scenario_01_standalone(
+    agent: DeileAgent, forced_model: Optional[str]
+) -> ScenarioResult:
     with tempfile.TemporaryDirectory(prefix="evolve-01-") as raw:
         tmp = Path(raw).resolve()
         _setup_standalone(tmp)
@@ -350,7 +352,9 @@ async def scenario_01_standalone(agent: DeileAgent, forced_model: Optional[str])
     return r
 
 
-async def scenario_02_subproject(agent: DeileAgent, forced_model: Optional[str]) -> ScenarioResult:
+async def scenario_02_subproject(
+    agent: DeileAgent, forced_model: Optional[str]
+) -> ScenarioResult:
     with tempfile.TemporaryDirectory(prefix="evolve-02-") as raw:
         tmp = Path(raw).resolve()
         sub = _setup_subproject(tmp)
@@ -373,7 +377,9 @@ async def scenario_02_subproject(agent: DeileAgent, forced_model: Optional[str])
     return r
 
 
-async def scenario_03_no_templates(agent: DeileAgent, forced_model: Optional[str]) -> ScenarioResult:
+async def scenario_03_no_templates(
+    agent: DeileAgent, forced_model: Optional[str]
+) -> ScenarioResult:
     with tempfile.TemporaryDirectory(prefix="evolve-03-") as raw:
         tmp = Path(raw).resolve()
         _setup_no_templates(tmp)
@@ -416,7 +422,9 @@ def _print_summary(results: List[ScenarioResult]) -> int:
     failed = 0
     for r in results:
         status = "PASS" if r.passed else "FAIL"
-        print(f"  [{status}] {r.name} — {r.duration_s:.2f}s, {len(r.tool_calls)} tool calls")
+        print(
+            f"  [{status}] {r.name} — {r.duration_s:.2f}s, {len(r.tool_calls)} tool calls"
+        )
         if not r.passed:
             failed += 1
             for err in r.errors:

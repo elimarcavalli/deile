@@ -79,8 +79,7 @@ async def run_for_model(agent: DeileAgent, model_key: str) -> dict:
         "=" * 100 + "\n"
         f"=== MODEL: {model_key}\n"
         f"=== SESSION: {session_id}\n"
-        f"=== USER: {PROMPT_T1}\n"
-        + "=" * 100 + "\n"
+        f"=== USER: {PROMPT_T1}\n" + "=" * 100 + "\n"
     )
 
     t0 = time.time()
@@ -90,7 +89,8 @@ async def run_for_model(agent: DeileAgent, model_key: str) -> dict:
         tool_calls_block = _format_tool_calls(response.tool_results)
         n_tools = len(response.tool_results)
         n_read_file = sum(
-            1 for tr in response.tool_results
+            1
+            for tr in response.tool_results
             if (tr.metadata or {}).get("function_name") == "read_file"
         )
         body = (
@@ -103,7 +103,9 @@ async def run_for_model(agent: DeileAgent, model_key: str) -> dict:
             f"  read_file_count: {n_read_file}\n"
         )
         log_path.write_text(header + body)
-        print(f"[{model_key}] OK — duration={dt:.2f}s, tools={n_tools}, read_file={n_read_file} → {log_path.name}")
+        print(
+            f"[{model_key}] OK — duration={dt:.2f}s, tools={n_tools}, read_file={n_read_file} → {log_path.name}"
+        )
         return {
             "model": model_key,
             "ok": True,
@@ -117,7 +119,12 @@ async def run_for_model(agent: DeileAgent, model_key: str) -> dict:
         body = f"\n--- EXCEPTION after {dt:.2f}s ---\n{type(exc).__name__}: {exc}\n"
         log_path.write_text(header + body)
         print(f"[{model_key}] FAIL — {type(exc).__name__}: {exc}")
-        return {"model": model_key, "ok": False, "error": f"{type(exc).__name__}: {exc}", "log": str(log_path)}
+        return {
+            "model": model_key,
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "log": str(log_path),
+        }
 
 
 async def main():
@@ -143,7 +150,9 @@ async def main():
     print("=" * 100)
     for r in summary:
         if r["ok"]:
-            print(f"  {r['model']:42s}  duration={r['duration']:6.2f}s  tools={r['tools']:2d}  read_file={r['read_file_count']}  log={Path(r['log']).name}")
+            print(
+                f"  {r['model']:42s}  duration={r['duration']:6.2f}s  tools={r['tools']:2d}  read_file={r['read_file_count']}  log={Path(r['log']).name}"
+            )
         else:
             print(f"  {r['model']:42s}  FAILED  {r['error']}")
 

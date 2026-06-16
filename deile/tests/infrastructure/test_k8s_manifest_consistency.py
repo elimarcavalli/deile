@@ -42,16 +42,20 @@ APISERVER_PORTS = frozenset({443, 6443})
 # Prefixos da família crítica DEILE_PIPELINE_* que o guarda de paridade cobre
 # (issue #534 — "Definição operacional de 'família crítica'"). Prefixos terminam
 # em "_" para casar com o stage suffix; MAX_PARALLEL é chave exata (sem wildcard).
-_CRITICAL_PIPELINE_ENV_PREFIXES = frozenset({
-    "DEILE_PIPELINE_DISPATCH_",
-    "DEILE_PIPELINE_MODEL_",
-    "DEILE_PIPELINE_REASONING_",
-    "DEILE_PIPELINE_TIMEOUT_S_",
-    "DEILE_PIPELINE_RETRIES_",
-})
-_CRITICAL_PIPELINE_ENV_EXACT = frozenset({
-    "DEILE_PIPELINE_MAX_PARALLEL",
-})
+_CRITICAL_PIPELINE_ENV_PREFIXES = frozenset(
+    {
+        "DEILE_PIPELINE_DISPATCH_",
+        "DEILE_PIPELINE_MODEL_",
+        "DEILE_PIPELINE_REASONING_",
+        "DEILE_PIPELINE_TIMEOUT_S_",
+        "DEILE_PIPELINE_RETRIES_",
+    }
+)
+_CRITICAL_PIPELINE_ENV_EXACT = frozenset(
+    {
+        "DEILE_PIPELINE_MAX_PARALLEL",
+    }
+)
 
 # Nome da egress policy do apiserver (fallback estático no manifest 40 +
 # override de runtime no `deploy.py`/`_netpol.py`, mesmo nome de propósito).
@@ -82,11 +86,7 @@ def docs() -> list[dict[str, Any]]:
 
 
 def _service_accounts(docs: list[dict[str, Any]]) -> set[str]:
-    return {
-        d["metadata"]["name"]
-        for d in docs
-        if d.get("kind") == "ServiceAccount"
-    }
+    return {d["metadata"]["name"] for d in docs if d.get("kind") == "ServiceAccount"}
 
 
 def _service_account_refs(docs: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
@@ -133,9 +133,7 @@ def test_service_account_refs_are_defined(docs: list[dict[str, Any]]) -> None:
     declared = _service_accounts(docs)
     refs = _service_account_refs(docs)
     missing = [
-        (manifest, kind, sa)
-        for manifest, kind, sa in refs
-        if sa not in declared
+        (manifest, kind, sa) for manifest, kind, sa in refs if sa not in declared
     ]
     assert not missing, (
         f"ServiceAccount(s) referenciado em pods mas não declarado: {missing}.\n"
@@ -163,8 +161,7 @@ def test_kubectl_exec_pods_have_apiserver_egress(docs: list[dict[str, Any]]) -> 
     """
     refs = _service_account_refs(docs)
     pods_needing_apiserver = {
-        manifest for manifest, _kind, sa in refs
-        if sa == "claude-creds-renewer"
+        manifest for manifest, _kind, sa in refs if sa == "claude-creds-renewer"
     }
     assert pods_needing_apiserver, (
         "Sentinel-check: nenhum pod usa SA 'claude-creds-renewer' — se o auto-renew "
@@ -223,7 +220,7 @@ def test_kubectl_exec_pods_have_apiserver_egress(docs: list[dict[str, Any]]) -> 
         "      matchExpressions:\n"
         "        - { key: app, operator: In, values: [deile-pipeline, "
         "claude-creds-renewer] }\n"
-        "    policyTypes: [\"Egress\"]\n"
+        '    policyTypes: ["Egress"]\n'
         "    egress:\n"
         "      - to:\n"
         "          - ipBlock: { cidr: 10.0.0.0/8 }\n"
@@ -264,7 +261,9 @@ def test_apiserver_egress_selector_matches_runtime() -> None:
         f"NetworkPolicy '{_APISERVER_POLICY_NAME}' (fallback) ausente do "
         "manifest 40 — sem ela `kubectl apply -f` cru perde o egress ao apiserver."
     )
-    expr = (policy.get("spec", {}).get("podSelector", {}) or {}).get("matchExpressions") or []
+    expr = (policy.get("spec", {}).get("podSelector", {}) or {}).get(
+        "matchExpressions"
+    ) or []
     manifest_apps: set[str] = set()
     for e in expr:
         if e.get("key") == "app" and e.get("operator") == "In":
@@ -327,7 +326,9 @@ def test_pipeline_timeout_vars_present_with_exact_values(
     )
 
     # (a) + (b) presence and exact value
-    env_map: dict[str, str] = {e["name"]: e.get("value", "") for e in env if "name" in e}
+    env_map: dict[str, str] = {
+        e["name"]: e.get("value", "") for e in env if "name" in e
+    }
     errors: list[str] = []
     for key, expected in _EXPECTED_TIMEOUTS.items():
         if key not in env_map:
@@ -492,14 +493,20 @@ _CONFIGMAP_LIMIT_BYTES = 1 * 1024 * 1024  # 1 MiB limite rígido do Kubernetes
 
 def _get_configmap(docs: list[dict], name: str) -> dict | None:
     for d in docs:
-        if d.get("kind") == "ConfigMap" and (d.get("metadata", {}) or {}).get("name") == name:
+        if (
+            d.get("kind") == "ConfigMap"
+            and (d.get("metadata", {}) or {}).get("name") == name
+        ):
             return d
     return None
 
 
 def _get_deployment(docs: list[dict], name: str) -> dict | None:
     for d in docs:
-        if d.get("kind") == "Deployment" and (d.get("metadata", {}) or {}).get("name") == name:
+        if (
+            d.get("kind") == "Deployment"
+            and (d.get("metadata", {}) or {}).get("name") == name
+        ):
             return d
     return None
 
@@ -525,7 +532,9 @@ def test_agents_configmaps_exist(docs: list[dict]) -> None:
 def test_claude_worker_agents_configmap_size(docs: list[dict]) -> None:
     """Issue #515 AC#7 — conteúdo do ConfigMap claude-worker-agents < 1 MiB."""
     cm = _get_configmap(docs, "claude-worker-agents")
-    assert cm is not None, "ConfigMap 'claude-worker-agents' ausente — rode test_agents_configmaps_exist."
+    assert (
+        cm is not None
+    ), "ConfigMap 'claude-worker-agents' ausente — rode test_agents_configmaps_exist."
     data = cm.get("data") or {}
     total = sum(len((v or "").encode("utf-8")) for v in data.values())
     assert total < _CONFIGMAP_LIMIT_BYTES, (
@@ -537,7 +546,9 @@ def test_claude_worker_agents_configmap_size(docs: list[dict]) -> None:
 def test_deile_worker_agents_configmap_size(docs: list[dict]) -> None:
     """Issue #515 AC#7 — conteúdo do ConfigMap deile-worker-agents < 1 MiB."""
     cm = _get_configmap(docs, "deile-worker-agents")
-    assert cm is not None, "ConfigMap 'deile-worker-agents' ausente — rode test_agents_configmaps_exist."
+    assert (
+        cm is not None
+    ), "ConfigMap 'deile-worker-agents' ausente — rode test_agents_configmaps_exist."
     data = cm.get("data") or {}
     total = sum(len((v or "").encode("utf-8")) for v in data.values())
     assert total < _CONFIGMAP_LIMIT_BYTES, (
@@ -565,7 +576,9 @@ def test_claude_worker_inject_agents_uses_chmod_0644(docs: list[dict]) -> None:
     assert dep is not None, "Deployment 'claude-worker' não encontrado."
     pod_spec = _pod_spec(dep)
     init_containers = pod_spec.get("initContainers") or []
-    inject = next((c for c in init_containers if c.get("name") == "inject-agents"), None)
+    inject = next(
+        (c for c in init_containers if c.get("name") == "inject-agents"), None
+    )
     assert inject is not None, "initContainer 'inject-agents' não encontrado."
     args = inject.get("args") or []
     script = " ".join(args)
@@ -581,7 +594,9 @@ def test_claude_worker_inject_agents_idempotent_by_cmp(docs: list[dict]) -> None
     assert dep is not None
     pod_spec = _pod_spec(dep)
     init_containers = pod_spec.get("initContainers") or []
-    inject = next((c for c in init_containers if c.get("name") == "inject-agents"), None)
+    inject = next(
+        (c for c in init_containers if c.get("name") == "inject-agents"), None
+    )
     assert inject is not None, "initContainer 'inject-agents' não encontrado."
     args = inject.get("args") or []
     script = " ".join(args)
@@ -599,15 +614,17 @@ def test_claude_worker_inject_agents_mounts_configmap(docs: list[dict]) -> None:
     pod_spec = _pod_spec(dep)
     # verifica que o volume claude-agents-source usa o ConfigMap correto
     volumes = pod_spec.get("volumes") or []
-    agents_vol = next((v for v in volumes if v.get("name") == "claude-agents-source"), None)
+    agents_vol = next(
+        (v for v in volumes if v.get("name") == "claude-agents-source"), None
+    )
     assert agents_vol is not None, (
         "Volume 'claude-agents-source' ausente no Deployment 'claude-worker'. "
         "Adicione o volume que mapeia ConfigMap 'claude-worker-agents' (issue #515)."
     )
     cm_name = (agents_vol.get("configMap") or {}).get("name")
-    assert cm_name == "claude-worker-agents", (
-        f"Volume 'claude-agents-source' não aponta para 'claude-worker-agents': {cm_name!r}."
-    )
+    assert (
+        cm_name == "claude-worker-agents"
+    ), f"Volume 'claude-agents-source' não aponta para 'claude-worker-agents': {cm_name!r}."
 
 
 def test_deile_worker_mounts_agents_configmap_readonly(docs: list[dict]) -> None:
@@ -642,13 +659,13 @@ def test_deile_worker_agents_volume_uses_correct_configmap(docs: list[dict]) -> 
     pod_spec = _pod_spec(dep)
     volumes = pod_spec.get("volumes") or []
     agents_vol = next((v for v in volumes if v.get("name") == "deile-agents"), None)
-    assert agents_vol is not None, (
-        "Volume 'deile-agents' ausente no Deployment 'deile-worker' (issue #515)."
-    )
+    assert (
+        agents_vol is not None
+    ), "Volume 'deile-agents' ausente no Deployment 'deile-worker' (issue #515)."
     cm_name = (agents_vol.get("configMap") or {}).get("name")
-    assert cm_name == "deile-worker-agents", (
-        f"Volume 'deile-agents' não aponta para 'deile-worker-agents': {cm_name!r}."
-    )
+    assert (
+        cm_name == "deile-worker-agents"
+    ), f"Volume 'deile-agents' não aponta para 'deile-worker-agents': {cm_name!r}."
 
 
 def test_agents_versioned_source_files_exist() -> None:
@@ -663,7 +680,7 @@ def test_agents_versioned_source_files_exist() -> None:
     ]
     missing = [str(p) for p in required if not p.is_file()]
     assert not missing, (
-        f"Arquivos-fonte versionados ausentes em infra/k8s/agents/ (issue #515 AC#8):\n"
+        "Arquivos-fonte versionados ausentes em infra/k8s/agents/ (issue #515 AC#8):\n"
         + "\n".join(f"  {p}" for p in missing)
         + "\nEsses arquivos são a fonte autoritativa; o ConfigMap é derivado deles."
     )
@@ -673,10 +690,13 @@ def test_brainstorm_skill_provenance_has_commit_sha() -> None:
     """Issue #515 AC#8 — PROVENANCE da skill brainstorm deve registrar commit SHA."""
     provenance = _AGENTS_DIR / "claude-worker" / "skills" / "brainstorm" / "PROVENANCE"
     if not provenance.is_file():
-        pytest.skip("PROVENANCE ausente — coberto por test_agents_versioned_source_files_exist")
+        pytest.skip(
+            "PROVENANCE ausente — coberto por test_agents_versioned_source_files_exist"
+        )
     content = provenance.read_text(encoding="utf-8")
     # commit SHA: 40 chars hex
     import re
+
     sha_pattern = re.compile(r"\b[0-9a-f]{40}\b")
     assert sha_pattern.search(content), (
         f"PROVENANCE da skill brainstorm não contém commit SHA (40 hex chars): "

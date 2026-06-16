@@ -99,7 +99,11 @@ def init_logging(
         pod_name,
         level,
         max_mb if max_mb is not None else os.environ.get("DEILE_LOG_MAX_SIZE_MB", "5"),
-        backup_count if backup_count is not None else os.environ.get("DEILE_LOG_BACKUP_COUNT", "3"),
+        (
+            backup_count
+            if backup_count is not None
+            else os.environ.get("DEILE_LOG_BACKUP_COUNT", "3")
+        ),
     )
 
     return handler

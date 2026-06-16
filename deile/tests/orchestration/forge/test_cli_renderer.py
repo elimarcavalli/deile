@@ -8,7 +8,9 @@ from deile.orchestration.forge.cli_renderer import render_brief_cmds
 
 
 def test_github_starts_with_gh(github_config):
-    cmds = render_brief_cmds(github_config, number=42, branch="auto/issue-42", main="main")
+    cmds = render_brief_cmds(
+        github_config, number=42, branch="auto/issue-42", main="main"
+    )
     assert cmds["clone_cmd"].startswith("gh ")
     assert cmds["create_pr_cmd"].startswith("gh pr create")
     assert cmds["view_issue_cmd"].startswith("gh issue view 42")
@@ -21,14 +23,19 @@ def test_github_starts_with_gh(github_config):
 
 def test_create_pr_cmd_defaults_to_closes(github_config):
     """Default close_keyword keeps the legacy ``Closes #N`` (byte-for-byte)."""
-    cmds = render_brief_cmds(github_config, number=42, branch="auto/issue-42", main="main")
+    cmds = render_brief_cmds(
+        github_config, number=42, branch="auto/issue-42", main="main"
+    )
     assert "Closes #42" in cmds["create_pr_cmd"]
 
 
 def test_create_pr_cmd_refs_when_spike_keyword(github_config):
     """A spike passes ``close_keyword="Refs"`` so the PR never auto-closes the issue."""
     cmds = render_brief_cmds(
-        github_config, number=42, branch="auto/issue-42", main="main",
+        github_config,
+        number=42,
+        branch="auto/issue-42",
+        main="main",
         close_keyword="Refs",
     )
     assert "Refs #42" in cmds["create_pr_cmd"]
@@ -38,13 +45,21 @@ def test_create_pr_cmd_refs_when_spike_keyword(github_config):
 def test_github_mark_draft_cmd(github_config):
     # Keyed by branch (not issue/PR number): the implement flow creates the PR
     # fresh, so only the head branch is known when marking it draft.
-    cmds = render_brief_cmds(github_config, number=42, branch="auto/issue-42", main="main")
-    assert cmds["mark_draft_cmd"] == "gh pr ready auto/issue-42 --repo owner/repo --undo"
+    cmds = render_brief_cmds(
+        github_config, number=42, branch="auto/issue-42", main="main"
+    )
+    assert (
+        cmds["mark_draft_cmd"] == "gh pr ready auto/issue-42 --repo owner/repo --undo"
+    )
 
 
 def test_gitlab_close_keyword_and_draft(gitlab_config):
     cmds = render_brief_cmds(
-        gitlab_config, number=7, branch="auto/issue-7", main="main", close_keyword="Refs",
+        gitlab_config,
+        number=7,
+        branch="auto/issue-7",
+        main="main",
+        close_keyword="Refs",
     )
     assert "Refs #7" in cmds["create_pr_cmd"]
     assert "Closes #7" not in cmds["create_pr_cmd"]
@@ -54,12 +69,16 @@ def test_gitlab_close_keyword_and_draft(gitlab_config):
 
 
 def test_gitlab_starts_with_glab(gitlab_config):
-    cmds = render_brief_cmds(gitlab_config, number=7, branch="auto/issue-7", main="main")
+    cmds = render_brief_cmds(
+        gitlab_config, number=7, branch="auto/issue-7", main="main"
+    )
     assert cmds["clone_cmd"].startswith("glab ")
     assert cmds["create_pr_cmd"].startswith("glab mr create")
     assert cmds["view_issue_cmd"].startswith("glab issue view 7")
     assert cmds["merge_cmd"].startswith("glab api -X PUT")
-    assert cmds["pr_url_pattern"] == "https://gitlab.com/group/project/-/merge_requests/7"
+    assert (
+        cmds["pr_url_pattern"] == "https://gitlab.com/group/project/-/merge_requests/7"
+    )
     assert cmds["pr_noun"] == "MR"
     assert cmds["forge_cli"] == "glab"
     assert cmds["forge_name"] == "GitLab"
@@ -67,7 +86,10 @@ def test_gitlab_starts_with_glab(gitlab_config):
 
 def test_gitlab_nested_path_in_url(gitlab_nested_config):
     cmds = render_brief_cmds(
-        gitlab_nested_config, number=99, branch="b", main="main",
+        gitlab_nested_config,
+        number=99,
+        branch="b",
+        main="main",
     )
     assert cmds["pr_url_pattern"] == (
         "https://gitlab.com/group/subgroup/project/-/merge_requests/99"
@@ -81,6 +103,7 @@ def test_gitlab_uses_cached_project_id_when_available():
     """When the GitLab adapter has resolved the numeric ID, the renderer
     must use it (cheaper REST URL than the URL-encoded path)."""
     from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+
     cfg = ForgeConfig(
         kind=ForgeKind.GITLAB,
         host="gitlab.com",
@@ -95,14 +118,20 @@ def test_gitlab_uses_cached_project_id_when_available():
 
 def test_self_hosted_gitlab_url_uses_host(gitlab_selfhosted_config):
     cmds = render_brief_cmds(
-        gitlab_selfhosted_config, number=1, branch="b", main="main",
+        gitlab_selfhosted_config,
+        number=1,
+        branch="b",
+        main="main",
     )
     assert cmds["pr_url_pattern"].startswith("https://gitlab.empresa.com/")
 
 
 def test_self_hosted_github_url_uses_host(gh_enterprise_config):
     cmds = render_brief_cmds(
-        gh_enterprise_config, number=1, branch="b", main="main",
+        gh_enterprise_config,
+        number=1,
+        branch="b",
+        main="main",
     )
     assert cmds["pr_url_pattern"].startswith("https://ghe.empresa.com/")
 
@@ -120,12 +149,21 @@ def test_github_review_post_cmd_uses_event_flag(github_config):
     assert "event=<EVENT>" in cmds["review_post_cmd"]
 
 
-@pytest.mark.parametrize("template_name", [
-    "feature_request.md", "bug_report.md", "intent.md", "refactor_proposal.md",
-])
+@pytest.mark.parametrize(
+    "template_name",
+    [
+        "feature_request.md",
+        "bug_report.md",
+        "intent.md",
+        "refactor_proposal.md",
+    ],
+)
 def test_fetch_template_cmd_includes_template_name(github_config, template_name):
     cmds = render_brief_cmds(
-        github_config, number=1, branch="b", main="main",
+        github_config,
+        number=1,
+        branch="b",
+        main="main",
         issue_template=template_name,
     )
     assert template_name in cmds["fetch_template_cmd"]
@@ -133,12 +171,17 @@ def test_fetch_template_cmd_includes_template_name(github_config, template_name)
 
 def test_gitlab_fetch_template_uses_correct_path(gitlab_config):
     cmds = render_brief_cmds(
-        gitlab_config, number=1, branch="b", main="main",
+        gitlab_config,
+        number=1,
+        branch="b",
+        main="main",
         issue_template="feature_request.md",
     )
     # GitLab keeps templates under ``.gitlab/issue_templates/`` — the URL
     # path is encoded with ``%2F`` inside the REST endpoint.
-    assert ".gitlab%2Fissue_templates%2Ffeature_request.md" in cmds["fetch_template_cmd"]
+    assert (
+        ".gitlab%2Fissue_templates%2Ffeature_request.md" in cmds["fetch_template_cmd"]
+    )
 
 
 def test_gitlab_assign_uses_assignee_ids_not_add_assignee_ids(gitlab_config):

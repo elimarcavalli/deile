@@ -9,10 +9,10 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 class StatusDisplay:
     """Componente para exibir status de operações"""
-    
+
     def __init__(self, console: Optional[Console] = None):
         self.console = console or Console()
-    
+
     @contextmanager
     def show_progress(self, message: str):
         """Context manager para mostrar progresso com spinner"""
@@ -20,27 +20,27 @@ class StatusDisplay:
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             console=self.console,
-            transient=True
+            transient=True,
         ) as progress:
             progress.add_task(message, total=None)
             try:
                 yield progress
             finally:
                 progress.stop()
-    
+
     def show_status(self, message: str, status_type: str = "info") -> None:
         """Exibe status com emoji apropriado"""
         emoji_map = {
             "info": "ℹ️",
-            "success": "✅", 
+            "success": "✅",
             "warning": "⚠️",
             "error": "❌",
-            "processing": "🔄"
+            "processing": "🔄",
         }
-        
+
         emoji = emoji_map.get(status_type, "ℹ️")
         self.console.print(f"{emoji} {message}")
-    
+
     def show_loading(self, message: str = "Carregando...") -> None:
         """Exibe indicador de carregamento"""
         self.show_status(f"🔄 {message}", "processing")

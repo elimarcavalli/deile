@@ -45,25 +45,29 @@ class UnifiedStreamEvent:
 
     # TOOL_USE_*
     tool_call_id: Optional[str] = None
-    tool_name: Optional[str] = None                    # TOOL_USE_START, TOOL_RESULT
-    arguments_json_delta: Optional[str] = None         # TOOL_USE_DELTA
-    arguments: Optional[Dict[str, Any]] = None         # TOOL_USE_END (parsed)
+    tool_name: Optional[str] = None  # TOOL_USE_START, TOOL_RESULT
+    arguments_json_delta: Optional[str] = None  # TOOL_USE_DELTA
+    arguments: Optional[Dict[str, Any]] = None  # TOOL_USE_END (parsed)
 
     # TOOL_RESULT
-    tool_status: Optional[str] = None                  # "success" | "error" | "running"
-    tool_result_summary: Optional[str] = None          # short preview (≤ 200 chars)
-    tool_result_data: Optional[Any] = None             # raw payload for rich display
-    tool_metadata: Optional[Dict[str, Any]] = None     # full ToolResult.metadata copy — carries
-                                                        # post_write_validation_required, file_path,
-                                                        # etc. so downstream gates that inspect
-                                                        # metadata keep working after the streaming
-                                                        # reconstruction round-trip
+    tool_status: Optional[str] = None  # "success" | "error" | "running"
+    tool_result_summary: Optional[str] = None  # short preview (≤ 200 chars)
+    tool_result_data: Optional[Any] = None  # raw payload for rich display
+    tool_metadata: Optional[Dict[str, Any]] = (
+        None  # full ToolResult.metadata copy — carries
+    )
+    # post_write_validation_required, file_path,
+    # etc. so downstream gates that inspect
+    # metadata keep working after the streaming
+    # reconstruction round-trip
 
     # USAGE_FINAL
     usage: Optional[ModelUsageSnapshot] = None
 
     # ERROR
-    error_envelope: Optional[Any] = None               # ProviderErrorEnvelope (avoids circular import)
+    error_envelope: Optional[Any] = (
+        None  # ProviderErrorEnvelope (avoids circular import)
+    )
 
     # Tool-loop iteration (set by the agent's tool-loop executor)
     iteration: Optional[int] = None

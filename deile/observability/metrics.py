@@ -25,8 +25,7 @@ import logging
 import threading
 from typing import Any, Dict, Optional
 
-from deile.observability.config import (ObservabilityConfig,
-                                        get_observability_config)
+from deile.observability.config import ObservabilityConfig, get_observability_config
 from deile.observability.no_op import NoOpMetrics
 from deile.observability.tracer import otel_available
 
@@ -86,10 +85,13 @@ class OtlpMetrics:
 
     def _build_provider(self) -> None:
         """Configura o ``MeterProvider`` apontando para o collector."""
-        from opentelemetry.sdk.metrics import \
-            MeterProvider  # pylint: disable=import-outside-toplevel
+        from opentelemetry.sdk.metrics import (  # pylint: disable=import-outside-toplevel
+            MeterProvider,
+        )
         from opentelemetry.sdk.resources import (  # pylint: disable=import-outside-toplevel
-            SERVICE_NAME, Resource)
+            SERVICE_NAME,
+            Resource,
+        )
 
         # Permite que testes injetem um provider via monkeypatch.
         injected = _module_injected_provider()
@@ -111,10 +113,12 @@ class OtlpMetrics:
     def _make_reader(self) -> Any:
         """Constrói ``PeriodicExportingMetricReader`` + ``OTLPMetricExporter``."""
         try:
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import \
-                OTLPMetricExporter  # pylint: disable=import-outside-toplevel
-            from opentelemetry.sdk.metrics.export import \
-                PeriodicExportingMetricReader  # pylint: disable=import-outside-toplevel
+            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (  # pylint: disable=import-outside-toplevel
+                OTLPMetricExporter,
+            )
+            from opentelemetry.sdk.metrics.export import (  # pylint: disable=import-outside-toplevel
+                PeriodicExportingMetricReader,
+            )
         except ImportError as exc:
             logger.warning(
                 "opentelemetry-exporter-otlp-proto-grpc (metrics) não disponível "
@@ -197,9 +201,14 @@ class OtlpMetrics:
         if not count or count <= 0:
             return
         self._emit(
-            "_counter_tokens", "add", int(count),
-            {"provider": str(provider), "model": str(model),
-             "direction": str(direction)},
+            "_counter_tokens",
+            "add",
+            int(count),
+            {
+                "provider": str(provider),
+                "model": str(model),
+                "direction": str(direction),
+            },
             op_name="record_tokens",
         )
 
@@ -212,7 +221,9 @@ class OtlpMetrics:
         if not usd or usd <= 0:
             return
         self._emit(
-            "_counter_cost", "add", float(usd),
+            "_counter_cost",
+            "add",
+            float(usd),
             {"provider": str(provider), "model": str(model)},
             op_name="record_cost",
         )
@@ -224,7 +235,9 @@ class OtlpMetrics:
         duration_ms: int,
     ) -> None:
         self._emit(
-            "_hist_tool_duration", "record", int(duration_ms),
+            "_hist_tool_duration",
+            "record",
+            int(duration_ms),
             {"tool_name": str(tool_name), "status": str(status)},
             op_name="record_tool_duration",
         )
@@ -235,7 +248,9 @@ class OtlpMetrics:
         duration_ms: int,
     ) -> None:
         self._emit(
-            "_hist_turn_duration", "record", int(duration_ms),
+            "_hist_turn_duration",
+            "record",
+            int(duration_ms),
             {"persona": str(persona or "unknown")},
             op_name="record_turn_duration",
         )
@@ -246,7 +261,9 @@ class OtlpMetrics:
         component: str,
     ) -> None:
         self._emit(
-            "_counter_errors", "add", 1,
+            "_counter_errors",
+            "add",
+            1,
             {"error_type": str(error_type), "component": str(component)},
             op_name="record_error",
         )

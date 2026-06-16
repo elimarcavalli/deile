@@ -32,10 +32,14 @@ class BaseEventHandler(ABC):
             self.handled_events += 1
             self.last_execution = time.time()
 
-            logger.debug(f"Handler {self.name} processou evento {event.event_id} em {time.time() - start_time:.3f}s")
+            logger.debug(
+                f"Handler {self.name} processou evento {event.event_id} em {time.time() - start_time:.3f}s"
+            )
         except Exception as e:
             self.failed_events += 1
-            logger.error(f"Handler {self.name} falhou ao processar evento {event.event_id}: {e}")
+            logger.error(
+                f"Handler {self.name} falhou ao processar evento {event.event_id}: {e}"
+            )
             raise
 
     def get_stats(self) -> Dict[str, Any]:
@@ -48,7 +52,7 @@ class BaseEventHandler(ABC):
             "handled_events": self.handled_events,
             "failed_events": self.failed_events,
             "success_rate": success_rate,
-            "last_execution": self.last_execution
+            "last_execution": self.last_execution,
         }
 
 
@@ -105,7 +109,7 @@ class TaskEventHandler(BaseEventHandler):
             self.active_tasks[task_id] = {
                 "name": task_name,
                 "created_at": event.timestamp,
-                "status": "created"
+                "status": "created",
             }
             logger.info(f"Tarefa criada: {task_name} (ID: {task_id})")
 
@@ -126,7 +130,9 @@ class TaskEventHandler(BaseEventHandler):
                 if "started_at" in task_info:
                     duration = event.timestamp - task_info["started_at"]
                     task_info["duration"] = duration
-                    logger.info(f"Tarefa completada: {task_info['name']} (duração: {duration:.2f}s)")
+                    logger.info(
+                        f"Tarefa completada: {task_info['name']} (duração: {duration:.2f}s)"
+                    )
                 else:
                     logger.info(f"Tarefa completada: {task_info['name']}")
 
@@ -150,7 +156,8 @@ class TaskEventHandler(BaseEventHandler):
     def get_active_tasks(self) -> Dict[str, Dict[str, Any]]:
         """Retorna tarefas ativas"""
         return {
-            task_id: info for task_id, info in self.active_tasks.items()
+            task_id: info
+            for task_id, info in self.active_tasks.items()
             if info["status"] in ["created", "running"]
         }
 
@@ -169,12 +176,14 @@ class CodeEventHandler(BaseEventHandler):
             lines_count = event.data.get("lines_count", 0)
             logger.info(f"Código gerado: {file_path} ({lines_count} linhas)")
 
-            self.code_operations.append({
-                "type": "generated",
-                "file_path": file_path,
-                "lines_count": lines_count,
-                "timestamp": event.timestamp
-            })
+            self.code_operations.append(
+                {
+                    "type": "generated",
+                    "file_path": file_path,
+                    "lines_count": lines_count,
+                    "timestamp": event.timestamp,
+                }
+            )
 
         elif event.event_type == EventType.CODE_EXECUTED:
             file_path = event.data.get("file_path", "Unknown")
@@ -182,7 +191,9 @@ class CodeEventHandler(BaseEventHandler):
             execution_time = event.data.get("execution_time", 0)
 
             if success:
-                logger.info(f"Código executado com sucesso: {file_path} ({execution_time:.3f}s)")
+                logger.info(
+                    f"Código executado com sucesso: {file_path} ({execution_time:.3f}s)"
+                )
             else:
                 error = event.data.get("error", "Unknown error")
                 logger.error(f"Falha na execução: {file_path} - {error}")
@@ -192,7 +203,9 @@ class CodeEventHandler(BaseEventHandler):
             tests_passed = event.data.get("tests_passed", 0)
             tests_failed = event.data.get("tests_failed", 0)
 
-            logger.info(f"Testes executados para {file_path}: {tests_passed} passou, {tests_failed} falhou")
+            logger.info(
+                f"Testes executados para {file_path}: {tests_passed} passou, {tests_failed} falhou"
+            )
 
         elif event.event_type == EventType.FILE_MODIFIED:
             file_path = event.data.get("file_path", "Unknown")
@@ -213,11 +226,13 @@ class PerformanceEventHandler(BaseEventHandler):
             component = event.data.get("component", "Unknown")
             metrics = event.data.get("metrics", {})
 
-            self.performance_metrics.append({
-                "component": component,
-                "metrics": metrics,
-                "timestamp": event.timestamp
-            })
+            self.performance_metrics.append(
+                {
+                    "component": component,
+                    "metrics": metrics,
+                    "timestamp": event.timestamp,
+                }
+            )
 
             logger.info(f"Performance analisada para {component}: {metrics}")
 
@@ -226,7 +241,9 @@ class PerformanceEventHandler(BaseEventHandler):
             description = event.data.get("description", "No description")
             impact = event.data.get("impact", "Unknown")
 
-            logger.info(f"Melhoria identificada ({improvement_type}): {description} - Impacto: {impact}")
+            logger.info(
+                f"Melhoria identificada ({improvement_type}): {description} - Impacto: {impact}"
+            )
 
         elif event.event_type == EventType.IMPROVEMENT_APPLIED:
             improvement_id = event.data.get("improvement_id", "Unknown")
@@ -256,18 +273,22 @@ class ErrorEventHandler(BaseEventHandler):
             "error_message": event.data.get("error_message", "No message"),
             "stack_trace": event.data.get("stack_trace"),
             "context": event.data.get("context", {}),
-            "severity": "critical" if event.event_type == EventType.CRITICAL_ERROR else "normal"
+            "severity": (
+                "critical" if event.event_type == EventType.CRITICAL_ERROR else "normal"
+            ),
         }
 
         self.error_history.append(error_info)
 
         # Mantém histórico limitado
         if len(self.error_history) > self.max_history:
-            self.error_history = self.error_history[-self.max_history:]
+            self.error_history = self.error_history[-self.max_history :]
 
         # Log appropriado baseado na severidade
         if event.event_type == EventType.CRITICAL_ERROR:
-            logger.critical(f"ERRO CRÍTICO em {event.source}: {error_info['error_message']}")
+            logger.critical(
+                f"ERRO CRÍTICO em {event.source}: {error_info['error_message']}"
+            )
         else:
             logger.error(f"Erro em {event.source}: {error_info['error_message']}")
 
@@ -278,7 +299,9 @@ class ErrorEventHandler(BaseEventHandler):
     async def _handle_critical_error(self, error_info: Dict[str, Any]) -> None:
         """Tratamento especial para erros críticos"""
         # Implementar notificações, alertas, etc.
-        logger.critical("Sistema em estado crítico - implementar recuperação automática")
+        logger.critical(
+            "Sistema em estado crítico - implementar recuperação automática"
+        )
 
     def get_error_summary(self) -> Dict[str, Any]:
         """Retorna resumo dos erros"""
@@ -286,14 +309,16 @@ class ErrorEventHandler(BaseEventHandler):
             return {"total_errors": 0, "critical_errors": 0, "recent_errors": []}
 
         total_errors = len(self.error_history)
-        critical_errors = sum(1 for e in self.error_history if e["severity"] == "critical")
+        critical_errors = sum(
+            1 for e in self.error_history if e["severity"] == "critical"
+        )
         recent_errors = self.error_history[-10:]  # Últimos 10 erros
 
         return {
             "total_errors": total_errors,
             "critical_errors": critical_errors,
             "recent_errors": recent_errors,
-            "error_rate_per_hour": self._calculate_error_rate()
+            "error_rate_per_hour": self._calculate_error_rate(),
         }
 
     def _calculate_error_rate(self) -> float:
@@ -304,7 +329,9 @@ class ErrorEventHandler(BaseEventHandler):
         current_time = time.time()
         one_hour_ago = current_time - 3600
 
-        recent_errors = [e for e in self.error_history if e["timestamp"] >= one_hour_ago]
+        recent_errors = [
+            e for e in self.error_history if e["timestamp"] >= one_hour_ago
+        ]
         return len(recent_errors)
 
 
@@ -325,14 +352,14 @@ class AuditEventHandler(BaseEventHandler):
             "source": event.source,
             "data": event.data,
             "correlation_id": event.correlation_id,
-            "causation_id": event.causation_id
+            "causation_id": event.causation_id,
         }
 
         self.audit_log.append(audit_entry)
 
         # Mantém log limitado
         if len(self.audit_log) > self.max_audit_entries:
-            self.audit_log = self.audit_log[-self.max_audit_entries:]
+            self.audit_log = self.audit_log[-self.max_audit_entries :]
 
         # Log detalhado apenas para eventos importantes
         important_events = [
@@ -342,7 +369,7 @@ class AuditEventHandler(BaseEventHandler):
             EventType.CODE_GENERATED,
             EventType.FILE_MODIFIED,
             EventType.ERROR_OCCURRED,
-            EventType.CRITICAL_ERROR
+            EventType.CRITICAL_ERROR,
         ]
 
         if event.event_type in important_events:

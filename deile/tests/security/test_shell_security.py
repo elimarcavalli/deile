@@ -1,4 +1,4 @@
-"""Testes para o módulo de segurança de shell (_shell_security.py).
+r"""Testes para o módulo de segurança de shell (_shell_security.py).
 
 Cobre a issue #267: o padrão `>\s*/dev/.*` era largo demais e bloqueava
 redirecionamentos inofensivos como `2>/dev/null`. A correção restringe o
@@ -21,6 +21,7 @@ def _is_dangerous(command: str) -> bool:
     entry point per pilar 08 §1.
     """
     return assess_risk(command)[0] == SecurityLevel.DANGEROUS.value
+
 
 # ── Comandos inofensivos que NÃO devem ser bloqueados ──────────────────
 
@@ -113,8 +114,7 @@ class TestShellSecurityRedirectFix:
         """Redirecionamentos para pseudo-devices NÃO devem ser blocked."""
         blocked = _is_dangerous(command)
         assert not blocked, (
-            f"Comando inofensivo bloqueado indevidamente:\n"
-            f"  command: {command}"
+            f"Comando inofensivo bloqueado indevidamente:\n" f"  command: {command}"
         )
 
     @pytest.mark.parametrize("command", DANGEROUS_REDIRECT_COMMANDS)
@@ -132,10 +132,7 @@ class TestShellSecurityRedirectFix:
     def test_dangerous_redirects_are_blocked(self, command: str):
         """Redirecionamentos para dispositivos de bloco DEVEM ser blocked."""
         blocked = _is_dangerous(command)
-        assert blocked, (
-            f"Comando perigoso NÃO bloqueado:\n"
-            f"  command: {command}"
-        )
+        assert blocked, f"Comando perigoso NÃO bloqueado:\n" f"  command: {command}"
 
 
 class TestIssue267Regression:
@@ -149,9 +146,9 @@ class TestIssue267Regression:
             "&& cat .github/ISSUE_TEMPLATE/bug_report.md"
         )
         level, warnings = assess_risk(cmd)
-        assert level != SecurityLevel.DANGEROUS.value, (
-            f"Comando da issue #267 ainda é classificado como DANGEROUS: {warnings}"
-        )
+        assert (
+            level != SecurityLevel.DANGEROUS.value
+        ), f"Comando da issue #267 ainda é classificado como DANGEROUS: {warnings}"
         assert not _is_dangerous(cmd), "Comando da issue #267 ainda está bloqueado"
 
     def test_all_pseudo_devices_allowed(self):
@@ -174,11 +171,13 @@ class TestIssue267Regression:
         ]
         for dev in pseudo_devices:
             cmd = f"echo test > {dev}"
-            assert not _is_dangerous(cmd), f"Pseudo-device {dev} foi bloqueado indevidamente"
+            assert not _is_dangerous(
+                cmd
+            ), f"Pseudo-device {dev} foi bloqueado indevidamente"
             level, _ = assess_risk(cmd)
-            assert level != SecurityLevel.DANGEROUS.value, (
-                f"Pseudo-device {dev} classificado como DANGEROUS"
-            )
+            assert (
+                level != SecurityLevel.DANGEROUS.value
+            ), f"Pseudo-device {dev} classificado como DANGEROUS"
 
     def test_block_devices_still_blocked_after_fix(self):
         """Dispositivos de bloco reais continuam bloqueados após o fix."""
@@ -202,6 +201,6 @@ class TestIssue267Regression:
             cmd = f"echo test > {dev}"
             assert _is_dangerous(cmd), f"Block device {dev} NÃO foi bloqueado"
             level, _ = assess_risk(cmd)
-            assert level == SecurityLevel.DANGEROUS.value, (
-                f"Block device {dev} NÃO classificado como DANGEROUS"
-            )
+            assert (
+                level == SecurityLevel.DANGEROUS.value
+            ), f"Block device {dev} NÃO classificado como DANGEROUS"

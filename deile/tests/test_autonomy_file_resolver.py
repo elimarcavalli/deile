@@ -13,9 +13,14 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.core.file_resolver import (CommonFilePatterns, FileMatch, MatchType,
-                                      SmartFileResolver, clear_resolver_cache,
-                                      get_file_resolver)
+from deile.core.file_resolver import (
+    CommonFilePatterns,
+    FileMatch,
+    MatchType,
+    SmartFileResolver,
+    clear_resolver_cache,
+    get_file_resolver,
+)
 
 
 @pytest.fixture
@@ -96,7 +101,7 @@ class TestFileMatch:
             confidence=0.95,
             match_type=MatchType.EXACT,
             reason="Test match",
-            exists=True
+            exists=True,
         )
         assert match.confidence == 0.95
         assert match.match_type == MatchType.EXACT
@@ -110,7 +115,7 @@ class TestFileMatch:
                 confidence=1.5,
                 match_type=MatchType.EXACT,
                 reason="Test match",
-                exists=True
+                exists=True,
             )
 
     def test_file_match_path_resolution(self):
@@ -125,7 +130,7 @@ class TestFileMatch:
                 confidence=0.95,
                 match_type=MatchType.EXACT,
                 reason="Test match",
-                exists=True
+                exists=True,
             )
             # Should resolve to absolute path if exists=True
             assert match.path.is_absolute()
@@ -257,13 +262,15 @@ class TestSmartFileResolver:
     def test_error_handling(self, resolver):
         """Test error handling in file operations"""
         # Test with invalid working directory
-        with patch.object(resolver, 'working_directory', Path("/nonexistent")):
+        with patch.object(resolver, "working_directory", Path("/nonexistent")):
             matches = resolver.resolve_file("test")
             assert matches == []
 
     def test_permission_error_handling(self, resolver):
         """Test handling of permission errors"""
-        with patch('pathlib.Path.iterdir', side_effect=PermissionError("Access denied")):
+        with patch(
+            "pathlib.Path.iterdir", side_effect=PermissionError("Access denied")
+        ):
             matches = resolver.resolve_file("test")
             assert matches == []
 
@@ -401,7 +408,9 @@ class TestFileResolverIntegration:
 
         matches = resolver.resolve_file("tests", include_directories=True)
         assert len(matches) > 0
-        test_dirs = [m for m in matches if m.path.is_dir() and "test" in str(m.path).lower()]
+        test_dirs = [
+            m for m in matches if m.path.is_dir() and "test" in str(m.path).lower()
+        ]
         assert len(test_dirs) > 0
 
 

@@ -40,14 +40,18 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import (Any, Callable, ClassVar, List, Literal, Optional, Set,
-                    TextIO)
+from typing import Any, Callable, ClassVar, List, Literal, Optional, Set, TextIO
 
 from deile.config.settings import get_settings
 
-from ._capture import (CappedBuffer, SwitchableStream, _capture_lock_holder,
-                       _DiscardSink, get_capture_buffer_max_bytes,
-                       get_capture_lock)
+from ._capture import (
+    CappedBuffer,
+    SwitchableStream,
+    _capture_lock_holder,
+    _DiscardSink,
+    get_capture_buffer_max_bytes,
+    get_capture_lock,
+)
 from ._loop_lock import LoopBoundLock
 from .events import SubAgentEvent, SubAgentState, SubAgentTask
 from .runner import SubAgentRunner
@@ -120,10 +124,12 @@ class SubAgentResult:
 
     def consolidated_summary(self) -> str:
         from ._summary import render_consolidated
+
         return render_consolidated(self)
 
     def markdown_summary(self) -> str:
         from ._summary import render_markdown
+
         return render_markdown(self)
 
 
@@ -351,7 +357,9 @@ class SubAgentOrchestrator:
         # após ``await asyncio.to_thread(...)`` ter sido cancelado.
         # ``threading.enumerate()`` é thread-safe e barato (snapshot do
         # internal _active dict).
-        pre_threads: Set[int] = {t.ident for t in threading.enumerate() if t.ident is not None}
+        pre_threads: Set[int] = {
+            t.ident for t in threading.enumerate() if t.ident is not None
+        }
 
         runner_tasks: List[asyncio.Task] = []
         renderer_task: Optional[asyncio.Task] = None
@@ -376,7 +384,9 @@ class SubAgentOrchestrator:
                 # renderer e aguardamos cleanup; CancelledError é re-raised
                 # APÓS o cleanup (Pilar 03 §6).
                 await asyncio.wait_for(
-                    self._wait_runners_and_renderer(runner_tasks, renderer_task, renderer),
+                    self._wait_runners_and_renderer(
+                        runner_tasks, renderer_task, renderer
+                    ),
                     timeout=budget_s,
                 )
             except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
@@ -474,7 +484,9 @@ class SubAgentOrchestrator:
                         if parent_cancelling and not renderer_task.cancelled():
                             raise
                         # Caso normal: nosso cancel cumprido, engolir.
-                    except Exception:  # noqa: BLE001 — renderer can't break orchestrator
+                    except (
+                        Exception
+                    ):  # noqa: BLE001 — renderer can't break orchestrator
                         logger.warning("renderer raised during shutdown", exc_info=True)
 
             # Se o renderer sinalizou cancel, propaga ao estado agregado.
@@ -509,7 +521,11 @@ class SubAgentOrchestrator:
             #
             # Quando NÃO há orfãs, restauramos normalmente para não vazar o
             # SwitchableStream para callers que não conhecem ele.
-            if self._capture_output and switch_out is not None and switch_err is not None:
+            if (
+                self._capture_output
+                and switch_out is not None
+                and switch_err is not None
+            ):
                 # Detecção de orfãs em DUAS camadas:
                 #   (a) asyncio Tasks que ainda não retornaram (raro — só
                 #       quando ``asyncio.wait_for`` desistiu por timeout);
@@ -520,8 +536,11 @@ class SubAgentOrchestrator:
                 # Comparamos enumerate() atual vs snapshot pre-dispatch.
                 task_orphans = sum(1 for t in runner_tasks if not t.done())
                 new_threads = [
-                    t for t in threading.enumerate()
-                    if t.ident is not None and t.ident not in pre_threads and t.is_alive()
+                    t
+                    for t in threading.enumerate()
+                    if t.ident is not None
+                    and t.ident not in pre_threads
+                    and t.is_alive()
                 ]
                 thread_orphans = len(new_threads)
                 if task_orphans > 0 or thread_orphans > 0:
@@ -529,7 +548,8 @@ class SubAgentOrchestrator:
                         "SubAgentOrchestrator: %d task(s) + %d thread(s) ainda "
                         "vivo(s) no encerramento; mantendo SwitchableStream + "
                         "DISCARD para evitar leak no terminal.",
-                        task_orphans, thread_orphans,
+                        task_orphans,
+                        thread_orphans,
                     )
                     # Aponta para o sink que descarta — orfãs imprimindo
                     # ``print(data, ...)`` no ``sys.stdout`` corrente cairão
@@ -605,7 +625,9 @@ class SubAgentOrchestrator:
             )
             # Se o renderer terminou primeiro com cancel, propaga.
             if renderer_task is not None and renderer_task in done:
-                rt_cancelled = getattr(renderer, "cancelled", False) if renderer else False
+                rt_cancelled = (
+                    getattr(renderer, "cancelled", False) if renderer else False
+                )
                 if rt_cancelled and not all(t.done() for t in runner_tasks):
                     for t in runner_tasks:
                         if not t.done():

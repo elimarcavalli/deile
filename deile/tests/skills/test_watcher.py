@@ -14,8 +14,7 @@ from pathlib import Path
 import pytest
 
 from deile.skills.registry import get_skill_registry, reset_skill_registry
-from deile.skills.watcher import (SkillsWatcher, _DebounceWorker,
-                                  reload_registry)
+from deile.skills.watcher import SkillsWatcher, _DebounceWorker, reload_registry
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +63,8 @@ class TestReloadRegistry:
         user_skills_dir.mkdir(parents=True)
         target = user_skills_dir / "ephemeral.md"
         target.write_text(
-            "---\nname: ephemeral\ndescription: Will be deleted\n---\nbody", encoding="utf-8"
+            "---\nname: ephemeral\ndescription: Will be deleted\n---\nbody",
+            encoding="utf-8",
         )
 
         reload_registry(**paths)
@@ -79,16 +79,12 @@ class TestReloadRegistry:
         user_skills_dir = paths["user_home"] / ".deile" / "skills"
         user_skills_dir.mkdir(parents=True)
         target = user_skills_dir / "rewritable.md"
-        target.write_text(
-            "---\nname: rewritable\n---\nVERSION ONE", encoding="utf-8"
-        )
+        target.write_text("---\nname: rewritable\n---\nVERSION ONE", encoding="utf-8")
 
         reload_registry(**paths)
         assert get_skill_registry().get("rewritable").body == "VERSION ONE"
 
-        target.write_text(
-            "---\nname: rewritable\n---\nVERSION TWO", encoding="utf-8"
-        )
+        target.write_text("---\nname: rewritable\n---\nVERSION TWO", encoding="utf-8")
         reload_registry(**paths)
         assert get_skill_registry().get("rewritable").body == "VERSION TWO"
 
@@ -148,16 +144,12 @@ class TestSkillsWatcher:
         user_skills_dir = paths["user_home"] / ".deile" / "skills"
         user_skills_dir.mkdir(parents=True)
         target = user_skills_dir / "mutable.md"
-        target.write_text(
-            "---\nname: mutable\n---\nold body", encoding="utf-8"
-        )
+        target.write_text("---\nname: mutable\n---\nold body", encoding="utf-8")
         reload_registry(**paths)
         assert get_skill_registry().get("mutable").body == "old body"
 
         watcher = SkillsWatcher(debounce_seconds=0.1, **paths)
-        target.write_text(
-            "---\nname: mutable\n---\nnew body", encoding="utf-8"
-        )
+        target.write_text("---\nname: mutable\n---\nnew body", encoding="utf-8")
         watcher._trigger_reload()
 
         assert get_skill_registry().get("mutable").body == "new body"

@@ -8,12 +8,12 @@ import time
 import pytest
 
 from deile.core.exceptions import ModelError
-from deile.core.models.errors import (ProviderErrorEnvelope,
-                                      ProviderInvocationError)
+from deile.core.models.errors import ProviderErrorEnvelope, ProviderInvocationError
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_envelope(provider_id: str, http_status: int = 401) -> ProviderErrorEnvelope:
     return ProviderErrorEnvelope(
@@ -28,7 +28,9 @@ def _make_envelope(provider_id: str, http_status: int = 401) -> ProviderErrorEnv
     )
 
 
-def _make_invocation_error(provider_id: str, http_status: int = 401) -> ProviderInvocationError:
+def _make_invocation_error(
+    provider_id: str, http_status: int = 401
+) -> ProviderInvocationError:
     return ProviderInvocationError(_make_envelope(provider_id, http_status))
 
 
@@ -36,10 +38,13 @@ def _make_invocation_error(provider_id: str, http_status: int = 401) -> Provider
 # ModelError — errors_by_handle in context
 # ---------------------------------------------------------------------------
 
+
 class TestModelErrorContext:
     def test_model_error_carries_context(self):
         _envelope = _make_envelope("anthropic")
-        errors = {"anthropic": {"error_type": "auth", "http_status": 401, "raw_json": {}}}
+        errors = {
+            "anthropic": {"error_type": "auth", "http_status": 401, "raw_json": {}}
+        }
         err = ModelError(
             "ALL_TIER_PROVIDERS_FAILED",
             error_code="ALL_TIER_PROVIDERS_FAILED",
@@ -50,7 +55,9 @@ class TestModelErrorContext:
 
     def test_model_error_raw_json_preserved(self):
         raw = {"error": {"type": "authentication_error"}, "status": 401}
-        errors = {"anthropic": {"error_type": "auth", "http_status": 401, "raw_json": raw}}
+        errors = {
+            "anthropic": {"error_type": "auth", "http_status": 401, "raw_json": raw}
+        }
         err = ModelError(
             "all failed",
             error_code="ALL_TIER_PROVIDERS_FAILED",
@@ -63,6 +70,7 @@ class TestModelErrorContext:
 # ---------------------------------------------------------------------------
 # ProviderErrorEnvelope — raw_json is JSON-serialisable
 # ---------------------------------------------------------------------------
+
 
 class TestProviderErrorEnvelopeSerialisation:
     def test_envelope_raw_json_is_serialisable(self):
@@ -86,6 +94,7 @@ class TestProviderErrorEnvelopeSerialisation:
 # ---------------------------------------------------------------------------
 # log_router_event — writes JSONL
 # ---------------------------------------------------------------------------
+
 
 class TestLogRouterEvent:
     @pytest.mark.asyncio
@@ -124,8 +133,12 @@ class TestLogRouterEvent:
         original = _mod._EVENTS_LOG
         _mod._EVENTS_LOG = events_file
         try:
-            await logger.log_router_event("cascade_fallback", {"from": "anthropic", "to": "openai"})
-            await logger.log_router_event("circuit_breaker_opened", {"provider_id": "anthropic"})
+            await logger.log_router_event(
+                "cascade_fallback", {"from": "anthropic", "to": "openai"}
+            )
+            await logger.log_router_event(
+                "circuit_breaker_opened", {"provider_id": "anthropic"}
+            )
         finally:
             _mod._EVENTS_LOG = original
 

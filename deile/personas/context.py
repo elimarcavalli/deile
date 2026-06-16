@@ -16,6 +16,7 @@ except ImportError:
 @dataclass
 class PersonaContext:
     """Unified persona context using DEILE's memory system"""
+
     persona_id: str
     session_id: str
     memory_layer: PersonaMemoryLayer
@@ -24,11 +25,8 @@ class PersonaContext:
 
     @classmethod
     async def create(
-        cls,
-        persona_id: str,
-        session_id: str,
-        memory_manager: MemoryManager
-    ) -> 'PersonaContext':
+        cls, persona_id: str, session_id: str, memory_manager: MemoryManager
+    ) -> "PersonaContext":
         """Create persona context with memory integration"""
         memory_layer = PersonaMemoryLayer(memory_manager, persona_id)
 
@@ -37,7 +35,7 @@ class PersonaContext:
         preferences = {}
 
         # Load common preferences
-        for pref_key in ['communication_style', 'preferred_tools', 'behavior_mode']:
+        for pref_key in ["communication_style", "preferred_tools", "behavior_mode"]:
             pref_value = await memory_layer.get_persona_preference(pref_key)
             if pref_value is not None:
                 preferences[pref_key] = pref_value
@@ -47,7 +45,7 @@ class PersonaContext:
             session_id=session_id,
             memory_layer=memory_layer,
             current_state=current_state,
-            preferences=preferences
+            preferences=preferences,
         )
 
     async def save_state(self) -> None:
@@ -62,14 +60,15 @@ class PersonaContext:
         """Update context based on interaction"""
         # Store interaction in conversation context
         await self.memory_layer.store_conversation_context(
-            self.session_id,
-            interaction_data
+            self.session_id, interaction_data
         )
 
         # Update current state
-        self.current_state.update({
-            'last_interaction': datetime.now().isoformat(),
-            'interaction_count': self.current_state.get('interaction_count', 0) + 1
-        })
+        self.current_state.update(
+            {
+                "last_interaction": datetime.now().isoformat(),
+                "interaction_count": self.current_state.get("interaction_count", 0) + 1,
+            }
+        )
 
         await self.save_state()

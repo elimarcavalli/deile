@@ -187,9 +187,7 @@ async def cascade_stream(
     try:
         while next_source is not None:
             wait_set = {t for t in (next_source, next_stage) if t is not None}
-            done, _ = await asyncio.wait(
-                wait_set, return_when=asyncio.FIRST_COMPLETED
-            )
+            done, _ = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
 
             if next_stage is not None and next_stage in done:
                 try:
@@ -272,9 +270,7 @@ async def cascade_until(
     try:
         while not work_task.done():
             wait_set = {t for t in (work_task, next_stage) if t is not None}
-            done, _ = await asyncio.wait(
-                wait_set, return_when=asyncio.FIRST_COMPLETED
-            )
+            done, _ = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
             if next_stage is not None and next_stage in done:
                 try:
                     label = next_stage.result()

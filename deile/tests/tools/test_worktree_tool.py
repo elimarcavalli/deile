@@ -32,7 +32,9 @@ def _ctx(**kwargs) -> ToolContext:
     return ToolContext(user_input="", parsed_args=kwargs, session_data={})
 
 
-def _fake_worktree(path: str = "/repo/.worktrees/feat/my-branch", branch: str = "my-branch"):
+def _fake_worktree(
+    path: str = "/repo/.worktrees/feat/my-branch", branch: str = "my-branch"
+):
     wt = MagicMock()
     wt.path = Path(path)
     wt.branch = branch
@@ -56,9 +58,7 @@ def test_schema_is_json_schema_object():
     """
     tool = WorktreeTool()
     params = tool._schema.parameters
-    assert params["type"] == "object", (
-        "parameters must have top-level 'type': 'object'"
-    )
+    assert params["type"] == "object", "parameters must have top-level 'type': 'object'"
     assert "properties" in params, "parameters must contain 'properties'"
     assert "action" in params["properties"]
 
@@ -106,10 +106,10 @@ async def test_ensure_main_happy_path(repo_tmp_path):
     mock_mgr.ensure_main = AsyncMock(return_value=repo_tmp_path / ".worktrees" / "main")
 
     tool = WorktreeTool()
-    with patch(
-        "deile.tools.worktree_tool.WorktreeManager", return_value=mock_mgr
-    ):
-        result = await tool.execute(_ctx(action="ensure_main", base_path=str(repo_tmp_path)))
+    with patch("deile.tools.worktree_tool.WorktreeManager", return_value=mock_mgr):
+        result = await tool.execute(
+            _ctx(action="ensure_main", base_path=str(repo_tmp_path))
+        )
 
     assert result.status == ToolStatus.SUCCESS
     assert "path" in result.data
@@ -126,16 +126,21 @@ async def test_create_happy_path(repo_tmp_path):
     (repo_tmp_path / ".git").mkdir()
     (repo_tmp_path / "deile.py").write_text("")
 
-    wt = _fake_worktree(str(repo_tmp_path / ".worktrees" / "feat" / "my-branch"), "my-branch")
+    wt = _fake_worktree(
+        str(repo_tmp_path / ".worktrees" / "feat" / "my-branch"), "my-branch"
+    )
     mock_mgr = AsyncMock()
     mock_mgr.create_branch_worktree = AsyncMock(return_value=wt)
 
     tool = WorktreeTool()
-    with patch(
-        "deile.tools.worktree_tool.WorktreeManager", return_value=mock_mgr
-    ):
+    with patch("deile.tools.worktree_tool.WorktreeManager", return_value=mock_mgr):
         result = await tool.execute(
-            _ctx(action="create", branch="my-branch", subdir="feat", base_path=str(repo_tmp_path))
+            _ctx(
+                action="create",
+                branch="my-branch",
+                subdir="feat",
+                base_path=str(repo_tmp_path),
+            )
         )
 
     assert result.status == ToolStatus.SUCCESS
@@ -386,7 +391,12 @@ async def test_remove_traversal_subdir_rejected(repo_tmp_path, monkeypatch):
 
     tool = WorktreeTool()
     result = await tool.execute(
-        _ctx(action="remove", branch="some-branch", subdir="..", base_path=str(repo_tmp_path))
+        _ctx(
+            action="remove",
+            branch="some-branch",
+            subdir="..",
+            base_path=str(repo_tmp_path),
+        )
     )
 
     assert result.status == ToolStatus.ERROR

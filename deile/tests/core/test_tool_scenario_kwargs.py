@@ -7,8 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile.core.tool_scenario_kwargs import (TOOL_SCENARIO_MAP,
-                                             build_tool_stage_kwargs)
+from deile.core.tool_scenario_kwargs import TOOL_SCENARIO_MAP, build_tool_stage_kwargs
 
 
 @pytest.mark.unit
@@ -32,9 +31,7 @@ class TestBuildToolStageKwargs:
         assert kwargs["package"] == "pip_install"
 
     def test_pip_install_picks_first_arg_value(self):
-        scenario, kwargs = build_tool_stage_kwargs(
-            "pip_install", {"package": "httpx"}
-        )
+        scenario, kwargs = build_tool_stage_kwargs("pip_install", {"package": "httpx"})
         assert scenario == "tool_pip_install"
         assert kwargs == {"tool": "pip_install", "package": "httpx"}
 
@@ -59,15 +56,11 @@ class TestBuildToolStageKwargs:
         )
         assert kwargs["file"] == "/tmp/a.py"
 
-        _, kwargs = build_tool_stage_kwargs(
-            "write_file", {"file_path": "/tmp/b.py"}
-        )
+        _, kwargs = build_tool_stage_kwargs("write_file", {"file_path": "/tmp/b.py"})
         assert kwargs["file"] == "/tmp/b.py"
 
     def test_write_file_alias_file_write(self):
-        scenario, kwargs = build_tool_stage_kwargs(
-            "file_write", {"path": "x.py"}
-        )
+        scenario, kwargs = build_tool_stage_kwargs("file_write", {"path": "x.py"})
         assert scenario == "tool_write_file"
         assert kwargs["file"] == "x.py"
 
@@ -79,9 +72,7 @@ class TestBuildToolStageKwargs:
         assert kwargs["scanned"] == 0
 
     def test_find_files_uses_directory_when_path_missing(self):
-        _, kwargs = build_tool_stage_kwargs(
-            "search_tool", {"directory": "src/"}
-        )
+        _, kwargs = build_tool_stage_kwargs("search_tool", {"directory": "src/"})
         assert kwargs["path"] == "src/"
 
     def test_run_tests_target_and_count_defaults(self):

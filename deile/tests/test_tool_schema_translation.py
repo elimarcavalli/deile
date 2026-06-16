@@ -11,6 +11,7 @@ from deile.tools.registry import ToolRegistry
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def simple_schema() -> ToolSchema:
     return ToolSchema(
@@ -51,6 +52,7 @@ def complex_schema() -> ToolSchema:
 # Anthropic format tests
 # ---------------------------------------------------------------------------
 
+
 def test_to_anthropic_tool_structure(simple_schema):
     tool = simple_schema.to_anthropic_tool()
     assert tool["name"] == "bash"
@@ -73,6 +75,7 @@ def test_to_anthropic_tool_type_lowercased(simple_schema):
 # ---------------------------------------------------------------------------
 # OpenAI format tests
 # ---------------------------------------------------------------------------
+
 
 def test_to_openai_function_structure(simple_schema):
     fn = simple_schema.to_openai_function()
@@ -101,6 +104,7 @@ def test_to_openai_function_type_lowercased(complex_schema):
 # Cross-format consistency
 # ---------------------------------------------------------------------------
 
+
 def test_parameters_json_schema_identical_across_formats(complex_schema):
     """The normalised parameters dict should be the same regardless of provider format."""
     anthropic_params = complex_schema.to_anthropic_tool()["input_schema"]
@@ -116,6 +120,7 @@ def test_parameters_json_schema_identical_across_formats(complex_schema):
 # ---------------------------------------------------------------------------
 # ToolRegistry methods
 # ---------------------------------------------------------------------------
+
 
 class _FakeSchemaOnlyTool:
     """Minimal Tool-like object to exercise registry translation methods."""

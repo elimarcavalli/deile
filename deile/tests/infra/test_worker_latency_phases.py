@@ -5,6 +5,7 @@ estruturado emitido ao final carrega o campo ``phases`` com os 5 marcos
 nomeados (``agent_start``, ``model_first_token``, ``agent_end``, ``io_ops``,
 ``total``), com deltas em milissegundos.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +28,11 @@ import worker_server  # noqa: E402
 pytestmark = pytest.mark.unit
 
 _EXPECTED_PHASES = {
-    "agent_start", "model_first_token", "agent_end", "io_ops", "total",
+    "agent_start",
+    "model_first_token",
+    "agent_end",
+    "io_ops",
+    "total",
 }
 
 
@@ -41,6 +46,7 @@ def _clean_tasks():
 def _mock_agent_with_delay():
     """Agente não-streaming que adiciona um pequeno delay real para que os
     deltas de fase sejam positivos de forma determinística."""
+
     class _Resp:
         content = "feito"
 
@@ -65,17 +71,24 @@ def _capture_phases(records) -> dict:
 
 async def test_run_task_logs_five_named_phases(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(worker_server, "WORK_ROOT", tmp_path)
-    monkeypatch.setattr(worker_server, "_get_agent",
-                        AsyncMock(return_value=_mock_agent_with_delay()))
-    monkeypatch.setattr(worker_server, "_post_status_message",
-                        AsyncMock(return_value=None))
-    monkeypatch.setattr(worker_server, "_edit_status_message",
-                        AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        worker_server, "_get_agent", AsyncMock(return_value=_mock_agent_with_delay())
+    )
+    monkeypatch.setattr(
+        worker_server, "_post_status_message", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        worker_server, "_edit_status_message", AsyncMock(return_value=True)
+    )
     monkeypatch.setattr(worker_server, "_react", AsyncMock(return_value=True))
 
     with caplog.at_level(logging.INFO, logger="deile.worker_server"):
         await worker_server._run_task(
-            "aaaaaaaaaaaa", "faça algo", "12345", None, "developer",
+            "aaaaaaaaaaaa",
+            "faça algo",
+            "12345",
+            None,
+            "developer",
         )
 
     phases = _capture_phases(caplog.records)

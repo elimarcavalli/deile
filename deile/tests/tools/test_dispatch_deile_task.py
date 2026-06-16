@@ -8,6 +8,7 @@ history forwarding: the ingress pipeline injects
 forwards it to the worker, while the ``/deile`` passthrough (whose
 ToolContext carries no ``recent_history``) stays one-shot.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -15,8 +16,10 @@ import time
 
 import pytest
 
-from deile.infrastructure.deile_worker_client import (DeileWorkerClient,
-                                                      WorkerDispatchError)
+from deile.infrastructure.deile_worker_client import (
+    DeileWorkerClient,
+    WorkerDispatchError,
+)
 from deile.tools.base import ToolContext
 from deile.tools.dispatch_deile_task import DispatchDeileTaskTool
 
@@ -148,9 +151,7 @@ async def test_cooldown_blocks_immediate_second_dispatch():
 
 async def test_cooldown_rollback_on_auth_missing():
     stub = _StubClient(
-        raises=WorkerDispatchError(
-            "no token", error_code="WORKER_AUTH_MISSING"
-        )
+        raises=WorkerDispatchError("no token", error_code="WORKER_AUTH_MISSING")
     )
     tool = DispatchDeileTaskTool(worker_client=stub)
     result = await tool.execute(_ctx(brief="b", channel_id="c"))
@@ -162,9 +163,7 @@ async def test_cooldown_rollback_on_auth_missing():
 
 async def test_cooldown_rollback_on_transport_missing():
     stub = _StubClient(
-        raises=WorkerDispatchError(
-            "no httpx", error_code="WORKER_TRANSPORT_MISSING"
-        )
+        raises=WorkerDispatchError("no httpx", error_code="WORKER_TRANSPORT_MISSING")
     )
     tool = DispatchDeileTaskTool(worker_client=stub)
     result = await tool.execute(_ctx(brief="b", channel_id="c"))
@@ -174,9 +173,7 @@ async def test_cooldown_rollback_on_transport_missing():
 
 async def test_cooldown_rollback_on_auth_malformed():
     stub = _StubClient(
-        raises=WorkerDispatchError(
-            "bad chars", error_code="WORKER_AUTH_MALFORMED"
-        )
+        raises=WorkerDispatchError("bad chars", error_code="WORKER_AUTH_MALFORMED")
     )
     tool = DispatchDeileTaskTool(worker_client=stub)
     result = await tool.execute(_ctx(brief="b", channel_id="c"))
@@ -187,9 +184,7 @@ async def test_cooldown_rollback_on_auth_malformed():
 async def test_cooldown_NOT_rolled_back_on_network_failure():
     """Genuine worker reach attempts keep the cooldown to prevent flooding."""
     stub = _StubClient(
-        raises=WorkerDispatchError(
-            "timeout", error_code="WORKER_TIMEOUT"
-        )
+        raises=WorkerDispatchError("timeout", error_code="WORKER_TIMEOUT")
     )
     tool = DispatchDeileTaskTool(worker_client=stub)
     result = await tool.execute(_ctx(brief="b", channel_id="c"))
@@ -216,9 +211,7 @@ async def test_prune_expired_dispatch_entries():
 async def test_payload_propagation_includes_user_message_id():
     stub = _StubClient()
     tool = DispatchDeileTaskTool(worker_client=stub)
-    await tool.execute(
-        _ctx(brief="b", channel_id="c", user_message_id="msg-99")
-    )
+    await tool.execute(_ctx(brief="b", channel_id="c", user_message_id="msg-99"))
     assert stub.calls[0][0]["user_message_id"] == "msg-99"
 
 

@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from deile.orchestration.forge import (ForgeDetectionError, ForgeKind,
-                                       ForgeRouter, GitHubForge, GitLabForge)
+from deile.orchestration.forge import (
+    ForgeDetectionError,
+    ForgeKind,
+    ForgeRouter,
+    GitHubForge,
+    GitLabForge,
+)
 
 
 @pytest.fixture
@@ -13,8 +18,11 @@ def router(monkeypatch):
     # Make ``shutil.which`` always succeed so ``discover_cli`` does not
     # crash on hosts that lack ``gh``/``glab``.
     import shutil
+
     monkeypatch.setattr(
-        shutil, "which", lambda name: f"/fake/bin/{name}",
+        shutil,
+        "which",
+        lambda name: f"/fake/bin/{name}",
     )
     return ForgeRouter()
 

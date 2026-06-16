@@ -41,27 +41,47 @@ logger = logging.getLogger(__name__)
 #: claude-worker quanto pelo deile-worker quando o modelo é ``anthropic:*``
 #: (decisão do Humano — paridade de vocabulário entre os dois workers).
 CLAUDE_CODE_EFFORTS: Tuple[str, ...] = (
-    "low", "medium", "high", "xhigh", "max", "ultracode", "auto",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultracode",
+    "auto",
 )
 
 #: OpenAI ``reasoning_effort`` (GPT-5.x). ``none`` = sem reasoning;
 #: ``auto`` = omitir (default do modelo). ``minimal`` é alias legado pré-5.4.
 OPENAI_EFFORTS: Tuple[str, ...] = (
-    "none", "minimal", "low", "medium", "high", "xhigh", "auto",
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "auto",
 )
 
 #: Gemini ``thinking_config``. 3.x usa ``thinking_level`` (minimal/low/medium/
 #: high); 2.5 usa ``thinking_budget`` (inteiro). Aqui expomos um vocabulário
 #: discreto uniforme — :func:`gemini_thinking_kwargs` resolve família/budget.
 GEMINI_EFFORTS: Tuple[str, ...] = (
-    "off", "minimal", "low", "medium", "high", "auto",
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "auto",
 )
 
 #: DeepSeek V4: ``reasoning_effort`` aceita ``high``/``max``; ``off`` desliga o
 #: thinking (``thinking.type=disabled``); ``auto`` = default (thinking on,
 #: effort high).
 DEEPSEEK_EFFORTS: Tuple[str, ...] = (
-    "off", "high", "max", "auto",
+    "off",
+    "high",
+    "max",
+    "auto",
 )
 
 #: União de todos os tokens conhecidos — usado pelo validador de settings, que
@@ -87,7 +107,9 @@ def is_valid_effort(value: Any) -> bool:
     return norm is not None and norm in KNOWN_EFFORTS
 
 
-def valid_efforts_for(*, worker: Optional[str], provider_id: Optional[str]) -> Tuple[str, ...]:
+def valid_efforts_for(
+    *, worker: Optional[str], provider_id: Optional[str]
+) -> Tuple[str, ...]:
     """Retorna os níveis válidos para o picker, dado (worker, provider).
 
     - ``claude-worker`` → vocabulário Claude Code (sempre anthropic).
@@ -219,6 +241,7 @@ def resolve_session_reasoning(session: Any) -> Optional[str]:
         pass
     try:
         from deile.config.settings import get_settings
+
         return normalize_effort(get_settings().reasoning_effort)
     except Exception:  # noqa: BLE001
         return None
@@ -239,9 +262,14 @@ def gemini_thinking_kwargs(model_id: str, effort: Any) -> Optional[Dict[str, Any
     is_25 = "2.5" in mid or "2-5" in mid
     if is_25:
         budget = {
-            "off": 0, "minimal": 0, "low": 1024,
-            "medium": 8192, "high": 24576, "xhigh": 24576,
-            "max": 24576, "ultracode": 24576,
+            "off": 0,
+            "minimal": 0,
+            "low": 1024,
+            "medium": 8192,
+            "high": 24576,
+            "xhigh": 24576,
+            "max": 24576,
+            "ultracode": 24576,
         }.get(norm)
         if budget is None:
             return None
@@ -251,9 +279,14 @@ def gemini_thinking_kwargs(model_id: str, effort: Any) -> Optional[Dict[str, Any
         return {"thinking_budget": budget}
     # 3.x — thinking_level
     level = {
-        "off": "minimal", "minimal": "minimal", "low": "low",
-        "medium": "medium", "high": "high", "xhigh": "high",
-        "max": "high", "ultracode": "high",
+        "off": "minimal",
+        "minimal": "minimal",
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "high",
+        "max": "high",
+        "ultracode": "high",
     }.get(norm)
     if level is None:
         return None

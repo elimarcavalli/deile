@@ -84,8 +84,11 @@ async def test_tool_loop_executor_emits_tool_span_and_duration(
     # Exercita os helpers internos diretamente (simulam o que a loop faz).
     import time
 
-    from deile.core.tool_loop_executor import (_record_tool_metrics,
-                                               _set_tool_span_status)
+    from deile.core.tool_loop_executor import (
+        _record_tool_metrics,
+        _set_tool_span_status,
+    )
+
     tracer = get_tracer()
     with tracer.tool("custom_tool", args_size=42) as span:
         _set_tool_span_status(span, is_success=True)
@@ -131,7 +134,9 @@ async def test_tool_loop_executor_error_helper_sets_error_status(in_memory_expor
     assert "deile.tool.error" in event_names
 
 
-async def test_agent_helpers_record_turn_error_and_finalize(in_memory_exporter, in_memory_metrics_reader):
+async def test_agent_helpers_record_turn_error_and_finalize(
+    in_memory_exporter, in_memory_metrics_reader
+):
     """``_record_turn_error`` + ``_finalize_turn_span`` cobrem o ciclo do turn."""
     if not otel_sdk_available():
         pytest.skip("SDK not available")

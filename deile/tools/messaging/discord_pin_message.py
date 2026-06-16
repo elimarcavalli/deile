@@ -10,9 +10,7 @@ from ._base import MessagingTool
 
 class DiscordPinMessageTool(MessagingTool):
     tool_name = "discord_pin_message"
-    description_text = (
-        "Pin a Discord message in its channel. Requires Manage Messages on the bot's role."
-    )
+    description_text = "Pin a Discord message in its channel. Requires Manage Messages on the bot's role."
     parameters: Dict[str, Any] = {
         "channel_id": {
             "type": "string",

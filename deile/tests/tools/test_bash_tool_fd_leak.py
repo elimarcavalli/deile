@@ -21,9 +21,7 @@ import pytest
 
 from deile.tools.bash_tool import BashExecuteTool
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="PTY path is Unix-only"
-)
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="PTY path is Unix-only")
 
 
 def _count_open_fds() -> int:
@@ -70,6 +68,6 @@ def test_pty_timeout_does_not_leak_master_fd(tool, tmp_path):
     after = _count_open_fds()
     # Tolerate a handful of unrelated FDs created by other process activity.
     # Without the fix, ``master_fd`` would leak per iteration → +5.
-    assert after - before < 3, (
-        f"FD leak detected: before={before} after={after} delta={after - before}"
-    )
+    assert (
+        after - before < 3
+    ), f"FD leak detected: before={before} after={after} delta={after - before}"

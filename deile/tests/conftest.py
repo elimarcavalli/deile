@@ -40,6 +40,7 @@ test_deile_md_loader.py (4)            | test_settings_has_pipeline_max_parallel
                                        | destructive re-import (``reset_settings()`` gives
                                        | a fresh instance without duplicating the module).
 """
+
 from __future__ import annotations
 
 import logging
@@ -79,9 +80,7 @@ def pytest_collection_modifyitems(config, items):
     """
     if config.getoption("--run-llm") or os.getenv("DEILE_RUN_LLM_TESTS") == "1":
         return
-    skip = pytest.mark.skip(
-        reason="teste LLM: use --run-llm ou DEILE_RUN_LLM_TESTS=1"
-    )
+    skip = pytest.mark.skip(reason="teste LLM: use --run-llm ou DEILE_RUN_LLM_TESTS=1")
     for item in items:
         if "llm" in item.keywords:
             item.add_marker(skip)
@@ -169,17 +168,17 @@ def _guard_sys_stdio():
     saved_stderr = sys.stderr
     saved_stdin = sys.stdin
     yield
-    assert sys.stdout is saved_stdout, (
-        f"test mutated sys.stdout without monkeypatch: {sys.stdout!r}"
-    )
+    assert (
+        sys.stdout is saved_stdout
+    ), f"test mutated sys.stdout without monkeypatch: {sys.stdout!r}"
     sys.stdout = saved_stdout
-    assert sys.stderr is saved_stderr, (
-        f"test mutated sys.stderr without monkeypatch: {sys.stderr!r}"
-    )
+    assert (
+        sys.stderr is saved_stderr
+    ), f"test mutated sys.stderr without monkeypatch: {sys.stderr!r}"
     sys.stderr = saved_stderr
-    assert sys.stdin is saved_stdin, (
-        f"test mutated sys.stdin without monkeypatch: {sys.stdin!r}"
-    )
+    assert (
+        sys.stdin is saved_stdin
+    ), f"test mutated sys.stdin without monkeypatch: {sys.stdin!r}"
     sys.stdin = saved_stdin
 
 
@@ -280,8 +279,7 @@ def allow_settings_writes():
     regression in unrelated test files.
     """
     from deile.security import permissions as perm_module
-    from deile.security.permissions import (PermissionLevel, PermissionRule,
-                                            ResourceType)
+    from deile.security.permissions import PermissionLevel, PermissionRule, ResourceType
 
     pm = perm_module.get_permission_manager()
     saved = pm.get_rule_by_id("settings_write_default")

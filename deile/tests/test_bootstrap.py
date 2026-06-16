@@ -14,6 +14,7 @@ _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.y
 # No API keys set → no providers registered
 # ---------------------------------------------------------------------------
 
+
 class TestBootstrapNoKeys:
     def test_no_keys_returns_empty(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -29,6 +30,7 @@ class TestBootstrapNoKeys:
 # ANTHROPIC_API_KEY only → anthropic registered
 # ---------------------------------------------------------------------------
 
+
 class TestBootstrapAnthropicOnly:
     def test_anthropic_only_registers(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -37,9 +39,12 @@ class TestBootstrapAnthropicOnly:
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         from deile.core.models.tier_router import reset_tier_router
+
         reset_tier_router()
 
-        with patch("deile.core.models.bootstrap._import_provider_class") as mock_cls_factory:
+        with patch(
+            "deile.core.models.bootstrap._import_provider_class"
+        ) as mock_cls_factory:
             mock_provider = MagicMock()
             mock_provider.provider_id = "anthropic"
             mock_cls = MagicMock(return_value=mock_provider)
@@ -58,9 +63,12 @@ class TestBootstrapAnthropicOnly:
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         from deile.core.models.tier_router import reset_tier_router
+
         reset_tier_router()
 
-        with patch("deile.core.models.bootstrap._import_provider_class") as mock_cls_factory:
+        with patch(
+            "deile.core.models.bootstrap._import_provider_class"
+        ) as mock_cls_factory:
             mock_provider = MagicMock()
             mock_cls = MagicMock(return_value=mock_provider)
             mock_cls_factory.return_value = mock_cls
@@ -75,6 +83,7 @@ class TestBootstrapAnthropicOnly:
 # All three main providers → all registered
 # ---------------------------------------------------------------------------
 
+
 class TestBootstrapAllProviders:
     def test_all_three_registered(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -83,9 +92,12 @@ class TestBootstrapAllProviders:
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         from deile.core.models.tier_router import reset_tier_router
+
         reset_tier_router()
 
-        with patch("deile.core.models.bootstrap._import_provider_class") as mock_cls_factory:
+        with patch(
+            "deile.core.models.bootstrap._import_provider_class"
+        ) as mock_cls_factory:
             mock_provider_a = MagicMock()
             mock_provider_a.provider_id = "anthropic"
             mock_provider_b = MagicMock()
@@ -118,9 +130,12 @@ class TestBootstrapAllProviders:
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         from deile.core.models.tier_router import reset_tier_router
+
         reset_tier_router()
 
-        with patch("deile.core.models.bootstrap._import_provider_class") as mock_cls_factory:
+        with patch(
+            "deile.core.models.bootstrap._import_provider_class"
+        ) as mock_cls_factory:
             mock_provider = MagicMock()
             mock_cls = MagicMock(return_value=mock_provider)
             mock_cls_factory.return_value = mock_cls
@@ -134,6 +149,7 @@ class TestBootstrapAllProviders:
 # Registers provider in router when router is passed
 # ---------------------------------------------------------------------------
 
+
 class TestBootstrapRouterRegistration:
     def test_registers_in_passed_router(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -142,11 +158,14 @@ class TestBootstrapRouterRegistration:
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         from deile.core.models.tier_router import reset_tier_router
+
         reset_tier_router()
 
         mock_router = MagicMock()
 
-        with patch("deile.core.models.bootstrap._import_provider_class") as mock_cls_factory:
+        with patch(
+            "deile.core.models.bootstrap._import_provider_class"
+        ) as mock_cls_factory:
             mock_provider = MagicMock()
             mock_cls = MagicMock(return_value=mock_provider)
             mock_cls_factory.return_value = mock_cls
@@ -172,6 +191,7 @@ class TestBootstrapRouterRegistration:
 # Provider instantiation failure is handled gracefully
 # ---------------------------------------------------------------------------
 
+
 class TestBootstrapInstantiationFailure:
     def test_instantiation_error_does_not_crash(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -179,7 +199,9 @@ class TestBootstrapInstantiationFailure:
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
-        with patch("deile.core.models.bootstrap._import_provider_class") as mock_cls_factory:
+        with patch(
+            "deile.core.models.bootstrap._import_provider_class"
+        ) as mock_cls_factory:
             mock_cls = MagicMock(side_effect=ValueError("SDK init failed"))
             mock_cls_factory.return_value = mock_cls
 

@@ -24,6 +24,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 print("🧪 ISOLATED CONFIGURATION TEST SUITE")
 print("=" * 50)
 
+
 class IsolatedConfigTestSuite:
     """Isolated configuration test suite"""
 
@@ -58,7 +59,7 @@ class IsolatedConfigTestSuite:
 
         try:
             # Import just the ConfigManager components we need
-            sys.path.insert(0, str(PROJECT_ROOT / 'deile'))
+            sys.path.insert(0, str(PROJECT_ROOT / "deile"))
 
             # Create a minimal ConfigManager test
             from deile.config.manager import ConfigManager
@@ -70,68 +71,66 @@ class IsolatedConfigTestSuite:
             self.log_result(
                 "ConfigManager initialization",
                 init_success,
-                "ConfigManager created successfully"
+                "ConfigManager created successfully",
             )
 
             # Test persona configuration loading
             personas_config = await config_manager.load_persona_configuration()
-            config_loaded = 'enabled' in personas_config
+            config_loaded = "enabled" in personas_config
 
             self.log_result(
                 "Load persona configuration",
                 config_loaded,
-                f"Config loaded with {len(personas_config)} top-level keys"
+                f"Config loaded with {len(personas_config)} top-level keys",
             )
 
             # Test get persona config
-            dev_config = await config_manager.get_persona_config('developer')
-            dev_loaded = 'capabilities' in dev_config
+            dev_config = await config_manager.get_persona_config("developer")
+            dev_loaded = "capabilities" in dev_config
 
             self.log_result(
                 "Get specific persona config",
                 dev_loaded,
-                f"Developer config has {len(dev_config)} fields"
+                f"Developer config has {len(dev_config)} fields",
             )
 
             # Test update persona config
-            test_update = {'test_field': 'test_value'}
-            await config_manager.update_persona_config('developer', test_update)
+            test_update = {"test_field": "test_value"}
+            await config_manager.update_persona_config("developer", test_update)
 
-            updated_config = await config_manager.get_persona_config('developer')
-            update_worked = updated_config.get('test_field') == 'test_value'
+            updated_config = await config_manager.get_persona_config("developer")
+            update_worked = updated_config.get("test_field") == "test_value"
 
             self.log_result(
                 "Update persona configuration",
                 update_worked,
-                f"Update persisted: {updated_config.get('test_field')}"
+                f"Update persisted: {updated_config.get('test_field')}",
             )
 
             # Test add persona
             new_persona_config = {
-                'capabilities': ['test_capability'],
-                'communication_style': 'technical'
+                "capabilities": ["test_capability"],
+                "communication_style": "technical",
             }
-            await config_manager.add_persona('test_persona', new_persona_config)
+            await config_manager.add_persona("test_persona", new_persona_config)
 
-            added_config = await config_manager.get_persona_config('test_persona')
-            add_worked = 'capabilities' in added_config
+            added_config = await config_manager.get_persona_config("test_persona")
+            add_worked = "capabilities" in added_config
 
             self.log_result(
                 "Add new persona",
                 add_worked,
-                f"New persona added with {len(added_config)} fields"
+                f"New persona added with {len(added_config)} fields",
             )
 
             # Test remove persona
-            await config_manager.remove_persona('test_persona')
+            await config_manager.remove_persona("test_persona")
 
-            removed_config = await config_manager.get_persona_config('test_persona')
+            removed_config = await config_manager.get_persona_config("test_persona")
             remove_worked = len(removed_config) == 0
 
             self.log_result(
-                "Remove persona",
-                remove_worked,
-                "Persona successfully removed"
+                "Remove persona", remove_worked, "Persona successfully removed"
             )
 
             # Test observer pattern
@@ -142,7 +141,9 @@ class IsolatedConfigTestSuite:
 
             config_manager.add_persona_observer(test_observer)
 
-            await config_manager.update_persona_config('developer', {'observer_test': 'value'})
+            await config_manager.update_persona_config(
+                "developer", {"observer_test": "value"}
+            )
             await asyncio.sleep(0.1)
 
             observer_worked = len(observer_calls) > 0
@@ -150,7 +151,7 @@ class IsolatedConfigTestSuite:
             self.log_result(
                 "Observer pattern",
                 observer_worked,
-                f"Observer calls: {len(observer_calls)}"
+                f"Observer calls: {len(observer_calls)}",
             )
 
         except Exception as e:
@@ -165,48 +166,47 @@ class IsolatedConfigTestSuite:
 
             # Test PersonaConfig creation
             config = PersonaConfig(
-                persona_id='test',
-                capabilities=['test_capability'],
-                communication_style=CommunicationStyle.TECHNICAL
+                persona_id="test",
+                capabilities=["test_capability"],
+                communication_style=CommunicationStyle.TECHNICAL,
             )
 
-            creation_success = config.persona_id == 'test'
+            creation_success = config.persona_id == "test"
 
             self.log_result(
                 "PersonaConfig creation",
                 creation_success,
-                f"Created config for {config.persona_id}"
+                f"Created config for {config.persona_id}",
             )
 
             # Test from_dict conversion
             config_data = {
-                'capabilities': ['debugging'],
-                'communication_style': 'analytical',
-                'model_preferences': {'temperature': 0.3},
-                'behavior_settings': {'verbosity_level': 'focused'},
-                'tool_preferences': {'preferred_tools': ['analysis_tools']}
+                "capabilities": ["debugging"],
+                "communication_style": "analytical",
+                "model_preferences": {"temperature": 0.3},
+                "behavior_settings": {"verbosity_level": "focused"},
+                "tool_preferences": {"preferred_tools": ["analysis_tools"]},
             }
 
-            config_from_dict = PersonaConfig.from_dict('test_dict', config_data)
-            dict_conversion_success = config_from_dict.persona_id == 'test_dict'
+            config_from_dict = PersonaConfig.from_dict("test_dict", config_data)
+            dict_conversion_success = config_from_dict.persona_id == "test_dict"
 
             self.log_result(
                 "PersonaConfig from_dict",
                 dict_conversion_success,
-                f"Converted config with {len(config_from_dict.capabilities)} capabilities"
+                f"Converted config with {len(config_from_dict.capabilities)} capabilities",
             )
 
             # Test to_dict serialization
             serialized = config.to_dict()
             serialization_success = (
-                'capabilities' in serialized and
-                'communication_style' in serialized
+                "capabilities" in serialized and "communication_style" in serialized
             )
 
             self.log_result(
                 "PersonaConfig serialization",
                 serialization_success,
-                f"Serialized to {len(serialized)} fields"
+                f"Serialized to {len(serialized)} fields",
             )
 
             # Test validation
@@ -216,7 +216,7 @@ class IsolatedConfigTestSuite:
             self.log_result(
                 "PersonaConfig validation",
                 validation_success,
-                "Valid configuration accepted"
+                "Valid configuration accepted",
             )
 
         except Exception as e:
@@ -236,27 +236,27 @@ class IsolatedConfigTestSuite:
             self.log_result(
                 "PersonaLoader creation",
                 creation_success,
-                "PersonaLoader created successfully"
+                "PersonaLoader created successfully",
             )
 
             # Test instruction loading
-            instructions = await loader.load_persona_instructions('developer')
+            instructions = await loader.load_persona_instructions("developer")
             instructions_success = len(instructions) > 0
 
             self.log_result(
                 "Load persona instructions",
                 instructions_success,
-                f"Loaded {len(instructions)} characters of instructions"
+                f"Loaded {len(instructions)} characters of instructions",
             )
 
             # Test fallback instruction generation
-            fallback_instructions = loader._generate_basic_instruction('developer')
-            fallback_success = 'developer' in fallback_instructions.lower()
+            fallback_instructions = loader._generate_basic_instruction("developer")
+            fallback_success = "developer" in fallback_instructions.lower()
 
             self.log_result(
                 "Generate fallback instructions",
                 fallback_success,
-                f"Generated {len(fallback_instructions)} characters"
+                f"Generated {len(fallback_instructions)} characters",
             )
 
         except Exception as e:
@@ -274,8 +274,8 @@ class IsolatedConfigTestSuite:
             await config_manager.load_persona_configuration()
 
             # Make a change
-            test_data = {'persistence_test': 'success'}
-            await config_manager.update_persona_config('developer', test_data)
+            test_data = {"persistence_test": "success"}
+            await config_manager.update_persona_config("developer", test_data)
 
             # Check file exists
             config_file = self.temp_dir / "persona_config.yaml"
@@ -284,35 +284,39 @@ class IsolatedConfigTestSuite:
             self.log_result(
                 "Configuration file creation",
                 file_exists,
-                f"File created: {config_file}"
+                f"File created: {config_file}",
             )
 
             # Verify file content
             if file_exists:
-                with open(config_file, 'r') as f:
+                with open(config_file, "r") as f:
                     file_content = yaml.safe_load(f)
 
                 content_valid = (
-                    'personas' in file_content and
-                    'persona_configs' in file_content['personas']
+                    "personas" in file_content
+                    and "persona_configs" in file_content["personas"]
                 )
 
                 self.log_result(
                     "Configuration file structure",
                     content_valid,
-                    f"File has {len(file_content)} top-level keys"
+                    f"File has {len(file_content)} top-level keys",
                 )
 
                 # Test persistence across instances
                 new_config_manager = ConfigManager(config_dir=self.temp_dir)
-                persisted_config = await new_config_manager.get_persona_config('developer')
+                persisted_config = await new_config_manager.get_persona_config(
+                    "developer"
+                )
 
-                persistence_success = persisted_config.get('persistence_test') == 'success'
+                persistence_success = (
+                    persisted_config.get("persistence_test") == "success"
+                )
 
                 self.log_result(
                     "Configuration persistence",
                     persistence_success,
-                    f"Value persisted: {persisted_config.get('persistence_test')}"
+                    f"Value persisted: {persisted_config.get('persistence_test')}",
                 )
 
         except Exception as e:
@@ -333,7 +337,7 @@ class IsolatedConfigTestSuite:
             # malformed. Use a malformed personas section to trigger validation.
             try:
                 await config_manager._validate_persona_config(
-                    {'personas': 'not-a-dict'}
+                    {"personas": "not-a-dict"}
                 )
                 validation_failed = False
             except Exception:
@@ -342,22 +346,22 @@ class IsolatedConfigTestSuite:
             self.log_result(
                 "Invalid config validation",
                 validation_failed,
-                "Invalid configuration correctly rejected"
+                "Invalid configuration correctly rejected",
             )
 
             # Test non-existent persona access
-            nonexistent_config = await config_manager.get_persona_config('nonexistent')
+            nonexistent_config = await config_manager.get_persona_config("nonexistent")
             empty_returned = len(nonexistent_config) == 0
 
             self.log_result(
                 "Non-existent persona handling",
                 empty_returned,
-                "Empty config returned for non-existent persona"
+                "Empty config returned for non-existent persona",
             )
 
             # Test remove non-existent persona
             try:
-                await config_manager.remove_persona('nonexistent')
+                await config_manager.remove_persona("nonexistent")
                 removal_failed = False
             except Exception:
                 removal_failed = True  # Expected
@@ -365,7 +369,7 @@ class IsolatedConfigTestSuite:
             self.log_result(
                 "Remove non-existent persona",
                 removal_failed,
-                "Correctly raised error for non-existent persona removal"
+                "Correctly raised error for non-existent persona removal",
             )
 
         except Exception as e:
@@ -414,7 +418,9 @@ async def run_isolated_tests():
         all_tests_passed = test_suite.print_summary()
 
         if all_tests_passed:
-            print("🎉 ALL ISOLATED TESTS PASSED - Configuration system working correctly!")
+            print(
+                "🎉 ALL ISOLATED TESTS PASSED - Configuration system working correctly!"
+            )
             return True
         else:
             print("🚨 SOME TESTS FAILED - Issues found in configuration system")
@@ -436,5 +442,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n💥 Test suite crashed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

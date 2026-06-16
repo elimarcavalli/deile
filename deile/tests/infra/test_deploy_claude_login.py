@@ -10,6 +10,7 @@ asserções abaixo refletem o real do verb:
     são parseadas a partir de `args["extra"]` pelo handler `k8s_claude_login`.
   * `--in-pod` delega para `_k8s_in_pod_claude_login` (issue #335).
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -57,17 +58,27 @@ def test_claude_login_handler_parses_flags_from_extra():
     from unittest.mock import patch
 
     fake_result = type(
-        "R", (),
-        {"ok": True, "account_email": "user@test.com",
-         "secret_applied": True, "deployment_applied": True,
-         "rollout_ready": True, "error": None},
+        "R",
+        (),
+        {
+            "ok": True,
+            "account_email": "user@test.com",
+            "secret_applied": True,
+            "deployment_applied": True,
+            "rollout_ready": True,
+            "error": None,
+        },
     )()
 
     with patch("_claude_install.bootstrap_claude_worker", return_value=fake_result):
-        rc = handler({
-            "extra": ["--switch", "--no-interactive"],
-            "k8s_namespace": None, "yes": True, "dry_run": False,
-        })
+        rc = handler(
+            {
+                "extra": ["--switch", "--no-interactive"],
+                "k8s_namespace": None,
+                "yes": True,
+                "dry_run": False,
+            }
+        )
     assert rc == 0
 
 
@@ -79,7 +90,10 @@ def test_claude_login_no_interactive_fails_without_creds(tmp_path):
     }
     result = subprocess.run(
         [sys.executable, str(DEPLOY_PY), "k8s", "claude-login", "--no-interactive"],
-        capture_output=True, text=True, timeout=30, env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
     )
     assert result.returncode != 0
     combined = (result.stdout + result.stderr).lower()
@@ -92,6 +106,7 @@ def test_claude_login_no_interactive_fails_without_creds(tmp_path):
 # ---------------------------------------------------------------------------
 # Tests for --in-pod flag (issue #335)
 # ---------------------------------------------------------------------------
+
 
 def test_parse_claude_login_flags_in_pod():
     """``--in-pod`` é parseado em ``in_pod=True``."""
@@ -133,10 +148,14 @@ def test_claude_login_in_pod_delegates_to_in_pod_function():
     from unittest.mock import patch  # noqa: PLC0415
 
     with patch.object(mod, "_k8s_in_pod_claude_login", side_effect=fake_in_pod):
-        rc = handler({
-            "extra": ["--in-pod"],
-            "k8s_namespace": None, "yes": True, "dry_run": False,
-        })
+        rc = handler(
+            {
+                "extra": ["--in-pod"],
+                "k8s_namespace": None,
+                "yes": True,
+                "dry_run": False,
+            }
+        )
     assert rc == 0
     assert len(calls) == 1
     assert calls[0][0] == "in_pod"
@@ -149,6 +168,6 @@ def test_claude_login_in_pod_registered_in_actions_description():
         (d for a, d in mod._K8S_ACTIONS if a == "claude-login"),
         "",
     )
-    assert "--in-pod" in desc, (
-        f"esperava '--in-pod' na descrição de claude-login em _K8S_ACTIONS; obtive: {desc!r}"
-    )
+    assert (
+        "--in-pod" in desc
+    ), f"esperava '--in-pod' na descrição de claude-login em _K8S_ACTIONS; obtive: {desc!r}"

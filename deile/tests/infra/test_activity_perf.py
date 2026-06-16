@@ -39,8 +39,7 @@ def _make_80_lines() -> str:
 @pytest.mark.skipif(_SKIP, reason="DEILE_PERF_TEST=0")
 def test_fetch_completes_under_500ms():
     """Five mocked sources each returning 80 lines; _fetch must finish <500ms."""
-    p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test",
-                                       enabled=True)
+    p = pd.MultiSourceActivityProvider(ttl_s=60.0, namespace="test", enabled=True)
     p._kubectl = "/usr/bin/kubectl"
 
     def _fast_run(cmd, **kw):
@@ -54,7 +53,7 @@ def test_fetch_completes_under_500ms():
             state = p._fetch()
     elapsed = time.perf_counter() - start
 
-    assert elapsed < 0.5, (
-        f"_fetch() took {elapsed:.3f}s — expected <0.5s (ThreadPoolExecutor)"
-    )
+    assert (
+        elapsed < 0.5
+    ), f"_fetch() took {elapsed:.3f}s — expected <0.5s (ThreadPoolExecutor)"
     assert len(state.events) == pd._MULTI_BUFFER_CAP

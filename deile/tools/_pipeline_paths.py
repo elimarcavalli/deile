@@ -9,6 +9,7 @@ Resolution order:
 3. Walk CWD ancestors looking for the marker pair ``.git`` directory + ``deile.py`` file.
 4. Fall back to the current working directory.
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,7 +52,11 @@ def _assert_safe_root(path: Path) -> None:
                 if not (ancestor.stat().st_mode & 0o002):
                     safe_roots.append(ancestor.resolve())
             except OSError:
-                logger.debug("stat() failed for git root %s; not adding to safe roots", ancestor, exc_info=True)
+                logger.debug(
+                    "stat() failed for git root %s; not adding to safe roots",
+                    ancestor,
+                    exc_info=True,
+                )
             break
 
     for root in safe_roots:

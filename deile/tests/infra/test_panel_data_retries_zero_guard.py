@@ -15,9 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-_INFRA_K8S = os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "infra", "k8s"
-)
+_INFRA_K8S = os.path.join(os.path.dirname(__file__), "..", "..", "..", "infra", "k8s")
 if _INFRA_K8S not in sys.path:
     sys.path.insert(0, _INFRA_K8S)
 
@@ -34,6 +32,7 @@ def fresh_panel_data(monkeypatch):
     """
     monkeypatch.delitem(sys.modules, "_panel_data", raising=False)
     import importlib
+
     pd = importlib.import_module("_panel_data")
     return pd
 
@@ -59,8 +58,10 @@ def test_zero_rejected_without_allow_zero(fresh_panel_data):
 
 def test_zero_accepted_with_allow_zero_true(fresh_panel_data):
     pd = fresh_panel_data
-    with patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"), \
-         patch.object(pd.subprocess, "run", return_value=_completed_proc()):
+    with (
+        patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"),
+        patch.object(pd.subprocess, "run", return_value=_completed_proc()),
+    ):
         ok, msg = pd.set_stage_retries("implement", 0, allow_zero=True)
     assert ok is True
     assert "DEILE_PIPELINE_RETRIES_IMPLEMENT=0" in msg
@@ -69,8 +70,10 @@ def test_zero_accepted_with_allow_zero_true(fresh_panel_data):
 def test_positive_retries_unaffected_by_guard(fresh_panel_data):
     """Valor positivo sempre aceito — guard só toca em 0."""
     pd = fresh_panel_data
-    with patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"), \
-         patch.object(pd.subprocess, "run", return_value=_completed_proc()):
+    with (
+        patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"),
+        patch.object(pd.subprocess, "run", return_value=_completed_proc()),
+    ):
         ok, msg = pd.set_stage_retries("implement", 3)
     assert ok is True
     assert "RETRIES_IMPLEMENT=3" in msg
@@ -79,9 +82,12 @@ def test_positive_retries_unaffected_by_guard(fresh_panel_data):
 def test_none_unaffected_by_guard(fresh_panel_data):
     """``None`` (clear) sempre aceito — guard só toca em 0."""
     pd = fresh_panel_data
-    with patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"), \
-         patch.object(pd.subprocess, "run",
-                      return_value=_completed_proc(stdout="unset ok")):
+    with (
+        patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"),
+        patch.object(
+            pd.subprocess, "run", return_value=_completed_proc(stdout="unset ok")
+        ),
+    ):
         ok, msg = pd.set_stage_retries("implement", None)
     assert ok is True
     assert "unset" in msg
@@ -90,8 +96,10 @@ def test_none_unaffected_by_guard(fresh_panel_data):
 def test_negative_rejected_before_zero_guard(fresh_panel_data):
     """Validação ``< 0`` precede o guard de zero — mensagem original mantida."""
     pd = fresh_panel_data
-    with patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"), \
-         patch.object(pd.subprocess, "run") as run:
+    with (
+        patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"),
+        patch.object(pd.subprocess, "run") as run,
+    ):
         ok, msg = pd.set_stage_retries("implement", -1)
     assert ok is False
     assert ">= 0" in msg
@@ -101,8 +109,10 @@ def test_negative_rejected_before_zero_guard(fresh_panel_data):
 def test_invalid_stage_rejected_before_zero_guard(fresh_panel_data):
     """Validação de stage canônico precede o guard de zero."""
     pd = fresh_panel_data
-    with patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"), \
-         patch.object(pd.subprocess, "run") as run:
+    with (
+        patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"),
+        patch.object(pd.subprocess, "run") as run,
+    ):
         ok, msg = pd.set_stage_retries("not_a_stage", 0)
     assert ok is False
     assert "invalid stage" in msg
@@ -112,9 +122,11 @@ def test_invalid_stage_rejected_before_zero_guard(fresh_panel_data):
 def test_audit_emitted_on_zero_denied(fresh_panel_data):
     """Zero rejeitado emite audit ``denied`` (rastreabilidade do bloqueio)."""
     pd = fresh_panel_data
-    with patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"), \
-         patch.object(pd.subprocess, "run"), \
-         patch.object(pd, "_audit_timeout_retries_change") as audit:
+    with (
+        patch.object(pd, "kubectl_bin", return_value="/fake/kubectl"),
+        patch.object(pd.subprocess, "run"),
+        patch.object(pd, "_audit_timeout_retries_change") as audit,
+    ):
         pd.set_stage_retries("implement", 0)
     audit.assert_called_once()
     kw = audit.call_args.kwargs

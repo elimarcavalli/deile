@@ -16,8 +16,7 @@ from rich.console import Console
 
 from deile.commands.base import CommandContext
 from deile.commands.builtin.config_command import ConfigCommand
-from deile.config.manager import (CommandConfig, DeileConfig, GeminiConfig,
-                                  SystemConfig)
+from deile.config.manager import CommandConfig, DeileConfig, GeminiConfig, SystemConfig
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -34,11 +33,15 @@ def _render(content) -> str:
 
 def _make_config(commands: dict | None = None) -> DeileConfig:
     cfg = DeileConfig()
-    cfg.system = SystemConfig(debug_mode=False, log_level="INFO", log_requests=False, log_responses=False)
+    cfg.system = SystemConfig(
+        debug_mode=False, log_level="INFO", log_requests=False, log_responses=False
+    )
     cfg.gemini = GeminiConfig()
     cfg.commands = commands or {
         "help": CommandConfig(name="help", description="Show help", action="show_help"),
-        "config": CommandConfig(name="config", description="Show config", action="show_config"),
+        "config": CommandConfig(
+            name="config", description="Show config", action="show_config"
+        ),
     }
     return cfg
 
@@ -74,9 +77,9 @@ class TestConfigCommandResult:
     async def test_content_is_single_renderable_not_list(self):
         """The fix: content must NOT be a bare list."""
         result = await ConfigCommand().execute(_ctx(_make_config_manager()))
-        assert not isinstance(result.content, list), (
-            "content must be a single Rich renderable, not a list"
-        )
+        assert not isinstance(
+            result.content, list
+        ), "content must be a single Rich renderable, not a list"
 
     async def test_content_renders_without_error(self):
         """Rich must be able to render the content directly (the original crash scenario)."""
@@ -86,7 +89,11 @@ class TestConfigCommandResult:
 
     async def test_metadata_has_config_sections(self):
         result = await ConfigCommand().execute(_ctx(_make_config_manager()))
-        assert result.metadata.get("config_sections") == ["system", "gemini", "commands"]
+        assert result.metadata.get("config_sections") == [
+            "system",
+            "gemini",
+            "commands",
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ Provides ``repo_tmp_path`` — a temporary directory created inside the git
 repo root so that ``_assert_safe_root`` accepts it (``/tmp`` is excluded
 from safe roots because it is world-writable).
 """
+
 from __future__ import annotations
 
 import shutil
@@ -13,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]  # tests/orchestration/pipeline → repo root
+_REPO_ROOT = (
+    Path(__file__).resolve().parents[4]
+)  # tests/orchestration/pipeline → repo root
 
 
 @pytest.fixture(autouse=True)
@@ -29,9 +32,7 @@ def _isolated_dispatch_ledger(tmp_path, monkeypatch):
     Em produção o ledger vive no PVC do pipeline (correto); isto é só higiene
     de teste exposta pelo refator.
     """
-    monkeypatch.setenv(
-        "DEILE_PIPELINE_LEDGER_PATH", str(tmp_path / "dispatches.json")
-    )
+    monkeypatch.setenv("DEILE_PIPELINE_LEDGER_PATH", str(tmp_path / "dispatches.json"))
 
 
 @pytest.fixture()
@@ -61,6 +62,7 @@ def repo_git_tmp(repo_tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("DEILE_PIPELINE_BASE_PATH", str(repo_tmp_path))
     # Reset singleton so the new env var is picked up.
     from deile.config.settings import reset_settings
+
     reset_settings()
     yield repo_tmp_path
     reset_settings()

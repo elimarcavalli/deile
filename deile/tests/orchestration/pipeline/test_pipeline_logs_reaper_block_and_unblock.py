@@ -5,6 +5,7 @@ AC2: linhas caplog satisfazem regex canônica de formato.
 AC12: cenário block (attempt=2 → next=3 == cap=3).
 AC13: cenário unblock (attempt=1 → next=2 < cap=3).
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,14 +20,13 @@ import deile.orchestration.pipeline.pipeline_logger as pl
 from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 from deile.orchestration.pipeline.stages import reap_orphan_claims
 
-_CANONICAL = re.compile(
-    r"^reaper\.[a-z_]+  ([a-z_]+=('[^']*'|[^ ]+) ?)+$"
-)
+_CANONICAL = re.compile(r"^reaper\.[a-z_]+  ([a-z_]+=('[^']*'|[^ ]+) ?)+$")
 
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_reaper.py)
 # ---------------------------------------------------------------------------
+
 
 def _make_pr(number, *, labels, head_ref="auto/issue-1"):
     pr = MagicMock()
@@ -37,7 +37,8 @@ def _make_pr(number, *, labels, head_ref="auto/issue-1"):
     pr.url = f"https://github.com/o/r/pull/{number}"
     pr.title = f"PR #{number}"
     pr.batch_id = next(
-        (lb[len("~batch:"):] for lb in labels if lb.startswith("~batch:")), None,
+        (lb[len("~batch:") :] for lb in labels if lb.startswith("~batch:")),
+        None,
     )
     return pr
 
@@ -64,7 +65,11 @@ def _make_monitor_for_reaper(*, reaper_stale_seconds=60, reaper_max_attempts=3):
     worktrees = MagicMock()
     claude = MagicMock()
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier,
+        cfg,
+        github=github,
+        worktrees=worktrees,
+        claude=claude,
+        notifier=notifier,
     )
     return monitor, github
 
@@ -79,11 +84,13 @@ def _reset_dedup(monkeypatch):
 # AC2 — formato canônico de ambas as famílias
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_ac2_reaper_block_format(caplog):
     """reaper.block emite linha que satisfaz regex canônica."""
     monitor, github = _make_monitor_for_reaper(
-        reaper_stale_seconds=60, reaper_max_attempts=3,
+        reaper_stale_seconds=60,
+        reaper_max_attempts=3,
     )
     own = monitor.identity.ownership_label()
     pr = _make_pr(200, labels=["~review:em_andamento", "~batch:def", own, "~attempt:2"])
@@ -103,7 +110,8 @@ async def test_ac2_reaper_block_format(caplog):
 async def test_ac2_reaper_unblock_format(caplog):
     """reaper.unblock emite linha que satisfaz regex canônica."""
     monitor, github = _make_monitor_for_reaper(
-        reaper_stale_seconds=60, reaper_max_attempts=3,
+        reaper_stale_seconds=60,
+        reaper_max_attempts=3,
     )
     own = monitor.identity.ownership_label()
     pr = _make_pr(200, labels=["~review:em_andamento", "~batch:def", own, "~attempt:1"])
@@ -123,6 +131,7 @@ async def test_ac2_reaper_unblock_format(caplog):
 # AC12 — block scenario (attempt=2 → next=3 == cap=3)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_ac12_reaper_block_at_cap(caplog):
     """PR com ~attempt:2, cap=3 → next_attempt=3 == cap → ramo block.
@@ -132,7 +141,8 @@ async def test_ac12_reaper_block_at_cap(caplog):
     Exemplo concreto: reaper.block  target_kind=pr target=200 attempts=3 cap=3 reason='PR #200 review stuck há 3min'
     """
     monitor, github = _make_monitor_for_reaper(
-        reaper_stale_seconds=60, reaper_max_attempts=3,
+        reaper_stale_seconds=60,
+        reaper_max_attempts=3,
     )
     own = monitor.identity.ownership_label()
     pr = _make_pr(200, labels=["~review:em_andamento", "~batch:def", own, "~attempt:2"])
@@ -158,6 +168,7 @@ async def test_ac12_reaper_block_at_cap(caplog):
 # AC13 — unblock scenario (attempt=1 → next=2 < cap=3)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_ac13_reaper_unblock_before_cap(caplog):
     """PR com ~attempt:1, cap=3 → next_attempt=2 < cap → ramo unblock.
@@ -167,7 +178,8 @@ async def test_ac13_reaper_unblock_before_cap(caplog):
     Exemplo concreto: reaper.unblock  target_kind=pr target=200 attempts=2 reason='PR #200 review stuck há 3min' last_activity_s=200
     """
     monitor, github = _make_monitor_for_reaper(
-        reaper_stale_seconds=60, reaper_max_attempts=3,
+        reaper_stale_seconds=60,
+        reaper_max_attempts=3,
     )
     own = monitor.identity.ownership_label()
     pr = _make_pr(200, labels=["~review:em_andamento", "~batch:def", own, "~attempt:1"])
@@ -179,7 +191,9 @@ async def test_ac13_reaper_unblock_before_cap(caplog):
 
     lines = [r.message for r in caplog.records if r.name == "deile.pipeline.events"]
     unblock_lines = [l for l in lines if l.startswith("reaper.unblock  ")]
-    assert len(unblock_lines) == 1, f"Expected 1 reaper.unblock line, got {unblock_lines}"
+    assert (
+        len(unblock_lines) == 1
+    ), f"Expected 1 reaper.unblock line, got {unblock_lines}"
 
     line = unblock_lines[0]
     assert "attempts=2" in line, repr(line)

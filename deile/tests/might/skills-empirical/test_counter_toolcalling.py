@@ -30,13 +30,16 @@ MODEL_KEY = "deepseek:deepseek-v4-flash"
 PROBES = [
     ("D1", "Lista os arquivos da pasta deile/skills."),
     ("D2", "Quantas linhas tem o arquivo deile/__version__.py?"),
-    ("D3", "Procura por 'invoke_skill' nos arquivos .py do projeto e me diz em quais aparece."),
+    (
+        "D3",
+        "Procura por 'invoke_skill' nos arquivos .py do projeto e me diz em quais aparece.",
+    ),
 ]
 
 
 def _tool_names(response):
     out = []
-    for tr in (getattr(response, "tool_results", None) or []):
+    for tr in getattr(response, "tool_results", None) or []:
         meta = getattr(tr, "metadata", None) or {}
         name = (
             getattr(tr, "tool_name", None)
@@ -71,7 +74,9 @@ async def main():
         print(f"\n[ {pid} ] {prompt}")
         start = time.time()
         try:
-            r = await agent.process_input(user_input=prompt, session_id=session.session_id)
+            r = await agent.process_input(
+                user_input=prompt, session_id=session.session_id
+            )
         except Exception as exc:
             print(f"  ERR: {type(exc).__name__}: {exc}")
             continue

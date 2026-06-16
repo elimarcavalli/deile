@@ -26,7 +26,8 @@ _INFRA_K8S = Path(__file__).resolve().parents[3] / "infra" / "k8s"
 def jc():
     """Carrega ``jsonl_cost`` dinamicamente (infra/k8s não é package)."""
     spec = importlib.util.spec_from_file_location(
-        "jsonl_cost_test", str(_INFRA_K8S / "jsonl_cost.py"),
+        "jsonl_cost_test",
+        str(_INFRA_K8S / "jsonl_cost.py"),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -45,7 +46,8 @@ def _assistant(model, mid, rid, usage):
 
 def _write_session(path: Path, records):
     path.write_text(
-        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8",
+        "\n".join(json.dumps(r) for r in records) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -54,9 +56,12 @@ def golden_session(tmp_path):
     """JSONL determinístico exercitando todos os ramos da agregação."""
     f = tmp_path / "sess-abc123.jsonl"
     rec_a = _assistant(
-        "claude-opus-4-5-20260101", "m1", "r1",
+        "claude-opus-4-5-20260101",
+        "m1",
+        "r1",
         {
-            "input_tokens": 100, "output_tokens": 50,
+            "input_tokens": 100,
+            "output_tokens": 50,
             "cache_creation_input_tokens": 200,
             "cache_read_input_tokens": 300,
             "cache_creation": {
@@ -66,19 +71,30 @@ def golden_session(tmp_path):
         },
     )
     records = [
-        {"type": "user", "timestamp": "2026-06-01T09:59:00.000Z",
-         "message": {"role": "user", "content": "oi"}},
+        {
+            "type": "user",
+            "timestamp": "2026-06-01T09:59:00.000Z",
+            "message": {"role": "user", "content": "oi"},
+        },
         rec_a,
         # duplicata de streaming: MESMO (id, requestId) → deve ser deduplicada.
         dict(rec_a),
         _assistant(
-            "claude-sonnet-4-5-20260101", "m2", "r2",
-            {"input_tokens": 10, "output_tokens": 5,
-             "cache_creation_input_tokens": 20, "cache_read_input_tokens": 0},
+            "claude-sonnet-4-5-20260101",
+            "m2",
+            "r2",
+            {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 20,
+                "cache_read_input_tokens": 0,
+            },
         ),
         # assistant sem id/requestId mas com tokens → conta uma vez.
         _assistant(
-            "claude-haiku-4-5", None, None,
+            "claude-haiku-4-5",
+            None,
+            None,
             {"input_tokens": 7, "output_tokens": 3},
         ),
     ]
@@ -95,10 +111,20 @@ def test_aggregate_dedup_and_sums(jc, golden_session):
     assert agg["assistant_rounds"] == 3  # A (dedup), B, noid
     m = agg["models"]
     assert m["claude-opus-4-5-20260101"] == {
-        "in": 100, "out": 50, "cc": 200, "cr": 300, "cc_5m": 150, "cc_1h": 50,
+        "in": 100,
+        "out": 50,
+        "cc": 200,
+        "cr": 300,
+        "cc_5m": 150,
+        "cc_1h": 50,
     }
     assert m["claude-sonnet-4-5-20260101"] == {
-        "in": 10, "out": 5, "cc": 20, "cr": 0, "cc_5m": 0, "cc_1h": 0,
+        "in": 10,
+        "out": 5,
+        "cc": 20,
+        "cr": 0,
+        "cc_5m": 0,
+        "cc_1h": 0,
     }
     assert m["claude-haiku-4-5"]["in"] == 7
     assert agg["first_ts"] == "2026-06-01T09:59:00.000Z"
@@ -107,9 +133,12 @@ def test_aggregate_dedup_and_sums(jc, golden_session):
 
 def test_aggregate_skips_sessions_without_tokens(jc, tmp_path):
     f = tmp_path / "empty.jsonl"
-    _write_session(f, [
-        {"type": "user", "message": {"role": "user", "content": "hi"}},
-    ])
+    _write_session(
+        f,
+        [
+            {"type": "user", "message": {"role": "user", "content": "hi"}},
+        ],
+    )
     agg = jc.aggregate_jsonl(str(f))
     assert agg["models"] == {}
     assert agg["assistant_rounds"] == 0
@@ -119,8 +148,12 @@ def test_aggregate_tolerates_malformed_lines(jc, tmp_path):
     f = tmp_path / "bad.jsonl"
     f.write_text(
         "{not json\n"
-        + json.dumps(_assistant("claude-opus-4-5", "m1", "r1",
-                                 {"input_tokens": 5, "output_tokens": 2})) + "\n"
+        + json.dumps(
+            _assistant(
+                "claude-opus-4-5", "m1", "r1", {"input_tokens": 5, "output_tokens": 2}
+            )
+        )
+        + "\n"
         + "\n",  # linha vazia
         encoding="utf-8",
     )
@@ -189,7 +222,8 @@ def test_aggregate_parity_with_inpod_reference(jc, golden_session):
                 continue
             model = msg.get("model") or "unknown"
             mm = models.setdefault(
-                model, {"in": 0, "out": 0, "cc": 0, "cr": 0, "cc_5m": 0, "cc_1h": 0})
+                model, {"in": 0, "out": 0, "cc": 0, "cr": 0, "cc_5m": 0, "cc_1h": 0}
+            )
             mm["in"] += u.get("input_tokens", 0) or 0
             mm["out"] += u.get("output_tokens", 0) or 0
             cc = u.get("cache_creation_input_tokens", 0) or 0
@@ -224,33 +258,57 @@ def test_summarize_extracts_full_detail(jc, tmp_path):
     """``summarize_jsonl`` colhe TUDO que a tela de tokens mostra no detalhe."""
     f = tmp_path / "sess-detail.jsonl"
     records = [
-        {"type": "user", "timestamp": "2026-06-01T09:00:00.000Z",
-         "cwd": "/home/claude/work/abc/repo", "gitBranch": "auto/issue-9",
-         "version": "2.1.158", "permissionMode": "bypassPermissions",
-         "entrypoint": "cli", "aiTitle": "Corrige bug X",
-         "prNumber": 42, "prUrl": "https://github.com/o/r/pull/42",
-         "prRepository": "o/r",
-         "message": {"role": "user", "content": "implementa a issue 9 por favor"}},
-        {"type": "assistant", "requestId": "r1",
-         "timestamp": "2026-06-01T09:01:00.000Z",
-         "message": {"id": "m1", "role": "assistant",
-                     "model": "claude-opus-4-5-20260101", "stop_reason": "tool_use",
-                     "content": [
-                         {"type": "text", "text": "vou ler o arquivo"},
-                         {"type": "tool_use", "name": "Read"},
-                         {"type": "tool_use", "name": "Edit"},
-                     ],
-                     "usage": {"input_tokens": 100, "output_tokens": 50}}},
+        {
+            "type": "user",
+            "timestamp": "2026-06-01T09:00:00.000Z",
+            "cwd": "/home/claude/work/abc/repo",
+            "gitBranch": "auto/issue-9",
+            "version": "2.1.158",
+            "permissionMode": "bypassPermissions",
+            "entrypoint": "cli",
+            "aiTitle": "Corrige bug X",
+            "prNumber": 42,
+            "prUrl": "https://github.com/o/r/pull/42",
+            "prRepository": "o/r",
+            "message": {"role": "user", "content": "implementa a issue 9 por favor"},
+        },
+        {
+            "type": "assistant",
+            "requestId": "r1",
+            "timestamp": "2026-06-01T09:01:00.000Z",
+            "message": {
+                "id": "m1",
+                "role": "assistant",
+                "model": "claude-opus-4-5-20260101",
+                "stop_reason": "tool_use",
+                "content": [
+                    {"type": "text", "text": "vou ler o arquivo"},
+                    {"type": "tool_use", "name": "Read"},
+                    {"type": "tool_use", "name": "Edit"},
+                ],
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+            },
+        },
         # tool result com erro → conta tool_error
-        {"type": "user", "timestamp": "2026-06-01T09:02:00.000Z",
-         "toolUseResult": {"is_error": True},
-         "message": {"role": "user", "content": "erro!"}},
-        {"type": "assistant", "requestId": "r2",
-         "timestamp": "2026-06-01T09:03:00.000Z",
-         "message": {"id": "m2", "role": "assistant",
-                     "model": "claude-opus-4-5-20260101", "stop_reason": "end_turn",
-                     "content": [{"type": "tool_use", "name": "Read"}],
-                     "usage": {"input_tokens": 10, "output_tokens": 5}}},
+        {
+            "type": "user",
+            "timestamp": "2026-06-01T09:02:00.000Z",
+            "toolUseResult": {"is_error": True},
+            "message": {"role": "user", "content": "erro!"},
+        },
+        {
+            "type": "assistant",
+            "requestId": "r2",
+            "timestamp": "2026-06-01T09:03:00.000Z",
+            "message": {
+                "id": "m2",
+                "role": "assistant",
+                "model": "claude-opus-4-5-20260101",
+                "stop_reason": "end_turn",
+                "content": [{"type": "tool_use", "name": "Read"}],
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+        },
     ]
     _write_session(f, records)
     s = jc.summarize_jsonl(str(f))
@@ -278,11 +336,18 @@ def test_summarize_extracts_full_detail(jc, tmp_path):
 def test_summarize_counts_synthetic_and_max_tokens(jc, tmp_path):
     f = tmp_path / "sess-err.jsonl"
     records = [
-        {"type": "assistant", "requestId": "r1",
-         "message": {"id": "m1", "role": "assistant", "model": "<synthetic>",
-                     "stop_reason": "max_tokens",
-                     "content": "prompt is too long: blah",
-                     "usage": {"input_tokens": 1, "output_tokens": 1}}},
+        {
+            "type": "assistant",
+            "requestId": "r1",
+            "message": {
+                "id": "m1",
+                "role": "assistant",
+                "model": "<synthetic>",
+                "stop_reason": "max_tokens",
+                "content": "prompt is too long: blah",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        },
     ]
     _write_session(f, records)
     s = jc.summarize_jsonl(str(f))
@@ -295,31 +360,44 @@ def test_summarize_counts_synthetic_and_max_tokens(jc, tmp_path):
 def test_summarize_brief_capped(jc, tmp_path):
     f = tmp_path / "sess-big.jsonl"
     big = "x" * 9000
-    _write_session(f, [
-        {"type": "user", "message": {"role": "user", "content": big}},
-        {"type": "assistant", "requestId": "r1",
-         "message": {"id": "m1", "role": "assistant", "model": "claude-opus-4-5",
-                     "usage": {"input_tokens": 1, "output_tokens": 1}}},
-    ])
+    _write_session(
+        f,
+        [
+            {"type": "user", "message": {"role": "user", "content": big}},
+            {
+                "type": "assistant",
+                "requestId": "r1",
+                "message": {
+                    "id": "m1",
+                    "role": "assistant",
+                    "model": "claude-opus-4-5",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            },
+        ],
+    )
     s = jc.summarize_jsonl(str(f))
     assert s["brief"] is not None
     assert len(s["brief"]) == jc._BRIEF_CAP  # capado em 4000
 
 
 # --- context_window_of_model (issue #445 follow-up: threshold de resume) ------
-@pytest.mark.parametrize("model,expected", [
-    ("claude-opus-4-8", 1_000_000),
-    ("claude-opus-4-8-20260101", 1_000_000),   # sufixo de data ignorado
-    ("anthropic:claude-opus-4-8", 1_000_000),  # prefixo de provider ignorado
-    ("opus-4-5", 1_000_000),
-    ("claude-opus-4-20250514", 200_000),       # Opus 4.0 legacy
-    ("claude-opus-4-1", 200_000),              # Opus 4.1 legacy
-    ("claude-sonnet-4-6", 1_000_000),
-    ("sonnet-4-5", 200_000),                   # Sonnet 4.5 = 200K
-    ("claude-haiku-4-5", 200_000),
-    ("gpt-4o", 200_000),                       # desconhecido = conservador
-    ("", 200_000),
-    (None, 200_000),
-])
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("claude-opus-4-8", 1_000_000),
+        ("claude-opus-4-8-20260101", 1_000_000),  # sufixo de data ignorado
+        ("anthropic:claude-opus-4-8", 1_000_000),  # prefixo de provider ignorado
+        ("opus-4-5", 1_000_000),
+        ("claude-opus-4-20250514", 200_000),  # Opus 4.0 legacy
+        ("claude-opus-4-1", 200_000),  # Opus 4.1 legacy
+        ("claude-sonnet-4-6", 1_000_000),
+        ("sonnet-4-5", 200_000),  # Sonnet 4.5 = 200K
+        ("claude-haiku-4-5", 200_000),
+        ("gpt-4o", 200_000),  # desconhecido = conservador
+        ("", 200_000),
+        (None, 200_000),
+    ],
+)
 def test_context_window_of_model(jc, model, expected):
     assert jc.context_window_of_model(model) == expected

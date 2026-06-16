@@ -21,6 +21,7 @@ Limitação fundamental NÃO testada aqui (porque é inevitável): conteúdo já
 commitado ao scrollback não reflowa. Esses testes cobrem apenas o
 comportamento de NOVOS renders.
 """
+
 from __future__ import annotations
 
 import io
@@ -32,7 +33,9 @@ from rich.console import Console
 from deile.ui.console_ui import ConsoleUIManager
 
 
-def _make_ui(width: int, default_model: str = "deepseek:deepseek-v4-pro") -> ConsoleUIManager:
+def _make_ui(
+    width: int, default_model: str = "deepseek:deepseek-v4-pro"
+) -> ConsoleUIManager:
     """Cria uma UI com Console de largura fixa explícita (simula terminal de N cols)."""
     cfg = SimpleNamespace(default_model=default_model)
     config_manager = SimpleNamespace(get_config=lambda: cfg)
@@ -61,12 +64,8 @@ def _panel_borders(output: str) -> tuple[str, str]:
     pegamos a última ocorrência de cada borda para isolá-lo.
     """
     lines = output.split("\n")
-    top = next(
-        ln for ln in reversed(lines) if ln.startswith("╔") and ln.endswith("╗")
-    )
-    bot = next(
-        ln for ln in reversed(lines) if ln.startswith("╚") and ln.endswith("╝")
-    )
+    top = next(ln for ln in reversed(lines) if ln.startswith("╔") and ln.endswith("╗"))
+    bot = next(ln for ln in reversed(lines) if ln.startswith("╚") and ln.endswith("╝"))
     return top, bot
 
 
@@ -93,9 +92,9 @@ def test_show_welcome_box_is_compact_on_wide_terminals(width: int) -> None:
     box_top, box_bot = _panel_borders(output)
 
     # Topo e fundo balanceados (caixa fechada nas 4 quinas).
-    assert len(box_top) == len(box_bot), (
-        f"box assimétrica: top={len(box_top)} bot={len(box_bot)}"
-    )
+    assert len(box_top) == len(
+        box_bot
+    ), f"box assimétrica: top={len(box_top)} bot={len(box_bot)}"
     # E estritamente menor que a largura do console — compacto.
     assert len(box_top) < width, (
         f"caixa de largura {len(box_top)} ocupou TODO o console (w={width}); "
@@ -119,12 +118,8 @@ def test_show_welcome_box_clamps_to_narrow_terminal(width: int) -> None:
     output = ui.console.file.getvalue()
 
     box_top, box_bot = _panel_borders(output)
-    assert len(box_top) <= width, (
-        f"caixa estourou: top={len(box_top)} > width={width}"
-    )
-    assert len(box_bot) <= width, (
-        f"caixa estourou: bot={len(box_bot)} > width={width}"
-    )
+    assert len(box_top) <= width, f"caixa estourou: top={len(box_top)} > width={width}"
+    assert len(box_bot) <= width, f"caixa estourou: bot={len(box_bot)} > width={width}"
 
 
 @pytest.mark.unit
@@ -133,14 +128,14 @@ def test_show_welcome_uses_double_box_style() -> None:
     ui = _make_ui(width=80)
     ui.show_welcome()
     output = ui.console.file.getvalue()
-    assert "╔" in output and "╚" in output, (
-        "expected DOUBLE box characters in welcome output"
-    )
+    assert (
+        "╔" in output and "╚" in output
+    ), "expected DOUBLE box characters in welcome output"
     # Separador interno: usamos `Rule` (que renderiza com `─` simples ligadas
     # nas bordas por `╟` / `╢`), não mais `╠══╣` manual.
-    assert "╟" in output or "─" in output, (
-        "expected horizontal separator (Rule) inside the panel"
-    )
+    assert (
+        "╟" in output or "─" in output
+    ), "expected horizontal separator (Rule) inside the panel"
 
 
 @pytest.mark.unit
@@ -195,13 +190,14 @@ def test_show_welcome_does_not_set_console_explicit_width(monkeypatch) -> None:
     # ``ConsoleUIManager.__init__`` instancia o ``Console`` real. Verificamos
     # diretamente que o construtor não passa ``width=`` para Rich.
     from deile.ui.console_ui import ConsoleUIManager as _UI
+
     ui = _UI()
     # `Console._width` é o atributo privado setado pelo construtor quando o
     # caller passa `width=N` explicitamente. Deve ser `None` para Rich
     # detectar lazy a cada acesso.
-    assert ui.console._width is None, (
-        "Console foi instanciado com width explícito; isso impede adaptação a resize"
-    )
+    assert (
+        ui.console._width is None
+    ), "Console foi instanciado com width explícito; isso impede adaptação a resize"
 
 
 @pytest.mark.unit

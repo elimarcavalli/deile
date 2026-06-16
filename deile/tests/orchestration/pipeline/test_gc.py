@@ -1,13 +1,14 @@
 """Tests for deile.orchestration.pipeline.gc — terminal GC (issue #587)."""
+
 from __future__ import annotations
 
 import asyncio
+
 import pytest
 
 from deile.orchestration.forge.refs import IssueRef, PrRef
 from deile.orchestration.pipeline.gc import GCOnOpenItemError, run_terminal_gc
 from deile.orchestration.pipeline.labels import (
-    BATCH_LABEL_PREFIX,
     FOLLOW_UPS_PROCESSED,
     MENTION_DONE,
     REFINAR,
@@ -22,7 +23,6 @@ from deile.orchestration.pipeline.labels import (
     make_batch_label,
     make_refine_attempt_label,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fake forge
@@ -40,14 +40,10 @@ class _FakeForge:
         self.add_raises: Exception | None = None
 
     async def get_issue(self, number: int) -> IssueRef:
-        return IssueRef(
-            number=number, title="t", url="u", labels=tuple(self._labels)
-        )
+        return IssueRef(number=number, title="t", url="u", labels=tuple(self._labels))
 
     async def get_pr(self, number: int) -> PrRef:
-        return PrRef(
-            number=number, title="t", url="u", labels=tuple(self._labels)
-        )
+        return PrRef(number=number, title="t", url="u", labels=tuple(self._labels))
 
     async def remove_labels(self, kind: str, number: int, labels) -> None:
         if self.remove_raises:
@@ -73,16 +69,12 @@ class TestGCOnOpenItemError:
     def test_raises_for_open_issue(self):
         forge = _FakeForge([WORKFLOW_NEW])
         with pytest.raises(GCOnOpenItemError):
-            asyncio.run(
-                run_terminal_gc(forge, "issue", 1, "open")
-            )
+            asyncio.run(run_terminal_gc(forge, "issue", 1, "open"))
 
     def test_raises_for_open_pr(self):
         forge = _FakeForge(["~review:pendente"])
         with pytest.raises(GCOnOpenItemError):
-            asyncio.run(
-                run_terminal_gc(forge, "pr", 1, "open")
-            )
+            asyncio.run(run_terminal_gc(forge, "pr", 1, "open"))
 
     def test_no_api_calls_before_raise(self):
         calls = []
@@ -107,9 +99,7 @@ class TestGCOnOpenItemError:
 class TestIssueGC:
     def _run(self, labels, state="closed"):
         forge = _FakeForge(labels)
-        result = asyncio.run(
-            run_terminal_gc(forge, "issue", 42, state)
-        )
+        result = asyncio.run(run_terminal_gc(forge, "issue", 42, state))
         return forge, result
 
     def test_strips_workflow_new_and_adds_concluded(self):
@@ -187,8 +177,15 @@ class TestIssueGC:
         assert "~prioridade:1" in forge._labels
 
     def test_preserves_project_type_labels(self):
-        for label in ("bug", "feature", "intent", "refactor", "enhancement",
-                      "infra", "observability"):
+        for label in (
+            "bug",
+            "feature",
+            "intent",
+            "refactor",
+            "enhancement",
+            "infra",
+            "observability",
+        ):
             forge, result = self._run([WORKFLOW_NEW, label])
             assert result == "success", f"expected success stripping {label!r}"
             assert label in forge._labels, f"expected {label!r} to be preserved"
@@ -218,9 +215,7 @@ class TestIssueGC:
 class TestPRGC:
     def _run(self, labels, state="merged"):
         forge = _FakeForge(labels)
-        result = asyncio.run(
-            run_terminal_gc(forge, "pr", 99, state)
-        )
+        result = asyncio.run(run_terminal_gc(forge, "pr", 99, state))
         return forge, result
 
     def test_strips_review_labels(self):
@@ -252,7 +247,9 @@ class TestPRGC:
         assert attempt not in forge._labels
 
     def test_strips_residual_workflow_labels(self):
-        forge, result = self._run(["~review:concluida", WORKFLOW_PR, WORKFLOW_IMPLEMENTING])
+        forge, result = self._run(
+            ["~review:concluida", WORKFLOW_PR, WORKFLOW_IMPLEMENTING]
+        )
         assert result == "success"
         assert WORKFLOW_PR not in forge._labels
         assert WORKFLOW_IMPLEMENTING not in forge._labels
@@ -295,26 +292,20 @@ class TestPartialFailures:
     def test_partial_when_remove_labels_raises(self):
         forge = _FakeForge([WORKFLOW_NEW])
         forge.remove_raises = RuntimeError("network error")
-        result = asyncio.run(
-            run_terminal_gc(forge, "issue", 1, "closed")
-        )
+        result = asyncio.run(run_terminal_gc(forge, "issue", 1, "closed"))
         assert result == "partial"
 
     def test_partial_when_add_labels_raises(self):
         forge = _FakeForge(["bug"])
         forge.add_raises = RuntimeError("network error")
-        result = asyncio.run(
-            run_terminal_gc(forge, "issue", 1, "closed")
-        )
+        result = asyncio.run(run_terminal_gc(forge, "issue", 1, "closed"))
         assert result == "partial"
 
     def test_partial_remove_still_attempts_add(self):
         """Even when remove fails, we still attempt the add."""
         forge = _FakeForge([WORKFLOW_NEW])
         forge.remove_raises = RuntimeError("boom")
-        result = asyncio.run(
-            run_terminal_gc(forge, "issue", 1, "closed")
-        )
+        result = asyncio.run(run_terminal_gc(forge, "issue", 1, "closed"))
         assert result == "partial"
         # add was attempted despite remove failure
         assert WORKFLOW_CONCLUDED in forge.added
@@ -323,9 +314,7 @@ class TestPartialFailures:
         forge = _FakeForge([WORKFLOW_NEW])
         forge.remove_raises = RuntimeError("remove boom")
         forge.add_raises = RuntimeError("add boom")
-        result = asyncio.run(
-            run_terminal_gc(forge, "issue", 1, "closed")
-        )
+        result = asyncio.run(run_terminal_gc(forge, "issue", 1, "closed"))
         assert result == "partial"
 
 

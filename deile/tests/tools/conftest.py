@@ -3,6 +3,7 @@
 Resets the Settings singleton around tests that manipulate DEILE_* env vars
 so that monkeypatch.setenv changes are actually picked up.
 """
+
 from __future__ import annotations
 
 import shutil

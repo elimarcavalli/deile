@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 print("🧪 BACKWARD COMPATIBILITY TEST SUITE")
 print("=" * 45)
 
+
 class BackwardCompatibilityTest:
     """Backward compatibility test suite"""
 
@@ -57,7 +58,11 @@ class BackwardCompatibilityTest:
             # Test PersonaManager file structure
             manager_file = Path("deile/personas/manager.py")
             if not manager_file.exists():
-                self.log_result("PersonaManager file exists", False, f"File not found: {manager_file}")
+                self.log_result(
+                    "PersonaManager file exists",
+                    False,
+                    f"File not found: {manager_file}",
+                )
                 return
 
             content = manager_file.read_text()
@@ -69,7 +74,7 @@ class BackwardCompatibilityTest:
                 "def get_current_persona",
                 "def has_active_persona",
                 "async def switch_persona",
-                "def list_personas"
+                "def list_personas",
             ]
 
             missing_methods = []
@@ -82,37 +87,45 @@ class BackwardCompatibilityTest:
             self.log_result(
                 "Essential public methods preserved",
                 interface_preserved,
-                f"Missing methods: {missing_methods}" if missing_methods else "All methods found"
+                (
+                    f"Missing methods: {missing_methods}"
+                    if missing_methods
+                    else "All methods found"
+                ),
             )
 
             # Check for constructor compatibility
             constructor_patterns = [
                 "def __init__",
                 "agent",  # Should accept agent parameter
-                "memory_manager"  # Should accept memory_manager parameter
+                "memory_manager",  # Should accept memory_manager parameter
             ]
 
-            constructor_compatible = all(pattern in content for pattern in constructor_patterns)
+            constructor_compatible = all(
+                pattern in content for pattern in constructor_patterns
+            )
 
             self.log_result(
                 "Constructor compatibility",
                 constructor_compatible,
-                "Constructor accepts expected parameters"
+                "Constructor accepts expected parameters",
             )
 
             # Check for configuration integration
             config_integration_patterns = [
                 "self.config_manager",
                 "add_persona_observer",
-                "_on_persona_config_change"
+                "_on_persona_config_change",
             ]
 
-            config_integrated = all(pattern in content for pattern in config_integration_patterns)
+            config_integrated = all(
+                pattern in content for pattern in config_integration_patterns
+            )
 
             self.log_result(
                 "Configuration integration",
                 config_integrated,
-                "Unified configuration properly integrated"
+                "Unified configuration properly integrated",
             )
 
         except Exception as e:
@@ -125,7 +138,11 @@ class BackwardCompatibilityTest:
         try:
             config_manager_file = Path("deile/config/manager.py")
             if not config_manager_file.exists():
-                self.log_result("ConfigManager file exists", False, f"File not found: {config_manager_file}")
+                self.log_result(
+                    "ConfigManager file exists",
+                    False,
+                    f"File not found: {config_manager_file}",
+                )
                 return
 
             content = config_manager_file.read_text()
@@ -137,7 +154,7 @@ class BackwardCompatibilityTest:
                 "async def update_persona_config",
                 "async def add_persona",
                 "async def remove_persona",
-                "def add_persona_observer"
+                "def add_persona_observer",
             ]
 
             missing_persona_methods = []
@@ -150,22 +167,28 @@ class BackwardCompatibilityTest:
             self.log_result(
                 "Persona configuration methods",
                 persona_methods_present,
-                f"Missing methods: {missing_persona_methods}" if missing_persona_methods else "All methods found"
+                (
+                    f"Missing methods: {missing_persona_methods}"
+                    if missing_persona_methods
+                    else "All methods found"
+                ),
             )
 
             # Check for hot-reload capability
             hot_reload_patterns = [
                 "async def setup_hot_reload",
                 "async def _notify_persona_observers",
-                "_file_changed"
+                "_file_changed",
             ]
 
-            hot_reload_supported = any(pattern in content for pattern in hot_reload_patterns)
+            hot_reload_supported = any(
+                pattern in content for pattern in hot_reload_patterns
+            )
 
             self.log_result(
                 "Hot-reload capability",
                 hot_reload_supported,
-                "Hot-reload functionality available"
+                "Hot-reload functionality available",
             )
 
         except Exception as e:
@@ -178,7 +201,11 @@ class BackwardCompatibilityTest:
         try:
             persona_config_file = Path("deile/personas/config.py")
             if not persona_config_file.exists():
-                self.log_result("PersonaConfig file exists", False, f"File not found: {persona_config_file}")
+                self.log_result(
+                    "PersonaConfig file exists",
+                    False,
+                    f"File not found: {persona_config_file}",
+                )
                 return
 
             content = persona_config_file.read_text()
@@ -190,7 +217,7 @@ class BackwardCompatibilityTest:
                 "class ModelPreferences",
                 "class BehaviorSettings",
                 "class ToolPreferences",
-                "class PersonaConfig"
+                "class PersonaConfig",
             ]
 
             missing_classes = []
@@ -203,7 +230,11 @@ class BackwardCompatibilityTest:
             self.log_result(
                 "Essential configuration classes",
                 classes_present,
-                f"Missing classes: {missing_classes}" if missing_classes else "All classes found"
+                (
+                    f"Missing classes: {missing_classes}"
+                    if missing_classes
+                    else "All classes found"
+                ),
             )
 
             # Check for factory methods
@@ -211,29 +242,30 @@ class BackwardCompatibilityTest:
                 "def from_dict",
                 "def to_dict",
                 "async def load_from_config_manager",
-                "async def save"
+                "async def save",
             ]
 
-            factory_methods_available = any(method in content for method in factory_methods)
+            factory_methods_available = any(
+                method in content for method in factory_methods
+            )
 
             self.log_result(
                 "Factory and serialization methods",
                 factory_methods_available,
-                "Configuration serialization methods available"
+                "Configuration serialization methods available",
             )
 
             # Check for validation
-            validation_patterns = [
-                "ValidationError",
-                "_validate_persona_data"
-            ]
+            validation_patterns = ["ValidationError", "_validate_persona_data"]
 
-            validation_present = any(pattern in content for pattern in validation_patterns)
+            validation_present = any(
+                pattern in content for pattern in validation_patterns
+            )
 
             self.log_result(
                 "Configuration validation",
                 validation_present,
-                "Validation mechanisms present"
+                "Validation mechanisms present",
             )
 
         except Exception as e:
@@ -246,7 +278,9 @@ class BackwardCompatibilityTest:
         try:
             loader_file = Path("deile/personas/loader.py")
             if not loader_file.exists():
-                self.log_result("PersonaLoader file exists", False, f"File not found: {loader_file}")
+                self.log_result(
+                    "PersonaLoader file exists", False, f"File not found: {loader_file}"
+                )
                 return
 
             content = loader_file.read_text()
@@ -256,7 +290,7 @@ class BackwardCompatibilityTest:
                 "async def load_persona",
                 "async def load_persona_instructions",
                 "def register_persona_class",
-                "async def discover_persona_modules"
+                "async def discover_persona_modules",
             ]
 
             missing_loader_methods = []
@@ -269,14 +303,18 @@ class BackwardCompatibilityTest:
             self.log_result(
                 "Essential loader methods",
                 loader_methods_present,
-                f"Missing methods: {missing_loader_methods}" if missing_loader_methods else "All methods found"
+                (
+                    f"Missing methods: {missing_loader_methods}"
+                    if missing_loader_methods
+                    else "All methods found"
+                ),
             )
 
             # Check for configuration integration
             config_patterns = [
                 "config_manager",
                 "from .config import PersonaConfig",
-                "InstructionLoader"
+                "InstructionLoader",
             ]
 
             config_integration = all(pattern in content for pattern in config_patterns)
@@ -284,7 +322,7 @@ class BackwardCompatibilityTest:
             self.log_result(
                 "Loader configuration integration",
                 config_integration,
-                "Loader properly integrated with unified configuration"
+                "Loader properly integrated with unified configuration",
             )
 
             # Check for BaseAutonomousPersona usage
@@ -293,7 +331,7 @@ class BackwardCompatibilityTest:
             self.log_result(
                 "Correct persona base class",
                 persona_base_correct,
-                "Uses BaseAutonomousPersona consistently"
+                "Uses BaseAutonomousPersona consistently",
             )
 
         except Exception as e:
@@ -313,7 +351,7 @@ class BackwardCompatibilityTest:
                 "self.personas_dir",  # Old directory management
                 "async def discover_and_load_personas",  # Old discovery
                 "async def load_persona_from_file",  # Old file loading
-                "async def handle_hot_reload"  # Old hot-reload handler
+                "async def handle_hot_reload",  # Old hot-reload handler
             ]
 
             found_deprecated = []
@@ -326,14 +364,18 @@ class BackwardCompatibilityTest:
             self.log_result(
                 "Deprecated systems removed",
                 deprecated_removed,
-                f"Still found: {found_deprecated}" if found_deprecated else "All deprecated systems cleaned up"
+                (
+                    f"Still found: {found_deprecated}"
+                    if found_deprecated
+                    else "All deprecated systems cleaned up"
+                ),
             )
 
             # Check for clean unified integration
             unified_patterns = [
                 "self.config_manager =",
                 "add_persona_observer",
-                "async def _on_persona_config_change"
+                "async def _on_persona_config_change",
             ]
 
             unified_integrated = all(pattern in content for pattern in unified_patterns)
@@ -341,7 +383,7 @@ class BackwardCompatibilityTest:
             self.log_result(
                 "Clean unified integration",
                 unified_integrated,
-                "Unified configuration cleanly integrated"
+                "Unified configuration cleanly integrated",
             )
 
         except Exception as e:
@@ -358,7 +400,7 @@ class BackwardCompatibilityTest:
             self.log_result(
                 "Default configuration file",
                 config_present,
-                f"File: {default_config_file}"
+                f"File: {default_config_file}",
             )
 
             if config_present:
@@ -369,7 +411,7 @@ class BackwardCompatibilityTest:
                 self.log_result(
                     "Default configuration content",
                     has_content,
-                    f"Content length: {len(content)} characters"
+                    f"Content length: {len(content)} characters",
                 )
 
                 # Check for expected structure
@@ -378,7 +420,7 @@ class BackwardCompatibilityTest:
                     "enabled:",
                     "persona_configs:",
                     "developer:",
-                    "capabilities:"
+                    "capabilities:",
                 ]
 
                 structure_valid = all(marker in content for marker in structure_markers)
@@ -386,7 +428,7 @@ class BackwardCompatibilityTest:
                 self.log_result(
                     "Default configuration structure",
                     structure_valid,
-                    "Contains expected YAML structure"
+                    "Contains expected YAML structure",
                 )
 
         except Exception as e:
@@ -415,6 +457,7 @@ class BackwardCompatibilityTest:
 
         print("\n" + "=" * 45)
         return failed_tests == 0
+
 
 async def run_backward_compatibility_test():
     """Run backward compatibility test suite"""
@@ -446,6 +489,7 @@ async def run_backward_compatibility_test():
     finally:
         await test_suite.teardown()
 
+
 if __name__ == "__main__":
     print("Starting backward compatibility test suite...\n")
 
@@ -458,5 +502,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n💥 Test suite crashed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

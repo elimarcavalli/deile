@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from deile.orchestration.pipeline.worktree_manager import (Worktree,
-                                                           WorktreeError,
-                                                           WorktreeManager)
+from deile.orchestration.pipeline.worktree_manager import (
+    Worktree,
+    WorktreeError,
+    WorktreeManager,
+)
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -82,7 +84,9 @@ class TestCreateBranchWorktree:
         assert (wt.path / ".git").exists()
         assert (wt.path / "README.md").exists()
         # Verify branch is checked out.
-        out = subprocess.check_output(["git", "-C", str(wt.path), "branch", "--show-current"])
+        out = subprocess.check_output(
+            ["git", "-C", str(wt.path), "branch", "--show-current"]
+        )
         assert out.strip() == b"feat/x"
 
     async def test_idempotent_reuses_existing(self, fake_repo):
@@ -124,9 +128,9 @@ class TestForgeHostHints:
         """URL genérica ``git.empresa.com/x/y`` NÃO deve ser reconhecida como forge."""
         url = "https://git.empresa.com/grupo/projeto"
         hints = WorktreeManager._FORGE_HOST_HINTS
-        assert not any(h in url for h in hints), (
-            f"'git.empresa.com' não deveria casar nenhum hint; hints={hints}"
-        )
+        assert not any(
+            h in url for h in hints
+        ), f"'git.empresa.com' não deveria casar nenhum hint; hints={hints}"
 
     def test_github_url_still_matches(self):
         url = "https://github.com/owner/repo"

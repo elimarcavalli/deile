@@ -12,11 +12,16 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.core.interfaces.selector import (InteractiveSelector,
-                                            SelectorNotSupported,
-                                            SelectorOption)
+from deile.core.interfaces.selector import (
+    InteractiveSelector,
+    SelectorNotSupported,
+    SelectorOption,
+)
 from deile.infrastructure.selectors.prompt_toolkit_selector import (
-    PromptToolkitSelector, _SelectorState, get_default_selector)
+    PromptToolkitSelector,
+    _SelectorState,
+    get_default_selector,
+)
 
 
 def _make_options(n: int) -> list[SelectorOption]:
@@ -142,11 +147,13 @@ class TestPromptToolkitSelectorSelect:
         async def _fake_run_async(self, *args, **kwargs):
             return chosen
 
-        with patch.object(PromptToolkitSelector, "is_supported", return_value=True), \
-             patch(
-                 "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
-                 _fake_run_async,
-             ):
+        with (
+            patch.object(PromptToolkitSelector, "is_supported", return_value=True),
+            patch(
+                "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
+                _fake_run_async,
+            ),
+        ):
             result = await sel.select([chosen, SelectorOption(label="b", value=99)])
             assert result is chosen
 
@@ -157,11 +164,13 @@ class TestPromptToolkitSelectorSelect:
         async def _fake_run_async(self, *args, **kwargs):
             return None
 
-        with patch.object(PromptToolkitSelector, "is_supported", return_value=True), \
-             patch(
-                 "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
-                 _fake_run_async,
-             ):
+        with (
+            patch.object(PromptToolkitSelector, "is_supported", return_value=True),
+            patch(
+                "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
+                _fake_run_async,
+            ),
+        ):
             result = await sel.select([SelectorOption(label="a", value=1)])
             assert result is None
 
@@ -216,11 +225,13 @@ class TestSelectMapsTerminalErrorToNotSupported:
         async def _boom(self, *args, **kwargs):
             raise RuntimeError("no console screen buffer")
 
-        with patch.object(PromptToolkitSelector, "is_supported", return_value=True), \
-             patch(
-                 "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
-                 _boom,
-             ):
+        with (
+            patch.object(PromptToolkitSelector, "is_supported", return_value=True),
+            patch(
+                "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
+                _boom,
+            ),
+        ):
             with pytest.raises(SelectorNotSupported):
                 await sel.select([SelectorOption(label="x", value=1)])
 
@@ -231,10 +242,12 @@ class TestSelectMapsTerminalErrorToNotSupported:
         async def _boom(self, *args, **kwargs):
             raise OSError("redirected stdin")
 
-        with patch.object(PromptToolkitSelector, "is_supported", return_value=True), \
-             patch(
-                 "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
-                 _boom,
-             ):
+        with (
+            patch.object(PromptToolkitSelector, "is_supported", return_value=True),
+            patch(
+                "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
+                _boom,
+            ),
+        ):
             with pytest.raises(SelectorNotSupported):
                 await sel.select([SelectorOption(label="x", value=1)])

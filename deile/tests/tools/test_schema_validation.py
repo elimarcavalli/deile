@@ -7,11 +7,11 @@ the canonical pattern (``MessagingTool``), where required fields live in
 ``ToolSchema.required``. These tests pin the corrected behaviour so a
 regression to the wrong field source fails fast.
 """
+
 from __future__ import annotations
 
 from deile.tools.base import ToolSchema
-from deile.tools.schema_validation import (_validate_type,
-                                           validate_function_arguments)
+from deile.tools.schema_validation import _validate_type, validate_function_arguments
 
 
 def _schema(parameters, required):

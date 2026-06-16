@@ -8,11 +8,12 @@ import pytest
 
 from deile.skills.base import Skill, SkillTrigger
 from deile.skills.registry import SkillRegistry
-from deile.skills.router import (SkillRouter, SkillSelectionContext,
-                                 _resolve_within)
+from deile.skills.router import SkillRouter, SkillSelectionContext, _resolve_within
 
 
-def _skill(name: str, *, globs=None, langs=None, priority: int = 0, **trigger_kwargs) -> Skill:
+def _skill(
+    name: str, *, globs=None, langs=None, priority: int = 0, **trigger_kwargs
+) -> Skill:
     # Aliases: ``globs`` and ``file_globs`` both populate ``file_globs``;
     # likewise ``langs`` and ``code_block_langs``. Older tests used the short
     # form, newer ones used the field name — we accept either.
@@ -110,7 +111,9 @@ class TestKeywordTrigger:
         reg = _registry(_skill("rust", keywords=["Rust"]))
         router = SkillRouter(reg)
         out = router.select_skills(
-            SkillSelectionContext(user_input="this should match RUST today", file_references=())
+            SkillSelectionContext(
+                user_input="this should match RUST today", file_references=()
+            )
         )
         assert len(out) == 1
 
@@ -119,7 +122,9 @@ class TestKeywordTrigger:
         reg = _registry(_skill("rust", keywords=["rust"]))
         router = SkillRouter(reg)
         out = router.select_skills(
-            SkillSelectionContext(user_input="I trust this approach", file_references=())
+            SkillSelectionContext(
+                user_input="I trust this approach", file_references=()
+            )
         )
         assert out == []
 
@@ -127,7 +132,10 @@ class TestKeywordTrigger:
         reg = _registry(_skill("tdd", keywords=["test driven"]))
         router = SkillRouter(reg)
         out = router.select_skills(
-            SkillSelectionContext(user_input="please write a test driven implementation", file_references=())
+            SkillSelectionContext(
+                user_input="please write a test driven implementation",
+                file_references=(),
+            )
         )
         assert [s.name for s in out] == ["tdd"]
 
@@ -150,14 +158,18 @@ class TestFileContentTrigger:
         reg = _registry(_skill("bash-strict", file_content_patterns=[r"^#!/.*bash"]))
         router = SkillRouter(reg, project_root=tmp_path)
         out = router.select_skills(
-            SkillSelectionContext(user_input="check run.sh", file_references=("run.sh",))
+            SkillSelectionContext(
+                user_input="check run.sh", file_references=("run.sh",)
+            )
         )
         assert [s.name for s in out] == ["bash-strict"]
 
     def test_import_pattern_matches(self, tmp_path: Path) -> None:
         f = tmp_path / "x.py"
         f.write_text("import requests\nimport asyncio\n", encoding="utf-8")
-        reg = _registry(_skill("requests", file_content_patterns=[r"^import requests\b"]))
+        reg = _registry(
+            _skill("requests", file_content_patterns=[r"^import requests\b"])
+        )
         router = SkillRouter(reg, project_root=tmp_path)
         out = router.select_skills(
             SkillSelectionContext(user_input="x.py", file_references=("x.py",))
@@ -240,7 +252,9 @@ class TestPathTraversal:
         out = _resolve_within(str(target), tmp_path)
         assert out == target.resolve()
 
-    def test_file_content_trigger_does_not_leak_outside_root(self, tmp_path: Path) -> None:
+    def test_file_content_trigger_does_not_leak_outside_root(
+        self, tmp_path: Path
+    ) -> None:
         reg = _registry(_skill("probe", file_content_patterns=[r".+"]))
         router = SkillRouter(reg, project_root=tmp_path)
         out = router.select_skills(
@@ -279,7 +293,9 @@ class TestPriorityAndCap:
 
     def test_empty_registry_returns_empty(self) -> None:
         router = SkillRouter(SkillRegistry())
-        ctx = SkillSelectionContext(user_input="```python\n```", file_references=("a.py",))
+        ctx = SkillSelectionContext(
+            user_input="```python\n```", file_references=("a.py",)
+        )
         assert router.select_skills(ctx) == []
 
     def test_skill_matched_only_once_even_when_two_triggers_fire(self) -> None:
@@ -288,7 +304,8 @@ class TestPriorityAndCap:
         reg = _registry(_skill("python", globs=["*.py"], langs=["python"]))
         router = SkillRouter(reg)
         ctx = SkillSelectionContext(
-            user_input="```python\nx\n```", file_references=("foo.py",),
+            user_input="```python\nx\n```",
+            file_references=("foo.py",),
         )
         assert [s.name for s in router.select_skills(ctx)] == ["python"]
 
@@ -362,7 +379,9 @@ class TestRenderCatalog:
         assert "auto-active" not in line
 
     def test_skill_with_triggers_shows_hint(self) -> None:
-        reg = _registry(_skill("python", file_globs=["*.py"], code_block_langs=["python"]))
+        reg = _registry(
+            _skill("python", file_globs=["*.py"], code_block_langs=["python"])
+        )
         router = SkillRouter(reg)
         out = router.render_catalog()
         line = next(line for line in out.splitlines() if "python" in line)

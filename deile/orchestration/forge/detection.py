@@ -18,8 +18,12 @@ import logging
 import threading
 from typing import Dict, Mapping, Optional
 
-from deile.orchestration.forge.base import (ForgeConfig, ForgeDetectionError,
-                                            ForgeKind, discover_cli)
+from deile.orchestration.forge.base import (
+    ForgeConfig,
+    ForgeDetectionError,
+    ForgeKind,
+    discover_cli,
+)
 from deile.orchestration.forge.url_parser import parse_forge_url
 
 logger = logging.getLogger(__name__)
@@ -49,15 +53,18 @@ def settings_as_env() -> Mapping[str, str]:
     """
     try:
         from deile.config.settings import get_settings
+
         s = get_settings()
     except Exception as exc:  # pragma: no cover — defensive: settings not loaded yet
         # Pilar 03 §6: logamos o motivo do fallback para diagnose de bootstrap
         # quebrado (ex.: dependência circular, YAML malformado).
         import os
+
         logger.debug(
             "settings_as_env: get_settings() falhou (%s) — fallback "
             "lendo %d env vars conhecidas direto de os.environ",
-            exc, 4,
+            exc,
+            4,
         )
         return {
             "DEILE_FORGE_KIND": os.environ.get("DEILE_FORGE_KIND", ""),
@@ -126,9 +133,12 @@ def _check_gitlab_endpoint(host: str) -> Optional[ForgeKind]:
     import urllib.request
 
     from deile.config.settings import get_settings
+
     version = get_settings().forge_gitlab_api_version
     try:
-        req = urllib.request.Request(f"https://{host}/api/v{version}/version", method="GET")
+        req = urllib.request.Request(
+            f"https://{host}/api/v{version}/version", method="GET"
+        )
         with urllib.request.urlopen(req, timeout=3) as resp:
             if resp.status == 200:
                 return ForgeKind.GITLAB
@@ -147,12 +157,12 @@ def _check_github_endpoint(host: str) -> Optional[ForgeKind]:
     """
     import urllib.error
     import urllib.request
+
     try:
         req = urllib.request.Request(f"https://{host}/api/v3/", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
             if resp.status == 200 and any(
-                k.lower() == "x-github-enterprise-version"
-                for k in dict(resp.headers)
+                k.lower() == "x-github-enterprise-version" for k in dict(resp.headers)
             ):
                 return ForgeKind.GITHUB
     except (urllib.error.URLError, OSError, ValueError):
@@ -213,6 +223,7 @@ def detect_forge_kind(
     # ``detect_forge_kind(url="https://github.com/o/r")`` and get the answer.
     if url:
         from urllib.parse import urlparse
+
         gh_extra = _split_hosts(_env(env, "DEILE_GITHUB_HOST"))
         gl_extra = _split_hosts(_env(env, "DEILE_GITLAB_HOST"))
         parsed = parse_forge_url(url, github_hosts=gh_extra, gitlab_hosts=gl_extra)
@@ -319,7 +330,9 @@ def _split_hosts(value: str) -> tuple:
     single pipeline can serve a forge fleet without spawning N processes.
     Empty entries are dropped.
     """
-    return tuple(h.strip().lower() for h in value.replace(",", " ").split() if h.strip())
+    return tuple(
+        h.strip().lower() for h in value.replace(",", " ").split() if h.strip()
+    )
 
 
 def build_forge_config(

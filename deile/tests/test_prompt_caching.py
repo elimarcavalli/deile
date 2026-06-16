@@ -13,6 +13,7 @@ from deile.core.models.base import ModelMessage
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_handle(model_id: str = "test-model", tier_value: str = "tier_1"):
     from deile.core.models.catalog import ModelHandle, ModelPricing
     from deile.core.models.tier import ModelTier
@@ -45,6 +46,7 @@ def _make_config(
     provider_id: str = "test",
 ):
     from deile.core.models.provider_config import ProviderConfig
+
     return ProviderConfig(
         provider_id=provider_id,
         api_key_env=api_key_env,
@@ -62,6 +64,7 @@ def _usage_ns(**kwargs) -> SimpleNamespace:
 # Anthropic — cache_creation + cache_read in generate()
 # ---------------------------------------------------------------------------
 
+
 class TestAnthropicPromptCaching:
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch):
@@ -69,8 +72,11 @@ class TestAnthropicPromptCaching:
 
     def _make_provider(self):
         from deile.core.models.anthropic_provider import AnthropicProvider
+
         with patch("anthropic.AsyncAnthropic"):
-            return AnthropicProvider(_make_handle(), _make_config(api_key_env="ANTHROPIC_API_KEY"))
+            return AnthropicProvider(
+                _make_handle(), _make_config(api_key_env="ANTHROPIC_API_KEY")
+            )
 
     @pytest.mark.asyncio
     async def test_generate_extracts_cache_read_tokens(self):
@@ -139,6 +145,7 @@ class TestAnthropicPromptCaching:
 # OpenAI — prompt_tokens_details.cached_tokens in generate()
 # ---------------------------------------------------------------------------
 
+
 class TestOpenAIPromptCaching:
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch):
@@ -146,8 +153,11 @@ class TestOpenAIPromptCaching:
 
     def _make_provider(self):
         from deile.core.models.openai_provider import OpenAIProvider
+
         with patch("openai.AsyncOpenAI"):
-            return OpenAIProvider(_make_handle(), _make_config(api_key_env="OPENAI_API_KEY"))
+            return OpenAIProvider(
+                _make_handle(), _make_config(api_key_env="OPENAI_API_KEY")
+            )
 
     @pytest.mark.asyncio
     async def test_generate_extracts_cached_tokens(self):
@@ -163,7 +173,9 @@ class TestOpenAIPromptCaching:
             message=SimpleNamespace(content="result", tool_calls=None),
             finish_reason="stop",
         )
-        fake_response = SimpleNamespace(usage=fake_usage, choices=[fake_choice], model="gpt-4o")
+        fake_response = SimpleNamespace(
+            usage=fake_usage, choices=[fake_choice], model="gpt-4o"
+        )
         provider._client.chat.completions.create = AsyncMock(return_value=fake_response)
 
         msgs = [ModelMessage(role="user", content="hi")]
@@ -184,7 +196,9 @@ class TestOpenAIPromptCaching:
             message=SimpleNamespace(content="ok", tool_calls=None),
             finish_reason="stop",
         )
-        fake_response = SimpleNamespace(usage=fake_usage, choices=[fake_choice], model="gpt-4o")
+        fake_response = SimpleNamespace(
+            usage=fake_usage, choices=[fake_choice], model="gpt-4o"
+        )
         provider._client.chat.completions.create = AsyncMock(return_value=fake_response)
 
         msgs = [ModelMessage(role="user", content="hello")]
@@ -196,6 +210,7 @@ class TestOpenAIPromptCaching:
 # DeepSeek — prompt_cache_hit_tokens override
 # ---------------------------------------------------------------------------
 
+
 class TestDeepSeekPromptCaching:
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch):
@@ -203,18 +218,19 @@ class TestDeepSeekPromptCaching:
 
     def _make_provider(self):
         from deile.core.models.deepseek_provider import DeepSeekProvider
+
         with patch("openai.AsyncOpenAI"):
             return DeepSeekProvider(
                 _make_handle(),
-                _make_config(api_key_env="DEEPSEEK_API_KEY", base_url="https://api.deepseek.com"),
+                _make_config(
+                    api_key_env="DEEPSEEK_API_KEY", base_url="https://api.deepseek.com"
+                ),
             )
 
     def test_extract_cached_tokens_uses_hit_tokens(self):
         from deile.core.models.deepseek_provider import DeepSeekProvider
 
-        fake_response = SimpleNamespace(
-            usage=_usage_ns(prompt_cache_hit_tokens=512)
-        )
+        fake_response = SimpleNamespace(usage=_usage_ns(prompt_cache_hit_tokens=512))
         assert DeepSeekProvider._extract_cached_tokens(fake_response) == 512
 
     def test_extract_cached_tokens_zero_on_missing(self):
@@ -242,7 +258,9 @@ class TestDeepSeekPromptCaching:
             message=SimpleNamespace(content="deep answer", tool_calls=None),
             finish_reason="stop",
         )
-        fake_response = SimpleNamespace(usage=fake_usage, choices=[fake_choice], model="deepseek-chat")
+        fake_response = SimpleNamespace(
+            usage=fake_usage, choices=[fake_choice], model="deepseek-chat"
+        )
         provider._client.chat.completions.create = AsyncMock(return_value=fake_response)
 
         msgs = [ModelMessage(role="user", content="hello")]

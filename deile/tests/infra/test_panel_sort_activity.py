@@ -38,16 +38,18 @@ from rich.console import Console  # noqa: E402
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _make_activity_event(age_s: float, target: str = "#1",
-                          action: str = "dispatch",
-                          detail: str = "") -> "pd.ActivityEvent":
+def _make_activity_event(
+    age_s: float, target: str = "#1", action: str = "dispatch", detail: str = ""
+) -> "pd.ActivityEvent":
     ts = _utc_now() - timedelta(seconds=age_s)
-    return pd.ActivityEvent(ts=ts, actor="pipeline", action=action,
-                             target=target, detail=detail)
+    return pd.ActivityEvent(
+        ts=ts, actor="pipeline", action=action, target=target, detail=detail
+    )
 
 
 def _make_pipeline_state(events: list) -> "pd.PipelineState":
@@ -73,16 +75,28 @@ def _fake_data(pipeline_events=None, local_events=None):
     return data
 
 
-def _make_pod_row(name: str, status: str = "Running",
-                  last_activity: str = "1s ago",
-                  age_s_for_sort: float = 1.0) -> "panel.PodRow":
-    return panel.PodRow(icon="●", name=name, role="other", status=status,
-                        age="1s", restarts="0",
-                        last_activity=last_activity, doing_now="—", busy=False)
+def _make_pod_row(
+    name: str,
+    status: str = "Running",
+    last_activity: str = "1s ago",
+    age_s_for_sort: float = 1.0,
+) -> "panel.PodRow":
+    return panel.PodRow(
+        icon="●",
+        name=name,
+        role="other",
+        status=status,
+        age="1s",
+        restarts="0",
+        last_activity=last_activity,
+        doing_now="—",
+        busy=False,
+    )
 
 
-def _make_issue(number: int, updated_at=None, workflow: str = "nova",
-                is_pr: bool = False) -> "pd.GitHubIssue":
+def _make_issue(
+    number: int, updated_at=None, workflow: str = "nova", is_pr: bool = False
+) -> "pd.GitHubIssue":
     return pd.GitHubIssue(
         number=number,
         title=f"issue {number}",
@@ -124,6 +138,7 @@ class _FakePanelData:
 # ---------------------------------------------------------------------------
 # _pod_rows sorting
 # ---------------------------------------------------------------------------
+
 
 class TestPodRowsSort:
     def _make_data_with_pods(self, pod_specs):
@@ -168,28 +183,34 @@ class TestPodRowsSort:
 
     def test_sort_recent_orders_by_age_asc(self):
         # worker-b was active 2s ago, worker-a was active 10s ago → b first
-        data = self._make_data_with_pods([
-            ("worker-a", "worker", 10.0),
-            ("worker-b", "worker", 2.0),
-        ])
+        data = self._make_data_with_pods(
+            [
+                ("worker-a", "worker", 10.0),
+                ("worker-b", "worker", 2.0),
+            ]
+        )
         rows = panel._pod_rows(data, sort_mode="recent")
         names = [r.name for r in rows]
         assert names.index("worker-b") < names.index("worker-a")
 
     def test_sort_recent_puts_dash_last(self):
         # "other" role has no activity → goes to end
-        data = self._make_data_with_pods([
-            ("bot", "other", None),
-            ("worker-a", "worker", 5.0),
-        ])
+        data = self._make_data_with_pods(
+            [
+                ("bot", "other", None),
+                ("worker-a", "worker", 5.0),
+            ]
+        )
         rows = panel._pod_rows(data, sort_mode="recent")
         assert rows[-1].name == "bot"
 
     def test_sort_number_orders_by_name_alpha(self):
-        data = self._make_data_with_pods([
-            ("worker-z", "worker", 1.0),
-            ("worker-a", "worker", 100.0),
-        ])
+        data = self._make_data_with_pods(
+            [
+                ("worker-z", "worker", 1.0),
+                ("worker-a", "worker", 100.0),
+            ]
+        )
         rows = panel._pod_rows(data, sort_mode="number")
         assert rows[0].name == "worker-a"
         assert rows[1].name == "worker-z"
@@ -222,10 +243,12 @@ class TestPodRowsSort:
 
     def test_default_sort_mode_is_recent(self):
         # Calling without sort_mode should default to "recent"
-        data = self._make_data_with_pods([
-            ("worker-a", "worker", 10.0),
-            ("worker-b", "worker", 2.0),
-        ])
+        data = self._make_data_with_pods(
+            [
+                ("worker-a", "worker", 10.0),
+                ("worker-b", "worker", 2.0),
+            ]
+        )
         rows_default = panel._pod_rows(data)
         rows_recent = panel._pod_rows(data, sort_mode="recent")
         assert [r.name for r in rows_default] == [r.name for r in rows_recent]
@@ -234,6 +257,7 @@ class TestPodRowsSort:
 # ---------------------------------------------------------------------------
 # IssuesPRsView._rows sorting
 # ---------------------------------------------------------------------------
+
 
 class TestIssuesPRsViewSort:
     def test_sort_recent_most_recent_first(self):
@@ -277,8 +301,10 @@ class TestIssuesPRsViewSort:
     def test_sort_is_independent_per_view_instance(self):
         # Two views with different sort_modes must not interfere.
         now = _utc_now()
-        issues = [_make_issue(3, updated_at=now - timedelta(hours=1)),
-                  _make_issue(1, updated_at=now - timedelta(seconds=10))]
+        issues = [
+            _make_issue(3, updated_at=now - timedelta(hours=1)),
+            _make_issue(1, updated_at=now - timedelta(seconds=10)),
+        ]
         data = _FakePanelData(issues, [])
         view_recent = panel.IssuesPRsView(data=data)
         view_recent.sort_mode = "recent"
@@ -286,12 +312,14 @@ class TestIssuesPRsViewSort:
         view_number.sort_mode = "number"
         recent_issues, _ = view_recent._rows()
         number_issues, _ = view_number._rows()
-        assert recent_issues[0].number == 1   # most recent first
-        assert number_issues[0].number == 1   # lowest number first (also 1 here)
+        assert recent_issues[0].number == 1  # most recent first
+        assert number_issues[0].number == 1  # lowest number first (also 1 here)
         # Make it unambiguous: recent sort returns #1 first, number sort returns #1 first too.
         # Redo with clearer numbers.
-        issues2 = [_make_issue(10, updated_at=now - timedelta(hours=1)),
-                   _make_issue(2, updated_at=now - timedelta(seconds=10))]
+        issues2 = [
+            _make_issue(10, updated_at=now - timedelta(hours=1)),
+            _make_issue(2, updated_at=now - timedelta(seconds=10)),
+        ]
         data2 = _FakePanelData(issues2, [])
         vr = panel.IssuesPRsView(data=data2)
         vr.sort_mode = "recent"
@@ -299,8 +327,8 @@ class TestIssuesPRsViewSort:
         vn.sort_mode = "number"
         ri, _ = vr._rows()
         ni, _ = vn._rows()
-        assert ri[0].number == 2   # most recent (10 here = 2s old)
-        assert ni[0].number == 2   # lowest number
+        assert ri[0].number == 2  # most recent (10 here = 2s old)
+        assert ni[0].number == 2  # lowest number
 
     def test_prs_sorted_independently_from_issues(self):
         # PRs should also be sorted by sort_mode, not just issues.
@@ -316,6 +344,7 @@ class TestIssuesPRsViewSort:
 # ---------------------------------------------------------------------------
 # Hotkey [s] cycling
 # ---------------------------------------------------------------------------
+
 
 class TestSortHotkey:
     def test_dashboard_s_cycles_recent_number_status(self):
@@ -369,6 +398,7 @@ class TestSortHotkey:
 # HOTKEYS property
 # ---------------------------------------------------------------------------
 
+
 class TestHotkeysProperty:
     def test_dashboard_hotkeys_reflects_sort_mode_recent(self):
         view = panel.DashboardView(data=None)
@@ -394,6 +424,7 @@ class TestHotkeysProperty:
 # ---------------------------------------------------------------------------
 # _last_activity_caption
 # ---------------------------------------------------------------------------
+
 
 class TestLastActivityCaption:
     def test_returns_none_when_data_is_none(self):
@@ -422,8 +453,7 @@ class TestLastActivityCaption:
     def test_combines_pipeline_and_local_events(self):
         ev_pipeline = _make_activity_event(age_s=60, target="#1")
         ev_local = _make_activity_event(age_s=5, target="#latest")
-        data = _fake_data(pipeline_events=[ev_pipeline],
-                          local_events=[ev_local])
+        data = _fake_data(pipeline_events=[ev_pipeline], local_events=[ev_local])
         caption = panel._last_activity_caption(data)
         assert caption is not None
         assert "#latest" in caption
@@ -431,8 +461,10 @@ class TestLastActivityCaption:
     def test_uses_action_when_detail_empty(self):
         ev = pd.ActivityEvent(
             ts=_utc_now() - timedelta(seconds=10),
-            actor="pipeline", action="dispatch",
-            target="#99", detail="",
+            actor="pipeline",
+            action="dispatch",
+            target="#99",
+            detail="",
         )
         data = _fake_data(pipeline_events=[ev])
         caption = panel._last_activity_caption(data)
@@ -442,8 +474,10 @@ class TestLastActivityCaption:
     def test_falls_back_to_actor_when_target_empty(self):
         ev = pd.ActivityEvent(
             ts=_utc_now() - timedelta(seconds=10),
-            actor="local", action="startup",
-            target="", detail="",
+            actor="local",
+            action="startup",
+            target="",
+            detail="",
         )
         data = _fake_data(pipeline_events=[ev])
         caption = panel._last_activity_caption(data)
@@ -455,11 +489,13 @@ class TestLastActivityCaption:
 # _footer_panel with last_activity
 # ---------------------------------------------------------------------------
 
+
 class TestFooterPanel:
     def _render_footer(self, hotkeys: str, last_activity=None) -> str:
         footer = panel._footer_panel(hotkeys, last_activity)
-        console = Console(record=True, width=200, force_terminal=False,
-                          color_system=None)
+        console = Console(
+            record=True, width=200, force_terminal=False, color_system=None
+        )
         console.print(footer)
         return console.export_text()
 

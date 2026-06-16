@@ -5,6 +5,7 @@ Antes, ``_resolve_provider_model`` lia apenas ``config_manager.get_config().defa
 ignorando ``session.context_data["forced_model"]`` definido por ``/model use``
 ou ``/model select``.
 """
+
 from __future__ import annotations
 
 import io
@@ -22,7 +23,9 @@ def _make_ui_with_default(default_model: str | None) -> ConsoleUIManager:
     config_manager = SimpleNamespace(get_config=lambda: cfg)
     ui = ConsoleUIManager.__new__(ConsoleUIManager)
     # bypass __init__ — só precisamos do config_manager e do console
-    ui.console = Console(file=io.StringIO(), width=120, force_terminal=False, no_color=True)
+    ui.console = Console(
+        file=io.StringIO(), width=120, force_terminal=False, no_color=True
+    )
     ui.session = None
     ui.is_initialized = True
     ui.config_manager = config_manager
@@ -31,7 +34,9 @@ def _make_ui_with_default(default_model: str | None) -> ConsoleUIManager:
 
 
 def _session(forced_model: str | None) -> SimpleNamespace:
-    return SimpleNamespace(context_data={"forced_model": forced_model} if forced_model else {})
+    return SimpleNamespace(
+        context_data={"forced_model": forced_model} if forced_model else {}
+    )
 
 
 @pytest.mark.unit

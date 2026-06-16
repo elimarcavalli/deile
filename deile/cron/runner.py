@@ -23,11 +23,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
-from deile.cron.constants import (CRON_DM_PROMPT_MAX_CHARS,
-                                  CRON_DM_RESULT_MAX_CHARS,
-                                  CRON_RESULT_MAX_CHARS,
-                                  CRON_STOP_TIMEOUT_SECONDS,
-                                  cron_poll_interval_seconds)
+from deile.cron.constants import (
+    CRON_DM_PROMPT_MAX_CHARS,
+    CRON_DM_RESULT_MAX_CHARS,
+    CRON_RESULT_MAX_CHARS,
+    CRON_STOP_TIMEOUT_SECONDS,
+    cron_poll_interval_seconds,
+)
 from deile.cron.store import CronEntry, CronStore
 from deile.security.audit_logger import get_audit_logger
 
@@ -36,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 def _payload_hash(prompt: str) -> str:
     import hashlib
+
     return f"sha256:{hashlib.sha256(prompt.encode(), usedforsecurity=False).hexdigest()[:16]}"
 
 
@@ -118,15 +121,20 @@ class CronRunner:
                 logger.exception("cron entry %s fire failed: %s", entry.id, exc)
                 # Even on error, mark fired so we don't loop on a poison entry.
                 self.store.mark_fired(
-                    entry.id, when=datetime.now(timezone.utc),
-                    result=f"error: {type(exc).__name__}: {exc}"[:CRON_RESULT_MAX_CHARS],
+                    entry.id,
+                    when=datetime.now(timezone.utc),
+                    result=f"error: {type(exc).__name__}: {exc}"[
+                        :CRON_RESULT_MAX_CHARS
+                    ],
                 )
         return fired
 
     async def _fire(self, entry: CronEntry) -> None:
         cb = self.fire_callback
         if cb is None:
-            logger.warning("CronRunner has no fire_callback wired; skipping %s", entry.id)
+            logger.warning(
+                "CronRunner has no fire_callback wired; skipping %s", entry.id
+            )
             self.store.mark_fired(entry.id, result="skipped: no callback")
             self._audit_best_effort(
                 "log_cron_skipped",
@@ -143,7 +151,9 @@ class CronRunner:
             payload_hash=_payload_hash(entry.prompt),
         )
         result_summary = await cb(entry)
-        self.store.mark_fired(entry.id, result=str(result_summary)[:CRON_RESULT_MAX_CHARS])
+        self.store.mark_fired(
+            entry.id, result=str(result_summary)[:CRON_RESULT_MAX_CHARS]
+        )
         if self.notify_dm and entry.notify_user_id and result_summary:
             try:
                 msg = (

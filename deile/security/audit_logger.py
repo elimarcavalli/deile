@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 class AuditEventType(Enum):
     """Types of auditable security events"""
+
     PERMISSION_CHECK = "permission_check"
     PERMISSION_DENIED = "permission_denied"
     SECRET_DETECTED = "secret_detected"
@@ -45,6 +46,7 @@ class AuditEventType(Enum):
 
 class SeverityLevel(Enum):
     """Security event severity levels"""
+
     DEBUG = "debug"
     INFO = "info"
     WARNING = "warning"
@@ -55,6 +57,7 @@ class SeverityLevel(Enum):
 @dataclass
 class AuditEvent:
     """Single audit event"""
+
     timestamp: datetime
     event_type: AuditEventType
     severity: SeverityLevel
@@ -67,49 +70,49 @@ class AuditEvent:
     run_id: Optional[str] = None
     plan_id: Optional[str] = None
     tool_name: Optional[str] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         data = asdict(self)
-        data['timestamp'] = self.timestamp.isoformat()
-        data['event_type'] = self.event_type.value
-        data['severity'] = self.severity.value
+        data["timestamp"] = self.timestamp.isoformat()
+        data["event_type"] = self.event_type.value
+        data["severity"] = self.severity.value
         return data
 
 
 class AuditLogger:
     """Security audit logger with structured logging and redaction tracking"""
-    
+
     def __init__(self, log_dir: str = "", log_file: str = "security_audit.log"):
         self.log_dir = Path(log_dir) if log_dir else Path.home() / ".deile" / "logs"
         self.log_file = self.log_dir / log_file
         self.session_id = self._generate_session_id()
-        
+
         # Ensure log directory exists. ``parents=True`` is required because the
         # default location is ``~/.deile/logs`` and the ``~/.deile`` parent does
         # not exist on fresh installs — without it the constructor raised
         # ``FileNotFoundError`` and prevented the security module from loading.
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Setup structured logging
         self.logger = logging.getLogger("deile.security.audit")
         self.logger.setLevel(logging.INFO)
-        
+
         # Remove existing handlers to avoid duplicates
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
-        
+
         # File handler for structured logs
-        file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
+        file_handler = logging.FileHandler(self.log_file, encoding="utf-8")
         file_handler.setLevel(logging.INFO)
-        
+
         # JSON formatter for structured data
-        formatter = logging.Formatter('%(message)s')
+        formatter = logging.Formatter("%(message)s")
         file_handler.setFormatter(formatter)
-        
+
         self.logger.addHandler(file_handler)
         self.logger.propagate = False
-        
+
         # Track events in memory for quick access
         self.recent_events: List[AuditEvent] = []
         self.max_memory_events = 1000
@@ -122,13 +125,13 @@ class AuditLogger:
             resource="audit_logger",
             action="initialize",
             result="success",
-            details={"session_id": self.session_id, "log_file": str(self.log_file)}
+            details={"session_id": self.session_id, "log_file": str(self.log_file)},
         )
 
         # Register session-end compliance report when the profile requests it (issue #138).
         self._compliance_report_registered = False
         self._maybe_register_compliance_report()
-    
+
     def _generate_session_id(self) -> str:
         return f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -182,20 +185,21 @@ class AuditLogger:
         except Exception:  # pragma: no cover
             pass
 
-
-    def log_event(self, 
-                  event_type: AuditEventType,
-                  severity: SeverityLevel,
-                  actor: str,
-                  resource: str,
-                  action: str,
-                  result: str,
-                  details: Optional[Dict[str, Any]] = None,
-                  run_id: Optional[str] = None,
-                  plan_id: Optional[str] = None,
-                  tool_name: Optional[str] = None) -> None:
+    def log_event(
+        self,
+        event_type: AuditEventType,
+        severity: SeverityLevel,
+        actor: str,
+        resource: str,
+        action: str,
+        result: str,
+        details: Optional[Dict[str, Any]] = None,
+        run_id: Optional[str] = None,
+        plan_id: Optional[str] = None,
+        tool_name: Optional[str] = None,
+    ) -> None:
         """Log a security audit event"""
-        
+
         event = AuditEvent(
             timestamp=datetime.now(),
             event_type=event_type,
@@ -208,64 +212,76 @@ class AuditLogger:
             session_id=self.session_id,
             run_id=run_id,
             plan_id=plan_id,
-            tool_name=tool_name
+            tool_name=tool_name,
         )
-        
+
         # Add to memory buffer
         self.recent_events.append(event)
         if len(self.recent_events) > self.max_memory_events:
             self.recent_events.pop(0)  # Remove oldest
-        
+
         # Write to structured log file
         log_entry = json.dumps(event.to_dict(), ensure_ascii=False)
         self.logger.info(log_entry)
-    
-    def log_permission_check(self, 
-                           tool_name: str, 
-                           resource: str, 
-                           action: str, 
-                           allowed: bool,
-                           rule_id: Optional[str] = None,
-                           additional_details: Optional[Dict[str, Any]] = None) -> None:
+
+    def log_permission_check(
+        self,
+        tool_name: str,
+        resource: str,
+        action: str,
+        allowed: bool,
+        rule_id: Optional[str] = None,
+        additional_details: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Log permission check result"""
-        
+
         details = {
             "rule_id": rule_id,
-            "permission_level": "granted" if allowed else "denied"
+            "permission_level": "granted" if allowed else "denied",
         }
         if additional_details:
             details.update(additional_details)
-        
+
         self.log_event(
-            event_type=AuditEventType.PERMISSION_DENIED if not allowed else AuditEventType.PERMISSION_CHECK,
+            event_type=(
+                AuditEventType.PERMISSION_DENIED
+                if not allowed
+                else AuditEventType.PERMISSION_CHECK
+            ),
             severity=SeverityLevel.WARNING if not allowed else SeverityLevel.INFO,
             actor=tool_name,
             resource=resource,
             action=action,
             result="allowed" if allowed else "denied",
             details=details,
-            tool_name=tool_name
+            tool_name=tool_name,
         )
-    
-    def log_secret_detection(self, 
-                           file_path: str,
-                           secret_type: str,
-                           line_number: int,
-                           confidence: float,
-                           redacted: bool = True) -> None:
+
+    def log_secret_detection(
+        self,
+        file_path: str,
+        secret_type: str,
+        line_number: int,
+        confidence: float,
+        redacted: bool = True,
+    ) -> None:
         """Log secret detection and redaction"""
-        
+
         details = {
             "secret_type": secret_type,
             "line_number": line_number,
             "confidence": confidence,
             "redacted": redacted,
-            "detection_method": "pattern_matching"
+            "detection_method": "pattern_matching",
         }
-        
-        event_type = AuditEventType.SECRET_REDACTED if redacted else AuditEventType.SECRET_DETECTED
+
+        event_type = (
+            AuditEventType.SECRET_REDACTED
+            if redacted
+            else AuditEventType.SECRET_DETECTED
+        )
         severity = SeverityLevel.WARNING if redacted else SeverityLevel.ERROR
-        
+
         self.log_event(
             event_type=event_type,
             severity=severity,
@@ -273,24 +289,26 @@ class AuditLogger:
             resource=file_path,
             action="scan",
             result="redacted" if redacted else "detected",
-            details=details
+            details=details,
         )
-    
-    def log_tool_execution(self,
-                         tool_name: str,
-                         resource: str,
-                         success: bool,
-                         duration_ms: Optional[int] = None,
-                         exit_code: Optional[int] = None,
-                         output_size: Optional[int] = None) -> None:
+
+    def log_tool_execution(
+        self,
+        tool_name: str,
+        resource: str,
+        success: bool,
+        duration_ms: Optional[int] = None,
+        exit_code: Optional[int] = None,
+        output_size: Optional[int] = None,
+    ) -> None:
         """Log tool execution event"""
-        
+
         details = {
             "duration_ms": duration_ms,
             "exit_code": exit_code,
-            "output_size_bytes": output_size
+            "output_size_bytes": output_size,
         }
-        
+
         self.log_event(
             event_type=AuditEventType.TOOL_EXECUTION,
             severity=SeverityLevel.INFO if success else SeverityLevel.ERROR,
@@ -299,22 +317,21 @@ class AuditLogger:
             action="execute",
             result="success" if success else "failure",
             details=details,
-            tool_name=tool_name
+            tool_name=tool_name,
         )
-    
-    def log_plan_execution(self,
-                         plan_id: str,
-                         action: str,  # start, complete, pause, stop
-                         result: str,
-                         step_count: Optional[int] = None,
-                         duration_ms: Optional[int] = None) -> None:
+
+    def log_plan_execution(
+        self,
+        plan_id: str,
+        action: str,  # start, complete, pause, stop
+        result: str,
+        step_count: Optional[int] = None,
+        duration_ms: Optional[int] = None,
+    ) -> None:
         """Log plan execution events"""
-        
-        details = {
-            "step_count": step_count,
-            "duration_ms": duration_ms
-        }
-        
+
+        details = {"step_count": step_count, "duration_ms": duration_ms}
+
         self.log_event(
             event_type=AuditEventType.PLAN_EXECUTION,
             severity=SeverityLevel.INFO,
@@ -323,32 +340,32 @@ class AuditLogger:
             action=action,
             result=result,
             details=details,
-            plan_id=plan_id
+            plan_id=plan_id,
         )
-    
-    def log_approval_event(self,
-                         plan_id: str,
-                         step_id: str,
-                         approval_action: str,  # required, granted, denied
-                         tool_name: str,
-                         risk_level: str,
-                         approver: str = "user") -> None:
+
+    def log_approval_event(
+        self,
+        plan_id: str,
+        step_id: str,
+        approval_action: str,  # required, granted, denied
+        tool_name: str,
+        risk_level: str,
+        approver: str = "user",
+    ) -> None:
         """Log approval-related events"""
-        
-        details = {
-            "step_id": step_id,
-            "risk_level": risk_level,
-            "approver": approver
-        }
-        
+
+        details = {"step_id": step_id, "risk_level": risk_level, "approver": approver}
+
         event_mapping = {
             "required": AuditEventType.APPROVAL_REQUIRED,
             "granted": AuditEventType.APPROVAL_GRANTED,
-            "denied": AuditEventType.APPROVAL_DENIED
+            "denied": AuditEventType.APPROVAL_DENIED,
         }
-        
+
         self.log_event(
-            event_type=event_mapping.get(approval_action, AuditEventType.APPROVAL_REQUIRED),
+            event_type=event_mapping.get(
+                approval_action, AuditEventType.APPROVAL_REQUIRED
+            ),
             severity=SeverityLevel.INFO,
             actor=approver,
             resource=f"plan:{plan_id}:step:{step_id}",
@@ -356,9 +373,9 @@ class AuditLogger:
             result="logged",
             details=details,
             plan_id=plan_id,
-            tool_name=tool_name
+            tool_name=tool_name,
         )
-    
+
     def log_cron_fire(
         self,
         entry_id: str,
@@ -399,15 +416,17 @@ class AuditLogger:
             },
         )
 
-    def get_recent_events(self,
-                        limit: int = 100,
-                        event_type: Optional[AuditEventType] = None,
-                        severity: Optional[SeverityLevel] = None,
-                        actor: Optional[str] = None) -> List[AuditEvent]:
+    def get_recent_events(
+        self,
+        limit: int = 100,
+        event_type: Optional[AuditEventType] = None,
+        severity: Optional[SeverityLevel] = None,
+        actor: Optional[str] = None,
+    ) -> List[AuditEvent]:
         """Get recent audit events with optional filtering"""
-        
+
         events = self.recent_events
-        
+
         # Apply filters
         if event_type:
             events = [e for e in events if e.event_type == event_type]
@@ -415,13 +434,13 @@ class AuditLogger:
             events = [e for e in events if e.severity == severity]
         if actor:
             events = [e for e in events if actor.lower() in e.actor.lower()]
-        
+
         # Return most recent first, limited
         return list(reversed(events))[:limit]
-    
+
     def get_security_summary(self) -> Dict[str, Any]:
         """Get security summary statistics"""
-        
+
         total_events = len(self.recent_events)
         if total_events == 0:
             return {
@@ -434,7 +453,7 @@ class AuditLogger:
                 "recent_critical_events": 0,
                 "log_file": str(self.log_file),
             }
-        
+
         # Count by type / severity in a single pass.
         type_counts = dict(Counter(e.event_type.value for e in self.recent_events))
         severity_counts = dict(Counter(e.severity.value for e in self.recent_events))
@@ -442,23 +461,22 @@ class AuditLogger:
         # Recent critical events (last 10).
         _critical_severities = {SeverityLevel.ERROR, SeverityLevel.CRITICAL}
         critical_events = [
-            e for e in self.recent_events
-            if e.severity in _critical_severities
+            e for e in self.recent_events if e.severity in _critical_severities
         ][-10:]
 
         # Permission denials
         permission_denials = sum(
-            1 for e in self.recent_events
+            1
+            for e in self.recent_events
             if e.event_type == AuditEventType.PERMISSION_DENIED
         )
 
         # Secret detections
         _secret_types = {AuditEventType.SECRET_DETECTED, AuditEventType.SECRET_REDACTED}
         secret_detections = sum(
-            1 for e in self.recent_events
-            if e.event_type in _secret_types
+            1 for e in self.recent_events if e.event_type in _secret_types
         )
-        
+
         return {
             "total_events": total_events,
             "session_id": self.session_id,
@@ -469,7 +487,7 @@ class AuditLogger:
             "recent_critical_events": len(critical_events),
             "log_file": str(self.log_file),
         }
-    
+
     def event_count(self) -> int:
         """Return the current number of in-memory events."""
         return len(self.recent_events)
@@ -484,55 +502,65 @@ class AuditLogger:
         old, self.recent_events = self.recent_events, []
         return len(old)
 
-    def export_audit_log(self,
-                        output_file: str,
-                        format: str = "json",
-                        include_details: bool = True) -> str:
+    def export_audit_log(
+        self, output_file: str, format: str = "json", include_details: bool = True
+    ) -> str:
         """Export audit log to file"""
-        
+
         output_path = self.log_dir / Path(output_file).name
-        
+
         if format.lower() == "json":
             # Export as JSON lines
-            with open(output_path, 'w', encoding='utf-8') as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 for event in self.recent_events:
                     event_data = event.to_dict()
                     if not include_details:
-                        event_data.pop('details', None)
-                    f.write(json.dumps(event_data, ensure_ascii=False) + '\n')
-        
+                        event_data.pop("details", None)
+                    f.write(json.dumps(event_data, ensure_ascii=False) + "\n")
+
         elif format.lower() == "csv":
             # Export as CSV
             import csv
-            
-            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+
+            with open(output_path, "w", newline="", encoding="utf-8") as f:
                 if not self.recent_events:
                     return str(output_path)
-                
+
                 # Get field names from first event
-                fieldnames = ['timestamp', 'event_type', 'severity', 'actor', 
-                             'resource', 'action', 'result', 'session_id', 'run_id', 
-                             'plan_id', 'tool_name']
-                
+                fieldnames = [
+                    "timestamp",
+                    "event_type",
+                    "severity",
+                    "actor",
+                    "resource",
+                    "action",
+                    "result",
+                    "session_id",
+                    "run_id",
+                    "plan_id",
+                    "tool_name",
+                ]
+
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
-                
+
                 for event in self.recent_events:
                     row = event.to_dict()
                     # Remove details for CSV simplicity
-                    row.pop('details', None)
+                    row.pop("details", None)
                     # Keep only basic fields
                     row = {k: v for k, v in row.items() if k in fieldnames}
                     writer.writerow(row)
-        
+
         else:
             raise ValueError(f"Unsupported export format: {format}")
-        
+
         return str(output_path)
 
 
 # Global audit logger instance
 _audit_logger = None
+
 
 def get_audit_logger() -> AuditLogger:
     """Get global audit logger instance"""
@@ -540,5 +568,3 @@ def get_audit_logger() -> AuditLogger:
     if _audit_logger is None:
         _audit_logger = AuditLogger()
     return _audit_logger
-
-

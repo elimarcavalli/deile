@@ -37,9 +37,7 @@ def build_tool_stage_kwargs(
     args = tc_args or {}
 
     if tool_key == "tool_pip_install":
-        kwargs["package"] = (
-            str(next(iter(args.values()))) if args else tc_name
-        )
+        kwargs["package"] = str(next(iter(args.values()))) if args else tc_name
     elif tool_key == "tool_bash":
         raw_cmd = ""
         if args:
@@ -59,17 +57,17 @@ def build_tool_stage_kwargs(
     elif tool_key == "tool_find_files":
         kwargs.setdefault(
             "path",
-            str(args.get("path") or args.get("directory") or "workspace")
-            if args
-            else "workspace",
+            (
+                str(args.get("path") or args.get("directory") or "workspace")
+                if args
+                else "workspace"
+            ),
         )
         kwargs.setdefault("matches", 0)
         kwargs.setdefault("scanned", 0)
     elif tool_key == "tool_run_tests":
         kwargs["target"] = (
-            str(args.get("target") or args.get("path") or tc_name)
-            if args
-            else tc_name
+            str(args.get("target") or args.get("path") or tc_name) if args else tc_name
         )
         kwargs.setdefault("count", 0)
 

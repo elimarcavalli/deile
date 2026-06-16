@@ -26,24 +26,23 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
 
 import pytest
 
 from deile.config.settings import (
-    Settings,
-    _OVERRIDE_HANDLERS,
     _JSON_FIELD_MAP,
     _LIST_ATTRS,
+    _OVERRIDE_HANDLERS,
+    Settings,
     _to_activity_sources,
     get_settings,
     reset_settings,
 )
 
-
 # ---------------------------------------------------------------------------
 # 1–10: _to_activity_sources unit tests
 # ---------------------------------------------------------------------------
+
 
 class TestToActivitySources:
     def test_empty_list_is_valid_sentinel(self):
@@ -52,13 +51,25 @@ class TestToActivitySources:
 
     def test_valid_list(self):
         raw = [
-            {"deployment": "deile-pipeline", "role": "pipeline", "color": "bright_black"},
-            {"deployment": "deile-worker",   "role": "worker",   "color": "cyan"},
+            {
+                "deployment": "deile-pipeline",
+                "role": "pipeline",
+                "color": "bright_black",
+            },
+            {"deployment": "deile-worker", "role": "worker", "color": "cyan"},
         ]
         result = _to_activity_sources(raw)
         assert len(result) == 2
-        assert result[0] == {"deployment": "deile-pipeline", "role": "pipeline", "color": "bright_black"}
-        assert result[1] == {"deployment": "deile-worker", "role": "worker", "color": "cyan"}
+        assert result[0] == {
+            "deployment": "deile-pipeline",
+            "role": "pipeline",
+            "color": "bright_black",
+        }
+        assert result[1] == {
+            "deployment": "deile-worker",
+            "role": "worker",
+            "color": "cyan",
+        }
 
     def test_non_list_raises_type_error(self):
         with pytest.raises(TypeError, match="expected list"):
@@ -74,45 +85,47 @@ class TestToActivitySources:
 
     def test_deployment_invalid_dns_raises_value_error(self):
         with pytest.raises(ValueError, match="DNS-1123"):
-            _to_activity_sources([
-                {"deployment": "Invalid_NAME", "role": "worker", "color": "cyan"}
-            ])
+            _to_activity_sources(
+                [{"deployment": "Invalid_NAME", "role": "worker", "color": "cyan"}]
+            )
 
     def test_deployment_with_uppercase_fails(self):
         with pytest.raises(ValueError, match="DNS-1123"):
-            _to_activity_sources([
-                {"deployment": "MyDeployment", "role": "w", "color": "c"}
-            ])
+            _to_activity_sources(
+                [{"deployment": "MyDeployment", "role": "w", "color": "c"}]
+            )
 
     def test_deployment_starting_with_hyphen_fails(self):
         with pytest.raises(ValueError, match="DNS-1123"):
-            _to_activity_sources([
-                {"deployment": "-invalid", "role": "w", "color": "c"}
-            ])
+            _to_activity_sources(
+                [{"deployment": "-invalid", "role": "w", "color": "c"}]
+            )
 
     def test_role_missing_raises_value_error(self):
         with pytest.raises(ValueError, match="role.*missing or empty"):
-            _to_activity_sources([
-                {"deployment": "my-deploy", "role": "", "color": "cyan"}
-            ])
+            _to_activity_sources(
+                [{"deployment": "my-deploy", "role": "", "color": "cyan"}]
+            )
 
     def test_color_missing_raises_value_error(self):
         with pytest.raises(ValueError, match="color.*missing or empty"):
-            _to_activity_sources([
-                {"deployment": "my-deploy", "role": "worker", "color": ""}
-            ])
+            _to_activity_sources(
+                [{"deployment": "my-deploy", "role": "worker", "color": ""}]
+            )
 
     def test_duplicate_deployment_raises_value_error(self):
         with pytest.raises(ValueError, match="duplicate"):
-            _to_activity_sources([
-                {"deployment": "deile-worker", "role": "w1", "color": "c1"},
-                {"deployment": "deile-worker", "role": "w2", "color": "c2"},
-            ])
+            _to_activity_sources(
+                [
+                    {"deployment": "deile-worker", "role": "w1", "color": "c1"},
+                    {"deployment": "deile-worker", "role": "w2", "color": "c2"},
+                ]
+            )
 
     def test_duplicate_role_is_allowed(self):
         raw = [
-            {"deployment": "deile-worker",   "role": "worker", "color": "cyan"},
-            {"deployment": "deile-pipeline",  "role": "worker", "color": "blue"},
+            {"deployment": "deile-worker", "role": "worker", "color": "cyan"},
+            {"deployment": "deile-pipeline", "role": "worker", "color": "blue"},
         ]
         result = _to_activity_sources(raw)
         assert len(result) == 2
@@ -136,37 +149,52 @@ class TestToActivitySources:
 # 11–12: apply_overrides integration
 # ---------------------------------------------------------------------------
 
+
 class TestApplyOverridesActivitySources:
     def test_valid_sources_loaded(self):
         s = Settings()
-        s.apply_overrides({
-            "panel": {
-                "activity_sources": [
-                    {"deployment": "deile-pipeline", "role": "pipeline", "color": "bright_black"},
-                    {"deployment": "deile-worker",   "role": "worker",   "color": "cyan"},
-                    {"deployment": "deile-monitor",  "role": "monitor",  "color": "blue"},
-                ]
+        s.apply_overrides(
+            {
+                "panel": {
+                    "activity_sources": [
+                        {
+                            "deployment": "deile-pipeline",
+                            "role": "pipeline",
+                            "color": "bright_black",
+                        },
+                        {
+                            "deployment": "deile-worker",
+                            "role": "worker",
+                            "color": "cyan",
+                        },
+                        {
+                            "deployment": "deile-monitor",
+                            "role": "monitor",
+                            "color": "blue",
+                        },
+                    ]
+                }
             }
-        })
+        )
         assert len(s.panel_activity_sources) == 3
         assert s.panel_activity_sources[0]["deployment"] == "deile-pipeline"
 
     def test_invalid_sources_keeps_default(self):
         s = Settings()
-        s.apply_overrides({
-            "panel": {
-                "activity_sources": [
-                    {"deployment": "INVALID-UPPER", "role": "r", "color": "c"},
-                ]
+        s.apply_overrides(
+            {
+                "panel": {
+                    "activity_sources": [
+                        {"deployment": "INVALID-UPPER", "role": "r", "color": "c"},
+                    ]
+                }
             }
-        })
+        )
         assert s.panel_activity_sources == []
 
     def test_empty_sources_sets_empty_list(self):
         s = Settings()
-        s.panel_activity_sources = [
-            {"deployment": "x", "role": "r", "color": "c"}
-        ]
+        s.panel_activity_sources = [{"deployment": "x", "role": "r", "color": "c"}]
         s.apply_overrides({"panel": {"activity_sources": []}})
         assert s.panel_activity_sources == []
 
@@ -180,17 +208,27 @@ class TestApplyOverridesActivitySources:
 # 13–15: Layered loading via settings files
 # ---------------------------------------------------------------------------
 
+
 class TestLayeredLoadingActivitySources:
     def test_user_layer_applies_sources(self, tmp_path: Path):
         settings_file = tmp_path / "settings.json"
-        settings_file.write_text(json.dumps({
-            "panel": {
-                "activity_sources": [
-                    {"deployment": "my-pod", "role": "myrole", "color": "green"},
-                ]
-            }
-        }))
+        settings_file.write_text(
+            json.dumps(
+                {
+                    "panel": {
+                        "activity_sources": [
+                            {
+                                "deployment": "my-pod",
+                                "role": "myrole",
+                                "color": "green",
+                            },
+                        ]
+                    }
+                }
+            )
+        )
         import deile.config.settings as _sm
+
         orig_resolve = _sm._resolve_global_settings_path
         _sm._resolve_global_settings_path = lambda: settings_file
         reset_settings()
@@ -205,29 +243,46 @@ class TestLayeredLoadingActivitySources:
     def test_project_layer_overrides_user_layer(self, tmp_path: Path):
         """D3: last layer wins — 3-source project layer overrides 5-source user layer."""
         user_file = tmp_path / "user_settings.json"
-        user_file.write_text(json.dumps({
-            "panel": {
-                "activity_sources": [
-                    {"deployment": f"deploy-{i}", "role": f"r{i}", "color": "c"}
-                    for i in range(5)
-                ]
-            }
-        }))
+        user_file.write_text(
+            json.dumps(
+                {
+                    "panel": {
+                        "activity_sources": [
+                            {"deployment": f"deploy-{i}", "role": f"r{i}", "color": "c"}
+                            for i in range(5)
+                        ]
+                    }
+                }
+            )
+        )
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         project_settings = project_dir / ".deile" / "settings.json"
         project_settings.parent.mkdir(parents=True)
-        project_settings.write_text(json.dumps({
-            "panel": {
-                "activity_sources": [
-                    {"deployment": "proj-pod-0", "role": "pr0", "color": "blue"},
-                    {"deployment": "proj-pod-1", "role": "pr1", "color": "red"},
-                    {"deployment": "proj-pod-2", "role": "pr2", "color": "green"},
-                ]
-            },
-            "trust": {"project_layer_dirs": [str(project_dir)]},
-        }))
+        project_settings.write_text(
+            json.dumps(
+                {
+                    "panel": {
+                        "activity_sources": [
+                            {
+                                "deployment": "proj-pod-0",
+                                "role": "pr0",
+                                "color": "blue",
+                            },
+                            {"deployment": "proj-pod-1", "role": "pr1", "color": "red"},
+                            {
+                                "deployment": "proj-pod-2",
+                                "role": "pr2",
+                                "color": "green",
+                            },
+                        ]
+                    },
+                    "trust": {"project_layer_dirs": [str(project_dir)]},
+                }
+            )
+        )
         import deile.config.settings as _sm
+
         orig_resolve = _sm._resolve_global_settings_path
         orig_cwd = os.getcwd()
         _sm._resolve_global_settings_path = lambda: user_file
@@ -247,6 +302,7 @@ class TestLayeredLoadingActivitySources:
         settings_file = tmp_path / "settings.json"
         settings_file.write_text(json.dumps({"logging": {"level": "INFO"}}))
         import deile.config.settings as _sm
+
         orig_resolve = _sm._resolve_global_settings_path
         _sm._resolve_global_settings_path = lambda: settings_file
         reset_settings()
@@ -261,6 +317,7 @@ class TestLayeredLoadingActivitySources:
 # ---------------------------------------------------------------------------
 # 16–18: Schema / map membership invariants
 # ---------------------------------------------------------------------------
+
 
 class TestSchemaInvariants:
     def test_panel_activity_sources_not_in_list_attrs(self):

@@ -31,6 +31,7 @@ CANDIDATES = [
 
 async def _ping(provider_key: str, provider) -> tuple[str, str]:
     from deile.core.models.base import ModelMessage
+
     try:
         result = await provider.generate(
             messages=[ModelMessage(role="user", content="hi")],

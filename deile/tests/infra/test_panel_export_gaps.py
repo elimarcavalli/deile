@@ -1,4 +1,5 @@
 """Tests: _redact_for_export recursive, _deile_export_dir mode, and exact key-sets (issue #461)."""
+
 from __future__ import annotations
 
 import json
@@ -11,6 +12,7 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
         sys.path.insert(0, str(_p))
 
 import _panel as panel
+
 from deile.ui.panel.observability.screens import LiveSessionData
 
 
@@ -33,6 +35,7 @@ class TestRedactForExport:
 
     def test_string_redacted(self):
         from deile.security.secrets_scanner import SecretsScanner
+
         redactor = SecretsScanner()
         secret = "ghp_" + "C" * 36
         result = panel._redact_for_export(secret, redactor)
@@ -40,6 +43,7 @@ class TestRedactForExport:
 
     def test_dict_keys_preserved(self):
         from deile.security.secrets_scanner import SecretsScanner
+
         redactor = SecretsScanner()
         secret = "ghp_" + "C" * 36
         d = {"key": secret, "other": "safe"}
@@ -49,6 +53,7 @@ class TestRedactForExport:
     def test_nested_dict_redacted(self):
         """Recursive: secret inside a nested dict is redacted."""
         from deile.security.secrets_scanner import SecretsScanner
+
         redactor = SecretsScanner()
         secret = "ghp_" + "C" * 36
         nested = {"outer": {"inner": f"token={secret}"}}
@@ -60,6 +65,7 @@ class TestRedactForExport:
     def test_nested_list_redacted(self):
         """Recursive: secret inside a list item is redacted."""
         from deile.security.secrets_scanner import SecretsScanner
+
         redactor = SecretsScanner()
         secret = "ghp_" + "C" * 36
         lst = [f"token={secret}", "safe"]
@@ -69,6 +75,7 @@ class TestRedactForExport:
 
     def test_non_string_non_dict_non_list_passthrough(self):
         from deile.security.secrets_scanner import SecretsScanner
+
         redactor = SecretsScanner()
         assert panel._redact_for_export(42, redactor) == 42
         assert panel._redact_for_export(3.14, redactor) == 3.14
@@ -87,8 +94,10 @@ class TestDeileExportDir:
 
     def test_dir_mode_0o700(self, tmp_path, monkeypatch):
         import os
+
         if os.name == "nt":
             import pytest
+
             pytest.skip("mode bits not enforced on Windows")
         monkeypatch.setenv("HOME", str(tmp_path))
         result = panel._deile_export_dir()
@@ -114,21 +123,37 @@ class TestBuildLiveSessionJsonExactKeys:
         data = LiveSessionData(session=None, command=None, chat=None, api_errors=[])
         obj = panel._build_live_session_json(data, [], redactor=None)
         assert set(obj["payload"].keys()) == {
-            "session", "command", "chat", "api_errors", "stdout"
+            "session",
+            "command",
+            "chat",
+            "api_errors",
+            "stdout",
         }
 
     def test_v2_envelope_exact_keys(self):
         data = LiveSessionData(session=None, command=None, chat=None, api_errors=[])
-        obj = panel._build_live_session_json(data, [], redactor=None, include_history=True)
+        obj = panel._build_live_session_json(
+            data, [], redactor=None, include_history=True
+        )
         assert set(obj.keys()) == {
-            "schema_version", "kind", "exported_at", "payload", "history"
+            "schema_version",
+            "kind",
+            "exported_at",
+            "payload",
+            "history",
         }
 
     def test_v2_payload_exact_keys(self):
         data = LiveSessionData(session=None, command=None, chat=None, api_errors=[])
-        obj = panel._build_live_session_json(data, [], redactor=None, include_history=True)
+        obj = panel._build_live_session_json(
+            data, [], redactor=None, include_history=True
+        )
         assert set(obj["payload"].keys()) == {
-            "session", "command", "chat", "api_errors", "stdout"
+            "session",
+            "command",
+            "chat",
+            "api_errors",
+            "stdout",
         }
 
     def test_v1_no_history_key(self):
@@ -143,7 +168,9 @@ class TestBuildLiveSessionJsonExactKeys:
 
     def test_v2_schema_version(self):
         data = LiveSessionData(session=None, command=None, chat=None, api_errors=[])
-        obj = panel._build_live_session_json(data, [], redactor=None, include_history=True)
+        obj = panel._build_live_session_json(
+            data, [], redactor=None, include_history=True
+        )
         assert obj["schema_version"] == "deile.export.v2"
 
     def test_v1_json_roundtrip(self):

@@ -4,6 +4,7 @@ Pinpoint behavior contracts of the extracted auto-discovery module so that
 regressions (silent ImportError, double-registration, abstract-class pickup)
 fail fast.
 """
+
 from __future__ import annotations
 
 import sys
@@ -83,9 +84,7 @@ def test_duplicate_tool_not_reregistered():
 def test_abstract_class_is_ignored():
     registry = ToolRegistry()
     pkg = "deile.tools._fake_discovery_pkg_abstract"
-    _install_fake_module(
-        pkg, AbstractTool=_AbstractTool, ConcreteTool=_ConcreteTool
-    )
+    _install_fake_module(pkg, AbstractTool=_AbstractTool, ConcreteTool=_ConcreteTool)
 
     try:
         count = discover_tools_in_package(registry, pkg)

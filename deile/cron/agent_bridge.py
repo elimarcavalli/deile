@@ -129,7 +129,9 @@ def make_fire_callback(
         wrapped_prompt = _wrap_prompt(entry)
         logger.info(
             "cron firing entry %s — notify_user_id=%s prompt_chars=%d",
-            entry.id, entry.notify_user_id, len(entry.prompt),
+            entry.id,
+            entry.notify_user_id,
+            len(entry.prompt),
         )
 
         try:
@@ -160,9 +162,7 @@ def make_fire_callback(
         if len(text) > max_summary_chars:
             summary = summary[: max_summary_chars - 1] + "…"
 
-        logger.debug(
-            "cron entry %s fired; summary length=%d", entry.id, len(summary)
-        )
+        logger.debug("cron entry %s fired; summary length=%d", entry.id, len(summary))
         return summary
 
     return _fire

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile.core.intent_analyzer import (IntentAnalysisResult, IntentCategory,
-                                        IntentType)
+from deile.core.intent_analyzer import IntentAnalysisResult, IntentCategory, IntentType
 from deile.core.intent_tier_mapper import classify_tier
 from deile.core.models.tier import ModelTier
 
@@ -23,14 +22,18 @@ def _result(intent_type: IntentType, category: IntentCategory) -> IntentAnalysis
 # Intent type → tier mapping
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("intent_type,expected_tier", [
-    (IntentType.WORKFLOW_REQUIRED, ModelTier.TIER_1),
-    (IntentType.COMPLEX_ANALYSIS, ModelTier.TIER_1),
-    (IntentType.MULTI_STEP, ModelTier.TIER_2),
-    (IntentType.SIMPLE_TASK, ModelTier.TIER_3),
-    (IntentType.INFORMATION_QUERY, ModelTier.TIER_3),
-    (IntentType.UNKNOWN, ModelTier.TIER_2),
-])
+
+@pytest.mark.parametrize(
+    "intent_type,expected_tier",
+    [
+        (IntentType.WORKFLOW_REQUIRED, ModelTier.TIER_1),
+        (IntentType.COMPLEX_ANALYSIS, ModelTier.TIER_1),
+        (IntentType.MULTI_STEP, ModelTier.TIER_2),
+        (IntentType.SIMPLE_TASK, ModelTier.TIER_3),
+        (IntentType.INFORMATION_QUERY, ModelTier.TIER_3),
+        (IntentType.UNKNOWN, ModelTier.TIER_2),
+    ],
+)
 def test_intent_type_to_tier(intent_type, expected_tier):
     result = _result(intent_type, IntentCategory.INFORMATION)
     assert classify_tier(result) == expected_tier
@@ -39,6 +42,7 @@ def test_intent_type_to_tier(intent_type, expected_tier):
 # ---------------------------------------------------------------------------
 # Category floor — implementation always ≥ TIER_2
 # ---------------------------------------------------------------------------
+
 
 def test_implementation_category_raises_simple_task_to_tier2():
     """SIMPLE_TASK + IMPLEMENTATION category → floor to TIER_2."""
@@ -67,6 +71,7 @@ def test_neutral_category_does_not_change_tier():
 # ---------------------------------------------------------------------------
 # Sanity: unknown intent_type gets safe default
 # ---------------------------------------------------------------------------
+
 
 def test_unknown_type_defaults_to_tier2():
     result = _result(IntentType.UNKNOWN, IntentCategory.INFORMATION)

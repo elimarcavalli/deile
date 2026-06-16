@@ -10,7 +10,7 @@ __all__ = [
     "Parser",
     "ParseResult",
     "FileParser",
-    "CommandParser", 
+    "CommandParser",
     "DiffParser",
-    "IntelligentFileParser"
+    "IntelligentFileParser",
 ]

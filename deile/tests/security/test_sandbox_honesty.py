@@ -46,10 +46,7 @@ def test_bash_sandbox_param_description_does_not_promise_isolation():
     not a Python helper, which could drift from the live schema.
     """
     schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "tools"
-        / "schemas"
-        / "bash_execute.json"
+        Path(__file__).resolve().parents[2] / "tools" / "schemas" / "bash_execute.json"
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     desc = schema["parameters"]["properties"]["sandbox"]["description"].lower()
@@ -69,12 +66,12 @@ def test_plugin_sandbox_docstring_marks_skeleton():
     """Issue #54: PluginSandbox docstring must declare it does not isolate."""
     doc = (PluginSandbox.__doc__ or "").lower()
 
-    assert "skeleton" in doc, (
-        f"PluginSandbox class docstring must declare itself a skeleton; got: {doc!r}"
-    )
-    assert "não fornece isolamento" in doc or "does not" in doc, (
-        f"PluginSandbox docstring must be explicit that it does not isolate; got: {doc!r}"
-    )
+    assert (
+        "skeleton" in doc
+    ), f"PluginSandbox class docstring must declare itself a skeleton; got: {doc!r}"
+    assert (
+        "não fornece isolamento" in doc or "does not" in doc
+    ), f"PluginSandbox docstring must be explicit that it does not isolate; got: {doc!r}"
 
 
 @pytest.mark.security
@@ -88,9 +85,7 @@ def test_plugin_manager_does_not_invoke_plugin_sandbox():
     does not count as wiring.
     """
     plugin_manager_path = (
-        Path(__file__).resolve().parents[2]
-        / "plugins"
-        / "plugin_manager.py"
+        Path(__file__).resolve().parents[2] / "plugins" / "plugin_manager.py"
     )
     tree = ast.parse(plugin_manager_path.read_text(encoding="utf-8"))
 
@@ -102,9 +97,9 @@ def test_plugin_manager_does_not_invoke_plugin_sandbox():
                 "plugin_manager.py imports PluginSandbox — issue #54 forbids "
                 "wiring without first updating the docs that call it a skeleton."
             )
-            assert "sandbox" not in module.split("."), (
-                "plugin_manager.py imports from .sandbox — issue #54."
-            )
+            assert "sandbox" not in module.split(
+                "."
+            ), "plugin_manager.py imports from .sandbox — issue #54."
         if isinstance(node, ast.Name) and node.id == "PluginSandbox":
             raise AssertionError(
                 "plugin_manager.py references the PluginSandbox name in code — "
@@ -121,9 +116,7 @@ def test_plugin_manager_does_not_invoke_plugin_sandbox():
 def test_safety_sandbox_is_gone():
     """Issue #56: SafetySandbox stub removed; module must not exist or import."""
     safety_sandbox_path = (
-        Path(__file__).resolve().parents[2]
-        / "evolution"
-        / "safety_sandbox.py"
+        Path(__file__).resolve().parents[2] / "evolution" / "safety_sandbox.py"
     )
     assert not safety_sandbox_path.exists(), (
         "deile/evolution/safety_sandbox.py reappeared — issue #56 stub must "
@@ -135,9 +128,9 @@ def test_safety_sandbox_is_gone():
 
     from deile import evolution
 
-    assert not hasattr(evolution, "SafetySandbox"), (
-        "deile.evolution.SafetySandbox must not be re-exported (issue #56)."
-    )
+    assert not hasattr(
+        evolution, "SafetySandbox"
+    ), "deile.evolution.SafetySandbox must not be re-exported (issue #56)."
 
 
 @pytest.mark.security

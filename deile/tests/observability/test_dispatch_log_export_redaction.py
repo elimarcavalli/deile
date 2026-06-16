@@ -37,9 +37,7 @@ class TestRedactionInLogRecords:
 
         # Check attributes
         for k, v in (record.attributes or {}).items():
-            assert secret not in str(v), (
-                f"secret leaked in attribute {k!r}: {v!r}"
-            )
+            assert secret not in str(v), f"secret leaked in attribute {k!r}: {v!r}"
 
     @pytest.mark.parametrize("label,secret", SENSITIVE_PATTERNS)
     def test_secret_in_body_is_redacted(self, in_memory_log_exporter, label, secret):

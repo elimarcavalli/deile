@@ -28,7 +28,13 @@ from deile.core.agent import DeileAgent  # noqa: E402
 from deile.core.models.bootstrap import bootstrap_providers  # noqa: E402
 from deile.core.models.router import get_model_router  # noqa: E402
 
-CODE_TOOLS = {"python_execute", "bash_execute", "write_file", "read_file", "pip_install"}
+CODE_TOOLS = {
+    "python_execute",
+    "bash_execute",
+    "write_file",
+    "read_file",
+    "pip_install",
+}
 
 
 def _fmt_tools(tool_results) -> str:
@@ -51,7 +57,9 @@ async def run_turn(agent, session_id, label, user_input):
     print(f"\n--- TOOL CALLS ({len(response.tool_results)}) ---")
     print(_fmt_tools(response.tool_results))
     print(f"\n--- RESPONSE TEXT ---\n{response.content}")
-    print(f"\n--- META | {dt:.1f}s | model={response.metadata.get('model_used','?')} ---")
+    print(
+        f"\n--- META | {dt:.1f}s | model={response.metadata.get('model_used','?')} ---"
+    )
     return response
 
 
@@ -70,7 +78,9 @@ async def main():
     session_id = "text-task-fix-test"
 
     # T1 — pure text request; must produce zero code-tool calls
-    r1 = await run_turn(agent, session_id, "T1 — escreva 50 palavras", "escreva 50 palavras")
+    r1 = await run_turn(
+        agent, session_id, "T1 — escreva 50 palavras", "escreva 50 palavras"
+    )
 
     code_calls_t1 = [
         tr.metadata.get("function_name", "?")
@@ -84,15 +94,22 @@ async def main():
 
     # T2 — self-reflection; should NOT hallucinate python_execute calls
     r2 = await run_turn(
-        agent, session_id,
+        agent,
+        session_id,
         "T2 — o que você fez?",
-        "o que você fez para produzir isso? chamou alguma tool?"
+        "o que você fez para produzir isso? chamou alguma tool?",
     )
 
     text_lower = (r2.content or "").lower()
-    hallucinated = any(k in text_lower for k in [
-        "python_execute", "bash_execute", "contei mentalmente", "deveria ter chamado"
-    ])
+    hallucinated = any(
+        k in text_lower
+        for k in [
+            "python_execute",
+            "bash_execute",
+            "contei mentalmente",
+            "deveria ter chamado",
+        ]
+    )
     if hallucinated:
         print("\n[FAIL T2] Response contains hallucinated tool call references")
     else:

@@ -8,13 +8,17 @@ Garante que o runner local:
   * Captura exceções (não propaga) e marca ``status="error"``.
   * Cada sub-tarefa recebe um ``session_id`` único.
 """
+
 from __future__ import annotations
 
 import pytest
 
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
-from deile.orchestration.subagents.events import (SubAgentEventKind,
-                                                  SubAgentState, SubAgentTask)
+from deile.orchestration.subagents.events import (
+    SubAgentEventKind,
+    SubAgentState,
+    SubAgentTask,
+)
 from deile.orchestration.subagents.runner import LocalSubAgentRunner
 
 pytestmark = pytest.mark.unit
@@ -173,9 +177,11 @@ async def test_prompt_envelope_isolates_subagent_context():
     class _CapturingAgent:
         def process_input_stream(self, prompt, **kwargs):
             captured_prompt.append(prompt)
+
             async def _gen():
                 return
                 yield  # pragma: no cover — generator vazio
+
             return _gen()
 
     runner = LocalSubAgentRunner(_CapturingAgent())
@@ -225,7 +231,8 @@ async def test_persona_warning_emitted_as_progress_event_and_log(caplog):
 
     # Canal principal (sempre observável): evento PROGRESS no painel.
     progress_events = [
-        e for e in captured
+        e
+        for e in captured
         if e.kind is SubAgentEventKind.PROGRESS and "persona" in (e.label or "")
     ]
     assert progress_events, f"esperava progress event sobre persona; got {captured}"
@@ -235,7 +242,8 @@ async def test_persona_warning_emitted_as_progress_event_and_log(caplog):
     # introduzir interferência), mas se houver, deve mencionar persona.
     if caplog.records:
         persona_warns = [
-            rec for rec in caplog.records
+            rec
+            for rec in caplog.records
             if rec.levelno >= _logging.WARNING and "persona" in rec.getMessage()
         ]
         # Se houver algum warning, deve incluir o de persona.
@@ -249,11 +257,13 @@ async def test_cleanup_handles_missing_session_gracefully():
     KeyError/AttributeError silenciosamente quando a sessão já foi
     removida ou o agent não expõe ``_sessions``.
     """
+
     class _AgentWithoutSessions:
         def process_input_stream(self, prompt, **kwargs):
             async def _gen():
                 return
                 yield  # pragma: no cover
+
             return _gen()
 
     runner = LocalSubAgentRunner(_AgentWithoutSessions())

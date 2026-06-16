@@ -8,6 +8,7 @@ Foca no contrato do orquestrador:
     frente — ele vai pro LLM, então deve ser barato em tokens.
   * Renderer factory é opcional (caminho headless funciona).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,9 +17,11 @@ import time
 import pytest
 
 from deile.orchestration.subagents import SubAgentOrchestrator, SubAgentTask
-from deile.orchestration.subagents.events import (SubAgentEvent,
-                                                  SubAgentEventKind,
-                                                  SubAgentState)
+from deile.orchestration.subagents.events import (
+    SubAgentEvent,
+    SubAgentEventKind,
+    SubAgentState,
+)
 from deile.orchestration.subagents.runner import OnEvent
 
 pytestmark = pytest.mark.unit
@@ -42,33 +45,39 @@ class _StubRunner:
         try:
             state.status = "running"
             state.started_at = time.monotonic()
-            on_event(SubAgentEvent(
-                kind=SubAgentEventKind.STARTED,
-                index=state.task.index,
-                label=state.task.description,
-            ))
+            on_event(
+                SubAgentEvent(
+                    kind=SubAgentEventKind.STARTED,
+                    index=state.task.index,
+                    label=state.task.description,
+                )
+            )
             delay = self._delays.get(state.task.index, 0.05)
             await asyncio.sleep(delay)
             if state.task.index in self._fail_for:
                 state.status = "error"
                 state.error = "stub failure"
                 state.finished_at = time.monotonic()
-                on_event(SubAgentEvent(
-                    kind=SubAgentEventKind.FAILED,
-                    index=state.task.index,
-                    label="boom",
-                    error="stub failure",
-                ))
+                on_event(
+                    SubAgentEvent(
+                        kind=SubAgentEventKind.FAILED,
+                        index=state.task.index,
+                        label="boom",
+                        error="stub failure",
+                    )
+                )
                 return
             state.status = "ok"
             state.result_text = f"done #{state.task.index}"
             state.add_file(f"file_{state.task.index}.py")
             state.finished_at = time.monotonic()
-            on_event(SubAgentEvent(
-                kind=SubAgentEventKind.COMPLETED,
-                index=state.task.index,
-                label="ok",
-            ))
+            on_event(
+                SubAgentEvent(
+                    kind=SubAgentEventKind.COMPLETED,
+                    index=state.task.index,
+                    label="ok",
+                )
+            )
         finally:
             async with self._lock:
                 self._active -= 1
@@ -76,7 +85,9 @@ class _StubRunner:
 
 def _mk_tasks(n: int) -> list[SubAgentTask]:
     return [
-        SubAgentTask(index=i, description=f"task {i}", prompt=f"prompt for task #{i}" * 5)
+        SubAgentTask(
+            index=i, description=f"task {i}", prompt=f"prompt for task #{i}" * 5
+        )
         for i in range(1, n + 1)
     ]
 
@@ -146,9 +157,7 @@ async def test_renderer_factory_is_optional_and_invoked_when_provided():
             # Encerra rápido para não segurar a finalização.
             await asyncio.sleep(0.005)
 
-    orch = SubAgentOrchestrator(
-        runner, max_parallel=2, renderer_factory=_FakeRenderer
-    )
+    orch = SubAgentOrchestrator(runner, max_parallel=2, renderer_factory=_FakeRenderer)
     tasks = _mk_tasks(2)
 
     result = await orch.run(tasks)
@@ -171,9 +180,7 @@ async def test_renderer_factory_backward_compat_with_2_args():
         async def run(self):
             await asyncio.sleep(0.001)
 
-    orch = SubAgentOrchestrator(
-        runner, max_parallel=1, renderer_factory=_OldRenderer
-    )
+    orch = SubAgentOrchestrator(runner, max_parallel=1, renderer_factory=_OldRenderer)
     result = await orch.run(_mk_tasks(2))
     assert result.ok_count == 2
 
@@ -207,6 +214,7 @@ async def test_capture_output_false_does_not_redirect():
     """capture_output=False mantém prints fluindo para o terminal real
     (usado em testes onde queremos VER o output do runner).
     """
+
     class _NoopRunner:
         async def run_one(self, state, *, on_event):
             state.status = "ok"
@@ -222,6 +230,7 @@ async def test_capped_buffer_truncates_oversize_writes():
     """Fix C5: ``_CappedBuffer`` substitui StringIO unbounded — após o cap,
     descarta o resto e injeta marker ``[...truncated]``."""
     from deile.orchestration.subagents.orchestrator import _CappedBuffer
+
     buf = _CappedBuffer(max_bytes=100)
     for _ in range(50):
         buf.write("x" * 10)  # 500 chars total
@@ -236,6 +245,7 @@ async def test_capped_buffer_truncates_oversize_writes():
 
 async def test_capped_buffer_below_cap_keeps_everything():
     from deile.orchestration.subagents.orchestrator import _CappedBuffer
+
     buf = _CappedBuffer(max_bytes=1024)
     buf.write("hello ")
     buf.write("world")
@@ -276,6 +286,7 @@ async def test_concurrent_capture_dispatches_rejected(monkeypatch):
     devem ser rejeitados (RuntimeError) — sys.stdout é global do processo e
     sobreposição corromperia o stream.
     """
+
     # Runner que segura por um tempo para garantir overlap.
     class _HoldRunner:
         async def run_one(self, state, *, on_event):
@@ -308,6 +319,7 @@ async def test_no_lock_when_capture_disabled():
     """capture_output=False não deve acionar o lock — testes/headless rodam
     concorrentemente sem mutar sys.stdout.
     """
+
     class _NoopRunner:
         async def run_one(self, state, *, on_event):
             state.status = "ok"
@@ -333,6 +345,7 @@ async def test_budget_enforcement_cancels_pending_states(monkeypatch):
 
     class _HangRunner:
         """Runner que nunca termina (até ser cancelado)."""
+
         async def run_one(self, state, *, on_event):
             state.status = "running"
             state.started_at = time.monotonic()
@@ -400,6 +413,7 @@ async def test_budget_exceeded_with_noncooperative_runner_marks_pending(monkeypa
 
     class _NonCoopRunner:
         """Runner que NÃO propaga CancelledError corretamente — engole."""
+
         async def run_one(self, state, *, on_event):
             state.status = "running"
             state.started_at = time.monotonic()
@@ -430,6 +444,7 @@ def test_lazy_capture_lock_per_event_loop():
     Síncrono propositalmente para usar asyncio.run() — asyncio_mode=auto
     do pytest já provê um loop ativo que conflitaria com o nested run().
     """
+
     class _NoopRunner:
         async def run_one(self, state, *, on_event):
             state.status = "ok"
@@ -454,6 +469,7 @@ async def test_capture_output_false_does_not_redirect_via_capsys(capsys):
     redireciona sys.stdout — prints fluem para o stdout do processo
     (captado por capsys neste teste).
     """
+
     class _PrintRunner:
         async def run_one(self, state, *, on_event):
             print("VISIBLE_FROM_RUNNER")
@@ -477,6 +493,7 @@ async def test_renderer_task_awaited_before_stdout_restore():
     já foi restaurado fora do contexto do orquestrador.
     """
     import sys as _sys
+
     saved_stdout = _sys.stdout
 
     class _SlowRenderer:
@@ -526,6 +543,7 @@ async def test_renderer_task_awaited_before_stdout_restore():
 
 async def test_cancellation_reason_is_none_on_happy_path():
     """NT5: ``cancellation_reason=None`` quando não houve cancel."""
+
     class _NoopRunner:
         async def run_one(self, state, *, on_event):
             state.status = "ok"
@@ -569,6 +587,7 @@ async def test_cancellation_reason_budget_exceeded(monkeypatch):
 
 async def test_cancellation_reason_user_esc():
     """NT5: ESC do usuário (renderer.cancelled=True) → ``cancellation_reason='user_esc'``."""
+
     class _FastRunner:
         async def run_one(self, state, *, on_event):
             state.status = "running"
@@ -623,6 +642,7 @@ async def test_orphan_thread_after_cancel_does_not_leak_to_real_stdout():
         async def run_one(self, state, *, on_event):
             state.status = "running"
             state.started_at = 0.0
+
             def _blocking_with_prints():
                 # Simula execute_sync de bash_tool — print() em sequência.
                 # ``time.sleep`` aqui é intencional (não respondem a cancel
@@ -630,6 +650,7 @@ async def test_orphan_thread_after_cancel_does_not_leak_to_real_stdout():
                 for i in range(6):
                     _time.sleep(0.15)
                     print(f"ORPHAN_LEAK_{i}", flush=True)
+
             try:
                 await asyncio.to_thread(_blocking_with_prints)
             except asyncio.CancelledError:
@@ -646,10 +667,13 @@ async def test_orphan_thread_after_cancel_does_not_leak_to_real_stdout():
     # Budget pequeno → força timeout no orquestrador → cancel das runner tasks
     # → thread orfã continua viva imprimindo.
     import deile.orchestration.subagents.orchestrator as oc_mod
+
     orig_get_budget = oc_mod._get_budget_s
     oc_mod._get_budget_s = lambda: 0.3
     try:
-        orch = SubAgentOrchestrator(_ToThreadRunner(), max_parallel=1, capture_output=True)
+        orch = SubAgentOrchestrator(
+            _ToThreadRunner(), max_parallel=1, capture_output=True
+        )
         await orch.run(_mk_tasks(1))
         # Aguarda thread orfã terminar de imprimir todos os 6 prints.
         _time.sleep(1.5)
@@ -659,9 +683,9 @@ async def test_orphan_thread_after_cancel_does_not_leak_to_real_stdout():
 
     # CONTRATO: ``ORPHAN_LEAK_<N>`` NUNCA pode aparecer no terminal real.
     leaked = real_stdout_proxy.getvalue()
-    assert "ORPHAN_LEAK" not in leaked, (
-        f"Orphan thread leaked to real terminal: {leaked!r}"
-    )
+    assert (
+        "ORPHAN_LEAK" not in leaked
+    ), f"Orphan thread leaked to real terminal: {leaked!r}"
 
 
 async def test_capture_output_keeps_switchable_when_orphan_detected():
@@ -682,8 +706,10 @@ async def test_capture_output_keeps_switchable_when_orphan_detected():
         async def run_one(self, state, *, on_event):
             state.status = "running"
             state.started_at = 0.0
+
             def _orphan():
                 _time.sleep(0.5)  # ainda vivo no encerramento
+
             try:
                 await asyncio.to_thread(_orphan)
             except asyncio.CancelledError:
@@ -694,18 +720,21 @@ async def test_capture_output_keeps_switchable_when_orphan_detected():
     saved = _sys.stdout
     _sys.stdout = io.StringIO()
     import deile.orchestration.subagents.orchestrator as oc_mod
+
     orig_get_budget = oc_mod._get_budget_s
     oc_mod._get_budget_s = lambda: 0.1
     try:
         orch = SubAgentOrchestrator(
-            _ToThreadOrphanRunner(), max_parallel=1, capture_output=True,
+            _ToThreadOrphanRunner(),
+            max_parallel=1,
+            capture_output=True,
         )
         await orch.run(_mk_tasks(1))
         # No encerramento, ``sys.stdout`` permanece o SwitchableStream porque
         # orfãs foram detectadas.
-        assert isinstance(_sys.stdout, SwitchableStream), (
-            f"esperava SwitchableStream em sys.stdout, vi {type(_sys.stdout).__name__}"
-        )
+        assert isinstance(
+            _sys.stdout, SwitchableStream
+        ), f"esperava SwitchableStream em sys.stdout, vi {type(_sys.stdout).__name__}"
         # Aguarda orfã terminar antes de finalizar o teste.
         _time.sleep(1.0)
     finally:
@@ -718,10 +747,15 @@ async def test_cancellation_reason_field_in_dataclass_signature():
     default None — garante que SubAgentResult não regrediu a assinatura.
     """
     from deile.orchestration.subagents.orchestrator import SubAgentResult
+
     r = SubAgentResult(states=[], elapsed_s=0.0, ok_count=0, error_count=0)
     assert r.cancellation_reason is None
     r2 = SubAgentResult(
-        states=[], elapsed_s=0.0, ok_count=0, error_count=1,
-        cancelled=True, cancellation_reason="user_esc",
+        states=[],
+        elapsed_s=0.0,
+        ok_count=0,
+        error_count=1,
+        cancelled=True,
+        cancellation_reason="user_esc",
     )
     assert r2.cancellation_reason == "user_esc"

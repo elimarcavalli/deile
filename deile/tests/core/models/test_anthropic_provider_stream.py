@@ -80,8 +80,16 @@ async def test_text_stream_only(provider):
         )
     )
     events = [
-        _e("content_block_delta", index=0, delta=SimpleNamespace(type="text_delta", text="hi")),
-        _e("content_block_delta", index=0, delta=SimpleNamespace(type="text_delta", text=" world")),
+        _e(
+            "content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="text_delta", text="hi"),
+        ),
+        _e(
+            "content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="text_delta", text=" world"),
+        ),
         _e("message_stop"),
     ]
 
@@ -119,7 +127,9 @@ async def test_tool_use_stream_emits_lifecycle(provider):
         _e(
             "content_block_start",
             index=0,
-            content_block=SimpleNamespace(type="tool_use", id="tool-1", name="bash_execute"),
+            content_block=SimpleNamespace(
+                type="tool_use", id="tool-1", name="bash_execute"
+            ),
         ),
         _e(
             "content_block_delta",

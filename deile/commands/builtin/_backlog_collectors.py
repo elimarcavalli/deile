@@ -18,9 +18,12 @@ from typing import Dict, Iterable, List, Tuple
 
 from ...orchestration.forge import get_forge_router
 from ...orchestration.forge.refs import IssueRef, PrRef
-from ...orchestration.pipeline.labels import (REVIEW_LABELS, WORKFLOW_BLOCKED,
-                                              WORKFLOW_LABELS,
-                                              WORKFLOW_WAITING)
+from ...orchestration.pipeline.labels import (
+    REVIEW_LABELS,
+    WORKFLOW_BLOCKED,
+    WORKFLOW_LABELS,
+    WORKFLOW_WAITING,
+)
 
 # Prefixes used to strip ``~workflow:`` / ``~review:`` off label constants
 # when building bucket *display* names. The ``labels.py`` constants stay
@@ -31,7 +34,7 @@ _REVIEW_PREFIX = "~review:"
 
 def _strip_prefix(label: str, prefix: str) -> str:
     assert label.startswith(prefix), f"label {label!r} missing prefix {prefix!r}"
-    return label[len(prefix):]
+    return label[len(prefix) :]
 
 
 # Canonical ordered buckets derived from ``labels.py`` — any rename or
@@ -44,7 +47,9 @@ ISSUE_BUCKETS: Tuple[str, ...] = tuple(
 # ``~workflow:`` label that may attach to a PR — see ``stages.py``).
 PR_BUCKETS: Tuple[str, ...] = tuple(
     _strip_prefix(lb, _REVIEW_PREFIX) for lb in REVIEW_LABELS
-) + (_strip_prefix(WORKFLOW_BLOCKED, _WORKFLOW_PREFIX),)
+) + (
+    _strip_prefix(WORKFLOW_BLOCKED, _WORKFLOW_PREFIX),
+)
 
 _SEM_WORKFLOW = "(sem ~workflow:*)"
 _SEM_REVIEW = "(sem ~review:* e sem bloqueada)"
@@ -58,6 +63,7 @@ _WAITING_BUCKET = _strip_prefix(WORKFLOW_WAITING, _WORKFLOW_PREFIX)
 @dataclass
 class BacklogData:
     """Aggregated counts for the two backlog tables."""
+
     repo: str
     issue_counts: Dict[str, int] = field(default_factory=dict)
     pr_counts: Dict[str, int] = field(default_factory=dict)

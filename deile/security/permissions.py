@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 
 class PermissionLevel(Enum):
     """Permission levels"""
+
     NONE = "none"
-    READ = "read" 
+    READ = "read"
     WRITE = "write"
     EXECUTE = "execute"
     ADMIN = "admin"
@@ -23,6 +24,7 @@ class PermissionLevel(Enum):
 
 class ResourceType(Enum):
     """Types of resources that can be protected"""
+
     FILE = "file"
     DIRECTORY = "directory"
     COMMAND = "command"
@@ -33,6 +35,7 @@ class ResourceType(Enum):
 @dataclass
 class PermissionRule:
     """Single permission rule"""
+
     id: str
     name: str
     description: str
@@ -43,7 +46,7 @@ class PermissionRule:
     conditions: Dict[str, Any] = field(default_factory=dict)
     priority: int = 100
     enabled: bool = True
-    
+
     def __post_init__(self):
         """Compile regex pattern after initialization"""
         try:
@@ -51,13 +54,13 @@ class PermissionRule:
         except re.error as e:
             logger.error(f"Invalid regex pattern in rule {self.id}: {e}")
             self.compiled_pattern = None
-            
+
     def matches_resource(self, resource: str) -> bool:
         """Check if this rule matches the given resource"""
         if not self.compiled_pattern:
             return False
         return bool(self.compiled_pattern.match(resource))
-        
+
     def applies_to_tool(self, tool_name: str) -> bool:
         """Check if this rule applies to the given tool"""
         return tool_name in self.tool_names or "*" in self.tool_names
@@ -65,7 +68,7 @@ class PermissionRule:
 
 class PermissionManager:
     """Central permission management"""
-    
+
     def __init__(self, config_path: Optional[Path] = None):
         self.rules: List[PermissionRule] = []
         self.default_permission = PermissionLevel.READ
@@ -76,34 +79,32 @@ class PermissionManager:
             self.load_rules_from_config(config_path)
         else:
             self._load_default_rules()
-    
+
     def _load_default_rules(self) -> None:
         """Load default security rules"""
         default_rules = [
             # System protection
             PermissionRule(
                 id="protect_system_dirs",
-                name="System Directory Protection", 
+                name="System Directory Protection",
                 description="Protect critical system directories",
                 resource_type=ResourceType.DIRECTORY,
                 resource_pattern=r"^(/etc|/usr|/boot|/sys|/proc|C:\\Windows|C:\\Program Files).*",
                 tool_names=["*"],
                 permission_level=PermissionLevel.NONE,
-                priority=10
+                priority=10,
             ),
-            
             # Git protection
             PermissionRule(
                 id="protect_git_dir",
                 name="Git Directory Protection",
                 description="Protect .git directories from accidental modification",
-                resource_type=ResourceType.DIRECTORY, 
+                resource_type=ResourceType.DIRECTORY,
                 resource_pattern=r".*\.git(/.*)?$",
                 tool_names=["write_file", "delete_file", "bash_execute"],
                 permission_level=PermissionLevel.READ,
-                priority=20
+                priority=20,
             ),
-            
             # Config file protection
             PermissionRule(
                 id="protect_config_files",
@@ -113,9 +114,8 @@ class PermissionManager:
                 resource_pattern=r".*\.(env|config|conf|yaml|yml|json|ini)$",
                 tool_names=["write_file", "delete_file"],
                 permission_level=PermissionLevel.WRITE,
-                priority=30
+                priority=30,
             ),
-            
             # Python cache protection
             PermissionRule(
                 id="allow_python_cache",
@@ -125,9 +125,8 @@ class PermissionManager:
                 resource_pattern=r".*(__pycache__|\.pytest_cache)(/.*)?$",
                 tool_names=["*"],
                 permission_level=PermissionLevel.WRITE,
-                priority=40
+                priority=40,
             ),
-            
             # Default workspace access
             PermissionRule(
                 id="workspace_access",
@@ -137,9 +136,8 @@ class PermissionManager:
                 resource_pattern=r"^\./((?!\.git/).)*$",
                 tool_names=["*"],
                 permission_level=PermissionLevel.WRITE,
-                priority=100
+                priority=100,
             ),
-
             # Settings writes (issue #125) — DEFAULT IS FAIL-CLOSED.
             # The default rule is ``READ`` (i.e. "no writes"), matching the
             # security-first principle in 03-PRINCIPIOS-ARQUITETURAIS.md
@@ -166,9 +164,9 @@ class PermissionManager:
                 id="settings_write_default",
                 name="Settings Write Default",
                 description="Deny writes to ~/.deile/settings.json and "
-                            "<project>/.deile/settings.json unless "
-                            "explicitly enabled in config/permissions.yaml "
-                            "(fail-closed; issue #125)",
+                "<project>/.deile/settings.json unless "
+                "explicitly enabled in config/permissions.yaml "
+                "(fail-closed; issue #125)",
                 resource_type=ResourceType.FILE,
                 resource_pattern=r"^settings:(global|project):.*$",
                 tool_names=["settings_manager"],
@@ -176,66 +174,72 @@ class PermissionManager:
                 priority=50,
             ),
         ]
-        
+
         for rule in default_rules:
             self.add_rule(rule)
-            
-    def check_permission(self, 
-                        tool_name: str,
-                        resource: str,
-                        action: str,
-                        context: Optional[Dict[str, Any]] = None) -> bool:
+
+    def check_permission(
+        self,
+        tool_name: str,
+        resource: str,
+        action: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Check if action is permitted"""
-        
+
         context = context or {}
-        
+
         # Find applicable rules, sorted by priority
         applicable_rules = [
-            rule for rule in sorted(self.rules, key=lambda r: r.priority)
-            if rule.enabled and rule.applies_to_tool(tool_name) and rule.matches_resource(resource)
+            rule
+            for rule in sorted(self.rules, key=lambda r: r.priority)
+            if rule.enabled
+            and rule.applies_to_tool(tool_name)
+            and rule.matches_resource(resource)
         ]
-        
+
         if not applicable_rules:
             # No specific rules, use default permission
             return self._check_default_permission(action)
-        
+
         # Use the highest priority rule (lowest priority number)
         rule = applicable_rules[0]
-        
+
         # Check if the requested action is allowed by the rule
-        return self._action_allowed_by_permission(action, rule.permission_level, context)
-    
+        return self._action_allowed_by_permission(
+            action, rule.permission_level, context
+        )
+
     def _check_default_permission(self, action: str) -> bool:
         """Check if action is allowed by default permission"""
         return self._action_allowed_by_permission(action, self.default_permission, {})
-    
-    def _action_allowed_by_permission(self, 
-                                    action: str, 
-                                    permission: PermissionLevel,
-                                    context: Dict[str, Any]) -> bool:
+
+    def _action_allowed_by_permission(
+        self, action: str, permission: PermissionLevel, context: Dict[str, Any]
+    ) -> bool:
         """Check if action is allowed by permission level"""
-        
+
         action_requirements = {
             "read": PermissionLevel.READ,
-            "write": PermissionLevel.WRITE, 
+            "write": PermissionLevel.WRITE,
             "execute": PermissionLevel.EXECUTE,
             "delete": PermissionLevel.WRITE,
             "create": PermissionLevel.WRITE,
             "modify": PermissionLevel.WRITE,
-            "admin": PermissionLevel.ADMIN
+            "admin": PermissionLevel.ADMIN,
         }
-        
+
         required_level = action_requirements.get(action.lower(), PermissionLevel.READ)
-        
+
         # Permission level hierarchy
         level_hierarchy = [
             PermissionLevel.NONE,
             PermissionLevel.READ,
             PermissionLevel.WRITE,
             PermissionLevel.EXECUTE,
-            PermissionLevel.ADMIN
+            PermissionLevel.ADMIN,
         ]
-        
+
         try:
             required_index = level_hierarchy.index(required_level)
             current_index = level_hierarchy.index(permission)
@@ -243,100 +247,102 @@ class PermissionManager:
         except ValueError:
             # Unknown permission level, deny by default
             return False
-    
+
     def add_rule(self, rule: PermissionRule) -> None:
         """Add a permission rule"""
         # Remove existing rule with same ID
         self.rules = [r for r in self.rules if r.id != rule.id]
         self.rules.append(rule)
         logger.debug(f"Added permission rule: {rule.id}")
-    
+
     def remove_rule(self, rule_id: str) -> bool:
         """Remove a permission rule"""
         original_count = len(self.rules)
         self.rules = [r for r in self.rules if r.id != rule_id]
         removed = len(self.rules) < original_count
-        
+
         if removed:
             logger.debug(f"Removed permission rule: {rule_id}")
         return removed
-    
+
     def load_rules_from_config(self, config_path: Path) -> None:
         """Load rules from YAML configuration"""
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
-            
-            rules_config = config.get('permission_rules', [])
-            
+
+            rules_config = config.get("permission_rules", [])
+
             for rule_data in rules_config:
                 rule = PermissionRule(
-                    id=rule_data['id'],
-                    name=rule_data['name'],
-                    description=rule_data['description'],
-                    resource_type=ResourceType(rule_data['resource_type']),
-                    resource_pattern=rule_data['resource_pattern'],
-                    tool_names=rule_data['tool_names'],
-                    permission_level=PermissionLevel(rule_data['permission_level']),
-                    conditions=rule_data.get('conditions', {}),
-                    priority=rule_data.get('priority', 100),
-                    enabled=rule_data.get('enabled', True)
+                    id=rule_data["id"],
+                    name=rule_data["name"],
+                    description=rule_data["description"],
+                    resource_type=ResourceType(rule_data["resource_type"]),
+                    resource_pattern=rule_data["resource_pattern"],
+                    tool_names=rule_data["tool_names"],
+                    permission_level=PermissionLevel(rule_data["permission_level"]),
+                    conditions=rule_data.get("conditions", {}),
+                    priority=rule_data.get("priority", 100),
+                    enabled=rule_data.get("enabled", True),
                 )
                 self.add_rule(rule)
-                
-            logger.info(f"Loaded {len(rules_config)} permission rules from {config_path}")
-            
+
+            logger.info(
+                f"Loaded {len(rules_config)} permission rules from {config_path}"
+            )
+
         except Exception as e:
             logger.error(f"Failed to load permission rules from {config_path}: {e}")
             # Load default rules as fallback
             self._load_default_rules()
-    
+
     def save_rules_to_config(self, config_path: Path) -> None:
         """Save current rules to YAML configuration"""
         try:
             rules_data = []
-            
+
             for rule in self.rules:
                 rule_data = {
-                    'id': rule.id,
-                    'name': rule.name,
-                    'description': rule.description,
-                    'resource_type': rule.resource_type.value,
-                    'resource_pattern': rule.resource_pattern,
-                    'tool_names': rule.tool_names,
-                    'permission_level': rule.permission_level.value,
-                    'conditions': rule.conditions,
-                    'priority': rule.priority,
-                    'enabled': rule.enabled
+                    "id": rule.id,
+                    "name": rule.name,
+                    "description": rule.description,
+                    "resource_type": rule.resource_type.value,
+                    "resource_pattern": rule.resource_pattern,
+                    "tool_names": rule.tool_names,
+                    "permission_level": rule.permission_level.value,
+                    "conditions": rule.conditions,
+                    "priority": rule.priority,
+                    "enabled": rule.enabled,
                 }
                 rules_data.append(rule_data)
-            
+
             config = {
-                'permission_rules': rules_data,
-                'default_permission': self.default_permission.value
+                "permission_rules": rules_data,
+                "default_permission": self.default_permission.value,
             }
-            
-            with open(config_path, 'w', encoding='utf-8') as f:
+
+            with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(config, f, indent=2, default_flow_style=False)
-                
+
             logger.info(f"Saved {len(rules_data)} permission rules to {config_path}")
-            
+
         except Exception as e:
             logger.error(f"Failed to save permission rules to {config_path}: {e}")
-    
+
     def get_rule_by_id(self, rule_id: str) -> Optional[PermissionRule]:
         """Get rule by ID"""
         for rule in self.rules:
             if rule.id == rule_id:
                 return rule
         return None
-    
+
     def list_rules(self, tool_name: Optional[str] = None) -> List[PermissionRule]:
         """List all rules, optionally filtered by tool name"""
         if tool_name:
             return [r for r in self.rules if r.applies_to_tool(tool_name)]
         return self.rules.copy()
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """Get permission system statistics"""
         return {
@@ -344,7 +350,7 @@ class PermissionManager:
             "enabled_rules": len([r for r in self.rules if r.enabled]),
             "rules_by_priority": len(set(r.priority for r in self.rules)),
             "default_permission": self.default_permission.value,
-            "resource_types": list(set(r.resource_type.value for r in self.rules))
+            "resource_types": list(set(r.resource_type.value for r in self.rules)),
         }
 
 
@@ -352,7 +358,9 @@ class PermissionManager:
 _permission_manager: Optional[PermissionManager] = None
 
 
-_DEFAULT_PERMISSIONS_CONFIG = Path(__file__).parent.parent.parent / "config" / "permissions.yaml"
+_DEFAULT_PERMISSIONS_CONFIG = (
+    Path(__file__).parent.parent.parent / "config" / "permissions.yaml"
+)
 
 
 def get_permission_manager() -> PermissionManager:

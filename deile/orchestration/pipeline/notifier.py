@@ -18,10 +18,12 @@ import logging
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
-from deile.orchestration.pipeline.labels import (WORKFLOW_BLOCKED,
-                                                 WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW,
-                                                 WORKFLOW_REVIEWED)
+from deile.orchestration.pipeline.labels import (
+    WORKFLOW_BLOCKED,
+    WORKFLOW_IMPLEMENTING,
+    WORKFLOW_NEW,
+    WORKFLOW_REVIEWED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,7 @@ def _resolve_dm_function() -> Optional[Callable[[str, str], Awaitable[dict]]]:
     """
     try:
         from deilebot.bridge.dm_tool import send_discord_dm  # type: ignore
+
         return send_discord_dm
     except Exception:  # noqa: BLE001
         return None
@@ -98,11 +101,11 @@ class DiscordNotifier:
         )
 
     async def issue_reviewed(self, number: int, title: str, url: str) -> None:
-        await self._send(
-            f"✏️ **Issue revisada** #{number}: {title}\n🔗 {url}"
-        )
+        await self._send(f"✏️ **Issue revisada** #{number}: {title}\n🔗 {url}")
 
-    async def implementation_started(self, number: int, title: str, branch: str) -> None:
+    async def implementation_started(
+        self, number: int, title: str, branch: str
+    ) -> None:
         await self._send(
             f"🛠️ **Implementação iniciada** para issue #{number}: {title}\n"
             f"branch: `{branch}`"
@@ -193,7 +196,9 @@ class DiscordNotifier:
             f"🔎 **Pipeline pegou para revisar** PR #{number}: {title}\n🔗 {url}"
         )
 
-    async def pr_reviewed(self, number: int, title: str, url: str, *, merged: bool) -> None:
+    async def pr_reviewed(
+        self, number: int, title: str, url: str, *, merged: bool
+    ) -> None:
         verb = "mergeada" if merged else "revisada"
         emoji = "🟣" if merged else "✅"
         await self._send(f"{emoji} **PR #{number} {verb}**: {title}\n🔗 {url}")
@@ -204,20 +209,20 @@ class DiscordNotifier:
             f"Label `{WORKFLOW_NEW}` adicionado — na fila do pipeline.\n🔗 {url}"
         )
 
-    async def follow_ups_processed(self, pr_number: int, opened: int, skipped: int) -> None:
+    async def follow_ups_processed(
+        self, pr_number: int, opened: int, skipped: int
+    ) -> None:
         await self._send(
             f"🔗 **Stage 4 — PR #{pr_number}**: {opened} issue(s) abertas, {skipped} puladas."
         )
 
     async def error(self, where: str, detail: str) -> None:
-        await self._send(f"⚠️ **Pipeline error** em `{where}`:\n```\n{detail[:PIPELINE_MSG_TRUNCATE_CHARS]}\n```")
+        await self._send(
+            f"⚠️ **Pipeline error** em `{where}`:\n```\n{detail[:PIPELINE_MSG_TRUNCATE_CHARS]}\n```"
+        )
 
     async def pr_auto_classified(self, number: int, title: str, url: str) -> None:
-        await self._send(
-            f"🏷️ **PR auto-triaged** #{number}: {title[:100]}\n🔗 {url}"
-        )
+        await self._send(f"🏷️ **PR auto-triaged** #{number}: {title[:100]}\n🔗 {url}")
 
     async def mention_processed(self, context_url: str, author: str) -> None:
-        await self._send(
-            f"💬 **Menção de @{author} processada**\n🔗 {context_url}"
-        )
+        await self._send(f"💬 **Menção de @{author} processada**\n🔗 {context_url}")

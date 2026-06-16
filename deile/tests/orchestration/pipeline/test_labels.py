@@ -5,12 +5,24 @@ from __future__ import annotations
 import pytest
 
 from deile.orchestration.pipeline.labels import (
-    BATCH_LABEL_PREFIX, LABEL_COLORS, LABEL_DESCRIPTIONS, MENTION_DONE,
-    MENTION_LABELS, REVIEW_LABELS, REVIEW_PENDING, WORKFLOW_BLOCKED,
-    WORKFLOW_LABELS, WORKFLOW_NEW, batch_id_from_label,
-    current_refine_attempt_from_labels, is_batch_label,
-    is_refine_attempt_label, make_batch_label, make_refine_attempt_label,
-    parse_refine_attempt_label)
+    BATCH_LABEL_PREFIX,
+    LABEL_COLORS,
+    LABEL_DESCRIPTIONS,
+    MENTION_DONE,
+    MENTION_LABELS,
+    REVIEW_LABELS,
+    REVIEW_PENDING,
+    WORKFLOW_BLOCKED,
+    WORKFLOW_LABELS,
+    WORKFLOW_NEW,
+    batch_id_from_label,
+    current_refine_attempt_from_labels,
+    is_batch_label,
+    is_refine_attempt_label,
+    make_batch_label,
+    make_refine_attempt_label,
+    parse_refine_attempt_label,
+)
 
 
 class TestLabelConstants:
@@ -86,10 +98,10 @@ class TestRefineAttemptHelpers:
     def test_is_refine_attempt_label_falso_para_outros(self):
         assert not is_refine_attempt_label(WORKFLOW_NEW)
         assert not is_refine_attempt_label("~attempt:1")
-        assert not is_refine_attempt_label("refine:1")        # sem ~
-        assert not is_refine_attempt_label("~refine:")        # sem número
-        assert not is_refine_attempt_label("~refinar:1")      # confusão com REFINAR
-        assert not is_refine_attempt_label("~refine:1a")      # sufixo não numérico
+        assert not is_refine_attempt_label("refine:1")  # sem ~
+        assert not is_refine_attempt_label("~refine:")  # sem número
+        assert not is_refine_attempt_label("~refinar:1")  # confusão com REFINAR
+        assert not is_refine_attempt_label("~refine:1a")  # sufixo não numérico
 
     def test_parse_refine_attempt_label_extrai_n(self):
         assert parse_refine_attempt_label("~refine:0") == 0

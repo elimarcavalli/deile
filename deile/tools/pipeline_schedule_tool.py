@@ -17,13 +17,21 @@ from __future__ import annotations
 from deile.orchestration.pipeline._time_utils import parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTION_NAMES
 from deile.orchestration.pipeline.identity import MonitorIdentity
-from deile.orchestration.pipeline.scheduler import (OneshotEntry,
-                                                    RecurringEntry,
-                                                    ScheduleError,
-                                                    ScheduleStore)
+from deile.orchestration.pipeline.scheduler import (
+    OneshotEntry,
+    RecurringEntry,
+    ScheduleError,
+    ScheduleStore,
+)
 from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
-from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
-                              ToolResult, ToolSchema)
+from deile.tools.base import (
+    SecurityLevel,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 from deile.tools.cron_tool_base import unexpected_error
 
 
@@ -47,8 +55,14 @@ class PipelineScheduleTool(Tool):
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["list", "add_recurring", "add_oneshot",
-                                     "remove", "enable", "disable"],
+                            "enum": [
+                                "list",
+                                "add_recurring",
+                                "add_oneshot",
+                                "remove",
+                                "enable",
+                                "disable",
+                            ],
                             "description": "Operation to perform.",
                         },
                         "id": {
@@ -98,7 +112,6 @@ class PipelineScheduleTool(Tool):
             )
         )
 
-
     async def execute(self, context: ToolContext) -> ToolResult:
         args = context.parsed_args or {}
         action = (args.get("action") or "").strip().lower()
@@ -113,7 +126,8 @@ class PipelineScheduleTool(Tool):
         except ScheduleError as exc:
             return ToolResult.error_result(
                 message=f"could not load schedule: {exc}",
-                error=exc, error_code="SCHEDULE_LOAD",
+                error=exc,
+                error_code="SCHEDULE_LOAD",
             )
 
         try:
@@ -139,9 +153,14 @@ class PipelineScheduleTool(Tool):
                         error_code="MISSING_ARGS",
                     )
                 entry_id = args.get("id") or f"{trigger}_loop"
-                schedule.add_recurring(RecurringEntry(
-                    id=entry_id, action=trigger, cron=cron, enabled=True,
-                ))
+                schedule.add_recurring(
+                    RecurringEntry(
+                        id=entry_id,
+                        action=trigger,
+                        cron=cron,
+                        enabled=True,
+                    )
+                )
                 store.save(schedule)
                 return ToolResult.success_result(
                     data={"id": entry_id, "cron": cron, "action": trigger},
@@ -161,17 +180,21 @@ class PipelineScheduleTool(Tool):
                 except ValueError as exc:
                     return ToolResult.error_result(
                         message=f"invalid run_at: {run_at_str!r}",
-                        error=exc, error_code="INVALID_DATETIME",
+                        error=exc,
+                        error_code="INVALID_DATETIME",
                     )
                 entry_id = (
-                    args.get("id")
-                    or f"oneshot-{trigger}-{int(run_at.timestamp())}"
+                    args.get("id") or f"oneshot-{trigger}-{int(run_at.timestamp())}"
                 )
-                schedule.add_oneshot(OneshotEntry(
-                    id=entry_id, action=trigger, run_at=run_at,
-                    target_issue=args.get("target_issue"),
-                    target_pr=args.get("target_pr"),
-                ))
+                schedule.add_oneshot(
+                    OneshotEntry(
+                        id=entry_id,
+                        action=trigger,
+                        run_at=run_at,
+                        target_issue=args.get("target_issue"),
+                        target_pr=args.get("target_pr"),
+                    )
+                )
                 store.save(schedule)
                 return ToolResult.success_result(
                     data={
@@ -186,7 +209,8 @@ class PipelineScheduleTool(Tool):
                 entry_id = args.get("id")
                 if not entry_id:
                     return ToolResult.error_result(
-                        message="remove requires 'id'", error_code="MISSING_ARGS",
+                        message="remove requires 'id'",
+                        error_code="MISSING_ARGS",
                     )
                 if not schedule.remove(entry_id):
                     return ToolResult.error_result(
@@ -195,14 +219,16 @@ class PipelineScheduleTool(Tool):
                     )
                 store.save(schedule)
                 return ToolResult.success_result(
-                    data={"id": entry_id}, message=f"removed {entry_id!r}",
+                    data={"id": entry_id},
+                    message=f"removed {entry_id!r}",
                 )
 
             if action in ("enable", "disable"):
                 entry_id = args.get("id")
                 if not entry_id:
                     return ToolResult.error_result(
-                        message=f"{action} requires 'id'", error_code="MISSING_ARGS",
+                        message=f"{action} requires 'id'",
+                        error_code="MISSING_ARGS",
                     )
                 entry = schedule.get_recurring(entry_id)
                 if entry is None:
@@ -210,7 +236,7 @@ class PipelineScheduleTool(Tool):
                         message=f"no recurring entry with id={entry_id!r}",
                         error_code="NOT_FOUND",
                     )
-                entry.enabled = (action == "enable")
+                entry.enabled = action == "enable"
                 store.save(schedule)
                 return ToolResult.success_result(
                     data={"id": entry_id, "enabled": entry.enabled},
@@ -218,11 +244,14 @@ class PipelineScheduleTool(Tool):
                 )
 
             return ToolResult.error_result(
-                message=f"unknown action: {action!r}", error_code="INVALID_ACTION",
+                message=f"unknown action: {action!r}",
+                error_code="INVALID_ACTION",
             )
         except ScheduleError as exc:
             return ToolResult.error_result(
-                message=str(exc), error=exc, error_code="SCHEDULE_ERROR",
+                message=str(exc),
+                error=exc,
+                error_code="SCHEDULE_ERROR",
             )
         except Exception as exc:  # noqa: BLE001
             return unexpected_error(exc)

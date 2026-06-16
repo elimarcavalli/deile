@@ -15,8 +15,7 @@ import json
 from deile.config.settings import Settings
 from deile.orchestration.forge import GitLabForge
 from deile.orchestration.forge.base import ForgeClient, ForgeConfig, ForgeKind
-from deile.orchestration.forge.github_forge import (GitHubForge,
-                                                    _rewrite_gh_api_args)
+from deile.orchestration.forge.github_forge import GitHubForge, _rewrite_gh_api_args
 from deile.orchestration.forge.gitlab_forge import _rewrite_gl_api_args
 
 # ---------------------------------------------------------------------------
@@ -42,8 +41,14 @@ def test_rewrite_gl_api_args_with_method_flag():
     result = _rewrite_gl_api_args(
         host="gitlab.example.com",
         version="3",
-        args=("api", "-X", "POST", "projects/123/issues/1/notes",
-              "--raw-field", "body=hello"),
+        args=(
+            "api",
+            "-X",
+            "POST",
+            "projects/123/issues/1/notes",
+            "--raw-field",
+            "body=hello",
+        ),
     )
     assert result == (
         "api",
@@ -98,11 +103,21 @@ async def test_gitlab_api_version_setting_used_in_url(monkeypatch):
 
     async def fake_base_run(self, *args):
         base_calls.append(args)
-        return (0, json.dumps({
-            "iid": 7, "title": "t", "web_url": "u",
-            "labels": [], "description": "d",
-            "state": "opened", "author": {"username": "u"},
-        }), "")
+        return (
+            0,
+            json.dumps(
+                {
+                    "iid": 7,
+                    "title": "t",
+                    "web_url": "u",
+                    "labels": [],
+                    "description": "d",
+                    "state": "opened",
+                    "author": {"username": "u"},
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(ForgeClient, "_run", fake_base_run)
 
@@ -114,9 +129,9 @@ async def test_gitlab_api_version_setting_used_in_url(monkeypatch):
 
     assert base_calls, "expected at least one base _run call"
     endpoint = base_calls[0][-1]
-    assert endpoint.startswith("https://old-gitlab.example.com/api/v3/"), (
-        f"expected full URL with /api/v3/, got {endpoint!r}"
-    )
+    assert endpoint.startswith(
+        "https://old-gitlab.example.com/api/v3/"
+    ), f"expected full URL with /api/v3/, got {endpoint!r}"
 
 
 async def test_gitlab_api_version_default_keeps_relative_path(monkeypatch):
@@ -126,11 +141,21 @@ async def test_gitlab_api_version_default_keeps_relative_path(monkeypatch):
 
     async def fake_base_run(self, *args):
         base_calls.append(args)
-        return (0, json.dumps({
-            "iid": 1, "title": "t", "web_url": "u",
-            "labels": [], "description": "d",
-            "state": "opened", "author": {"username": "u"},
-        }), "")
+        return (
+            0,
+            json.dumps(
+                {
+                    "iid": 1,
+                    "title": "t",
+                    "web_url": "u",
+                    "labels": [],
+                    "description": "d",
+                    "state": "opened",
+                    "author": {"username": "u"},
+                }
+            ),
+            "",
+        )
 
     monkeypatch.setattr(ForgeClient, "_run", fake_base_run)
 
@@ -142,9 +167,9 @@ async def test_gitlab_api_version_default_keeps_relative_path(monkeypatch):
 
     assert base_calls
     endpoint = base_calls[0][-1]
-    assert not endpoint.startswith("https://"), (
-        f"with default version, endpoint should be relative, got {endpoint!r}"
-    )
+    assert not endpoint.startswith(
+        "https://"
+    ), f"with default version, endpoint should be relative, got {endpoint!r}"
 
 
 def test_gitlab_api_version_env_var(monkeypatch):
@@ -236,12 +261,14 @@ async def test_github_api_prefix_setting_used_in_url(monkeypatch):
     api_calls = [c for c in base_calls if c and c[0] == "api"]
     if api_calls:
         rewritten = [
-            a for args in api_calls for a in args[1:]
+            a
+            for args in api_calls
+            for a in args[1:]
             if isinstance(a, str) and a.startswith("https://ghes.example.com/api/v4/")
         ]
-        assert rewritten, (
-            f"expected at least one rewritten endpoint with api/v4, got {api_calls}"
-        )
+        assert (
+            rewritten
+        ), f"expected at least one rewritten endpoint with api/v4, got {api_calls}"
 
 
 async def test_github_api_prefix_skipped_for_github_dot_com(monkeypatch):
@@ -273,12 +300,14 @@ async def test_github_api_prefix_skipped_for_github_dot_com(monkeypatch):
     api_calls = [c for c in base_calls if c and c[0] == "api"]
     if api_calls:
         rewritten = [
-            a for args in api_calls for a in args[1:]
+            a
+            for args in api_calls
+            for a in args[1:]
             if isinstance(a, str) and a.startswith("https://github.com/")
         ]
-        assert not rewritten, (
-            f"github.com endpoint MUST NOT be rewritten, got {api_calls}"
-        )
+        assert (
+            not rewritten
+        ), f"github.com endpoint MUST NOT be rewritten, got {api_calls}"
 
 
 # ---------------------------------------------------------------------------
@@ -294,8 +323,12 @@ def test_detection_uses_gitlab_api_version_in_probe(monkeypatch):
 
     class FakeResponse:
         status = 200
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
 
     def fake_urlopen(req, timeout=3):
         probed_urls.append(req.full_url)
@@ -306,10 +339,11 @@ def test_detection_uses_gitlab_api_version_in_probe(monkeypatch):
     monkeypatch.setattr("deile.config.settings.get_settings", lambda: s)
 
     import urllib.request
+
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
     result = _check_gitlab_endpoint("gl3.example.com")
     assert result is ForgeKind.GITLAB
-    assert any("/api/v3/version" in url for url in probed_urls), (
-        f"expected probe to /api/v3/version, got {probed_urls}"
-    )
+    assert any(
+        "/api/v3/version" in url for url in probed_urls
+    ), f"expected probe to /api/v3/version, got {probed_urls}"

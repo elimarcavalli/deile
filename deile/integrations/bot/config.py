@@ -11,9 +11,11 @@ from typing import Optional
 
 try:
     from pydantic_settings import BaseSettings, SettingsConfigDict
+
     _HAVE = True
 except ImportError:  # pragma: no cover
     from pydantic import BaseSettings  # type: ignore[attr-defined]
+
     SettingsConfigDict = None  # type: ignore[assignment]
     _HAVE = False
 
@@ -42,6 +44,7 @@ class BotIntegrationSettings(BaseSettings):
             extra="ignore",
         )
     else:  # pragma: no cover
+
         class Config:
             env_prefix = "DEILE_BOT_"
             env_file = ".env"

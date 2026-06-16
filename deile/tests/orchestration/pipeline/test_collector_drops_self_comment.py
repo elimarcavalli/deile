@@ -15,12 +15,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.github_client import CommentRef
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 from deile.orchestration.pipeline.stages import _collect_mention_triggers
 
 
-def _comment(comment_id: int, *, author: str, body: str = "@deile-one help", kind: str = "issue") -> CommentRef:
+def _comment(
+    comment_id: int, *, author: str, body: str = "@deile-one help", kind: str = "issue"
+) -> CommentRef:
     return CommentRef(
         comment_id=comment_id,
         body=body,
@@ -39,7 +40,9 @@ def _make_monitor(*, issue_comments: list | None = None) -> PipelineMonitor:
         mention_handle="@deile-one",
     )
     github = MagicMock()
-    github.list_issue_comments_since = AsyncMock(return_value=list(issue_comments or []))
+    github.list_issue_comments_since = AsyncMock(
+        return_value=list(issue_comments or [])
+    )
     github.list_pr_review_comments_since = AsyncMock(return_value=[])
     github.list_issues_assigned_to = AsyncMock(return_value=[])
     github.list_prs_assigned_to = AsyncMock(return_value=[])
@@ -50,7 +53,11 @@ def _make_monitor(*, issue_comments: list | None = None) -> PipelineMonitor:
     notifier.error = AsyncMock()
     claude = MagicMock()
     return PipelineMonitor(
-        cfg, github=github, worktrees=MagicMock(), claude=claude, notifier=notifier,
+        cfg,
+        github=github,
+        worktrees=MagicMock(),
+        claude=claude,
+        notifier=notifier,
     )
 
 
@@ -87,7 +94,9 @@ class TestCollectorDropsSelfComment:
         """Caso degenerado: comment do próprio DEILE sem ``@deile-one`` no
         corpo nem entra na branch de match — confirmamos que continua não
         virando trigger (não é regressão, só sanity-check)."""
-        c = _comment(4, author="deile-one", body="implementação feita; merge no próximo tick")
+        c = _comment(
+            4, author="deile-one", body="implementação feita; merge no próximo tick"
+        )
         monitor = _make_monitor(issue_comments=[c])
         triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
         assert triggers == []

@@ -16,11 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from deile.ui.panel.observability.jsonl_parser import (AssistantTurn,
-                                                       ClaudeJsonlParser,
-                                                       ToolResultTurn,
-                                                       ToolUseTurn,
-                                                       UnknownTurn, UserTurn)
+from deile.ui.panel.observability.jsonl_parser import (
+    AssistantTurn,
+    ClaudeJsonlParser,
+    ToolResultTurn,
+    ToolUseTurn,
+    UnknownTurn,
+    UserTurn,
+)
 
 
 def _write_jsonl(path: Path, rows) -> Path:
@@ -33,9 +36,16 @@ def _write_jsonl(path: Path, rows) -> Path:
 
 def test_parses_user_turn(tmp_path):
     """A ``{"type":"user"}`` line becomes a :class:`UserTurn`."""
-    p = _write_jsonl(tmp_path / "s.jsonl", [
-        {"type": "user", "content": "implement issue 347", "ts": "2026-05-27T16:04:10Z"},
-    ])
+    p = _write_jsonl(
+        tmp_path / "s.jsonl",
+        [
+            {
+                "type": "user",
+                "content": "implement issue 347",
+                "ts": "2026-05-27T16:04:10Z",
+            },
+        ],
+    )
     result = ClaudeJsonlParser(p).parse_all()
     assert len(result.turns) == 1
     turn = result.turns[0]
@@ -48,15 +58,18 @@ def test_parses_user_turn(tmp_path):
 
 def test_parses_assistant_turn_with_usage(tmp_path):
     """An ``{"type":"assistant"}`` line captures content/model/usage."""
-    p = _write_jsonl(tmp_path / "s.jsonl", [
-        {
-            "type": "assistant",
-            "content": "Vou analisar a PR.",
-            "model": "claude-sonnet-4-6",
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 3120, "output_tokens": 1703},
-        },
-    ])
+    p = _write_jsonl(
+        tmp_path / "s.jsonl",
+        [
+            {
+                "type": "assistant",
+                "content": "Vou analisar a PR.",
+                "model": "claude-sonnet-4-6",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 3120, "output_tokens": 1703},
+            },
+        ],
+    )
     result = ClaudeJsonlParser(p).parse_all()
     turn = result.turns[0]
     assert isinstance(turn, AssistantTurn)
@@ -68,14 +81,17 @@ def test_parses_assistant_turn_with_usage(tmp_path):
 
 def test_parses_tool_use_turn(tmp_path):
     """A ``tool_use`` becomes :class:`ToolUseTurn` with name/input."""
-    p = _write_jsonl(tmp_path / "s.jsonl", [
-        {
-            "type": "tool_use",
-            "id": "toolu_01",
-            "name": "Bash",
-            "input": {"command": "gh pr view 346"},
-        },
-    ])
+    p = _write_jsonl(
+        tmp_path / "s.jsonl",
+        [
+            {
+                "type": "tool_use",
+                "id": "toolu_01",
+                "name": "Bash",
+                "input": {"command": "gh pr view 346"},
+            },
+        ],
+    )
     result = ClaudeJsonlParser(p).parse_all()
     turn = result.turns[0]
     assert isinstance(turn, ToolUseTurn)
@@ -86,14 +102,17 @@ def test_parses_tool_use_turn(tmp_path):
 
 def test_parses_tool_result_turn(tmp_path):
     """A ``tool_result`` becomes :class:`ToolResultTurn` with is_error+content."""
-    p = _write_jsonl(tmp_path / "s.jsonl", [
-        {
-            "type": "tool_result",
-            "tool_use_id": "toolu_01",
-            "is_error": False,
-            "content": "files changed: 3",
-        },
-    ])
+    p = _write_jsonl(
+        tmp_path / "s.jsonl",
+        [
+            {
+                "type": "tool_result",
+                "tool_use_id": "toolu_01",
+                "is_error": False,
+                "content": "files changed: 3",
+            },
+        ],
+    )
     result = ClaudeJsonlParser(p).parse_all()
     turn = result.turns[0]
     assert isinstance(turn, ToolResultTurn)
@@ -104,9 +123,12 @@ def test_parses_tool_result_turn(tmp_path):
 
 def test_handles_unknown_turn_type(tmp_path):
     """Unknown ``type`` values fall back to :class:`UnknownTurn`."""
-    p = _write_jsonl(tmp_path / "s.jsonl", [
-        {"type": "system", "content": "compacting context..."},
-    ])
+    p = _write_jsonl(
+        tmp_path / "s.jsonl",
+        [
+            {"type": "system", "content": "compacting context..."},
+        ],
+    )
     result = ClaudeJsonlParser(p).parse_all()
     turn = result.turns[0]
     assert isinstance(turn, UnknownTurn)
@@ -149,9 +171,12 @@ def test_tail_incremental_from_offset(tmp_path):
 
 def test_marks_in_progress_tool_call(tmp_path):
     """A ``tool_use`` without a matching ``tool_result`` is in_progress=True."""
-    p = _write_jsonl(tmp_path / "s.jsonl", [
-        {"type": "tool_use", "id": "toolu_42", "name": "Bash", "input": {}},
-    ])
+    p = _write_jsonl(
+        tmp_path / "s.jsonl",
+        [
+            {"type": "tool_use", "id": "toolu_42", "name": "Bash", "input": {}},
+        ],
+    )
     result = ClaudeJsonlParser(p).parse_all()
     turn = result.turns[0]
     assert isinstance(turn, ToolUseTurn)
@@ -160,10 +185,13 @@ def test_marks_in_progress_tool_call(tmp_path):
 
 def test_marks_completed_when_result_present(tmp_path):
     """A ``tool_use`` paired with its result is NOT in_progress."""
-    p = _write_jsonl(tmp_path / "s.jsonl", [
-        {"type": "tool_use", "id": "toolu_99", "name": "Read", "input": {}},
-        {"type": "tool_result", "tool_use_id": "toolu_99", "content": "ok"},
-    ])
+    p = _write_jsonl(
+        tmp_path / "s.jsonl",
+        [
+            {"type": "tool_use", "id": "toolu_99", "name": "Read", "input": {}},
+            {"type": "tool_result", "tool_use_id": "toolu_99", "content": "ok"},
+        ],
+    )
     result = ClaudeJsonlParser(p).parse_all()
     tu = result.turns[0]
     assert isinstance(tu, ToolUseTurn)
@@ -179,9 +207,12 @@ def test_returns_empty_when_file_missing(tmp_path):
 
 def test_offset_beyond_eof_rewinds(tmp_path):
     """``since_byte_offset`` past EOF (rotated/truncated) reads from start."""
-    p = _write_jsonl(tmp_path / "s.jsonl", [
-        {"type": "user", "content": "after-rotation"},
-    ])
+    p = _write_jsonl(
+        tmp_path / "s.jsonl",
+        [
+            {"type": "user", "content": "after-rotation"},
+        ],
+    )
     # Offset far past EOF — must NOT raise and must NOT return nothing.
     result = ClaudeJsonlParser(p).parse_tail(since_byte_offset=10_000_000)
     assert len(result.turns) == 1
@@ -208,12 +239,18 @@ def test_rejects_non_positive_max_turns(tmp_path):
 
 def test_content_blocks_coerced_to_string(tmp_path):
     """Anthropic-style content blocks (list of dicts with ``text``) become str."""
-    p = _write_jsonl(tmp_path / "s.jsonl", [
-        {"type": "assistant", "content": [
-            {"type": "text", "text": "first line"},
-            {"type": "text", "text": "second line"},
-        ]},
-    ])
+    p = _write_jsonl(
+        tmp_path / "s.jsonl",
+        [
+            {
+                "type": "assistant",
+                "content": [
+                    {"type": "text", "text": "first line"},
+                    {"type": "text", "text": "second line"},
+                ],
+            },
+        ],
+    )
     result = ClaudeJsonlParser(p).parse_all()
     turn = result.turns[0]
     assert "first line" in turn.content

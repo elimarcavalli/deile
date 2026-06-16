@@ -21,9 +21,13 @@ pytest.importorskip("deilebot_client")
 from aiohttp import web  # noqa: E402
 from deilebot_client import BotClientAuthError  # noqa: E402
 from deilebot_client import BotClientNotReady  # noqa: E402
-from deilebot_client import (BotClientRateLimited, BotClientTimeoutError,
-                             BotClientUpstreamError, BotControlClient,
-                             BotControlSettings)
+from deilebot_client import (
+    BotClientRateLimited,
+    BotClientTimeoutError,
+    BotClientUpstreamError,
+    BotControlClient,
+    BotControlSettings,
+)
 
 # --- helpers -----------------------------------------------------------------
 
@@ -105,7 +109,10 @@ async def stub_server() -> AsyncIterator[Tuple[BotControlClient, int]]:
     app.add_routes(routes)
     runner, port = await _start(app)
     settings = BotControlSettings(
-        endpoint=f"http://127.0.0.1:{port}", auth_token="x", timeout_s=2.0, retry_attempts=1
+        endpoint=f"http://127.0.0.1:{port}",
+        auth_token="x",
+        timeout_s=2.0,
+        retry_attempts=1,
     )
     client = BotControlClient(settings)
     try:
@@ -143,7 +150,9 @@ async def test_dm_send_rejects_both_ids(stub_server):
 
 async def test_reaction_thread_pin_mention_user(stub_server):
     client, port = stub_server
-    assert (await client.discord_reaction_add(channel_id="1", message_id="2", emoji="👍")).ok is True
+    assert (
+        await client.discord_reaction_add(channel_id="1", message_id="2", emoji="👍")
+    ).ok is True
     th = await client.discord_thread_start(channel_id="1", name="hot-thread")
     assert th.thread_id == "t-1"
     pin = await client.discord_message_pin(channel_id="1", message_id="2")
@@ -165,11 +174,21 @@ async def auth_required_server() -> AsyncIterator[int]:
     async def _post(req):
         if req.headers.get("Authorization") != "Bearer goodtoken":
             return web.json_response(
-                {"error": {"code": "UNAUTHORIZED", "message": "bad token", "details": {}}},
+                {
+                    "error": {
+                        "code": "UNAUTHORIZED",
+                        "message": "bad token",
+                        "details": {},
+                    }
+                },
                 status=401,
             )
         return web.json_response(
-            {"message_id": "m1", "channel_id": "c1", "sent_at": "2025-01-01T00:00:00+00:00"}
+            {
+                "message_id": "m1",
+                "channel_id": "c1",
+                "sent_at": "2025-01-01T00:00:00+00:00",
+            }
         )
 
     app = web.Application()
@@ -183,8 +202,10 @@ async def auth_required_server() -> AsyncIterator[int]:
 
 async def test_auth_failure_raises_typed(auth_required_server):
     settings = BotControlSettings(
-        endpoint=f"http://127.0.0.1:{auth_required_server}", auth_token="wrongtoken",
-        timeout_s=2.0, retry_attempts=1,
+        endpoint=f"http://127.0.0.1:{auth_required_server}",
+        auth_token="wrongtoken",
+        timeout_s=2.0,
+        retry_attempts=1,
     )
     async with BotControlClient(settings) as cli:
         with pytest.raises(BotClientAuthError) as exc:
@@ -200,7 +221,13 @@ async def slow_server() -> AsyncIterator[int]:
     @routes.post("/v1/outbound/discord/channel.post")
     async def _slow(_):
         await asyncio.sleep(2.0)
-        return web.json_response({"message_id": "x", "channel_id": "x", "sent_at": "2025-01-01T00:00:00+00:00"})
+        return web.json_response(
+            {
+                "message_id": "x",
+                "channel_id": "x",
+                "sent_at": "2025-01-01T00:00:00+00:00",
+            }
+        )
 
     app = web.Application()
     app.add_routes(routes)
@@ -213,8 +240,10 @@ async def slow_server() -> AsyncIterator[int]:
 
 async def test_timeout_raises_typed(slow_server):
     settings = BotControlSettings(
-        endpoint=f"http://127.0.0.1:{slow_server}", auth_token="x",
-        timeout_s=0.2, retry_attempts=1,
+        endpoint=f"http://127.0.0.1:{slow_server}",
+        auth_token="x",
+        timeout_s=0.2,
+        retry_attempts=1,
     )
     async with BotControlClient(settings) as cli:
         with pytest.raises(BotClientTimeoutError):
@@ -236,7 +265,11 @@ async def flaky_server() -> AsyncIterator[Tuple[int, dict]]:
                 status=500,
             )
         return web.json_response(
-            {"message_id": "ok", "channel_id": "1", "sent_at": "2025-01-01T00:00:00+00:00"}
+            {
+                "message_id": "ok",
+                "channel_id": "1",
+                "sent_at": "2025-01-01T00:00:00+00:00",
+            }
         )
 
     app = web.Application()
@@ -251,8 +284,10 @@ async def flaky_server() -> AsyncIterator[Tuple[int, dict]]:
 async def test_5xx_retries_then_succeeds(flaky_server):
     port, state = flaky_server
     settings = BotControlSettings(
-        endpoint=f"http://127.0.0.1:{port}", auth_token="x",
-        timeout_s=2.0, retry_attempts=4,
+        endpoint=f"http://127.0.0.1:{port}",
+        auth_token="x",
+        timeout_s=2.0,
+        retry_attempts=4,
     )
     async with BotControlClient(settings) as cli:
         res = await cli.discord_channel_post(channel_id="1", text="x")
@@ -264,8 +299,10 @@ async def test_5xx_exhausts_retries_then_raises(flaky_server):
     port, state = flaky_server
     state["fail_first"] = 99  # always fail
     settings = BotControlSettings(
-        endpoint=f"http://127.0.0.1:{port}", auth_token="x",
-        timeout_s=2.0, retry_attempts=2,
+        endpoint=f"http://127.0.0.1:{port}",
+        auth_token="x",
+        timeout_s=2.0,
+        retry_attempts=2,
     )
     async with BotControlClient(settings) as cli:
         with pytest.raises(BotClientUpstreamError):
@@ -296,8 +333,10 @@ async def rate_limit_server() -> AsyncIterator[int]:
 
 async def test_rate_limit_carries_retry_after(rate_limit_server):
     settings = BotControlSettings(
-        endpoint=f"http://127.0.0.1:{rate_limit_server}", auth_token="x",
-        timeout_s=2.0, retry_attempts=1,
+        endpoint=f"http://127.0.0.1:{rate_limit_server}",
+        auth_token="x",
+        timeout_s=2.0,
+        retry_attempts=1,
     )
     async with BotControlClient(settings) as cli:
         with pytest.raises(BotClientRateLimited) as exc:

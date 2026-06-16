@@ -22,8 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from deile.core.models.gemini_provider import (GeminiProvider,
-                                               _stringify_for_model)
+from deile.core.models.gemini_provider import GeminiProvider, _stringify_for_model
 from deile.tools.base import ToolResult, ToolStatus
 
 
@@ -183,9 +182,7 @@ class TestExecuteFunctionCall:
         registry = MagicMock()
         registry.get.return_value = None
         registry.list_names.return_value = ["bash_execute", "read_file"]
-        monkeypatch.setattr(
-            "deile.tools.registry.get_tool_registry", lambda: registry
-        )
+        monkeypatch.setattr("deile.tools.registry.get_tool_registry", lambda: registry)
 
         tool_result, payload = await provider.execute_function_call(
             "run_code", {"x": 1}, working_directory="/tmp"
@@ -213,9 +210,7 @@ class TestExecuteFunctionCall:
         registry = MagicMock()
         registry.get.return_value = tool
         registry._tools = {"bash_execute": tool}
-        monkeypatch.setattr(
-            "deile.tools.registry.get_tool_registry", lambda: registry
-        )
+        monkeypatch.setattr("deile.tools.registry.get_tool_registry", lambda: registry)
 
         tool_result, payload = await provider.execute_function_call(
             "bash_execute", {"command": "echo Hello"}, working_directory="/work"
@@ -243,9 +238,7 @@ class TestExecuteFunctionCall:
         registry = MagicMock()
         registry.get.return_value = ExplodingTool()
         registry._tools = {"bash_execute": ExplodingTool()}
-        monkeypatch.setattr(
-            "deile.tools.registry.get_tool_registry", lambda: registry
-        )
+        monkeypatch.setattr("deile.tools.registry.get_tool_registry", lambda: registry)
 
         tool_result, payload = await provider.execute_function_call(
             "bash_execute", {"command": "true"}
@@ -281,9 +274,7 @@ class TestChatWithToolsLoop:
         registry = MagicMock()
         registry.get.return_value = tool
         registry._tools = {"bash_execute": tool}
-        monkeypatch.setattr(
-            "deile.tools.registry.get_tool_registry", lambda: registry
-        )
+        monkeypatch.setattr("deile.tools.registry.get_tool_registry", lambda: registry)
 
         chat = _FakeChat(
             [
@@ -320,20 +311,18 @@ class TestChatWithToolsLoop:
         registry = MagicMock()
         registry.get.return_value = None
         registry._tools = {"bash_execute": object()}
-        monkeypatch.setattr(
-            "deile.tools.registry.get_tool_registry", lambda: registry
-        )
+        monkeypatch.setattr("deile.tools.registry.get_tool_registry", lambda: registry)
 
         chat = _FakeChat(
             [
                 _make_response(_make_function_call_part("run_code", {})),
-                _make_response(
-                    _make_text_part("Sorry, I cannot run code directly.")
-                ),
+                _make_response(_make_text_part("Sorry, I cannot run code directly.")),
             ]
         )
 
-        text, results, _usage = await provider._gemini_chat_with_tools(chat, "run my script")
+        text, results, _usage = await provider._gemini_chat_with_tools(
+            chat, "run my script"
+        )
 
         assert "Sorry" in text
         assert len(results) == 1
@@ -353,20 +342,20 @@ class TestChatWithToolsLoop:
         registry = MagicMock()
         registry.get.return_value = tool
         registry._tools = {"bash_execute": tool}
-        monkeypatch.setattr(
-            "deile.tools.registry.get_tool_registry", lambda: registry
-        )
+        monkeypatch.setattr("deile.tools.registry.get_tool_registry", lambda: registry)
 
         # Always returns a function_call → would loop forever without a cap.
         # Use a unique `command` per iteration so the per-turn ToolLoopGuard
         # (which catches identical-call repetition by default) does NOT fire
         # — that would mask the iteration-cap enforcement we want to test.
-        chat = _FakeChat([
-            _make_response(
-                _make_function_call_part("bash_execute", {"command": f"x{i}"})
-            )
-            for i in range(20)
-        ])
+        chat = _FakeChat(
+            [
+                _make_response(
+                    _make_function_call_part("bash_execute", {"command": f"x{i}"})
+                )
+                for i in range(20)
+            ]
+        )
 
         text, results, _usage = await provider._gemini_chat_with_tools(
             chat, "loop please", max_iterations=3
@@ -393,9 +382,7 @@ class TestChatWithToolsLoop:
         registry = MagicMock()
         registry.get.return_value = tool
         registry._tools = {"bash_execute": tool}
-        monkeypatch.setattr(
-            "deile.tools.registry.get_tool_registry", lambda: registry
-        )
+        monkeypatch.setattr("deile.tools.registry.get_tool_registry", lambda: registry)
 
         chat = _FakeChat(
             [

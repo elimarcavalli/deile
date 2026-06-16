@@ -5,6 +5,7 @@ com ``_TASKS_MAX=10`` mantém ``len(_TASKS) <= 10 + N_em_voo`` ao final. O lock
 ``_TASKS_LOCK`` torna a invariante de tamanho à prova de regressão se um
 ``await`` for introduzido entre o evict e o insert no futuro.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,14 +48,13 @@ def _clean_state():
 async def client(_clean_state, monkeypatch):
     # Rate limiter generoso para não interferir no teste de lock.
     monkeypatch.setattr(
-        worker_server, "_RATE_LIMITER",
+        worker_server,
+        "_RATE_LIMITER",
         TokenBucketRateLimiter(capacity=10_000, rate=10_000),
     )
 
     app = worker_server.build_app(_TOKEN)
-    async with aiohttp_test_utils.TestClient(
-        aiohttp_test_utils.TestServer(app)
-    ) as cli:
+    async with aiohttp_test_utils.TestClient(aiohttp_test_utils.TestServer(app)) as cli:
         yield cli
 
 
@@ -70,13 +70,21 @@ async def test_burst_keeps_tasks_within_bound(client, monkeypatch):
         # ``ok`` permanece None enquanto bloqueado → todas as 100 tasks ficam
         # em voo simultaneamente durante a medição.
         worker_server._TASKS[task_id] = {
-            "task_id": task_id, "ok": None, "brief": brief,
+            "task_id": task_id,
+            "ok": None,
+            "brief": brief,
         }
         await release.wait()
-        result = {"schema_version": worker_server.RESULT_SCHEMA_VERSION,
-                  "task_id": task_id, "ok": True, "elapsed_s": 0.0,
-                  "finished_at": "2026-01-01T00:00:00+00:00",
-                  "brief": brief, "summary": "ok", "files": []}
+        result = {
+            "schema_version": worker_server.RESULT_SCHEMA_VERSION,
+            "task_id": task_id,
+            "ok": True,
+            "elapsed_s": 0.0,
+            "finished_at": "2026-01-01T00:00:00+00:00",
+            "brief": brief,
+            "summary": "ok",
+            "files": [],
+        }
         worker_server._TASKS[task_id] = result
         return result
 
@@ -85,8 +93,11 @@ async def test_burst_keeps_tasks_within_bound(client, monkeypatch):
     async def _one(i):
         return await client.post(
             "/v1/dispatch",
-            json={"brief": f"task {i}", "channel_id": f"chan-{i}",
-                  "wait_for_result": False},
+            json={
+                "brief": f"task {i}",
+                "channel_id": f"chan-{i}",
+                "wait_for_result": False,
+            },
             headers={"Authorization": f"Bearer {_TOKEN}"},
         )
 
@@ -97,7 +108,8 @@ async def test_burst_keeps_tasks_within_bound(client, monkeypatch):
     await asyncio.sleep(0.05)
 
     in_flight = sum(
-        1 for s in worker_server._TASKS.values()
+        1
+        for s in worker_server._TASKS.values()
         if isinstance(s, dict) and s.get("ok") is None
     )
     # AC3: o evict preserva todo o trabalho em voo → bound 10 + N_em_voo.
@@ -119,6 +131,6 @@ async def test_evict_runs_under_lock_in_source():
     # O evict e o insert do task_id vivem dentro do bloco do lock.
     lock_idx = src.index("async with _TASKS_LOCK:")
     evict_idx = src.index("_evict_old_tasks_if_needed()")
-    assert evict_idx > lock_idx, (
-        "_evict_old_tasks_if_needed deve ser chamado DENTRO do _TASKS_LOCK"
-    )
+    assert (
+        evict_idx > lock_idx
+    ), "_evict_old_tasks_if_needed deve ser chamado DENTRO do _TASKS_LOCK"

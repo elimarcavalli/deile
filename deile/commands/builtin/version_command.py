@@ -27,6 +27,7 @@ from ._shared import PROJECT_LINKS as _LINKS
 
 logger = logging.getLogger(__name__)
 
+
 def _detect_install_info() -> dict[str, str]:
     """Detecta modo de instalação via importlib.metadata (sem subprocess)."""
     try:
@@ -38,14 +39,22 @@ def _detect_install_info() -> dict[str, str]:
         if direct_url_text:
             direct_url = json.loads(direct_url_text)
             editable = direct_url.get("dir_info", {}).get("editable", False)
-            modo = "desenvolvimento (editable install)" if editable else "instalação normal"
+            modo = (
+                "desenvolvimento (editable install)"
+                if editable
+                else "instalação normal"
+            )
         else:
             modo = "instalação normal"
 
         return {"modo": modo, "versao_pkg": version, "diretorio": location}
     except Exception as exc:
         logger.debug("Não foi possível detectar info de instalação: %s", exc)
-        return {"modo": "indisponível", "versao_pkg": "indisponível", "diretorio": "indisponível"}
+        return {
+            "modo": "indisponível",
+            "versao_pkg": "indisponível",
+            "diretorio": "indisponível",
+        }
 
 
 def _build_info_table(rows: list[tuple[str, str]]) -> Table:
@@ -67,6 +76,7 @@ class VersionCommand(DirectCommand):
 
     def __init__(self) -> None:
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="version",
             description="Exibe versão, build, métricas de código e ambiente.",
@@ -80,9 +90,16 @@ class VersionCommand(DirectCommand):
         t_start = time.monotonic()
 
         try:
-            from deile.__version__ import (FEATURES, METRICS, __build_date__,
-                                           __build_number__, __description__,
-                                           __license__, __title__, __version__)
+            from deile.__version__ import (
+                FEATURES,
+                METRICS,
+                __build_date__,
+                __build_number__,
+                __description__,
+                __license__,
+                __title__,
+                __version__,
+            )
         except ImportError as exc:  # pragma: no cover — pacote sempre presente
             logger.error("Falha ao importar deile.__version__: %s", exc)
             return CommandResult.error_result(
@@ -97,7 +114,10 @@ class VersionCommand(DirectCommand):
 
         # --- Seção: Informações gerais ---
         info_rows = [
-            ("Versão", f"[bold cyan]{__title__}[/bold cyan] [bold]v{__version__}[/bold]"),
+            (
+                "Versão",
+                f"[bold cyan]{__title__}[/bold cyan] [bold]v{__version__}[/bold]",
+            ),
             ("Descrição", __description__),
             ("Build", f"{__build_number__}  •  {__build_date__}"),
             ("Licença", __license__),

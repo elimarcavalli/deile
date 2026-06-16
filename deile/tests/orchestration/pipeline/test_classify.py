@@ -15,16 +15,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
-from deile.orchestration.pipeline.github_client import (GhCommandError,
-                                                        GitHubClient, IssueRef)
+from deile.orchestration.pipeline.github_client import (
+    GhCommandError,
+    GitHubClient,
+    IssueRef,
+)
 from deile.orchestration.pipeline.labels import WORKFLOW_NEW
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 from deile.orchestration.pipeline.notifier import DiscordNotifier
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _issue(number: int, labels: tuple, body: str = "filled body") -> IssueRef:
     return IssueRef(
@@ -36,7 +39,9 @@ def _issue(number: int, labels: tuple, body: str = "filled body") -> IssueRef:
     )
 
 
-def _make_monitor(*, unclassified: list | None = None) -> tuple[PipelineMonitor, MagicMock, MagicMock]:
+def _make_monitor(
+    *, unclassified: list | None = None
+) -> tuple[PipelineMonitor, MagicMock, MagicMock]:
     cfg = PipelineConfig(
         repo="owner/name",
         base_repo_path=Path("/tmp/fake"),
@@ -69,9 +74,17 @@ def _make_monitor(*, unclassified: list | None = None) -> tuple[PipelineMonitor,
 
     notifier = MagicMock()
     for attr in (
-        "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "implementation_parked", "pr_picked_up", "pr_reviewed",
-        "issue_auto_classified", "error", "pr_auto_classified", "mention_processed",
+        "issue_picked_up",
+        "issue_reviewed",
+        "implementation_started",
+        "implementation_finished",
+        "implementation_parked",
+        "pr_picked_up",
+        "pr_reviewed",
+        "issue_auto_classified",
+        "error",
+        "pr_auto_classified",
+        "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
 
@@ -80,11 +93,17 @@ def _make_monitor(*, unclassified: list | None = None) -> tuple[PipelineMonitor,
     claude = MagicMock()
     claude.run = AsyncMock(
         return_value=ClaudeRunResult(
-            returncode=0, stdout="", stderr="", duration_seconds=0.0, cmd=("claude", "-p", "x")
+            returncode=0,
+            stdout="",
+            stderr="",
+            duration_seconds=0.0,
+            cmd=("claude", "-p", "x"),
         )
     )
 
-    monitor = PipelineMonitor(cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier)
+    monitor = PipelineMonitor(
+        cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier
+    )
     return monitor, github, notifier
 
 
@@ -92,19 +111,22 @@ def _make_monitor(*, unclassified: list | None = None) -> tuple[PipelineMonitor,
 # GitHubClient.list_unclassified_issues
 # ---------------------------------------------------------------------------
 
+
 class TestListUnclassifiedIssues:
     async def test_returns_issues_without_pipeline_labels(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {
-                "number": 1,
-                "title": "plain intent",
-                "url": "https://github.com/o/r/issues/1",
-                "labels": [{"name": "intent"}],
-                "body": "some body",
-                "state": "open",
-            },
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 1,
+                    "title": "plain intent",
+                    "url": "https://github.com/o/r/issues/1",
+                    "labels": [{"name": "intent"}],
+                    "body": "some body",
+                    "state": "open",
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             result = await client.list_unclassified_issues()
         assert len(result) == 1
@@ -112,48 +134,54 @@ class TestListUnclassifiedIssues:
 
     async def test_filters_out_issues_with_workflow_label(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {
-                "number": 2,
-                "title": "already in pipeline",
-                "url": "https://github.com/o/r/issues/2",
-                "labels": [{"name": "intent"}, {"name": "~workflow:nova"}],
-                "body": "body",
-                "state": "open",
-            },
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 2,
+                    "title": "already in pipeline",
+                    "url": "https://github.com/o/r/issues/2",
+                    "labels": [{"name": "intent"}, {"name": "~workflow:nova"}],
+                    "body": "body",
+                    "state": "open",
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             result = await client.list_unclassified_issues()
         assert result == []
 
     async def test_filters_out_issues_with_batch_label(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {
-                "number": 3,
-                "title": "batch locked",
-                "url": "https://github.com/o/r/issues/3",
-                "labels": [{"name": "bug"}, {"name": "~batch:abc12345"}],
-                "body": "body",
-                "state": "open",
-            },
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 3,
+                    "title": "batch locked",
+                    "url": "https://github.com/o/r/issues/3",
+                    "labels": [{"name": "bug"}, {"name": "~batch:abc12345"}],
+                    "body": "body",
+                    "state": "open",
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             result = await client.list_unclassified_issues()
         assert result == []
 
     async def test_filters_out_issues_with_review_label(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {
-                "number": 4,
-                "title": "under review",
-                "url": "https://github.com/o/r/issues/4",
-                "labels": [{"name": "intent"}, {"name": "~review:pendente"}],
-                "body": "body",
-                "state": "open",
-            },
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 4,
+                    "title": "under review",
+                    "url": "https://github.com/o/r/issues/4",
+                    "labels": [{"name": "intent"}, {"name": "~review:pendente"}],
+                    "body": "body",
+                    "state": "open",
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             result = await client.list_unclassified_issues()
         assert result == []
@@ -166,24 +194,26 @@ class TestListUnclassifiedIssues:
 
     async def test_mixed_returns_only_unclassified(self):
         client = GitHubClient("owner/name")
-        payload = json.dumps([
-            {
-                "number": 10,
-                "title": "eligible",
-                "url": "u",
-                "labels": [{"name": "intent"}],
-                "body": "body",
-                "state": "open",
-            },
-            {
-                "number": 11,
-                "title": "already classified",
-                "url": "u",
-                "labels": [{"name": "intent"}, {"name": "~workflow:nova"}],
-                "body": "body",
-                "state": "open",
-            },
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "number": 10,
+                    "title": "eligible",
+                    "url": "u",
+                    "labels": [{"name": "intent"}],
+                    "body": "body",
+                    "state": "open",
+                },
+                {
+                    "number": 11,
+                    "title": "already classified",
+                    "url": "u",
+                    "labels": [{"name": "intent"}, {"name": "~workflow:nova"}],
+                    "body": "body",
+                    "state": "open",
+                },
+            ]
+        )
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             result = await client.list_unclassified_issues()
         assert len(result) == 1
@@ -193,6 +223,7 @@ class TestListUnclassifiedIssues:
 # ---------------------------------------------------------------------------
 # PipelineMonitor._classify_new_issues (Stage 0)
 # ---------------------------------------------------------------------------
+
 
 class TestClassifyNewIssues:
     async def test_no_unclassified_issues_noop(self):
@@ -207,7 +238,9 @@ class TestClassifyNewIssues:
         await monitor._classify_new_issues()
         github.add_labels.assert_called_once_with("issue", 5, [WORKFLOW_NEW])
         github.comment_on_issue.assert_called_once()
-        notifier.issue_auto_classified.assert_called_once_with(5, issue.title, issue.url)
+        notifier.issue_auto_classified.assert_called_once_with(
+            5, issue.title, issue.url
+        )
 
     async def test_classifies_bug_issue(self):
         issue = _issue(6, ("bug",), body="Bug description")
@@ -229,7 +262,11 @@ class TestClassifyNewIssues:
         github.add_labels.assert_called_once_with("issue", 8, [WORKFLOW_NEW])
         # comment should mention the empty body
         comment_arg = github.comment_on_issue.call_args[0][1]
-        assert "vazio" in comment_arg.lower() or "empty" in comment_arg.lower() or "preencha" in comment_arg.lower()
+        assert (
+            "vazio" in comment_arg.lower()
+            or "empty" in comment_arg.lower()
+            or "preencha" in comment_arg.lower()
+        )
 
     async def test_classifies_issue_with_whitespace_only_body_and_posts_reminder(self):
         """gap #5: whitespace-only body is treated as empty and classified."""
@@ -266,7 +303,9 @@ class TestClassifyNewIssues:
         github.add_labels = AsyncMock(side_effect=_add_labels_by_issue)
         await monitor._classify_new_issues()
         notifier.error.assert_called_once()
-        notifier.issue_auto_classified.assert_called_once_with(21, issues[1].title, issues[1].url)
+        notifier.issue_auto_classified.assert_called_once_with(
+            21, issues[1].title, issues[1].url
+        )
         github.comment_on_issue.assert_called_once()
 
     async def test_comment_failure_does_not_trigger_error_notification(self):
@@ -289,8 +328,12 @@ class TestClassifyNewIssues:
         issue = _issue(40, ("intent",), body="body")
         monitor, github, notifier = _make_monitor(unclassified=[issue])
         call_order = []
-        github.list_unclassified_issues.side_effect = lambda **_: call_order.append("classify") or []
-        github.list_issues_with_label.side_effect = lambda *a, **_: call_order.append("review") or []
+        github.list_unclassified_issues.side_effect = (
+            lambda **_: call_order.append("classify") or []
+        )
+        github.list_issues_with_label.side_effect = (
+            lambda *a, **_: call_order.append("review") or []
+        )
         await monitor.tick()
         assert call_order.index("classify") < call_order.index("review")
 
@@ -298,6 +341,7 @@ class TestClassifyNewIssues:
         from datetime import datetime, timezone
 
         from deile.orchestration.pipeline.scheduler import PendingRun
+
         issue = _issue(50, ("intent",), body="body")
         monitor, github, notifier = _make_monitor(unclassified=[issue])
         run = PendingRun(
@@ -314,6 +358,7 @@ class TestClassifyNewIssues:
 # DiscordNotifier.issue_auto_classified
 # ---------------------------------------------------------------------------
 
+
 class TestIssueAutoClassifiedNotification:
     async def test_sends_dm_with_issue_number(self):
         sent = []
@@ -322,7 +367,9 @@ class TestIssueAutoClassifiedNotification:
             sent.append(text)
 
         n = DiscordNotifier(user_id="42", dm_fn=fake_dm)
-        await n.issue_auto_classified(99, "My Issue", "https://github.com/o/r/issues/99")
+        await n.issue_auto_classified(
+            99, "My Issue", "https://github.com/o/r/issues/99"
+        )
         assert len(sent) == 1
         assert "#99" in sent[0]
         assert "My Issue" in sent[0]
@@ -343,8 +390,11 @@ class TestIssueAutoClassifiedNotification:
 # Parametrized: all classifiable labels are handled
 # ---------------------------------------------------------------------------
 
+
 class TestClassifiableLabelCoverage:
-    @pytest.mark.parametrize("label", ["intent", "bug", "refactor", "feature", "security"])
+    @pytest.mark.parametrize(
+        "label", ["intent", "bug", "refactor", "feature", "security"]
+    )
     async def test_classifies_each_classifiable_label(self, label):
         issue = _issue(99, (label,), body="some body")
         monitor, github, _ = _make_monitor(unclassified=[issue])
@@ -356,10 +406,10 @@ class TestClassifiableLabelCoverage:
 # Scheduler integration: RecurringEntry with action="classify" is valid
 # ---------------------------------------------------------------------------
 
+
 class TestSchedulerClassifyAction:
     def test_recurring_classify_entry_is_valid(self):
-        from deile.orchestration.pipeline.scheduler import (RecurringEntry,
-                                                            Schedule)
+        from deile.orchestration.pipeline.scheduler import RecurringEntry, Schedule
 
         entry = RecurringEntry(id="cls-loop", action="classify", cron="*/5 * * * *")
         s = Schedule()
@@ -369,18 +419,22 @@ class TestSchedulerClassifyAction:
     async def test_schedule_roundtrip_triggers_classify(self, tmp_path):
         from datetime import datetime, timedelta, timezone
 
-        from deile.orchestration.pipeline.scheduler import (RecurringEntry,
-                                                            Schedule,
-                                                            ScheduleStore)
+        from deile.orchestration.pipeline.scheduler import (
+            RecurringEntry,
+            Schedule,
+            ScheduleStore,
+        )
 
         store = ScheduleStore(tmp_path, monitor_id="default")
         s = Schedule()
-        s.add_recurring(RecurringEntry(
-            id="cls-loop",
-            action="classify",
-            cron="*/5 * * * *",
-            last_run_at=datetime.now(timezone.utc) - timedelta(hours=2),
-        ))
+        s.add_recurring(
+            RecurringEntry(
+                id="cls-loop",
+                action="classify",
+                cron="*/5 * * * *",
+                last_run_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            )
+        )
         store.save(s)
 
         issue = _issue(70, ("intent",), body="body")
@@ -407,9 +461,17 @@ class TestSchedulerClassifyAction:
 
         notifier = MagicMock()
         for attr in (
-            "issue_picked_up", "issue_reviewed", "implementation_started",
-            "implementation_finished", "implementation_parked", "pr_picked_up", "pr_reviewed",
-            "issue_auto_classified", "error", "pr_auto_classified", "mention_processed",
+            "issue_picked_up",
+            "issue_reviewed",
+            "implementation_started",
+            "implementation_finished",
+            "implementation_parked",
+            "pr_picked_up",
+            "pr_reviewed",
+            "issue_auto_classified",
+            "error",
+            "pr_auto_classified",
+            "mention_processed",
         ):
             setattr(notifier, attr, AsyncMock())
 
@@ -446,6 +508,7 @@ class TestSchedulerClassifyAction:
 # Shard filter in Stage 0
 # ---------------------------------------------------------------------------
 
+
 class TestClassifySharding:
     async def test_skips_issue_outside_own_shard(self):
         from deile.orchestration.pipeline.identity import MonitorIdentity
@@ -454,7 +517,9 @@ class TestClassifySharding:
         # A monitor on shard_index=1 must NOT classify it.
         issue = _issue(60, ("intent",), body="body")
         monitor, github, _ = _make_monitor(unclassified=[issue])
-        monitor.identity = MonitorIdentity(monitor_id="m1", shard_index=1, shard_count=2)
+        monitor.identity = MonitorIdentity(
+            monitor_id="m1", shard_index=1, shard_count=2
+        )
         await monitor._classify_new_issues()
         github.add_labels.assert_not_called()
 
@@ -464,6 +529,8 @@ class TestClassifySharding:
         # "issue 61" hashes to shard 1 with shard_count=2.
         issue = _issue(61, ("intent",), body="body")
         monitor, github, _ = _make_monitor(unclassified=[issue])
-        monitor.identity = MonitorIdentity(monitor_id="m1", shard_index=1, shard_count=2)
+        monitor.identity = MonitorIdentity(
+            monitor_id="m1", shard_index=1, shard_count=2
+        )
         await monitor._classify_new_issues()
         github.add_labels.assert_called_once_with("issue", 61, [WORKFLOW_NEW])

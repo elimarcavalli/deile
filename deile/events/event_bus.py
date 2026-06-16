@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class EventType(Enum):
     """Tipos de eventos do sistema"""
+
     # Sistema
     SYSTEM_STARTED = "system.started"
     SYSTEM_STOPPED = "system.stopped"
@@ -57,6 +58,7 @@ class EventType(Enum):
 
 class EventPriority(Enum):
     """Prioridades de eventos"""
+
     LOW = 1
     NORMAL = 2
     HIGH = 3
@@ -66,6 +68,7 @@ class EventPriority(Enum):
 @dataclass
 class Event:
     """Evento do sistema com metadata completa"""
+
     event_type: EventType
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: float = field(default_factory=time.time)
@@ -73,7 +76,7 @@ class Event:
     data: Dict[str, Any] = field(default_factory=dict)
     priority: EventPriority = EventPriority.NORMAL
     correlation_id: Optional[str] = None  # Para rastrear fluxos relacionados
-    causation_id: Optional[str] = None    # Evento que causou este
+    causation_id: Optional[str] = None  # Evento que causou este
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -87,11 +90,11 @@ class Event:
             "priority": self.priority.value,
             "correlation_id": self.correlation_id,
             "causation_id": self.causation_id,
-            "metadata": self.metadata
+            "metadata": self.metadata,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Event':
+    def from_dict(cls, data: Dict[str, Any]) -> "Event":
         """Deserializa evento de dicionário"""
         return cls(
             event_id=data["event_id"],
@@ -102,7 +105,7 @@ class Event:
             priority=EventPriority(data["priority"]),
             correlation_id=data.get("correlation_id"),
             causation_id=data.get("causation_id"),
-            metadata=data.get("metadata", {})
+            metadata=data.get("metadata", {}),
         )
 
 
@@ -149,7 +152,7 @@ class EventBus:
             "events_processed": 0,
             "events_failed": 0,
             "handlers_executed": 0,
-            "average_processing_time": 0.0
+            "average_processing_time": 0.0,
         }
         self._processing_times: List[float] = []
 
@@ -263,7 +266,9 @@ class EventBus:
             queue.put_nowait(event)
 
             self._stats["events_published"] += 1
-            logger.debug(f"Evento {event.event_type.value} publicado (ID: {event.event_id})")
+            logger.debug(
+                f"Evento {event.event_type.value} publicado (ID: {event.event_id})"
+            )
             return True
 
         except asyncio.QueueFull:
@@ -303,7 +308,9 @@ class EventBus:
                 # Processa eventos por prioridade (CRITICAL -> LOW)
                 event_processed = False
 
-                for priority in sorted(EventPriority, key=lambda p: p.value, reverse=True):
+                for priority in sorted(
+                    EventPriority, key=lambda p: p.value, reverse=True
+                ):
                     queue = self._event_queues[priority]
 
                     try:
@@ -362,7 +369,9 @@ class EventBus:
             self._stats["handlers_executed"] += success_count
 
             if failure_count > 0:
-                logger.warning(f"{failure_count} handlers falharam para evento {event.event_id}")
+                logger.warning(
+                    f"{failure_count} handlers falharam para evento {event.event_id}"
+                )
                 self._stats["events_failed"] += 1
             else:
                 self._stats["events_processed"] += 1
@@ -381,7 +390,9 @@ class EventBus:
                 self._processing_times = self._processing_times[-1000:]
 
             # Atualiza média
-            self._stats["average_processing_time"] = sum(self._processing_times) / len(self._processing_times)
+            self._stats["average_processing_time"] = sum(self._processing_times) / len(
+                self._processing_times
+            )
 
             # Marca como processado para ``publish_and_wait``.
             self._mark_event_processed(event.event_id)
@@ -447,14 +458,16 @@ class EventBus:
         return {
             "running": self._running,
             "worker_count": len(self._workers),
-            "handlers_registered": sum(len(handlers) for handlers in self._handlers.values()),
+            "handlers_registered": sum(
+                len(handlers) for handlers in self._handlers.values()
+            ),
             "wildcard_handlers": len(self._wildcard_handlers),
             "queue_sizes": {
                 priority.name: self._event_queues[priority].qsize()
                 for priority in EventPriority
             },
             "dead_letters": len(self._dead_letters),
-            "stats": self._stats.copy()
+            "stats": self._stats.copy(),
         }
 
     async def get_dead_letters(self) -> List[Event]:

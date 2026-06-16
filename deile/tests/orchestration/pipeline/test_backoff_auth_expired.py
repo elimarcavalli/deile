@@ -13,8 +13,11 @@ from __future__ import annotations
 import time
 
 from deile.orchestration.pipeline.stages import (
-    _AUTH_BACKOFF_THRESHOLD, is_target_auth_paused,
-    record_auth_failure_and_maybe_pause, reset_auth_failures)
+    _AUTH_BACKOFF_THRESHOLD,
+    is_target_auth_paused,
+    record_auth_failure_and_maybe_pause,
+    reset_auth_failures,
+)
 
 
 class _FakeMonitor:
@@ -72,10 +75,11 @@ class TestBackoffAtAndAboveThresholdPauses:
         for _ in range(_AUTH_BACKOFF_THRESHOLD + 1):
             _, last_pause = record_auth_failure_and_maybe_pause(m2, "pr", 200)
         # A pausa da 4ª chamada deve ser >= dobro da 3ª (2^4 * 60 vs 2^3 * 60).
-        assert last_pause >= 60 * (2 ** _AUTH_BACKOFF_THRESHOLD)
+        assert last_pause >= 60 * (2**_AUTH_BACKOFF_THRESHOLD)
 
     def test_pause_duration_caps_at_max(self):
         from deile.orchestration.pipeline.stages import _AUTH_BACKOFF_MAX_S
+
         m = _FakeMonitor()
         # Gera muitas falhas para garantir que ``2^count * 60 > MAX``.
         for _ in range(20):

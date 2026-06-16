@@ -51,10 +51,12 @@ def test_env_value_is_lowercased(monkeypatch):
 @pytest.mark.unit
 def test_nested_json_apply_overrides():
     s = Settings()
-    s.apply_overrides({
-        "model": {"reasoning_effort": "max"},
-        "pipeline": {"reasoning": {"classify": "low", "implement": "high"}},
-    })
+    s.apply_overrides(
+        {
+            "model": {"reasoning_effort": "max"},
+            "pipeline": {"reasoning": {"classify": "low", "implement": "high"}},
+        }
+    )
     assert s.reasoning_effort == "max"
     assert s.pipeline_reasoning_classify == "low"
     assert s.pipeline_reasoning_implement == "high"

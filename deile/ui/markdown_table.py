@@ -167,7 +167,7 @@ def safe_streaming_split(text: str) -> Tuple[str, str]:
     while run_start > 0:
         prev_nl = text.rfind("\n", 0, run_start - 1)
         prev_line_start = prev_nl + 1 if prev_nl != -1 else 0
-        prev_line = text[prev_line_start:run_start - 1] if run_start > 0 else ""
+        prev_line = text[prev_line_start : run_start - 1] if run_start > 0 else ""
         if not _TABLE_LINE_RE.match(prev_line):
             break
         run_start = prev_line_start

@@ -43,15 +43,18 @@ def _view_with_worker(worker: str, *, namespace: str = "deile"):
     from _panel_data import StageDispatchEntry
 
     entry = StageDispatchEntry(
-        stage="classify", worker=worker, model=None, source="env",
+        stage="classify",
+        worker=worker,
+        model=None,
+        source="env",
     )
     data = MagicMock()
     data.context.namespace = namespace
     data.stage_dispatch.get_all_stages.return_value = [entry]
 
     view = DispatchMatrixView(data=data)
-    view.cursor_row = 0   # stage row "classify"
-    view.cursor_col = 0   # coluna Worker
+    view.cursor_row = 0  # stage row "classify"
+    view.cursor_col = 0  # coluna Worker
     return view
 
 

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                             StreamEventType,
-                                             UnifiedStreamEvent)
+from deile.core.models.stream_events import (
+    ModelUsageSnapshot,
+    StreamEventType,
+    UnifiedStreamEvent,
+)
 
 
 class TestStreamEventType:

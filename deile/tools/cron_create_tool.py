@@ -18,12 +18,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from deile.cron.parsing import (ScheduleParseError, parse_iso_datetime,
-                                parse_natural_schedule)
-from deile.cron.store import (CronEntry, CronStoreError, make_id,
-                              open_cron_store)
-from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
-                              ToolResult, ToolSchema)
+from deile.cron.parsing import (
+    ScheduleParseError,
+    parse_iso_datetime,
+    parse_natural_schedule,
+)
+from deile.cron.store import CronEntry, CronStoreError, make_id, open_cron_store
+from deile.tools.base import (
+    SecurityLevel,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 from deile.tools.cron_tool_base import unexpected_error
 
 
@@ -43,16 +51,26 @@ def _resolve_schedule(
         try:
             cron, run_at = parse_natural_schedule(when_str)
         except ScheduleParseError as exc:
-            return None, None, ToolResult.error_result(
-                message=str(exc), error=exc, error_code="INVALID_WHEN",
+            return (
+                None,
+                None,
+                ToolResult.error_result(
+                    message=str(exc),
+                    error=exc,
+                    error_code="INVALID_WHEN",
+                ),
             )
         return cron, run_at, None
     if run_at_str:
         run_at = parse_iso_datetime(str(run_at_str), naive_tz=timezone.utc)
         if run_at is None:
-            return None, None, ToolResult.error_result(
-                message=f"invalid run_at: {run_at_str!r}",
-                error_code="INVALID_DATETIME",
+            return (
+                None,
+                None,
+                ToolResult.error_result(
+                    message=f"invalid run_at: {run_at_str!r}",
+                    error_code="INVALID_DATETIME",
+                ),
             )
         return None, run_at, None
     return cron, None, None
@@ -169,9 +187,7 @@ class CronCreateTool(Tool):
                 error_code="AMBIGUOUS_SCHEDULE",
             )
 
-        cron, run_at, schedule_error = _resolve_schedule(
-            when_str, cron, run_at_str
-        )
+        cron, run_at, schedule_error = _resolve_schedule(when_str, cron, run_at_str)
         if schedule_error is not None:
             return schedule_error
 
@@ -188,7 +204,9 @@ class CronCreateTool(Tool):
             store.add(entry)
         except CronStoreError as exc:
             return ToolResult.error_result(
-                message=str(exc), error=exc, error_code="CRON_STORE",
+                message=str(exc),
+                error=exc,
+                error_code="CRON_STORE",
             )
         except Exception as exc:  # noqa: BLE001
             return unexpected_error(exc)

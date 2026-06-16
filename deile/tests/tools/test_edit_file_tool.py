@@ -49,11 +49,13 @@ class TestSinglePatch:
         target = tmp_path / "hello.py"
         target.write_text("greeting = 'hello'\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="hello.py",
-            patches=[{"find": "'hello'", "replace": "'world'"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="hello.py",
+                patches=[{"find": "'hello'", "replace": "'world'"}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert target.read_text(encoding="utf-8") == "greeting = 'world'\n"
@@ -62,11 +64,13 @@ class TestSinglePatch:
         target = tmp_path / "multi.txt"
         target.write_text("line1\nline2\nline3\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="multi.txt",
-            patches=[{"find": "line1\nline2\n", "replace": "alpha\nbeta\ngamma\n"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="multi.txt",
+                patches=[{"find": "line1\nline2\n", "replace": "alpha\nbeta\ngamma\n"}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert target.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\nline3\n"
@@ -77,11 +81,13 @@ class TestSinglePatch:
         target = tmp_path / "x.txt"
         target.write_text("KEEP\nDELETE_THIS\nKEEP\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="x.txt",
-            patches=[{"find": "DELETE_THIS\n", "replace": ""}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="x.txt",
+                patches=[{"find": "DELETE_THIS\n", "replace": ""}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert target.read_text(encoding="utf-8") == "KEEP\nKEEP\n"
@@ -94,12 +100,14 @@ class TestSinglePatch:
         target = tmp_path / "compat.py"
         target.write_text("x = 1\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="compat.py",
-            old_string="x = 1",
-            new_string="x = 42",
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="compat.py",
+                old_string="x = 1",
+                new_string="x = 42",
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert target.read_text(encoding="utf-8") == "x = 42\n"
@@ -112,15 +120,17 @@ class TestMultiPatch:
         target = tmp_path / "ordered.txt"
         target.write_text("A\nB\nC\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="ordered.txt",
-            patches=[
-                {"find": "A\n", "replace": "alpha\n"},
-                {"find": "B\n", "replace": "bravo\n"},
-                {"find": "C\n", "replace": "charlie\n"},
-            ],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="ordered.txt",
+                patches=[
+                    {"find": "A\n", "replace": "alpha\n"},
+                    {"find": "B\n", "replace": "bravo\n"},
+                    {"find": "C\n", "replace": "charlie\n"},
+                ],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert target.read_text(encoding="utf-8") == "alpha\nbravo\ncharlie\n"
@@ -133,14 +143,16 @@ class TestMultiPatch:
         target = tmp_path / "chain.txt"
         target.write_text("foo\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="chain.txt",
-            patches=[
-                {"find": "foo", "replace": "INTERMEDIATE"},
-                {"find": "INTERMEDIATE", "replace": "final"},
-            ],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="chain.txt",
+                patches=[
+                    {"find": "foo", "replace": "INTERMEDIATE"},
+                    {"find": "INTERMEDIATE", "replace": "final"},
+                ],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert target.read_text(encoding="utf-8") == "final\n"
@@ -153,11 +165,13 @@ class TestReplaceAll:
         target = tmp_path / "rep.txt"
         target.write_text("foo bar foo baz foo\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="rep.txt",
-            patches=[{"find": "foo", "replace": "FOO", "replace_all": True}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="rep.txt",
+                patches=[{"find": "foo", "replace": "FOO", "replace_all": True}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert target.read_text(encoding="utf-8") == "FOO bar FOO baz FOO\n"
@@ -173,11 +187,13 @@ class TestReplaceAll:
         target = tmp_path / "rep1.txt"
         target.write_text("only one foo here\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="rep1.txt",
-            patches=[{"find": "foo", "replace": "FOO", "replace_all": True}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="rep1.txt",
+                patches=[{"find": "foo", "replace": "FOO", "replace_all": True}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert target.read_text(encoding="utf-8") == "only one FOO here\n"
@@ -196,11 +212,13 @@ class TestFindNotFound:
         original = "print('original')\n"
         target.write_text(original, encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="ola.py",
-            patches=[{"find": "WILL_NEVER_MATCH", "replace": "x"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="ola.py",
+                patches=[{"find": "WILL_NEVER_MATCH", "replace": "x"}],
+            )
+        )
 
         assert result.status == ToolStatus.ERROR
         assert "not present" in result.message
@@ -214,11 +232,15 @@ class TestFindNotFound:
         target.write_text("def hello_world():\n    return 1\n", encoding="utf-8")
 
         # Same logical line but with extra leading spaces — won't match.
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="ws.py",
-            patches=[{"find": "    def hello_world():", "replace": "    def goodbye():"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="ws.py",
+                patches=[
+                    {"find": "    def hello_world():", "replace": "    def goodbye():"}
+                ],
+            )
+        )
 
         assert result.status == ToolStatus.ERROR
         assert "whitespace" in result.message or "DOES appear" in result.message
@@ -232,11 +254,13 @@ class TestAmbiguity:
         original = "foo\nfoo\n"
         target.write_text(original, encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="amb.txt",
-            patches=[{"find": "foo", "replace": "bar"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="amb.txt",
+                patches=[{"find": "foo", "replace": "bar"}],
+            )
+        )
 
         assert result.status == ToolStatus.ERROR
         assert "ambiguous" in result.message
@@ -251,11 +275,13 @@ class TestAmbiguity:
         target = tmp_path / "amb2.txt"
         target.write_text("greet = foo\nfarewell = foo\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="amb2.txt",
-            patches=[{"find": "greet = foo", "replace": "greet = bar"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="amb2.txt",
+                patches=[{"find": "greet = foo", "replace": "greet = bar"}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert target.read_text(encoding="utf-8") == "greet = bar\nfarewell = foo\n"
@@ -269,14 +295,16 @@ class TestAtomicityAcrossPatches:
         original = "FIRST\nSECOND\n"
         target.write_text(original, encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="tx.txt",
-            patches=[
-                {"find": "FIRST", "replace": "first_done"},
-                {"find": "DOES_NOT_EXIST", "replace": "boom"},
-            ],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="tx.txt",
+                patches=[
+                    {"find": "FIRST", "replace": "first_done"},
+                    {"find": "DOES_NOT_EXIST", "replace": "boom"},
+                ],
+            )
+        )
 
         assert result.status == ToolStatus.ERROR
         assert result.metadata["failed_patch_index"] == 2
@@ -290,17 +318,19 @@ class TestAtomicityAcrossPatches:
         original = "A\nB\nC\nD\nC\n"  # 'C' appears twice
         target.write_text(original, encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="tx3.txt",
-            patches=[
-                {"find": "A", "replace": "a"},
-                {"find": "B", "replace": "b"},
-                # Ambiguous: 'C' appears twice in the original AND remains
-                # twice after patches 1+2.
-                {"find": "C", "replace": "c"},
-            ],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="tx3.txt",
+                patches=[
+                    {"find": "A", "replace": "a"},
+                    {"find": "B", "replace": "b"},
+                    # Ambiguous: 'C' appears twice in the original AND remains
+                    # twice after patches 1+2.
+                    {"find": "C", "replace": "c"},
+                ],
+            )
+        )
 
         assert result.status == ToolStatus.ERROR
         assert result.metadata["failed_patch_index"] == 3
@@ -308,19 +338,17 @@ class TestAtomicityAcrossPatches:
 
 
 class TestInputValidation:
-    def test_missing_file_path_errors(
-        self, tool: EditFileTool, tmp_path: Path
-    ) -> None:
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            patches=[{"find": "x", "replace": "y"}],
-        ))
+    def test_missing_file_path_errors(self, tool: EditFileTool, tmp_path: Path) -> None:
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                patches=[{"find": "x", "replace": "y"}],
+            )
+        )
         assert result.status == ToolStatus.ERROR
         assert "file_path" in result.message.lower()
 
-    def test_missing_patches_errors(
-        self, tool: EditFileTool, tmp_path: Path
-    ) -> None:
+    def test_missing_patches_errors(self, tool: EditFileTool, tmp_path: Path) -> None:
         (tmp_path / "x.txt").write_text("anything\n", encoding="utf-8")
         result = tool.execute_sync(_ctx(tmp_path, file_path="x.txt"))
         assert result.status == ToolStatus.ERROR
@@ -332,15 +360,15 @@ class TestInputValidation:
         (tmp_path / "x.txt").write_text("anything\n", encoding="utf-8")
         result = tool.execute_sync(_ctx(tmp_path, file_path="x.txt", patches=[]))
         assert result.status == ToolStatus.ERROR
-        assert "non-empty" in result.message.lower() or "patches" in result.message.lower()
+        assert (
+            "non-empty" in result.message.lower() or "patches" in result.message.lower()
+        )
 
-    def test_patch_not_a_dict_errors(
-        self, tool: EditFileTool, tmp_path: Path
-    ) -> None:
+    def test_patch_not_a_dict_errors(self, tool: EditFileTool, tmp_path: Path) -> None:
         (tmp_path / "x.txt").write_text("anything\n", encoding="utf-8")
-        result = tool.execute_sync(_ctx(
-            tmp_path, file_path="x.txt", patches=["not-a-dict"]
-        ))
+        result = tool.execute_sync(
+            _ctx(tmp_path, file_path="x.txt", patches=["not-a-dict"])
+        )
         assert result.status == ToolStatus.ERROR
         assert "patch #1" in result.message
 
@@ -348,48 +376,52 @@ class TestInputValidation:
         self, tool: EditFileTool, tmp_path: Path
     ) -> None:
         (tmp_path / "x.txt").write_text("anything\n", encoding="utf-8")
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="x.txt",
-            patches=[{"find": "", "replace": "x"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="x.txt",
+                patches=[{"find": "", "replace": "x"}],
+            )
+        )
         assert result.status == ToolStatus.ERROR
         assert "empty" in result.message.lower()
 
-    def test_non_string_find_rejected(
-        self, tool: EditFileTool, tmp_path: Path
-    ) -> None:
+    def test_non_string_find_rejected(self, tool: EditFileTool, tmp_path: Path) -> None:
         (tmp_path / "x.txt").write_text("anything\n", encoding="utf-8")
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="x.txt",
-            patches=[{"find": 42, "replace": "x"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="x.txt",
+                patches=[{"find": 42, "replace": "x"}],
+            )
+        )
         assert result.status == ToolStatus.ERROR
         assert "find" in result.message.lower()
 
     def test_nonexistent_file_errors_clearly(
         self, tool: EditFileTool, tmp_path: Path
     ) -> None:
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="does_not_exist.txt",
-            patches=[{"find": "x", "replace": "y"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="does_not_exist.txt",
+                patches=[{"find": "x", "replace": "y"}],
+            )
+        )
         assert result.status == ToolStatus.ERROR
         assert "not found" in result.message.lower()
         assert "write_file" in result.message  # suggests the right alternative
 
-    def test_directory_path_errors(
-        self, tool: EditFileTool, tmp_path: Path
-    ) -> None:
+    def test_directory_path_errors(self, tool: EditFileTool, tmp_path: Path) -> None:
         subdir = tmp_path / "subdir"
         subdir.mkdir()
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="subdir",
-            patches=[{"find": "x", "replace": "y"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="subdir",
+                patches=[{"find": "x", "replace": "y"}],
+            )
+        )
         assert result.status == ToolStatus.ERROR
         assert "not a file" in result.message.lower()
 
@@ -402,11 +434,13 @@ class TestEncoding:
         # Pure non-UTF-8 byte sequence (0xff is invalid as standalone UTF-8).
         target.write_bytes(b"\xff\xfe\xfd")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="latin.txt",
-            patches=[{"find": "x", "replace": "y"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="latin.txt",
+                patches=[{"find": "x", "replace": "y"}],
+            )
+        )
 
         assert result.status == ToolStatus.ERROR
         assert "UTF-8" in result.message
@@ -418,14 +452,18 @@ class TestEncoding:
         original = "Olá 🌍\nGoodbye 👋\n"
         target.write_text(original, encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="emoji.txt",
-            patches=[{"find": "Goodbye 👋", "replace": "Hello 🙂"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="emoji.txt",
+                patches=[{"find": "Goodbye 👋", "replace": "Hello 🙂"}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
-        assert (tmp_path / "emoji.txt").read_bytes() == "Olá 🌍\nHello 🙂\n".encode("utf-8")
+        assert (tmp_path / "emoji.txt").read_bytes() == "Olá 🌍\nHello 🙂\n".encode(
+            "utf-8"
+        )
 
 
 class TestNoOp:
@@ -442,11 +480,13 @@ class TestNoOp:
 
         time.sleep(0.01)
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="noop.txt",
-            patches=[{"find": "stay the same", "replace": "stay the same"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="noop.txt",
+                patches=[{"find": "stay the same", "replace": "stay the same"}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert result.metadata.get("no_op") is True
@@ -463,11 +503,13 @@ class TestValidationHint:
         target = tmp_path / "ok.py"
         target.write_text("x = 1\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="ok.py",
-            patches=[{"find": "x = 1", "replace": "x = 42"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="ok.py",
+                patches=[{"find": "x = 1", "replace": "x = 42"}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert result.metadata.get("post_write_validation_required") is True
@@ -481,11 +523,13 @@ class TestValidationHint:
         target = tmp_path / "notes.txt"
         target.write_text("old\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="notes.txt",
-            patches=[{"find": "old", "replace": "new"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="notes.txt",
+                patches=[{"find": "old", "replace": "new"}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
         assert "post_write_validation_required" not in result.metadata
@@ -510,11 +554,13 @@ class TestAtomicWriteFailurePreservesOriginal:
 
         monkeypatch.setattr(WriteFileTool, "_atomic_write_text", staticmethod(boom))
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="atomic.txt",
-            patches=[{"find": "ORIGINAL", "replace": "MUTATED"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="atomic.txt",
+                patches=[{"find": "ORIGINAL", "replace": "MUTATED"}],
+            )
+        )
 
         assert result.status == ToolStatus.ERROR
         assert "atomic" in result.message.lower() or "intact" in result.message.lower()
@@ -530,16 +576,19 @@ class TestPathNormalization:
         the normalization in the result message."""
         (tmp_path / "foo.txt").write_text("abc\n", encoding="utf-8")
 
-        result = tool.execute_sync(_ctx(
-            tmp_path,
-            file_path="/foo.txt",
-            patches=[{"find": "abc", "replace": "xyz"}],
-        ))
+        result = tool.execute_sync(
+            _ctx(
+                tmp_path,
+                file_path="/foo.txt",
+                patches=[{"find": "abc", "replace": "xyz"}],
+            )
+        )
 
         assert result.status == ToolStatus.SUCCESS
-        assert "PATH_NORMALIZED" in result.message or result.metadata.get(
-            "path_normalization_note"
-        ) is not None
+        assert (
+            "PATH_NORMALIZED" in result.message
+            or result.metadata.get("path_normalization_note") is not None
+        )
         assert (tmp_path / "foo.txt").read_text(encoding="utf-8") == "xyz\n"
 
 
@@ -547,7 +596,10 @@ class TestToolMetadata:
     def test_name_description_category(self, tool: EditFileTool) -> None:
         assert tool.name == "edit_file"
         assert tool.category == "file"
-        assert "edit_file" in tool.description.lower() or "edit" in tool.description.lower()
+        assert (
+            "edit_file" in tool.description.lower()
+            or "edit" in tool.description.lower()
+        )
         assert "write_file" in tool.description  # mentions sibling tool to guide LLM
 
 
@@ -560,10 +612,7 @@ class TestSchema:
         from deile.tools.base import ToolSchema
 
         schema_path = (
-            Path(__file__).resolve().parents[2]
-            / "tools"
-            / "schemas"
-            / "edit_file.json"
+            Path(__file__).resolve().parents[2] / "tools" / "schemas" / "edit_file.json"
         )
         assert schema_path.exists(), f"schema missing at {schema_path}"
         schema = ToolSchema.from_json_file(schema_path)
@@ -581,13 +630,12 @@ class TestSchema:
         from deile.tools.base import ToolSchema
 
         schema_path = (
-            Path(__file__).resolve().parents[2]
-            / "tools"
-            / "schemas"
-            / "edit_file.json"
+            Path(__file__).resolve().parents[2] / "tools" / "schemas" / "edit_file.json"
         )
         schema = ToolSchema.from_json_file(schema_path)
         anthropic_tool = schema.to_anthropic_tool()
         assert anthropic_tool["name"] == "edit_file"
         # The conversion lowercases JSON Schema types.
-        assert anthropic_tool["input_schema"]["properties"]["patches"]["type"] == "array"
+        assert (
+            anthropic_tool["input_schema"]["properties"]["patches"]["type"] == "array"
+        )

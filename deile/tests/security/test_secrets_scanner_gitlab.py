@@ -12,12 +12,15 @@ def scanner():
     return SecretsScanner()
 
 
-@pytest.mark.parametrize("token", [
-    "glpat-abcdefghijklmnopqrstuvwxyzABC123",   # personal access token
-    "gldt-abcdefghijklmnopqrstuvwxyz1234567890",  # deploy token
-    "glptt-abcdefghijklmnopqrstuvwxyz12345678",   # project trigger
-    "glsoat-abcdefghijklmnopqrstuvwxyz12345",     # agent OAuth
-])
+@pytest.mark.parametrize(
+    "token",
+    [
+        "glpat-abcdefghijklmnopqrstuvwxyzABC123",  # personal access token
+        "gldt-abcdefghijklmnopqrstuvwxyz1234567890",  # deploy token
+        "glptt-abcdefghijklmnopqrstuvwxyz12345678",  # project trigger
+        "glsoat-abcdefghijklmnopqrstuvwxyz12345",  # agent OAuth
+    ],
+)
 def test_secrets_scanner_gitlab_prefix_tokens_flagged(scanner, token):
     matches = scanner.scan_text(f"my_token={token}")
     assert any(

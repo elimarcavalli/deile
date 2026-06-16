@@ -26,9 +26,10 @@ def _reset(monkeypatch):
 
 def test_missing_client_registers_zero(monkeypatch):
     """Simulate `deilebot` not being installed."""
-    monkeypatch.setattr("deile.tools.messaging.auto_discover", importlib.import_module(
-        "deile.tools.messaging.auto_discover"
-    ))
+    monkeypatch.setattr(
+        "deile.tools.messaging.auto_discover",
+        importlib.import_module("deile.tools.messaging.auto_discover"),
+    )
     monkeypatch.setattr(
         "deile.integrations.bot.BOT_CLIENT_AVAILABLE", False, raising=True
     )
@@ -52,6 +53,7 @@ def test_unconfigured_registers_zero(monkeypatch):
     )
     import deile.integrations.bot.config as cfg
     from deile.integrations.bot import BotIntegrationSettings
+
     forced = BotIntegrationSettings(endpoint="", auth_token="", disabled=True)
     monkeypatch.setattr(cfg, "get_bot_settings", lambda: forced, raising=True)
     # The auto_discover module re-imports get_bot_settings; patching the

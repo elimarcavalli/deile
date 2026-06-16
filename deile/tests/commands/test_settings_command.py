@@ -132,7 +132,9 @@ class TestSet:
         ):
             result = await _run(cmd, "set pipeline.poll_interval 60 --scope=project")
         assert not result.success
-        assert "trust" in result.content.lower() or "not trusted" in result.content.lower()
+        assert (
+            "trust" in result.content.lower() or "not trusted" in result.content.lower()
+        )
 
     async def test_set_scope_user_alias(self, tmp_path):
         mgr = _make_manager(tmp_path)
@@ -166,6 +168,7 @@ class TestGet:
         from io import StringIO
 
         from rich.console import Console
+
         buf = StringIO()
         c = Console(file=buf, width=120)
         c.print(result.content)
@@ -215,6 +218,7 @@ class TestList:
         from io import StringIO
 
         from rich.console import Console
+
         buf = StringIO()
         c = Console(file=buf, width=200)
         c.print(result.content)
@@ -255,6 +259,7 @@ class TestList:
         from io import StringIO
 
         from rich.console import Console
+
         buf = StringIO()
         c = Console(file=buf, width=200)
         c.print(result.content)
@@ -338,6 +343,7 @@ class TestWhere:
         from io import StringIO
 
         from rich.console import Console
+
         buf = StringIO()
         c = Console(file=buf, width=200)
         c.print(result.content)
@@ -360,6 +366,7 @@ class TestWhere:
         from io import StringIO
 
         from rich.console import Console
+
         buf = StringIO()
         c = Console(file=buf, width=200)
         c.print(result.content)
@@ -383,6 +390,7 @@ class TestWhere:
         from io import StringIO
 
         from rich.console import Console
+
         buf = StringIO()
         c = Console(file=buf, width=200)
         c.print(result.content)

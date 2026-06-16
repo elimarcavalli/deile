@@ -99,7 +99,9 @@ class TestManifest46DeilePipelineDeployment:
 
     def test_forge_kind_not_hardcoded(self):
         env = self._init_env()
-        assert "DEILE_FORGE_KIND" in env, "DEILE_FORGE_KIND must be declared in initContainer env"
+        assert (
+            "DEILE_FORGE_KIND" in env
+        ), "DEILE_FORGE_KIND must be declared in initContainer env"
         entry = env["DEILE_FORGE_KIND"]
         assert "value" not in entry or entry.get("value") != "github", (
             "DEILE_FORGE_KIND must not be hardcoded to 'github'; "
@@ -110,12 +112,10 @@ class TestManifest46DeilePipelineDeployment:
         env = self._init_env()
         entry = env["DEILE_FORGE_KIND"]
         ref = entry.get("valueFrom", {}).get("configMapKeyRef", {})
-        assert ref.get("name") == "deile-runtime-config", (
-            "DEILE_FORGE_KIND must read from ConfigMap deile-runtime-config"
-        )
-        assert ref.get("key") == "forge.kind", (
-            "ConfigMap key must be forge.kind"
-        )
+        assert (
+            ref.get("name") == "deile-runtime-config"
+        ), "DEILE_FORGE_KIND must read from ConfigMap deile-runtime-config"
+        assert ref.get("key") == "forge.kind", "ConfigMap key must be forge.kind"
         assert ref.get("optional") is True, (
             "optional: true required — if key absent, shell fallback "
             "${DEILE_FORGE_KIND:-github} in the initContainer script kicks in"
@@ -133,6 +133,6 @@ class TestManifest47DeileRuntimeConfig:
 
     def test_forge_kind_default_is_github(self):
         doc = _load("47-deile-runtime-config.yaml")
-        assert doc["data"]["forge.kind"] == "github", (
-            "Default forge.kind should be github for backwards compatibility"
-        )
+        assert (
+            doc["data"]["forge.kind"] == "github"
+        ), "Default forge.kind should be github for backwards compatibility"

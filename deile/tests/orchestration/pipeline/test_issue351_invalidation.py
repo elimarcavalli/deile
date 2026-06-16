@@ -12,11 +12,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
-                                                 REVIEW_PENDING)
+from deile.orchestration.pipeline.labels import REVIEW_CONCLUDED, REVIEW_PENDING
 from deile.orchestration.pipeline.stages import (
-    CLASS_CODE, CLASS_COSMETIC, CLASS_DOCS_ONLY, _classify_new_commits,
-    _handle_review_concluded_invalidation)
+    CLASS_CODE,
+    CLASS_COSMETIC,
+    CLASS_DOCS_ONLY,
+    _classify_new_commits,
+    _handle_review_concluded_invalidation,
+)
 
 # ---------------------------------------------------------------------------
 # _classify_new_commits
@@ -27,7 +30,9 @@ class TestClassifyNewCommits:
     """Unit tests for the commit classification heuristic."""
 
     def test_docs_only__all_files_in_docs_dir(self):
-        commits = [{"sha": "a", "message": "m", "files": ["docs/api.md", "docs/guide.rst"]}]
+        commits = [
+            {"sha": "a", "message": "m", "files": ["docs/api.md", "docs/guide.rst"]}
+        ]
         assert _classify_new_commits(commits) == CLASS_DOCS_ONLY
 
     def test_docs_only__all_files_md_extension(self):
@@ -56,11 +61,15 @@ class TestClassifyNewCommits:
         assert _classify_new_commits(commits) == CLASS_CODE
 
     def test_code__yaml_file(self):
-        commits = [{"sha": "a", "message": "ci", "files": [".github/workflows/ci.yaml"]}]
+        commits = [
+            {"sha": "a", "message": "ci", "files": [".github/workflows/ci.yaml"]}
+        ]
         assert _classify_new_commits(commits) == CLASS_CODE
 
     def test_cosmetic__config_only(self):
-        commits = [{"sha": "a", "message": "chore", "files": [".gitignore", "Makefile"]}]
+        commits = [
+            {"sha": "a", "message": "chore", "files": [".gitignore", "Makefile"]}
+        ]
         assert _classify_new_commits(commits) == CLASS_COSMETIC
 
     def test_empty_commits__safe_default_code(self):
@@ -125,9 +134,11 @@ async def test_invalidation_cosmetic__comments_keeps_label():
     """Cosmetic commits → comment only, label stays."""
     forge = MagicMock()
     forge.label_applied_at = AsyncMock(return_value=1700000000)
-    forge.get_pr_commits_since = AsyncMock(return_value=[
-        {"sha": "abc", "message": "chore", "files": [".gitignore"]},
-    ])
+    forge.get_pr_commits_since = AsyncMock(
+        return_value=[
+            {"sha": "abc", "message": "chore", "files": [".gitignore"]},
+        ]
+    )
     forge.remove_labels = AsyncMock()
     forge.add_labels = AsyncMock()
     forge.comment_on_pr = AsyncMock()
@@ -155,9 +166,11 @@ async def test_invalidation_code__removes_concluded_adds_pending():
     """Code commits → remove ~review:concluida, add ~review:pendente, comment."""
     forge = MagicMock()
     forge.label_applied_at = AsyncMock(return_value=1700000000)
-    forge.get_pr_commits_since = AsyncMock(return_value=[
-        {"sha": "abc", "message": "fix bug", "files": ["deile/stages.py"]},
-    ])
+    forge.get_pr_commits_since = AsyncMock(
+        return_value=[
+            {"sha": "abc", "message": "fix bug", "files": ["deile/stages.py"]},
+        ]
+    )
     forge.remove_labels = AsyncMock()
     forge.add_labels = AsyncMock()
     forge.comment_on_pr = AsyncMock()
@@ -195,9 +208,11 @@ async def test_invalidation_docs_only__removes_concluded_adds_pending():
     """Docs-only commits → remove ~review:concluida, add ~review:pendente."""
     forge = MagicMock()
     forge.label_applied_at = AsyncMock(return_value=1700000000)
-    forge.get_pr_commits_since = AsyncMock(return_value=[
-        {"sha": "abc", "message": "update docs", "files": ["docs/api.md"]},
-    ])
+    forge.get_pr_commits_since = AsyncMock(
+        return_value=[
+            {"sha": "abc", "message": "update docs", "files": ["docs/api.md"]},
+        ]
+    )
     forge.remove_labels = AsyncMock()
     forge.add_labels = AsyncMock()
     forge.comment_on_pr = AsyncMock()
@@ -268,13 +283,21 @@ async def test_invalidation_remove_label_fails__skips():
     """remove_labels fails after classification → returns early, no label changes."""
     forge = MagicMock()
     forge.label_applied_at = AsyncMock(return_value=1700000000)
-    forge.get_pr_commits_since = AsyncMock(return_value=[
-        {"sha": "abc", "message": "fix", "files": ["deile/stages.py"]},
-    ])
+    forge.get_pr_commits_since = AsyncMock(
+        return_value=[
+            {"sha": "abc", "message": "fix", "files": ["deile/stages.py"]},
+        ]
+    )
     from deile.orchestration.forge.github_forge import GhCommandError
-    forge.remove_labels = AsyncMock(side_effect=GhCommandError(
-        ("gh", "api"), 1, "", "GH API down",
-    ))
+
+    forge.remove_labels = AsyncMock(
+        side_effect=GhCommandError(
+            ("gh", "api"),
+            1,
+            "",
+            "GH API down",
+        )
+    )
     forge.add_labels = AsyncMock()
     forge.comment_on_pr = AsyncMock()
 
@@ -298,17 +321,21 @@ async def test_invalidation_add_pending_fails__re_adds_concluded():
     re-adds REVIEW_CONCLUDED so the PR isn't left label-less."""
     forge = MagicMock()
     forge.label_applied_at = AsyncMock(return_value=1700000000)
-    forge.get_pr_commits_since = AsyncMock(return_value=[
-        {"sha": "abc", "message": "fix", "files": ["deile/stages.py"]},
-    ])
+    forge.get_pr_commits_since = AsyncMock(
+        return_value=[
+            {"sha": "abc", "message": "fix", "files": ["deile/stages.py"]},
+        ]
+    )
     forge.remove_labels = AsyncMock()  # succeeds
     from deile.orchestration.forge.github_forge import GhCommandError
 
     # First call (add REVIEW_PENDING) fails; second call (re-add CONCLUDED) succeeds.
-    forge.add_labels = AsyncMock(side_effect=[
-        GhCommandError(("gh", "api"), 1, "", "GH API down"),
-        None,  # re-add succeeds
-    ])
+    forge.add_labels = AsyncMock(
+        side_effect=[
+            GhCommandError(("gh", "api"), 1, "", "GH API down"),
+            None,  # re-add succeeds
+        ]
+    )
     forge.comment_on_pr = AsyncMock()
 
     monitor = MagicMock()
@@ -339,12 +366,14 @@ async def test_review_one_open_pr_skips_concluded_pr_without_new_commits():
     """PR with ~review:concluida and NO new commits → still excluded."""
     from pathlib import Path
 
-    from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                      PipelineMonitor)
+    from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
     cfg = PipelineConfig(
-        repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0,
+        repo="owner/r",
+        base_repo_path=Path("/tmp"),
+        notify_user_id="42",
+        use_pid_lock=False,
+        reaper_stale_seconds=0,
     )
     forge = MagicMock()
     forge.list_open_prs = AsyncMock(return_value=[])
@@ -368,12 +397,16 @@ async def test_review_one_open_pr_skips_concluded_pr_without_new_commits():
     notifier.pr_reviewed = AsyncMock()
 
     monitor = PipelineMonitor(
-        cfg, github=forge, worktrees=MagicMock(), claude=MagicMock(),
+        cfg,
+        github=forge,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
         notifier=notifier,
     )
     monitor.implementer = MagicMock()
 
     from deile.orchestration.pipeline.stages import review_one_open_pr
+
     await review_one_open_pr(monitor)
 
     # PR was NOT picked up for review.
@@ -385,12 +418,14 @@ async def test_review_one_open_pr_invalidates_concluded_with_new_code_commits():
     """PR with ~review:concluida and new CODE commits → invalidated."""
     from pathlib import Path
 
-    from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                      PipelineMonitor)
+    from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
     cfg = PipelineConfig(
-        repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0,
+        repo="owner/r",
+        base_repo_path=Path("/tmp"),
+        notify_user_id="42",
+        use_pid_lock=False,
+        reaper_stale_seconds=0,
     )
     forge = MagicMock()
     forge.list_issues_with_label = AsyncMock(return_value=[])
@@ -412,9 +447,11 @@ async def test_review_one_open_pr_invalidates_concluded_with_new_code_commits():
 
     forge.list_open_prs = AsyncMock(return_value=[concluded_pr, fresh_pr])
     forge.label_applied_at = AsyncMock(return_value=1700000000)
-    forge.get_pr_commits_since = AsyncMock(return_value=[
-        {"sha": "abc", "message": "fix", "files": ["deile/stages.py"]},
-    ])
+    forge.get_pr_commits_since = AsyncMock(
+        return_value=[
+            {"sha": "abc", "message": "fix", "files": ["deile/stages.py"]},
+        ]
+    )
     forge.remove_labels = AsyncMock()
     forge.add_labels = AsyncMock()
     forge.comment_on_pr = AsyncMock()
@@ -428,29 +465,35 @@ async def test_review_one_open_pr_invalidates_concluded_with_new_code_commits():
     notifier.pr_reviewed = AsyncMock()
 
     monitor = PipelineMonitor(
-        cfg, github=forge, worktrees=MagicMock(), claude=MagicMock(),
+        cfg,
+        github=forge,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
         notifier=notifier,
     )
     from deile.orchestration.pipeline.implementer import WorkOutcome
+
     monitor.implementer = MagicMock()
     # Review succeeds with merge.
-    monitor.implementer.review = AsyncMock(return_value=WorkOutcome(
-        ok=True, text="merged successfully",
-    ))
+    monitor.implementer.review = AsyncMock(
+        return_value=WorkOutcome(
+            ok=True,
+            text="merged successfully",
+        )
+    )
 
     from deile.orchestration.pipeline.stages import review_one_open_pr
+
     await review_one_open_pr(monitor)
 
     # The concluded PR had its label removed and pending added.
     remove_calls = [
-        c for c in forge.remove_labels.call_args_list
-        if REVIEW_CONCLUDED in c[0][2]
+        c for c in forge.remove_labels.call_args_list if REVIEW_CONCLUDED in c[0][2]
     ]
     assert len(remove_calls) >= 1, "Expected REVIEW_CONCLUDED to be removed"
 
     add_pending_calls = [
-        c for c in forge.add_labels.call_args_list
-        if REVIEW_PENDING in c[0][2]
+        c for c in forge.add_labels.call_args_list if REVIEW_PENDING in c[0][2]
     ]
     assert len(add_pending_calls) >= 1, "Expected REVIEW_PENDING to be added"
 
@@ -460,19 +503,22 @@ async def test_review_one_open_pr_invalidates_concluded_with_new_code_commits():
 
 # --- issue #85 Phase 2: CI-gate determinístico antes do dispatch de review -----
 
+
 @pytest.mark.asyncio
 async def test_review_one_open_pr_skips_dispatch_when_ci_pending():
     """CI rodando (pending) → review NÃO é despachada neste tick (evita churn
     de redispatch a cada tick de 60s durante os minutos do CI). Issue #85."""
     from pathlib import Path
 
-    from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                     PipelineMonitor)
+    from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
     from deile.orchestration.pipeline.stages import review_one_open_pr
 
     cfg = PipelineConfig(
-        repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0,
+        repo="owner/r",
+        base_repo_path=Path("/tmp"),
+        notify_user_id="42",
+        use_pid_lock=False,
+        reaper_stale_seconds=0,
     )
     pr = MagicMock()
     pr.number = 701
@@ -490,7 +536,10 @@ async def test_review_one_open_pr_skips_dispatch_when_ci_pending():
     forge.add_labels = AsyncMock()
 
     monitor = PipelineMonitor(
-        cfg, github=forge, worktrees=MagicMock(), claude=MagicMock(),
+        cfg,
+        github=forge,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
         notifier=MagicMock(),
     )
     monitor.implementer = MagicMock()
@@ -510,13 +559,15 @@ async def test_review_one_open_pr_proceeds_when_ci_passing():
     ownership acontece). Issue #85."""
     from pathlib import Path
 
-    from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                     PipelineMonitor)
+    from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
     from deile.orchestration.pipeline.stages import review_one_open_pr
 
     cfg = PipelineConfig(
-        repo="owner/r", base_repo_path=Path("/tmp"), notify_user_id="42",
-        use_pid_lock=False, reaper_stale_seconds=0,
+        repo="owner/r",
+        base_repo_path=Path("/tmp"),
+        notify_user_id="42",
+        use_pid_lock=False,
+        reaper_stale_seconds=0,
     )
     pr = MagicMock()
     pr.number = 702
@@ -538,11 +589,16 @@ async def test_review_one_open_pr_proceeds_when_ci_passing():
     notifier.pr_reviewed = AsyncMock()
 
     monitor = PipelineMonitor(
-        cfg, github=forge, worktrees=MagicMock(), claude=MagicMock(),
+        cfg,
+        github=forge,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
         notifier=notifier,
     )
     monitor.implementer = MagicMock()
-    monitor.implementer.review = AsyncMock(return_value=MagicMock(ok=True, text="REVIEWED"))
+    monitor.implementer.review = AsyncMock(
+        return_value=MagicMock(ok=True, text="REVIEWED")
+    )
     monitor._owns_pr_branch = lambda *a, **k: True
 
     # O fluxo downstream do dispatch toca vários colaboradores async não-mockados

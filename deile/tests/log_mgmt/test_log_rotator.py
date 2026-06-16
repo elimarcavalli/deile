@@ -10,9 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from deile.log_mgmt.log_rotator import (CappedRotatingFileHandler,
-                                        _default_log_dir, _default_log_file,
-                                        create_log_handler, get_pod_name)
+from deile.log_mgmt.log_rotator import (
+    CappedRotatingFileHandler,
+    _default_log_dir,
+    _default_log_file,
+    create_log_handler,
+    get_pod_name,
+)
 
 
 class TestGetPodName:
@@ -105,9 +109,10 @@ class TestCappedRotatingFileHandler:
         path = Path(tmp_log_dir) / "pod.log"
         # tiny max: 1 byte -> rollover on every message
         handler = CappedRotatingFileHandler(str(path), max_mb=1, backup_count=2)
-        msg = "x" * 600_000  # ~0.6 MB -> 2 messages should trigger rollover (1.2 MB > 1 MB)
-        record = logging.LogRecord(
-            "test", logging.INFO, "", 0, msg, (), None)
+        msg = (
+            "x" * 600_000
+        )  # ~0.6 MB -> 2 messages should trigger rollover (1.2 MB > 1 MB)
+        record = logging.LogRecord("test", logging.INFO, "", 0, msg, (), None)
         handler.format = lambda r: msg  # bypass formatting
 
         assert handler.should_rollover(record) is False  # first msg fits
@@ -123,8 +128,7 @@ class TestCappedRotatingFileHandler:
         if current_day == handler.last_rotation_day:
             pytest.skip("Cannot test day rotation when day matches")
 
-        record = logging.LogRecord(
-            "test", logging.INFO, "", 0, "msg", (), None)
+        record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
         handler.format = lambda r: "msg"
         handler.emit(record)
         # After emit, last_rotation_day should be updated

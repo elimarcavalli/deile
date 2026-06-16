@@ -148,7 +148,10 @@ class UsageRepository:
                 "usage recorded with cost_usd=0 for a successful call with "
                 "billable tokens (provider=%s, model=%s, prompt=%s, completion=%s) "
                 "— pricing likely missing or uncomputed",
-                provider_id, model_id, prompt_tokens, completion_tokens,
+                provider_id,
+                model_id,
+                prompt_tokens,
+                completion_tokens,
             )
 
         r = UsageRecord(
@@ -271,6 +274,7 @@ class UsageRepository:
 # BudgetGuard
 # ---------------------------------------------------------------------------
 
+
 class BudgetExceeded(Exception):
     """Raised when a budget limit would be breached by the requested call."""
 
@@ -305,6 +309,7 @@ class BudgetGuard:
     @classmethod
     def from_yaml(cls, yaml_path: Path, repository: UsageRepository) -> "BudgetGuard":
         import yaml as _yaml
+
         with open(yaml_path) as f:
             data = _yaml.safe_load(f)
         budget = data.get("budget", {})
@@ -330,7 +335,10 @@ class BudgetGuard:
                 provider_id="(session)",
                 limit_type="per_session",
             )
-        if self._per_session > 0 and projected / self._per_session >= self._alert_threshold:
+        if (
+            self._per_session > 0
+            and projected / self._per_session >= self._alert_threshold
+        ):
             logger.warning(
                 "Budget alert: session %s at %.0f%% of $%.2f limit",
                 session_id,
@@ -338,7 +346,9 @@ class BudgetGuard:
                 self._per_session,
             )
 
-    def check_provider_daily(self, provider_id: str, estimated_cost: float = 0.0) -> None:
+    def check_provider_daily(
+        self, provider_id: str, estimated_cost: float = 0.0
+    ) -> None:
         """Raise BudgetExceeded if provider's 24h spend would exceed daily limit."""
         if not self._enabled:
             return
@@ -363,7 +373,9 @@ class BudgetGuard:
                 limit,
             )
 
-    def check_provider_monthly(self, provider_id: str, estimated_cost: float = 0.0) -> None:
+    def check_provider_monthly(
+        self, provider_id: str, estimated_cost: float = 0.0
+    ) -> None:
         """Raise BudgetExceeded if provider's 30-day spend would exceed monthly limit."""
         if not self._enabled:
             return
@@ -469,8 +481,9 @@ class StageBudgetGuard:
         """
         # Lazy import to avoid import cycle and to allow resolve_stage_cost_cap_usd
         # to be imported after the module is fully initialized.
-        from deile.orchestration.pipeline.dispatch_resolver import \
-            resolve_stage_cost_cap_usd  # noqa: PLC0415
+        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+            resolve_stage_cost_cap_usd,
+        )
 
         cap = resolve_stage_cost_cap_usd(stage)
         if cap is None:
@@ -487,7 +500,8 @@ class StageBudgetGuard:
             logger.debug(
                 "StageBudgetGuard: estimate=0 for stage=%s model=%s "
                 "(pricing unknown) — skipping cap check",
-                stage, model_slug,
+                stage,
+                model_slug,
             )
             return
 
@@ -495,7 +509,10 @@ class StageBudgetGuard:
             logger.warning(
                 "StageBudgetGuard: stage=%s model=%s estimated=$%s > cap=$%s "
                 "— raising StageCostCapExceeded",
-                stage, model_slug, estimated, cap,
+                stage,
+                model_slug,
+                estimated,
+                cap,
             )
             raise StageCostCapExceeded(
                 stage=stage,
@@ -505,7 +522,10 @@ class StageBudgetGuard:
 
         logger.debug(
             "StageBudgetGuard: stage=%s model=%s estimated=$%s <= cap=$%s — OK",
-            stage, model_slug, estimated, cap,
+            stage,
+            model_slug,
+            estimated,
+            cap,
         )
 
 

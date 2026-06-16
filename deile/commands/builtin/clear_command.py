@@ -20,11 +20,14 @@ class ClearCommand(DirectCommand):
     """Start a fresh conversation (and screen) while preserving the prior one."""
 
     cli_flag = "--clear"
-    cli_help = "Start a new conversation, archive the current one, redraw the welcome screen."
+    cli_help = (
+        "Start a new conversation, archive the current one, redraw the welcome screen."
+    )
     cli_requires_provider = False
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="clear",
             description="Inicia uma nova conversa, arquivando a atual (para /resume) e redesenhando a tela.",
@@ -48,7 +51,9 @@ class ClearCommand(DirectCommand):
             return await self._clear_history_only(context)
         if command == "screen":
             return await self._clear_screen_only(context)
-        raise CommandError(f"Unknown clear option: {command}. Use: cls, cls reset, cls history, cls screen")
+        raise CommandError(
+            f"Unknown clear option: {command}. Use: cls, cls reset, cls history, cls screen"
+        )
 
     async def _start_fresh_conversation(self, context: CommandContext) -> CommandResult:
         """Archive the current conversation and switch to a brand-new session.
@@ -101,8 +106,10 @@ class ClearCommand(DirectCommand):
             new_session_id=new_sid,
             archived_session_id=session.session_id,
         )
-    
-    async def _clear_reset(self, context: CommandContext, force: bool = False) -> CommandResult:
+
+    async def _clear_reset(
+        self, context: CommandContext, force: bool = False
+    ) -> CommandResult:
         """Complete session reset.
 
         ``force`` is a no-op placeholder for a future interactive confirmation
@@ -116,7 +123,7 @@ class ClearCommand(DirectCommand):
             reset_steps.extend(self._reset_plans())
             reset_steps.extend(self._reset_approvals())
 
-            if hasattr(context, 'ui_manager') and context.ui_manager:
+            if hasattr(context, "ui_manager") and context.ui_manager:
                 context.ui_manager.clear_screen()
                 reset_steps.append("✅ Screen display cleared")
 
@@ -135,7 +142,12 @@ class ClearCommand(DirectCommand):
                 "🚀 **Ready for fresh start!**"
             )
             return CommandResult.success_result(
-                Panel(Text(content, style="green"), title="🔄 Session Reset Complete", border_style="green", padding=(1, 2)),
+                Panel(
+                    Text(content, style="green"),
+                    title="🔄 Session Reset Complete",
+                    border_style="green",
+                    padding=(1, 2),
+                ),
                 "rich",
             )
 
@@ -149,10 +161,15 @@ class ClearCommand(DirectCommand):
                 "Try restarting the application for complete reset."
             )
             return CommandResult.success_result(
-                Panel(Text(content, style="yellow"), title="⚠️ Partial Reset", border_style="yellow", padding=(1, 2)),
+                Panel(
+                    Text(content, style="yellow"),
+                    title="⚠️ Partial Reset",
+                    border_style="yellow",
+                    padding=(1, 2),
+                ),
                 "rich",
             )
-    
+
     @staticmethod
     def _reset_agent(context: CommandContext) -> list[str]:
         """Steps 1-3: clear agent conversation/context/memory/token counters.
@@ -162,17 +179,17 @@ class ClearCommand(DirectCommand):
         methods simply skip the corresponding step.
         """
         steps: list[str] = []
-        agent = getattr(context, 'agent', None)
+        agent = getattr(context, "agent", None)
         if not agent:
             return steps
         agent.clear_conversation_history()
         agent.clear_context()
         steps.append("✅ Conversation history cleared")
         steps.append("✅ Agent context cleared")
-        if hasattr(agent, 'clear_session_memory'):
+        if hasattr(agent, "clear_session_memory"):
             agent.clear_session_memory()
             steps.append("✅ Session memory cleared")
-        if hasattr(agent, 'reset_token_counters'):
+        if hasattr(agent, "reset_token_counters"):
             agent.reset_token_counters()
             steps.append("✅ Token counters reset")
         return steps
@@ -182,6 +199,7 @@ class ClearCommand(DirectCommand):
         """Step 4: clear active plans/locks/stop-flags from PlanManager singleton."""
         try:
             from ...orchestration.plan_manager import get_plan_manager
+
             get_plan_manager().clear_active_state()
             return ["✅ Active plans cleared"]
         except Exception as exc:
@@ -193,6 +211,7 @@ class ClearCommand(DirectCommand):
         """Step 5: clear pending approval requests + futures."""
         try:
             from ...orchestration.approval_system import get_approval_system
+
             approval_system = get_approval_system()
             approval_system.pending_requests.clear()
             approval_system.request_futures.clear()
@@ -208,6 +227,7 @@ class ClearCommand(DirectCommand):
         try:
             import shutil
             from pathlib import Path
+
             for temp_dir in ("TEMP", "CACHE", ".deile_cache"):
                 temp_path = Path(temp_dir)
                 if temp_path.exists():
@@ -221,20 +241,24 @@ class ClearCommand(DirectCommand):
     @staticmethod
     def _reset_session_id(context: CommandContext) -> list[str]:
         """Step 8: regenerate session UUID when present on the context."""
-        if not hasattr(context, 'session_id'):
+        if not hasattr(context, "session_id"):
             return []
         import uuid
+
         context.session_id = str(uuid.uuid4())
         return ["✅ Session ID regenerated"]
 
     async def _clear_history_only(self, context: CommandContext) -> CommandResult:
         """Clear only conversation history."""
         try:
-            if getattr(context, 'agent', None):
+            if getattr(context, "agent", None):
                 context.agent.clear_conversation_history()
             return CommandResult.success_result(
                 Panel(
-                    Text("✅ Conversation history cleared.\n\nContext, memory, and session state preserved.", style="green"),
+                    Text(
+                        "✅ Conversation history cleared.\n\nContext, memory, and session state preserved.",
+                        style="green",
+                    ),
                     title="📝 History Cleared",
                     border_style="green",
                 ),
@@ -246,11 +270,14 @@ class ClearCommand(DirectCommand):
     async def _clear_screen_only(self, context: CommandContext) -> CommandResult:
         """Clear only screen display."""
         try:
-            if getattr(context, 'ui_manager', None):
+            if getattr(context, "ui_manager", None):
                 context.ui_manager.clear_screen()
             return CommandResult.success_result(
                 Panel(
-                    Text("✅ Screen display cleared.\n\nHistory and session state preserved.", style="green"),
+                    Text(
+                        "✅ Screen display cleared.\n\nHistory and session state preserved.",
+                        style="green",
+                    ),
                     title="🖥️ Screen Cleared",
                     border_style="green",
                 ),
@@ -258,7 +285,7 @@ class ClearCommand(DirectCommand):
             )
         except Exception as e:
             raise CommandError(f"Failed to clear screen: {e}")
-    
+
     def get_help(self) -> str:
         """Get detailed help for clear command"""
         return """Inicia uma nova conversa e redesenha a tela inicial.

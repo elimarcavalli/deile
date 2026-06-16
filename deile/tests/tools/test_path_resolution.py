@@ -11,14 +11,17 @@ from __future__ import annotations
 
 import pytest
 
-from deile.tools._path_resolution import (_PATH_ARG_KEYS_EDIT,
-                                          _PATH_ARG_KEYS_FALLBACK,
-                                          _PATH_ARG_KEYS_PRIMARY,
-                                          _PATH_ARG_KEYS_WRITE,
-                                          LocalFileAccessViolation,
-                                          ResolvedPath, _extract_path_arg,
-                                          _not_found_message,
-                                          _resolve_project_path)
+from deile.tools._path_resolution import (
+    _PATH_ARG_KEYS_EDIT,
+    _PATH_ARG_KEYS_FALLBACK,
+    _PATH_ARG_KEYS_PRIMARY,
+    _PATH_ARG_KEYS_WRITE,
+    LocalFileAccessViolation,
+    ResolvedPath,
+    _extract_path_arg,
+    _not_found_message,
+    _resolve_project_path,
+)
 
 # ---------------------------------------------------------------------------
 # _extract_path_arg
@@ -71,8 +74,7 @@ def test_extract_path_arg_two_stage_lookup_primary_vs_fallback():
     args_only_fallback = {"filename": "synonym"}
     assert _extract_path_arg(args_only_fallback, keys=_PATH_ARG_KEYS_PRIMARY) is None
     assert (
-        _extract_path_arg(args_only_fallback, keys=_PATH_ARG_KEYS_FALLBACK)
-        == "synonym"
+        _extract_path_arg(args_only_fallback, keys=_PATH_ARG_KEYS_FALLBACK) == "synonym"
     )
 
 
@@ -198,7 +200,7 @@ def test_not_found_message_shell_quotes_path_with_metacharacters():
     assert "'/tmp/foo; rm -rf /'" in msg
     # And the raw, unquoted dangerous form must not appear as a free-floating
     # part of the suggested command (would mean shlex.quote was skipped).
-    assert f'cat {dangerous_path})' not in msg
+    assert f"cat {dangerous_path})" not in msg
 
 
 @pytest.mark.unit

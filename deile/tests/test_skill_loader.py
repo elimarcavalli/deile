@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from deile.commands.skill_loader import (SkillLoader, _normalize_name,
-                                         _parse_skill_file)
+from deile.commands.skill_loader import SkillLoader, _normalize_name, _parse_skill_file
 
 # ---------------------------------------------------------------------------
 # _normalize_name
@@ -105,7 +104,9 @@ class TestSkillLoaderLoadSkills:
             user_home=tmp_path / "home",
         )
 
-    def _write_skill(self, directory: Path, filename: str, name: str, body: str) -> None:
+    def _write_skill(
+        self, directory: Path, filename: str, name: str, body: str
+    ) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         (directory / filename).write_text(
             f"---\nname: {name}\ndescription: {name} skill\n---\n{body}",
@@ -136,7 +137,9 @@ class TestSkillLoaderLoadSkills:
     def test_project_overrides_user_on_name_conflict(self, tmp_path):
         loader = self._make_loader(tmp_path)
         self._write_skill(loader.user_skills_dir, "skill.md", "my-skill", "User body.")
-        self._write_skill(loader.project_skills_dir, "skill.md", "my-skill", "Project body.")
+        self._write_skill(
+            loader.project_skills_dir, "skill.md", "my-skill", "Project body."
+        )
         skills = loader.load_skills()
         assert len(skills) == 1
         assert skills[0].source == "project"
@@ -171,7 +174,9 @@ class TestSkillLoaderExtraPaths:
     rule installed for the duration of each test.
     """
 
-    def _write_skill(self, directory: Path, filename: str, name: str, body: str) -> None:
+    def _write_skill(
+        self, directory: Path, filename: str, name: str, body: str
+    ) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         (directory / filename).write_text(
             f"---\nname: {name}\ndescription: {name} skill\n---\n{body}",
@@ -294,7 +299,9 @@ class TestLoadIntoRegistry:
             user_home=tmp_path / "home",
         )
 
-    def _write_skill(self, directory: Path, filename: str, name: str, body: str) -> None:
+    def _write_skill(
+        self, directory: Path, filename: str, name: str, body: str
+    ) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         (directory / filename).write_text(
             f"---\nname: {name}\ndescription: A skill\n---\n{body}",
@@ -411,8 +418,12 @@ class TestNoOverrideExistingCommand:
     """Skills must NOT silently hijack existing slash commands."""
 
     def _registry_with_existing_command(self, name: str = "help"):
-        from deile.commands.base import (CommandContext, CommandResult,
-                                         CommandStatus, SlashCommand)
+        from deile.commands.base import (
+            CommandContext,
+            CommandResult,
+            CommandStatus,
+            SlashCommand,
+        )
         from deile.commands.registry import CommandRegistry
         from deile.config.manager import CommandConfig
 
@@ -462,8 +473,12 @@ class TestNoOverrideExistingCommand:
 
         assert registered == 0
         assert registry.get_command("help").description == "REAL builtin"
-        assert any("collides with existing command" in m for m in warn_calls), warn_calls
-        assert any("Skipped 1 skill(s) due to name collision" in m for m in warn_calls), warn_calls
+        assert any(
+            "collides with existing command" in m for m in warn_calls
+        ), warn_calls
+        assert any(
+            "Skipped 1 skill(s) due to name collision" in m for m in warn_calls
+        ), warn_calls
 
     def test_two_distinct_skills_register_when_no_collision(self, tmp_path):
         from deile.commands.registry import CommandRegistry
@@ -474,8 +489,12 @@ class TestNoOverrideExistingCommand:
             user_home=tmp_path / "home",
         )
         loader.user_skills_dir.mkdir(parents=True, exist_ok=True)
-        (loader.user_skills_dir / "alpha.md").write_text("---\nname: alpha\n---\nA.", encoding="utf-8")
-        (loader.user_skills_dir / "beta.md").write_text("---\nname: beta\n---\nB.", encoding="utf-8")
+        (loader.user_skills_dir / "alpha.md").write_text(
+            "---\nname: alpha\n---\nA.", encoding="utf-8"
+        )
+        (loader.user_skills_dir / "beta.md").write_text(
+            "---\nname: beta\n---\nB.", encoding="utf-8"
+        )
 
         registered = loader.load_into_registry(registry)
 
@@ -564,7 +583,9 @@ class TestReloadIntoRegistry:
             user_home=tmp_path / "home",
         )
 
-    def _write_skill(self, directory: Path, filename: str, name: str, body: str) -> None:
+    def _write_skill(
+        self, directory: Path, filename: str, name: str, body: str
+    ) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         (directory / filename).write_text(
             f"---\nname: {name}\ndescription: A skill\n---\n{body}",
@@ -590,12 +611,18 @@ class TestReloadIntoRegistry:
         loader.reload_into_registry(registry)
 
         assert registry.get_command("old-skill") is None, "stale skill must be removed"
-        assert registry.get_command("new-skill") is not None, "new skill must be present"
+        assert (
+            registry.get_command("new-skill") is not None
+        ), "new skill must be present"
 
     def test_reload_does_not_touch_builtin_commands(self, tmp_path):
         """Built-in commands (no _is_skill_command marker) survive reload."""
-        from deile.commands.base import (CommandContext, CommandResult,
-                                         CommandStatus, SlashCommand)
+        from deile.commands.base import (
+            CommandContext,
+            CommandResult,
+            CommandStatus,
+            SlashCommand,
+        )
         from deile.commands.registry import CommandRegistry
         from deile.config.manager import CommandConfig
 
@@ -604,7 +631,9 @@ class TestReloadIntoRegistry:
                 super().__init__(CommandConfig(name="builtin", description="built-in"))
 
             async def execute(self, ctx: CommandContext) -> CommandResult:
-                return CommandResult(success=True, content="", status=CommandStatus.SUCCESS)
+                return CommandResult(
+                    success=True, content="", status=CommandStatus.SUCCESS
+                )
 
         registry = CommandRegistry()
         registry.register_command(_Builtin())
@@ -614,7 +643,9 @@ class TestReloadIntoRegistry:
         loader.load_into_registry(registry)
         loader.reload_into_registry(registry)
 
-        assert registry.get_command("builtin") is not None, "built-in must survive reload"
+        assert (
+            registry.get_command("builtin") is not None
+        ), "built-in must survive reload"
 
     async def test_reload_registers_updated_skill_body(self, tmp_path):
         """A skill whose file was modified gets the updated body after reload."""

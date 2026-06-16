@@ -19,6 +19,7 @@ from deile.core.models.tier import ModelTier
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def handle() -> ModelHandle:
     return ModelHandle(
@@ -59,6 +60,7 @@ def provider(handle, config, monkeypatch) -> OpenAIProvider:
 # Helpers to build mock OpenAI response objects
 # ---------------------------------------------------------------------------
 
+
 def _usage(prompt=10, completion=20, cached=0):
     u = MagicMock()
     u.prompt_tokens = prompt
@@ -81,7 +83,9 @@ def _choice(content="", finish_reason="stop", tool_calls=None):
 
 def _response(content="", finish_reason="stop", tool_calls=None, usage_kwargs=None):
     r = MagicMock()
-    r.choices = [_choice(content=content, finish_reason=finish_reason, tool_calls=tool_calls)]
+    r.choices = [
+        _choice(content=content, finish_reason=finish_reason, tool_calls=tool_calls)
+    ]
     r.usage = _usage(**(usage_kwargs or {}))
     return r
 
@@ -99,6 +103,7 @@ def _tool_call(call_id: str, name: str, arguments: dict):
 # ---------------------------------------------------------------------------
 # Test: generate()
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_generate_returns_model_response(provider):
@@ -136,6 +141,7 @@ async def test_generate_system_instruction(provider):
 # Test: chat_with_tools() — 1-turn (no tool calls)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_chat_with_tools_no_tool_calls(provider):
     resp = _response(content="Paris", finish_reason="stop")
@@ -155,6 +161,7 @@ async def test_chat_with_tools_no_tool_calls(provider):
 # Test: chat_with_tools() — 1 tool call
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_chat_with_tools_one_tool_call(provider):
     tc = _tool_call("tc_1", "bash", {"command": "ls"})
@@ -164,9 +171,16 @@ async def test_chat_with_tools_one_tool_call(provider):
     provider._client.chat.completions.create = AsyncMock(side_effect=[resp1, resp2])
 
     from deile.tools.base import ToolResult, ToolStatus
+
     mock_result = ToolResult(status=ToolStatus.SUCCESS, data="main.py", message="ok")
 
-    with patch.object(provider, "_execute_tool", AsyncMock(return_value=(mock_result, {"status": "success", "result": "main.py"}))):
+    with patch.object(
+        provider,
+        "_execute_tool",
+        AsyncMock(
+            return_value=(mock_result, {"status": "success", "result": "main.py"})
+        ),
+    ):
         text, tool_results, usage = await provider.chat_with_tools(
             messages=[ModelMessage(role="user", content="List files")],
             tools=[],
@@ -181,6 +195,7 @@ async def test_chat_with_tools_one_tool_call(provider):
 # Test: chat_with_tools() — 2 sequential iterations
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_chat_with_tools_two_iterations(provider):
     tc1 = _tool_call("tc_1", "bash", {"command": "ls"})
@@ -189,12 +204,19 @@ async def test_chat_with_tools_two_iterations(provider):
     resp2 = _response(content="", finish_reason="tool_calls", tool_calls=[tc2])
     resp3 = _response(content="done", finish_reason="stop")
 
-    provider._client.chat.completions.create = AsyncMock(side_effect=[resp1, resp2, resp3])
+    provider._client.chat.completions.create = AsyncMock(
+        side_effect=[resp1, resp2, resp3]
+    )
 
     from deile.tools.base import ToolResult, ToolStatus
+
     mock_tr = ToolResult(status=ToolStatus.SUCCESS, data="ok")
 
-    with patch.object(provider, "_execute_tool", AsyncMock(return_value=(mock_tr, {"status": "success", "result": "ok"}))):
+    with patch.object(
+        provider,
+        "_execute_tool",
+        AsyncMock(return_value=(mock_tr, {"status": "success", "result": "ok"})),
+    ):
         text, tool_results, usage = await provider.chat_with_tools(
             messages=[ModelMessage(role="user", content="Do stuff")],
             tools=[],
@@ -207,6 +229,7 @@ async def test_chat_with_tools_two_iterations(provider):
 # ---------------------------------------------------------------------------
 # Test: auth error → ProviderInvocationError with envelope
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_generate_auth_error_raises_envelope(provider):
@@ -238,6 +261,7 @@ async def test_generate_auth_error_raises_envelope(provider):
 # Test: _extract_cached_tokens
 # ---------------------------------------------------------------------------
 
+
 def test_extract_cached_tokens_present(provider):
     resp = _response(usage_kwargs={"cached": 500})
     result = provider._extract_cached_tokens(resp)
@@ -254,6 +278,7 @@ def test_extract_cached_tokens_missing(provider):
 # ---------------------------------------------------------------------------
 # Test: streaming — yields TEXT_DELTA + USAGE_FINAL
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_generate_stream_events(provider):
@@ -316,8 +341,11 @@ async def test_generate_stream_events(provider):
 # Test: cost estimation
 # ---------------------------------------------------------------------------
 
+
 def test_estimate_cost(provider):
-    usage = ModelUsage(prompt_tokens=1_000_000, completion_tokens=1_000_000, total_tokens=2_000_000)
+    usage = ModelUsage(
+        prompt_tokens=1_000_000, completion_tokens=1_000_000, total_tokens=2_000_000
+    )
     cost = provider.estimate_cost(usage)
     # 1M input @ $2.50 + 1M output @ $10.00 = $12.50
     assert abs(cost - 12.50) < 1e-4
@@ -326,6 +354,7 @@ def test_estimate_cost(provider):
 # ---------------------------------------------------------------------------
 # Test: provider_id and tier
 # ---------------------------------------------------------------------------
+
 
 def test_provider_id(provider):
     assert provider.provider_id == "openai"

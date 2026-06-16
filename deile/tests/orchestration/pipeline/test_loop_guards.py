@@ -20,29 +20,36 @@ from __future__ import annotations
 
 import pytest
 
-from deile.orchestration.pipeline.implementer import (parse_critique_verdict,
-                                                      parse_decompose_result,
-                                                      parse_refine_verdict)
+from deile.orchestration.pipeline.implementer import (
+    parse_critique_verdict,
+    parse_decompose_result,
+    parse_refine_verdict,
+)
 from deile.orchestration.pipeline.resume_state import ResumeTracker
 
 
 class TestVerdictParserToleratesMarkdown:
     """Bug 1 (#281/#283): personas decorate the verdict — parser must cope."""
 
-    @pytest.mark.parametrize("text,expected_clear", [
-        ("VEREDITO: CLARO", True),                     # plain
-        ("VEREDITO: VAGO: falta alvo técnico", False), # plain with reason
-        ("**VEREDITO:** CLARO", True),                 # markdown bold
-        ("**VEREDITO: CLARO**", True),                 # bolded whole
-        ("### VEREDITO: VAGO: tudo vazio", False),     # header prefix
-        ("> VEREDITO: CLARO", True),                   # blockquote
-        ("- VEREDITO: CLARO", True),                   # list bullet
-        ("*  VEREDITO: VAGO: foo bar", False),         # asterisk + spaces
-        ("# VEREDITO\n\nfinal: CLARO", True),          # NOT this (no token)
-    ])
+    @pytest.mark.parametrize(
+        "text,expected_clear",
+        [
+            ("VEREDITO: CLARO", True),  # plain
+            ("VEREDITO: VAGO: falta alvo técnico", False),  # plain with reason
+            ("**VEREDITO:** CLARO", True),  # markdown bold
+            ("**VEREDITO: CLARO**", True),  # bolded whole
+            ("### VEREDITO: VAGO: tudo vazio", False),  # header prefix
+            ("> VEREDITO: CLARO", True),  # blockquote
+            ("- VEREDITO: CLARO", True),  # list bullet
+            ("*  VEREDITO: VAGO: foo bar", False),  # asterisk + spaces
+            ("# VEREDITO\n\nfinal: CLARO", True),  # NOT this (no token)
+        ],
+    )
     def test_critique_accepts_decorated_verdict(self, text, expected_clear):
         if "final: CLARO" in text:
-            pytest.skip("requires a 'CLARO' after 'VEREDITO' on same logical token; out of scope for relaxer")
+            pytest.skip(
+                "requires a 'CLARO' after 'VEREDITO' on same logical token; out of scope for relaxer"
+            )
         is_clear, _ = parse_critique_verdict(text)
         assert is_clear is expected_clear
 
@@ -123,56 +130,70 @@ class TestClassifyOutcomeError:
 
     def test_classify_known_kinds(self):
         from deile.orchestration.pipeline.stages import _classify_outcome_error
+
         assert _classify_outcome_error("") == ""
         assert _classify_outcome_error("erro: timeout após 600.0s") == "TIMEOUT"
         assert _classify_outcome_error("Timeout while dispatching") == "TIMEOUT"
-        assert _classify_outcome_error(
-            "WORKER_UNREACHABLE: worker unreachable: ConnectError"
-        ) == "WORKER_UNREACHABLE"
-        assert _classify_outcome_error(
-            "RemoteProtocolError: Server disconnected"
-        ) == "WORKER_UNREACHABLE"
-        assert _classify_outcome_error(
-            "BAD_REQUEST: brief too long"
-        ) == "BAD_REQUEST"
+        assert (
+            _classify_outcome_error(
+                "WORKER_UNREACHABLE: worker unreachable: ConnectError"
+            )
+            == "WORKER_UNREACHABLE"
+        )
+        assert (
+            _classify_outcome_error("RemoteProtocolError: Server disconnected")
+            == "WORKER_UNREACHABLE"
+        )
+        assert _classify_outcome_error("BAD_REQUEST: brief too long") == "BAD_REQUEST"
         assert _classify_outcome_error("validation error") == "BAD_REQUEST"
         assert _classify_outcome_error("nothing interesting") == "OTHER"
         # Issue #309 fase 3 — WORKER_AUTH_EXPIRED tem precedência sobre
         # outros padrões (o ``error`` prefixado pelo _outcome_from_worker_response
         # tem o code primeiro: ``"[WORKER_AUTH_EXPIRED] claude reportou..."``).
-        assert _classify_outcome_error(
-            "[WORKER_AUTH_EXPIRED] claude reportou token expirado"
-        ) == "WORKER_AUTH_EXPIRED"
-        assert _classify_outcome_error(
-            "FOO WORKER_AUTH_EXPIRED BAR"
-        ) == "WORKER_AUTH_EXPIRED"
+        assert (
+            _classify_outcome_error(
+                "[WORKER_AUTH_EXPIRED] claude reportou token expirado"
+            )
+            == "WORKER_AUTH_EXPIRED"
+        )
+        assert (
+            _classify_outcome_error("FOO WORKER_AUTH_EXPIRED BAR")
+            == "WORKER_AUTH_EXPIRED"
+        )
 
     def test_only_timeout_and_bad_request_escalate(self):
         # Workers blip transitorio (UNREACHABLE) NÃO deve escalar — restart de
         # pod no rolling update produz isso normalmente. Só erros que indicam
         # impossibilidade estrutural (TIMEOUT recorrente, BAD_REQUEST) escalam.
         from deile.orchestration.pipeline.stages import _ESCALATE_ON_REPEAT
+
         assert "TIMEOUT" in _ESCALATE_ON_REPEAT
         assert "BAD_REQUEST" in _ESCALATE_ON_REPEAT
         assert "WORKER_UNREACHABLE" not in _ESCALATE_ON_REPEAT
         assert "OTHER" not in _ESCALATE_ON_REPEAT
 
-    @pytest.mark.parametrize("text,expected", [
-        ("REFINO: OK", "ok"),
-        ("**REFINO: OK**", "ok"),
-        ("### REFINO: AGUARDA_STAKEHOLDER", "waiting"),
-        ("> REFINO: AGUARDA_STAKEHOLDER", "waiting"),
-        ("- REFINO: OK", "ok"),
-    ])
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("REFINO: OK", "ok"),
+            ("**REFINO: OK**", "ok"),
+            ("### REFINO: AGUARDA_STAKEHOLDER", "waiting"),
+            ("> REFINO: AGUARDA_STAKEHOLDER", "waiting"),
+            ("- REFINO: OK", "ok"),
+        ],
+    )
     def test_refine_accepts_decorated(self, text, expected):
         assert parse_refine_verdict(text) == expected
 
-    @pytest.mark.parametrize("text,expected", [
-        ("DECOMPOSTO: #11 #12 #13", [11, 12, 13]),
-        ("**DECOMPOSTO:** #11 #12", [11, 12]),
-        ("### DECOMPOSTO: #99", [99]),
-        ("> DECOMPOSTO: #5 e #6 (independentes)", [5, 6]),
-    ])
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("DECOMPOSTO: #11 #12 #13", [11, 12, 13]),
+            ("**DECOMPOSTO:** #11 #12", [11, 12]),
+            ("### DECOMPOSTO: #99", [99]),
+            ("> DECOMPOSTO: #5 e #6 (independentes)", [5, 6]),
+        ],
+    )
     def test_decompose_accepts_decorated(self, text, expected):
         assert parse_decompose_result(text) == expected
 
@@ -237,6 +258,7 @@ class TestReviewerSilentFailureGuard:
         # This test exists to anchor the contract in code so a future
         # refactor cannot silently drop the check.
         from deile.orchestration.pipeline.github_client import GitHubClient
+
         assert hasattr(GitHubClient, "pr_reviewer_still_requested"), (
             "post-review verification helper was removed — the storm guard "
             "on review_only depends on it; reintroduce or update the test"

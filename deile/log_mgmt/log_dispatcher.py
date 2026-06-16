@@ -122,11 +122,13 @@ def dispatch_anomalies(
     try:
         import urllib.request
 
-        payload = json.dumps({
-            "brief": brief,
-            "channel_id": f"logger-auto-{os.environ.get('HOSTNAME', 'unknown')}",
-            "persona": "debugger",
-        }).encode("utf-8")
+        payload = json.dumps(
+            {
+                "brief": brief,
+                "channel_id": f"logger-auto-{os.environ.get('HOSTNAME', 'unknown')}",
+                "persona": "debugger",
+            }
+        ).encode("utf-8")
 
         req = urllib.request.Request(
             f"{endpoint}/v1/dispatch",
@@ -140,7 +142,9 @@ def dispatch_anomalies(
 
         with urllib.request.urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read().decode("utf-8"))
-            logger.info("log_dispatcher: worker dispatched — task_id=%s", result.get("task_id"))
+            logger.info(
+                "log_dispatcher: worker dispatched — task_id=%s", result.get("task_id")
+            )
             return result
 
     except Exception as exc:

@@ -4,8 +4,7 @@ import time
 
 import pytest
 
-from deile.core.models.errors import (ProviderErrorEnvelope,
-                                      ProviderInvocationError)
+from deile.core.models.errors import ProviderErrorEnvelope, ProviderInvocationError
 
 
 @pytest.fixture
@@ -16,7 +15,9 @@ def envelope():
         error_type="auth",
         message="Invalid API key",
         http_status=401,
-        raw_json={"error": {"type": "authentication_error", "message": "Invalid API key"}},
+        raw_json={
+            "error": {"type": "authentication_error", "message": "Invalid API key"}
+        },
         request_id="req_123",
         timestamp=1_700_000_000.0,
     )

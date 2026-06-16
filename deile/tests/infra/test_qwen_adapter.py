@@ -47,9 +47,9 @@ def brief(tmp_path):
 @pytest.mark.unit
 def test_metadata_matches_plan(adapter):
     assert adapter.kind == "qwen"
-    assert adapter.default_port == 8773          # §1.13
-    assert adapter.auth_mode == "env"            # §2.3 — OPENAI_API_KEY (tríade)
-    assert adapter.supports_resume is True       # issue #445 — qwen --resume
+    assert adapter.default_port == 8773  # §1.13
+    assert adapter.auth_mode == "env"  # §2.3 — OPENAI_API_KEY (tríade)
+    assert adapter.supports_resume is True  # issue #445 — qwen --resume
     assert adapter.supports_reasoning is False
     assert adapter.git_strategy == "brief_driven"
     assert adapter.oauth is None
@@ -66,12 +66,15 @@ def test_satisfies_protocol(adapter):
 @pytest.mark.unit
 def test_build_argv_form(adapter, brief):
     argv = adapter.build_argv(
-        brief_path=brief, model="ignored-in-argv", reasoning=None,
-        workdir="/w", resume=None,
+        brief_path=brief,
+        model="ignored-in-argv",
+        reasoning=None,
+        workdir="/w",
+        resume=None,
     )
     assert argv[0] == "qwen"
     assert argv[argv.index("-p") + 1] == "CORRIJA O BUG Y"  # conteúdo, não path
-    assert "--yolo" in argv                                  # §1.4 autonomia
+    assert "--yolo" in argv  # §1.4 autonomia
     # --auth-type openai: obrigatório em modo não-interativo (regressão homolog
     # pr_review — sem ele o qwen-code aborta "No auth type is selected").
     assert argv[argv.index("--auth-type") + 1] == "openai"
@@ -84,7 +87,11 @@ def test_build_argv_form(adapter, brief):
 @pytest.mark.unit
 def test_build_argv_fresh_has_no_resume(adapter, brief):
     argv = adapter.build_argv(
-        brief_path=brief, model=None, reasoning=None, workdir="/w", resume=None,
+        brief_path=brief,
+        model=None,
+        reasoning=None,
+        workdir="/w",
+        resume=None,
     )
     assert "--resume" not in argv
 
@@ -94,7 +101,11 @@ def test_build_argv_resume_passes_session(adapter, brief):
     # issue #445: resume → --resume <session_id>; reasoning segue ignorado.
     resume = base.ResumeCtx(session_id="s9", prev_task_id="0123456789abcdef")
     argv = adapter.build_argv(
-        brief_path=brief, model=None, reasoning="high", workdir="/w", resume=resume,
+        brief_path=brief,
+        model=None,
+        reasoning="high",
+        workdir="/w",
+        resume=resume,
     )
     assert argv[argv.index("--resume") + 1] == "s9"
     assert "--variant" not in argv  # reasoning não suportado → ignorado
@@ -103,19 +114,30 @@ def test_build_argv_resume_passes_session(adapter, brief):
 @pytest.mark.unit
 def test_extract_session_id_from_events(adapter):
     import json
-    stdout = json.dumps([
-        {"type": "system", "subtype": "session_start", "session_id": "qwen-1"},
-        {"type": "result", "session_id": "qwen-1", "result": "ok", "is_error": False},
-    ])
+
+    stdout = json.dumps(
+        [
+            {"type": "system", "subtype": "session_start", "session_id": "qwen-1"},
+            {
+                "type": "result",
+                "session_id": "qwen-1",
+                "result": "ok",
+                "is_error": False,
+            },
+        ]
+    )
     assert adapter.extract_session_id(stdout=stdout, stderr="", task_id="t") == "qwen-1"
 
 
 @pytest.mark.unit
 def test_parse_output_provider_429_classified(adapter):
     import json
-    stdout = json.dumps([
-        {"type": "result", "is_error": True, "result": "429 rate limit exceeded"},
-    ])
+
+    stdout = json.dumps(
+        [
+            {"type": "result", "is_error": True, "result": "429 rate limit exceeded"},
+        ]
+    )
     wr = adapter.parse_output(stdout=stdout, stderr="", rc=0)
     assert wr.ok is False
     assert wr.error_code == "RATE_LIMIT"
@@ -124,8 +146,11 @@ def test_parse_output_provider_429_classified(adapter):
 @pytest.mark.unit
 def test_build_argv_brief_read_failure_degrades(adapter):
     argv = adapter.build_argv(
-        brief_path="/nao/existe/.brief.md", model=None, reasoning=None,
-        workdir="/w", resume=None,
+        brief_path="/nao/existe/.brief.md",
+        model=None,
+        reasoning=None,
+        workdir="/w",
+        resume=None,
     )
     assert "/nao/existe/.brief.md" in argv[argv.index("-p") + 1]
 
@@ -147,7 +172,9 @@ def test_env_overlay(adapter):
 @pytest.mark.unit
 def test_parse_output_single_json_object(adapter):
     wr = adapter.parse_output(
-        stdout=json.dumps({"response": "feito com sucesso"}), stderr="", rc=0,
+        stdout=json.dumps({"response": "feito com sucesso"}),
+        stderr="",
+        rc=0,
     )
     assert wr.ok is True
     assert wr.result_text == "feito com sucesso"
@@ -156,7 +183,9 @@ def test_parse_output_single_json_object(adapter):
 @pytest.mark.unit
 def test_parse_output_object_error(adapter):
     wr = adapter.parse_output(
-        stdout=json.dumps({"error": "invalid api key"}), stderr="", rc=0,
+        stdout=json.dumps({"error": "invalid api key"}),
+        stderr="",
+        rc=0,
     )
     assert wr.ok is False
     assert "invalid api key" in wr.result_text
@@ -165,10 +194,12 @@ def test_parse_output_object_error(adapter):
 
 @pytest.mark.unit
 def test_parse_output_jsonl_fallback(adapter):
-    stdout = "\n".join([
-        json.dumps({"type": "tool_call", "name": "edit"}),
-        json.dumps({"type": "text", "text": "veredito jsonl"}),
-    ])
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "tool_call", "name": "edit"}),
+            json.dumps({"type": "text", "text": "veredito jsonl"}),
+        ]
+    )
     wr = adapter.parse_output(stdout=stdout, stderr="", rc=0)
     assert wr.ok is True
     assert wr.result_text == "veredito jsonl"
@@ -197,7 +228,7 @@ def test_list_models_static_catalog(adapter):
     ids = [m.id for m in models]
     assert "qwen3-coder-plus" in ids
     assert any(m.provider == "openrouter" for m in models)  # rota OpenRouter
-    assert any(m.provider == "dashscope" for m in models)   # rota Dashscope
+    assert any(m.provider == "dashscope" for m in models)  # rota Dashscope
 
 
 @pytest.mark.unit

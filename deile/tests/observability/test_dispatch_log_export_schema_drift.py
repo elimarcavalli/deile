@@ -36,9 +36,9 @@ class TestSchemaDrift:
         # Log record attributes should contain all schema keys
         record_keys = set((record.attributes or {}).keys())
         schema_keys = set(event_attrs.keys())
-        assert schema_keys.issubset(record_keys), (
-            f"schema keys missing from log record: {schema_keys - record_keys}"
-        )
+        assert schema_keys.issubset(
+            record_keys
+        ), f"schema keys missing from log record: {schema_keys - record_keys}"
 
     def test_dispatch_failed_log_attrs_match_schema(self, in_memory_log_exporter):
         """LogRecord de dispatch.failed tem os mesmos attr keys que o schema."""
@@ -89,9 +89,9 @@ class TestSchemaDrift:
         from deile.observability.dispatch_log_export import body_for
 
         body = body_for("dispatch.received", {"key": "value"})
-        assert body.startswith("dispatch.received"), (
-            f"body should start with event_name: {body!r}"
-        )
+        assert body.startswith(
+            "dispatch.received"
+        ), f"body should start with event_name: {body!r}"
 
     def test_body_is_deterministic(self, in_memory_log_exporter):
         """body_for() é determinístico (mesmos inputs → mesmo output)."""

@@ -16,16 +16,16 @@ pytestmark = pytest.mark.unit
 
 _MODULE = (
     pathlib.Path(__file__).resolve().parents[3]
-    / "deile" / "observability" / "dispatch_metrics.py"
+    / "deile"
+    / "observability"
+    / "dispatch_metrics.py"
 )
 
 
 def test_os_environ_used_exactly_once():
     source = _MODULE.read_text(encoding="utf-8")
     matches = re.findall(r"os\.environ", source)
-    assert len(matches) == 1, (
-        f"esperado 1 uso de os.environ, achou {len(matches)}"
-    )
+    assert len(matches) == 1, f"esperado 1 uso de os.environ, achou {len(matches)}"
     assert "OTEL_METRIC_EXPORT_INTERVAL" in source
 
 
@@ -34,8 +34,8 @@ def test_no_direct_deile_otlp_env_reads():
     # Não deve LER DEILE_OTLP_* nem DEILE_OBSERVABILITY_DISABLED via os.environ
     # (menções em docstring são permitidas; o que importa é nenhum os.environ
     #  apontar para essas vars — elas vêm de get_observability_config()).
-    assert not re.search(r'os\.environ[^\n]*DEILE_OTLP', source)
-    assert not re.search(r'os\.environ[^\n]*DEILE_OBSERVABILITY', source)
+    assert not re.search(r"os\.environ[^\n]*DEILE_OTLP", source)
+    assert not re.search(r"os\.environ[^\n]*DEILE_OBSERVABILITY", source)
 
 
 def test_sdk_imports_resolve():
@@ -45,12 +45,14 @@ def test_sdk_imports_resolve():
     except ImportError:
         pytest.skip("opentelemetry SDK não instalado")
     # API de métricas e reader periódico disponíveis.
-    from opentelemetry.sdk.metrics.export import \
-        PeriodicExportingMetricReader  # noqa: F401
+    from opentelemetry.sdk.metrics.export import (  # noqa: F401
+        PeriodicExportingMetricReader,
+    )
 
 
 def test_module_exports():
     from deile.observability import dispatch_metrics as dm
+
     for name in (
         "record_dispatch_total",
         "record_dispatch_failed_total",

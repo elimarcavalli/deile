@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ImprovementAttempt:
     """Tentativa de melhoria"""
+
     attempt_id: str
     opportunity: ImprovementOpportunity
     modification_plan: Dict[str, Any]
@@ -51,7 +52,7 @@ class ImprovementLoop:
         self_analyzer: SelfAnalyzer,
         code_modifier: Optional[CodeModifier] = None,
         benchmarker: Optional[Benchmarker] = None,
-        rollback_manager: Optional[RollbackManager] = None
+        rollback_manager: Optional[RollbackManager] = None,
     ):
         self.self_analyzer = self_analyzer
         self.code_modifier = code_modifier or CodeModifier()
@@ -77,7 +78,7 @@ class ImprovementLoop:
             "failed_improvements": 0,
             "rollbacks_performed": 0,
             "average_improvement_time": 0.0,
-            "last_improvement": 0.0
+            "last_improvement": 0.0,
         }
 
         logger.info("ImprovementLoop inicializado")
@@ -142,9 +143,7 @@ class ImprovementLoop:
         logger.info("Ciclo de melhoria parado")
 
     async def request_immediate_improvement(
-        self,
-        category: Optional[str] = None,
-        max_attempts: int = 3
+        self, category: Optional[str] = None, max_attempts: int = 3
     ) -> List[ImprovementAttempt]:
         """Solicita melhoria imediata (fora do ciclo automático)"""
         logger.info(f"Solicitação de melhoria imediata (categoria: {category})")
@@ -152,7 +151,7 @@ class ImprovementLoop:
         opportunities = await self.self_analyzer.get_improvement_opportunities(
             category=category,
             min_priority=5,  # Apenas prioridades altas
-            max_results=max_attempts
+            max_results=max_attempts,
         )
 
         attempts = []
@@ -177,13 +176,14 @@ class ImprovementLoop:
 
                 # Verifica se já não há muitas melhorias ativas
                 if len(self._active_attempts) >= self.max_concurrent_improvements:
-                    logger.debug("Máximo de melhorias simultâneas atingido, aguardando...")
+                    logger.debug(
+                        "Máximo de melhorias simultâneas atingido, aguardando..."
+                    )
                     continue
 
                 # Obtém oportunidades de melhoria
                 opportunities = await self.self_analyzer.get_improvement_opportunities(
-                    min_priority=3,
-                    max_results=5
+                    min_priority=3, max_results=5
                 )
 
                 if not opportunities:
@@ -206,15 +206,16 @@ class ImprovementLoop:
 
         logger.info("Loop de melhoria finalizado")
 
-    def _select_best_opportunity(self, opportunities: List[ImprovementOpportunity]) -> Optional[ImprovementOpportunity]:
+    def _select_best_opportunity(
+        self, opportunities: List[ImprovementOpportunity]
+    ) -> Optional[ImprovementOpportunity]:
         """Seleciona a melhor oportunidade de melhoria"""
         if not opportunities:
             return None
 
         # Filtra por confiança mínima
         viable_opportunities = [
-            o for o in opportunities
-            if o.confidence >= self.min_confidence_threshold
+            o for o in opportunities if o.confidence >= self.min_confidence_threshold
         ]
 
         if not viable_opportunities:
@@ -228,22 +229,28 @@ class ImprovementLoop:
 
         best_opportunity = max(viable_opportunities, key=calculate_score)
 
-        logger.info(f"Oportunidade selecionada: {best_opportunity.description} "
-                   f"(prioridade: {best_opportunity.priority}, impacto: {best_opportunity.impact_estimate})")
+        logger.info(
+            f"Oportunidade selecionada: {best_opportunity.description} "
+            f"(prioridade: {best_opportunity.priority}, impacto: {best_opportunity.impact_estimate})"
+        )
 
         return best_opportunity
 
-    async def _execute_improvement(self, opportunity: ImprovementOpportunity) -> Optional[ImprovementAttempt]:
+    async def _execute_improvement(
+        self, opportunity: ImprovementOpportunity
+    ) -> Optional[ImprovementAttempt]:
         """Executa uma tentativa de melhoria completa"""
         attempt_id = str(uuid.uuid4())[:8]
 
-        logger.info(f"Iniciando tentativa de melhoria: {attempt_id} - {opportunity.description}")
+        logger.info(
+            f"Iniciando tentativa de melhoria: {attempt_id} - {opportunity.description}"
+        )
 
         attempt = ImprovementAttempt(
             attempt_id=attempt_id,
             opportunity=opportunity,
             modification_plan={},
-            started_at=time.time()
+            started_at=time.time(),
         )
 
         self._active_attempts[attempt_id] = attempt
@@ -251,10 +258,14 @@ class ImprovementLoop:
 
         try:
             # 1. Mede performance antes da melhoria
-            attempt.performance_before = await self.benchmarker.measure_current_performance()
+            attempt.performance_before = (
+                await self.benchmarker.measure_current_performance()
+            )
 
             # 2. Gera plano de modificação
-            modification_plan = await self.code_modifier.generate_improvement_plan(opportunity)
+            modification_plan = await self.code_modifier.generate_improvement_plan(
+                opportunity
+            )
             attempt.modification_plan = modification_plan
 
             if not modification_plan.get("feasible", False):
@@ -267,14 +278,20 @@ class ImprovementLoop:
             attempt.rollback_data = rollback_data
 
             # 4. Aplica modificação no sistema real
-            application_result = await self.code_modifier.apply_modification(modification_plan)
+            application_result = await self.code_modifier.apply_modification(
+                modification_plan
+            )
 
             if not application_result.get("success", False):
-                raise Exception(f"Aplicação da modificação falhou: {application_result.get('error')}")
+                raise Exception(
+                    f"Aplicação da modificação falhou: {application_result.get('error')}"
+                )
 
             # 5. Aguarda estabilização e mede performance
             await asyncio.sleep(30)  # Aguarda estabilização
-            attempt.performance_after = await self.benchmarker.measure_current_performance()
+            attempt.performance_after = (
+                await self.benchmarker.measure_current_performance()
+            )
 
             # 6. Valida melhoria
             improvement_validated = await self._validate_improvement(attempt)
@@ -300,7 +317,8 @@ class ImprovementLoop:
                 except Exception as exc:  # noqa: BLE001 - cleanup é best-effort
                     logger.warning(
                         "Falha ao remover rollback %s: %s",
-                        rollback_data["rollback_id"], exc,
+                        rollback_data["rollback_id"],
+                        exc,
                     )
 
             else:
@@ -335,8 +353,13 @@ class ImprovementLoop:
             # Atualiza estatísticas
             if attempt.completed_at:
                 duration = attempt.completed_at - attempt.started_at
-                total_time = self._stats["average_improvement_time"] * self._stats["total_attempts"]
-                self._stats["average_improvement_time"] = (total_time + duration) / self._stats["total_attempts"]
+                total_time = (
+                    self._stats["average_improvement_time"]
+                    * self._stats["total_attempts"]
+                )
+                self._stats["average_improvement_time"] = (
+                    total_time + duration
+                ) / self._stats["total_attempts"]
 
         return attempt
 
@@ -350,7 +373,11 @@ class ImprovementLoop:
 
         if opportunity.category.value == "performance":
             # Para melhorias de performance, verifica redução em métricas de tempo
-            time_metrics = ["response_time_ms", "processing_time_ms", "execution_time_ms"]
+            time_metrics = [
+                "response_time_ms",
+                "processing_time_ms",
+                "execution_time_ms",
+            ]
 
             for metric in time_metrics:
                 before = attempt.performance_before.get(metric)
@@ -360,7 +387,9 @@ class ImprovementLoop:
                     improvement_percent = (before - after) / before * 100
 
                     if improvement_percent > 5:  # Melhoria de pelo menos 5%
-                        logger.info(f"Melhoria validada em {metric}: {improvement_percent:.1f}%")
+                        logger.info(
+                            f"Melhoria validada em {metric}: {improvement_percent:.1f}%"
+                        )
                         return True
 
         elif opportunity.category.value == "reliability":
@@ -403,7 +432,9 @@ class ImprovementLoop:
     async def _rollback_improvement(self, attempt: ImprovementAttempt) -> None:
         """Executa rollback de uma melhoria"""
         if not attempt.rollback_data:
-            logger.warning(f"Nenhum ponto de rollback disponível para {attempt.attempt_id}")
+            logger.warning(
+                f"Nenhum ponto de rollback disponível para {attempt.attempt_id}"
+            )
             return
 
         try:
@@ -428,7 +459,7 @@ class ImprovementLoop:
             "completed_attempts": len(self._completed_attempts),
             "loop_interval_seconds": self.loop_interval,
             "max_concurrent_improvements": self.max_concurrent_improvements,
-            "stats": self._stats.copy()
+            "stats": self._stats.copy(),
         }
 
     async def get_recent_attempts(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -440,9 +471,13 @@ class ImprovementLoop:
                 "attempt_id": attempt.attempt_id,
                 "opportunity_description": attempt.opportunity.description,
                 "success": attempt.success,
-                "duration_seconds": (attempt.completed_at - attempt.started_at) if attempt.completed_at else None,
+                "duration_seconds": (
+                    (attempt.completed_at - attempt.started_at)
+                    if attempt.completed_at
+                    else None
+                ),
                 "error_message": attempt.error_message,
-                "started_at": attempt.started_at
+                "started_at": attempt.started_at,
             }
             for attempt in recent
         ]

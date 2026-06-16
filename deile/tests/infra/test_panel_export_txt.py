@@ -1,4 +1,5 @@
 """Tests: plain-text export format for panel export (#547)."""
+
 from __future__ import annotations
 
 import json
@@ -17,13 +18,16 @@ import _panel as panel
 def _make_session_data(stdout=None):
     """Helper: create a realistic LiveSessionData-like object."""
     from deile.ui.panel.observability.screens import LiveSessionData
+
     return LiveSessionData(
         session={"task_id": "t1", "stage": "implement", "alive": True},
         command={"cmd": ["python3", "-m", "pytest"], "full_prompt": "run tests"},
-        chat={"turns": [
-            {"role": "user", "content": "implement feature", "ts": None},
-            {"role": "assistant", "content": "done", "ts": None},
-        ]},
+        chat={
+            "turns": [
+                {"role": "user", "content": "implement feature", "ts": None},
+                {"role": "assistant", "content": "done", "ts": None},
+            ]
+        },
         api_errors=[],
         stdout=stdout,
     )
@@ -72,6 +76,7 @@ class TestBuildLiveSessionTxt:
 
     def test_redaction_removes_secret(self):
         from deile.security.secrets_scanner import SecretsScanner
+
         redactor = SecretsScanner()
         secret_value = "ghp_" + "A" * 36
         data = _make_session_data(stdout=f"token={secret_value}")
@@ -81,7 +86,9 @@ class TestBuildLiveSessionTxt:
 
 class TestBuildPodWatchTxt:
     def test_not_valid_json(self):
-        txt = panel._build_pod_watch_txt("my-pod", "worker", ["log line 1"], redactor=None)
+        txt = panel._build_pod_watch_txt(
+            "my-pod", "worker", ["log line 1"], redactor=None
+        )
         try:
             json.loads(txt)
             assert False, "should not be valid JSON"
@@ -89,7 +96,9 @@ class TestBuildPodWatchTxt:
             pass
 
     def test_has_header(self):
-        txt = panel._build_pod_watch_txt("my-pod", "worker", ["line1", "line2"], redactor=None)
+        txt = panel._build_pod_watch_txt(
+            "my-pod", "worker", ["line1", "line2"], redactor=None
+        )
         assert "# deile export — kind=pod_watch" in txt
         assert "# pod: my-pod" in txt
         assert "# role: worker" in txt
@@ -107,8 +116,11 @@ class TestTxtExtensionDetection:
     def test_txt_extension_sets_export_txt(self, tmp_path):
         v = panel.LiveSessionView()
         v._last_render = MagicMock(
-            session={"task_id": "t1"}, command=None, chat=None,
-            api_errors=[], stdout=None,
+            session={"task_id": "t1"},
+            command=None,
+            chat=None,
+            api_errors=[],
+            stdout=None,
         )
         v.handle_key("E", MagicMock())
         target = tmp_path / "out.txt"
@@ -119,8 +131,11 @@ class TestTxtExtensionDetection:
     def test_json_extension_no_txt(self, tmp_path):
         v = panel.LiveSessionView()
         v._last_render = MagicMock(
-            session={"task_id": "t1"}, command=None, chat=None,
-            api_errors=[], stdout=None,
+            session={"task_id": "t1"},
+            command=None,
+            chat=None,
+            api_errors=[],
+            stdout=None,
         )
         v.handle_key("E", MagicMock())
         target = tmp_path / "out.json"

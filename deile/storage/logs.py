@@ -25,8 +25,7 @@ def _is_running_under_pytest() -> bool:
     (`'MagicMock' object can't be awaited`, etc.) vazam pro
     ``~/.deile/logs/deile.log`` real do operador e poluem o painel.
     """
-    return ("pytest" in sys.modules
-            or "PYTEST_CURRENT_TEST" in os.environ)
+    return "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
 
 
 def _is_encrypt_logs_enabled() -> bool:
@@ -63,8 +62,8 @@ def _ensure_initialized() -> None:
                 # como o "current hour" no raiz pra compatibilidade com
                 # leitores existentes (`tail -F`, painel TUI, etc.).
                 # Retenção default 30 dias.
-                from .log_rotation import \
-                    HourlyDailyDirRotatingHandler  # noqa: PLC0415
+                from .log_rotation import HourlyDailyDirRotatingHandler  # noqa: PLC0415
+
                 handler = HourlyDailyDirRotatingHandler(
                     filename=str(log_dir / "deile.log"),
                     encoding="utf-8",

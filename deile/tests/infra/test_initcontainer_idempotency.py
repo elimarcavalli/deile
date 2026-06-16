@@ -13,6 +13,7 @@ Este arquivo testa:
   3. O Secret usa a key ``CLAUDE_CODE_OAUTH_TOKEN`` (não ``credentials.json``).
   4. Os helpers legacy (``_force_clear_pvc_creds``) ainda funcionam para compat.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -46,7 +47,10 @@ class TestManifestAuthSetupToken:
         # comentários podem mencionar bootstrap-creds para documentar a remoção.
         for line in text.splitlines():
             stripped = line.strip()
-            if stripped.startswith("- name: bootstrap-creds") or stripped == "name: bootstrap-creds":
+            if (
+                stripped.startswith("- name: bootstrap-creds")
+                or stripped == "name: bootstrap-creds"
+            ):
                 pytest.fail(
                     f"initContainer 'bootstrap-creds' encontrado como YAML ativo: {line!r}\n"
                     "Deve ter sido removido na migração para setup-token (issue #603)"
@@ -79,7 +83,10 @@ class TestManifestAuthSetupToken:
         # Verificamos que o Secret claude-credentials não é mais montado como arquivo.
         for line in text.splitlines():
             stripped = line.strip()
-            if "mountPath: /run/secrets/claude" in stripped and "claude-worker" not in stripped:
+            if (
+                "mountPath: /run/secrets/claude" in stripped
+                and "claude-worker" not in stripped
+            ):
                 pytest.fail(
                     f"volumeMount de /run/secrets/claude encontrado no manifest 50: {line!r}\n"
                     "O Secret claude-credentials não deve mais ser montado como arquivo — "
@@ -87,6 +94,7 @@ class TestManifestAuthSetupToken:
                 )
         # Também verificamos que o volume claude-credentials não aparece como Secret volume.
         import re  # noqa: PLC0415
+
         if re.search(r"secretName:\s*claude-credentials", text):
             pytest.fail(
                 "secretName: claude-credentials encontrado em volumes do manifest 50 — "
@@ -126,7 +134,6 @@ class TestForceClearPvcCreds:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         """O helper retorna True quando o pod não existe (cluster fresco)."""
-        import sys
 
         sys.path.insert(0, str(_REPO / "infra" / "k8s"))
         try:
@@ -147,11 +154,8 @@ class TestForceClearPvcCreds:
         assert _claude_install._force_clear_pvc_creds(namespace="deile") is True
 
     @pytest.mark.unit
-    def test_force_clear_helper_handles_timeout(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_force_clear_helper_handles_timeout(self, monkeypatch: pytest.MonkeyPatch):
         """Timeout durante exec é tratado como não-fatal (retry no próximo boot)."""
-        import sys
 
         sys.path.insert(0, str(_REPO / "infra" / "k8s"))
         try:
@@ -170,7 +174,6 @@ class TestForceClearPvcCreds:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         """Exec sucesso (rc=0) é caminho feliz."""
-        import sys
 
         sys.path.insert(0, str(_REPO / "infra" / "k8s"))
         try:

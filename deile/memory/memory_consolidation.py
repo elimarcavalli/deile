@@ -15,8 +15,13 @@ logger = logging.getLogger(__name__)
 class MemoryConsolidator:
     """Consolida e otimiza diferentes tipos de memória"""
 
-    def __init__(self, working_memory: WorkingMemory, episodic_memory: EpisodicMemory,
-                 semantic_memory: SemanticMemory, procedural_memory: ProceduralMemory):
+    def __init__(
+        self,
+        working_memory: WorkingMemory,
+        episodic_memory: EpisodicMemory,
+        semantic_memory: SemanticMemory,
+        procedural_memory: ProceduralMemory,
+    ):
         self.working_memory = working_memory
         self.episodic_memory = episodic_memory
         self.semantic_memory = semantic_memory
@@ -31,7 +36,7 @@ class MemoryConsolidator:
             "episodic_memory": {},
             "semantic_memory": {},
             "procedural_memory": {},
-            "total_time": 0
+            "total_time": 0,
         }
 
         try:

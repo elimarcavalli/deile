@@ -31,12 +31,15 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import (Any, Callable, Iterable, List, Literal, Optional, Sequence,
-                    Tuple)
+from typing import Any, Callable, Iterable, List, Literal, Optional, Sequence, Tuple
 
 from deile.core.exceptions import DEILEError
-from deile.orchestration.forge.refs import (CommentRef, IssueRef, PrRef,
-                                            compute_batch_id_for_number)
+from deile.orchestration.forge.refs import (
+    CommentRef,
+    IssueRef,
+    PrRef,
+    compute_batch_id_for_number,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +129,9 @@ class ForgeCommandError(ForgeError):
     preserved for tests and audit.
     """
 
-    def __init__(self, cmd: Sequence[str], returncode: int, stdout: str, stderr: str) -> None:
+    def __init__(
+        self, cmd: Sequence[str], returncode: int, stdout: str, stderr: str
+    ) -> None:
         super().__init__(
             f"{cmd[0] if cmd else 'forge'} {' '.join(cmd[1:])} failed "
             f"({returncode}): {stderr.strip()[:300]}"
@@ -178,7 +183,9 @@ class WorkItemDetails:
     author: str = ""
     ci_status: Literal["passing", "failing", "pending", "none"] = "none"
     ci_checks_summary: Tuple[int, int] = (0, 0)  # (passed, total)
-    mergeability: Literal["clean", "conflict", "draft", "blocked", "unknown"] = "unknown"
+    mergeability: Literal["clean", "conflict", "draft", "blocked", "unknown"] = (
+        "unknown"
+    )
     # (login, state) onde state é "approved"|"changes_requested"|"pending"
     requested_reviewers: List[Tuple[str, str]] = field(default_factory=list)
     comments_count: int = 0
@@ -274,6 +281,7 @@ class ForgeConfig:
         for the first call.
         """
         from urllib.parse import quote
+
         return quote(self.project_path, safe="")
 
     def web_issue_url(self, number: int) -> str:
@@ -308,7 +316,9 @@ class ForgeClient(ABC):
 
     def __init__(self, config: ForgeConfig) -> None:
         self._config = config
-        self.on_label_change: Optional[Callable[[str, int, list[str], list[str]], None]] = None
+        self.on_label_change: Optional[
+            Callable[[str, int, list[str], list[str]], None]
+        ] = None
 
     # ------------------------------------------------------------------
     # Introspection
@@ -362,7 +372,9 @@ class ForgeClient(ABC):
     async def _run_checked(self, *args: str) -> str:
         rc, out, err = await self._run(*args)
         if rc != 0:
-            raise ForgeCommandError((self._config.cli_path,) + tuple(args), rc, out, err)
+            raise ForgeCommandError(
+                (self._config.cli_path,) + tuple(args), rc, out, err
+            )
         return out
 
     # ------------------------------------------------------------------
@@ -370,13 +382,17 @@ class ForgeClient(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    async def list_issues_with_label(self, label: str, *, limit: int = 50) -> List[IssueRef]: ...
+    async def list_issues_with_label(
+        self, label: str, *, limit: int = 50
+    ) -> List[IssueRef]: ...
 
     @abstractmethod
     async def get_issue(self, number: int) -> IssueRef: ...
 
     @abstractmethod
-    async def list_issues_assigned_to(self, login: str, *, limit: int = 100) -> List[IssueRef]: ...
+    async def list_issues_assigned_to(
+        self, login: str, *, limit: int = 100
+    ) -> List[IssueRef]: ...
 
     @abstractmethod
     async def list_unclassified_issues(self, *, limit: int = 100) -> List[IssueRef]: ...
@@ -422,7 +438,9 @@ class ForgeClient(ABC):
     async def list_open_prs(self, *, limit: int = 50) -> List[PrRef]: ...
 
     @abstractmethod
-    async def list_prs_assigned_to(self, login: str, *, limit: int = 100) -> List[PrRef]: ...
+    async def list_prs_assigned_to(
+        self, login: str, *, limit: int = 100
+    ) -> List[PrRef]: ...
 
     @abstractmethod
     async def list_unclassified_prs(self) -> List[PrRef]: ...
@@ -432,7 +450,10 @@ class ForgeClient(ABC):
 
     @abstractmethod
     async def list_prs_updated_since(
-        self, since_iso: str, *, limit: int = 100,
+        self,
+        since_iso: str,
+        *,
+        limit: int = 100,
     ) -> List[dict]:
         """PRs/MRs updated since *since_iso* (ISO-8601 UTC) — any state.
 
@@ -444,7 +465,10 @@ class ForgeClient(ABC):
 
     @abstractmethod
     async def list_issues_updated_since(
-        self, since_iso: str, *, limit: int = 100,
+        self,
+        since_iso: str,
+        *,
+        limit: int = 100,
     ) -> List[dict]:
         """Issues updated since *since_iso* (ISO-8601 UTC) — any state.
 
@@ -486,12 +510,16 @@ class ForgeClient(ABC):
         """
 
     @abstractmethod
-    async def get_ci_status(self, number: int) -> Literal["passing", "failing", "pending", "none"]:
+    async def get_ci_status(
+        self, number: int
+    ) -> Literal["passing", "failing", "pending", "none"]:
         """Return a forge-uniform CI status for the PR/MR's latest pipeline."""
 
     @abstractmethod
     async def get_work_item_details(
-        self, kind: Literal["issue", "pr"], number: int,
+        self,
+        kind: Literal["issue", "pr"],
+        number: int,
     ) -> WorkItemDetails:
         """Return a rich :class:`WorkItemDetails` snapshot for a single work-item.
 
@@ -508,16 +536,23 @@ class ForgeClient(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    async def add_labels(self, kind: str, number: int, labels: Iterable[str]) -> None: ...
+    async def add_labels(
+        self, kind: str, number: int, labels: Iterable[str]
+    ) -> None: ...
 
     @abstractmethod
-    async def remove_labels(self, kind: str, number: int, labels: Iterable[str]) -> None: ...
+    async def remove_labels(
+        self, kind: str, number: int, labels: Iterable[str]
+    ) -> None: ...
 
     @abstractmethod
     async def ensure_pipeline_labels(self) -> None: ...
 
     async def label_applied_at(
-        self, kind: str, number: int, label: str,
+        self,
+        kind: str,
+        number: int,
+        label: str,
     ) -> Optional[int]:
         """Retorna Unix timestamp (UTC) da ÚLTIMA aplicação de *label* em
         *kind/number*, ou None se nunca aplicada (ou se o adapter não suporta
@@ -561,7 +596,11 @@ class ForgeClient(ABC):
     # ------------------------------------------------------------------
 
     async def transition_issue(
-        self, number: int, *, from_label: Optional[str], to_label: str,
+        self,
+        number: int,
+        *,
+        from_label: Optional[str],
+        to_label: str,
     ) -> None:
         """Swap a workflow label on an issue."""
         cb = self.on_label_change
@@ -574,12 +613,21 @@ class ForgeClient(ABC):
             self.on_label_change = cb
         if cb is not None:
             try:
-                cb("issue", number, [from_label] if from_label is not None else [], [to_label])
+                cb(
+                    "issue",
+                    number,
+                    [from_label] if from_label is not None else [],
+                    [to_label],
+                )
             except Exception:
                 pass
 
     async def transition_pr(
-        self, number: int, *, from_label: Optional[str], to_label: str,
+        self,
+        number: int,
+        *,
+        from_label: Optional[str],
+        to_label: str,
     ) -> None:
         """Swap a workflow label on a PR/MR."""
         cb = self.on_label_change
@@ -592,7 +640,12 @@ class ForgeClient(ABC):
             self.on_label_change = cb
         if cb is not None:
             try:
-                cb("pr", number, [from_label] if from_label is not None else [], [to_label])
+                cb(
+                    "pr",
+                    number,
+                    [from_label] if from_label is not None else [],
+                    [to_label],
+                )
             except Exception:
                 pass
 
@@ -604,8 +657,7 @@ class ForgeClient(ABC):
         Returns the batch id on success, ``None`` if the lock could not be
         acquired (already held by another worker).
         """
-        from deile.orchestration.pipeline.labels import (is_batch_label,
-                                                         make_batch_label)
+        from deile.orchestration.pipeline.labels import is_batch_label, make_batch_label
 
         if kind not in ("issue", "pr"):
             raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
@@ -623,7 +675,9 @@ class ForgeClient(ABC):
 
         batch_id = compute_batch_id_for_number(kind, number)
         label = make_batch_label(batch_id)
-        await self._ensure_label(label, color="d73a4a", description="Pipeline batch lock")
+        await self._ensure_label(
+            label, color="d73a4a", description="Pipeline batch lock"
+        )
         await self.add_labels(kind, number, [label])
 
         after = await _fetch_current()
@@ -634,7 +688,9 @@ class ForgeClient(ABC):
             logger.warning(
                 "claim_with_batch: TOCTOU race detected on %s #%d; "
                 "foreign labels=%s; removing our label and yielding",
-                kind, number, foreign,
+                kind,
+                number,
+                foreign,
             )
             try:
                 await self.remove_labels(kind, number, [label])
@@ -658,7 +714,9 @@ class ForgeClient(ABC):
             try:
                 current = await self.get_issue(number)
             except ForgeCommandError as exc:
-                logger.warning("clear_batch_label: could not fetch %s #%d: %s", kind, number, exc)
+                logger.warning(
+                    "clear_batch_label: could not fetch %s #%d: %s", kind, number, exc
+                )
                 return
         elif kind == "pr":
             current = await self.get_pr(number)
@@ -667,14 +725,20 @@ class ForgeClient(ABC):
         else:
             raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
 
-        batch_labels = [lb for lb in current.labels if lb.startswith(BATCH_LABEL_PREFIX)]
+        batch_labels = [
+            lb for lb in current.labels if lb.startswith(BATCH_LABEL_PREFIX)
+        ]
         if not batch_labels:
             return
         try:
             await self.remove_labels(kind, number, batch_labels)
-            logger.debug("cleared batch labels %s from %s #%d", batch_labels, kind, number)
+            logger.debug(
+                "cleared batch labels %s from %s #%d", batch_labels, kind, number
+            )
         except ForgeCommandError as exc:
-            logger.warning("clear_batch_label: remove failed for %s #%d: %s", kind, number, exc)
+            logger.warning(
+                "clear_batch_label: remove failed for %s #%d: %s", kind, number, exc
+            )
 
     # ------------------------------------------------------------------
     # Comments / search
@@ -684,7 +748,9 @@ class ForgeClient(ABC):
     async def list_issue_comments_since(self, since: datetime) -> List[CommentRef]: ...
 
     @abstractmethod
-    async def list_pr_review_comments_since(self, since: datetime) -> List[CommentRef]: ...
+    async def list_pr_review_comments_since(
+        self, since: datetime
+    ) -> List[CommentRef]: ...
 
     @abstractmethod
     async def search_items_mentioning(
@@ -775,7 +841,9 @@ class ForgeClient(ABC):
         if rc != 0:
             logger.debug(
                 "_api_get_json_with_headers(%s) failed rc=%d err=%s",
-                endpoint, rc, err.strip()[:200],
+                endpoint,
+                rc,
+                err.strip()[:200],
             )
             return {}, {}
         return _parse_headers_and_body(out)
@@ -804,9 +872,7 @@ class ForgeClient(ABC):
             or ""
         ).strip()
         reset_str = (
-            headers.get("X-RateLimit-Reset")
-            or headers.get("RateLimit-Reset")
-            or ""
+            headers.get("X-RateLimit-Reset") or headers.get("RateLimit-Reset") or ""
         ).strip()
 
         if not remaining_str or not reset_str:
@@ -819,7 +885,8 @@ class ForgeClient(ABC):
             logger.debug(
                 "_maybe_sleep_for_rate_limit: could not parse headers "
                 "remaining=%r reset=%r — skipping",
-                remaining_str, reset_str,
+                remaining_str,
+                reset_str,
             )
             return
 
@@ -832,13 +899,18 @@ class ForgeClient(ABC):
                 logger.warning(
                     "rate-limit excedido: remaining=%d reset_epoch=%d "
                     "dormindo %.1fs (cap=%ds)",
-                    remaining, reset_epoch, sleep_secs, cap,
+                    remaining,
+                    reset_epoch,
+                    sleep_secs,
+                    cap,
                 )
             else:
                 logger.info(
                     "rate-limit baixo: remaining=%d threshold=%d "
                     "dormindo %.1fs até reset",
-                    remaining, threshold, sleep_secs,
+                    remaining,
+                    threshold,
+                    sleep_secs,
                 )
             await asyncio.sleep(sleep_secs)
 

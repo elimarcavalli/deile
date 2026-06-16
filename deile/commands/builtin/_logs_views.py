@@ -78,7 +78,9 @@ def format_time_ago(timestamp: datetime, *, now: datetime | None = None) -> str:
     return timestamp.strftime("%H:%M")
 
 
-def format_event_type_label(event_type: AuditEventType, *, max_chars: int | None = None) -> str:
+def format_event_type_label(
+    event_type: AuditEventType, *, max_chars: int | None = None
+) -> str:
     """``event_type.value`` → human-readable label.
 
     The pattern ``event_type.value.replace("_", " ").title()[:N]`` was
@@ -121,8 +123,12 @@ def build_overview_table(
 
     table.add_row("Total de Eventos", str(total_events), "Na sessão atual")
     table.add_row("ID da Sessão", session_id, "Identificador da sessão atual")
-    table.add_row("Negativas de Permissão", str(permission_denials), "Eventos de acesso negado")
-    table.add_row("Detecções de Segredos", str(secret_detections), "Dados sensíveis encontrados")
+    table.add_row(
+        "Negativas de Permissão", str(permission_denials), "Eventos de acesso negado"
+    )
+    table.add_row(
+        "Detecções de Segredos", str(secret_detections), "Dados sensíveis encontrados"
+    )
     table.add_row("Eventos Críticos", str(recent_critical), "Erros e avisos")
     table.add_row("Arquivo de Log", str(log_file), "Local de armazenamento persistente")
     return table
@@ -185,12 +191,16 @@ def build_types_table(type_counts: Mapping[str, int]) -> Table | Panel:
             border_style="dim",
         )
 
-    table = Table(title="📋 Tipos de Evento", show_header=True, header_style="bold blue")
+    table = Table(
+        title="📋 Tipos de Evento", show_header=True, header_style="bold blue"
+    )
     table.add_column("Tipo de Evento", style="blue")
     table.add_column("Contagem", style="green", justify="center")
     table.add_column("Descrição", style="dim")
 
-    for event_type, count in sorted(type_counts.items(), key=lambda x: x[1], reverse=True):
+    for event_type, count in sorted(
+        type_counts.items(), key=lambda x: x[1], reverse=True
+    ):
         description = _TYPE_DESCRIPTIONS.get(event_type, "Evento personalizado")
         table.add_row(
             _format_event_type_str(event_type),
@@ -381,9 +391,7 @@ def build_permission_empty_panel() -> Panel:
     )
 
 
-def build_permission_stats_panel(
-    *, total_checks: int, total_denials: int
-) -> Panel:
+def build_permission_stats_panel(*, total_checks: int, total_denials: int) -> Panel:
     denominator = total_checks + total_denials
     denial_rate = (total_denials / denominator * 100) if denominator > 0 else 0
     text = (
@@ -651,7 +659,9 @@ def build_summary_table(events: Sequence[AuditEvent]) -> Table:
         key = event.event_type.value
         type_counts[key] = type_counts.get(key, 0) + 1
 
-    for event_type, count in sorted(type_counts.items(), key=lambda x: x[1], reverse=True):
+    for event_type, count in sorted(
+        type_counts.items(), key=lambda x: x[1], reverse=True
+    ):
         percentage = (count / total_events * 100) if total_events > 0 else 0
         table.add_row(
             _format_event_type_str(event_type),

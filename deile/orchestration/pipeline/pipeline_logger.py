@@ -6,12 +6,12 @@ Emits 14 event families to the ``deile.pipeline.events`` logger in the format::
 
 Every public function isolates failures: no exception propagates to call-sites.
 """
+
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from hashlib import md5
 from typing import Hashable
 
 _LOG = logging.getLogger("deile.pipeline.events")
@@ -24,6 +24,7 @@ _MAX_LINE = 500
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _sanitize(value: str) -> str:
     """Strip control chars and replace internal single-quotes with space."""
@@ -68,6 +69,7 @@ def _build_line(family: str, **fields: object) -> str:
 # _DedupCache
 # ---------------------------------------------------------------------------
 
+
 class _DedupCache:
     """TTL-based dedup cache with bounded size (eviction at _DEDUP_MAX_KEYS)."""
 
@@ -110,11 +112,14 @@ _DEDUP = _DedupCache()
 # Public API — 15 typed functions
 # ---------------------------------------------------------------------------
 
+
 def log_refinement_critique(
     *, issue: int, round: int, persona: str, verdict: str, gaps: str = ""
 ) -> None:
     try:
-        kw: dict[str, object] = dict(issue=issue, round=round, persona=persona, verdict=verdict)
+        kw: dict[str, object] = dict(
+            issue=issue, round=round, persona=persona, verdict=verdict
+        )
         if gaps:
             kw["gaps"] = _truncate(_sanitize(gaps))
         line = _build_line("refinement.critique", **kw)
@@ -269,9 +274,7 @@ def log_reaper_block(
             pass
 
 
-def log_auth_fail(
-    *, target: str, attempts: int, threshold: int, reason: str
-) -> None:
+def log_auth_fail(*, target: str, attempts: int, threshold: int, reason: str) -> None:
     try:
         key: Hashable = ("auth.fail", target)
         if _DEDUP.seen_recently(key, ttl=60.0):

@@ -40,6 +40,7 @@ def _router(*, get=None, dry=None, apply=None, raises=None):
 
     ``raises`` (exception) é levantada SEMPRE, simulando timeout/binário ausente.
     """
+
     def _fake(argv, **kwargs):
         if raises is not None:
             raise raises
@@ -50,6 +51,7 @@ def _router(*, get=None, dry=None, apply=None, raises=None):
         if "apply" in argv:
             return apply if apply is not None else _FakeCompleted()
         raise AssertionError(f"argv inesperado: {argv}")
+
     return _fake
 
 
@@ -62,8 +64,10 @@ def _b64(value: str) -> str:
 # --------------------------------------------------------------------------- #
 def test_apply_empty_literals_is_noop_false(monkeypatch):
     """``literals`` vazio → ``False`` SEM invocar kubectl (guarda preservada)."""
+
     def _boom(*a, **k):
         raise AssertionError("kubectl não deveria ser chamado")
+
     monkeypatch.setattr(kh.subprocess, "run", _boom)
     assert kh.apply_generic_secret("s", {}, namespace="deile") is False
 
@@ -75,7 +79,8 @@ def test_apply_happy_path(monkeypatch):
 
 def test_apply_dry_run_failure_returns_false(monkeypatch):
     monkeypatch.setattr(
-        kh.subprocess, "run",
+        kh.subprocess,
+        "run",
         _router(dry=_FakeCompleted(returncode=1, stderr="boom")),
     )
     assert kh.apply_generic_secret("s", {"K": "V"}, namespace="deile") is False
@@ -83,7 +88,8 @@ def test_apply_dry_run_failure_returns_false(monkeypatch):
 
 def test_apply_apply_failure_returns_false(monkeypatch):
     monkeypatch.setattr(
-        kh.subprocess, "run",
+        kh.subprocess,
+        "run",
         _router(apply=_FakeCompleted(returncode=1, stderr="apply boom")),
     )
     assert kh.apply_generic_secret("s", {"K": "V"}, namespace="deile") is False
@@ -91,7 +97,8 @@ def test_apply_apply_failure_returns_false(monkeypatch):
 
 def test_apply_timeout_returns_false(monkeypatch):
     monkeypatch.setattr(
-        kh.subprocess, "run",
+        kh.subprocess,
+        "run",
         _router(raises=subprocess.TimeoutExpired(cmd="kubectl", timeout=15)),
     )
     assert kh.apply_generic_secret("s", {"K": "V"}, namespace="deile") is False
@@ -99,7 +106,9 @@ def test_apply_timeout_returns_false(monkeypatch):
 
 def test_apply_kubectl_missing_returns_false(monkeypatch):
     monkeypatch.setattr(
-        kh.subprocess, "run", _router(raises=FileNotFoundError("kubectl")),
+        kh.subprocess,
+        "run",
+        _router(raises=FileNotFoundError("kubectl")),
     )
     assert kh.apply_generic_secret("s", {"K": "V"}, namespace="deile") is False
 
@@ -108,7 +117,8 @@ def test_apply_never_logs_secret_value(monkeypatch, caplog):
     """Pilar 08: o VALOR do secret nunca entra em log, mesmo em falha."""
     secret_value = "super-secret-token-xyz"
     monkeypatch.setattr(
-        kh.subprocess, "run",
+        kh.subprocess,
+        "run",
         _router(dry=_FakeCompleted(returncode=1, stderr="kubectl error sem valor")),
     )
     with caplog.at_level(logging.DEBUG):
@@ -121,7 +131,8 @@ def test_apply_never_logs_secret_value(monkeypatch, caplog):
 # --------------------------------------------------------------------------- #
 def test_read_value_decodes_base64(monkeypatch):
     monkeypatch.setattr(
-        kh.subprocess, "run",
+        kh.subprocess,
+        "run",
         _router(get=_FakeCompleted(stdout=_b64("tok-123"))),
     )
     assert kh.read_secret_value("sec", "AUTH_TOKEN", namespace="deile") == "tok-123"
@@ -130,14 +141,18 @@ def test_read_value_decodes_base64(monkeypatch):
 def test_read_value_absent_returns_none(monkeypatch):
     """Secret/chave ausente (stdout vazio) → ``None`` silencioso."""
     monkeypatch.setattr(
-        kh.subprocess, "run", _router(get=_FakeCompleted(returncode=0, stdout="")),
+        kh.subprocess,
+        "run",
+        _router(get=_FakeCompleted(returncode=0, stdout="")),
     )
     assert kh.read_secret_value("sec", "AUTH_TOKEN", namespace="deile") is None
 
 
 def test_read_value_invalid_base64_returns_none(monkeypatch, caplog):
     monkeypatch.setattr(
-        kh.subprocess, "run", _router(get=_FakeCompleted(stdout="!!!not-base64!!!")),
+        kh.subprocess,
+        "run",
+        _router(get=_FakeCompleted(stdout="!!!not-base64!!!")),
     )
     with caplog.at_level(logging.ERROR):
         assert kh.read_secret_value("sec", "K", namespace="deile") is None
@@ -145,7 +160,8 @@ def test_read_value_invalid_base64_returns_none(monkeypatch, caplog):
 
 def test_read_value_timeout_returns_none(monkeypatch):
     monkeypatch.setattr(
-        kh.subprocess, "run",
+        kh.subprocess,
+        "run",
         _router(raises=subprocess.TimeoutExpired(cmd="kubectl", timeout=15)),
     )
     assert kh.read_secret_value("sec", "K", namespace="deile") is None
@@ -158,24 +174,30 @@ def test_read_map_decodes_all_and_skips_invalid(monkeypatch):
     """Merge use-case: decodifica todas as chaves, pula base64 inválido."""
     data = {"A": _b64("alpha"), "B": "!!!bad!!!", "C": _b64("gamma")}
     monkeypatch.setattr(
-        kh.subprocess, "run",
+        kh.subprocess,
+        "run",
         _router(get=_FakeCompleted(stdout=json.dumps(data))),
     )
     assert kh.read_secret_data_map("sec", namespace="deile") == {
-        "A": "alpha", "C": "gamma",
+        "A": "alpha",
+        "C": "gamma",
     }
 
 
 def test_read_map_absent_returns_none(monkeypatch):
     monkeypatch.setattr(
-        kh.subprocess, "run", _router(get=_FakeCompleted(returncode=1)),
+        kh.subprocess,
+        "run",
+        _router(get=_FakeCompleted(returncode=1)),
     )
     assert kh.read_secret_data_map("sec", namespace="deile") is None
 
 
 def test_read_map_non_dict_payload_returns_none(monkeypatch):
     monkeypatch.setattr(
-        kh.subprocess, "run", _router(get=_FakeCompleted(stdout="[1,2,3]")),
+        kh.subprocess,
+        "run",
+        _router(get=_FakeCompleted(stdout="[1,2,3]")),
     )
     assert kh.read_secret_data_map("sec", namespace="deile") is None
 
@@ -186,12 +208,16 @@ def test_read_map_non_dict_payload_returns_none(monkeypatch):
 def test_sync_bearer_source_absent_is_non_fatal_true(monkeypatch, caplog):
     """Source ausente → ``True`` (não-fatal; rollout fica pending) + warning."""
     monkeypatch.setattr(
-        kh.subprocess, "run", _router(get=_FakeCompleted(returncode=1)),
+        kh.subprocess,
+        "run",
+        _router(get=_FakeCompleted(returncode=1)),
     )
     with caplog.at_level(logging.WARNING):
         ok = kh.sync_bearer_secret(
-            source_secret="worker-bearer", source_key="AUTH_TOKEN",
-            target_secret="x-bearer", target_key="CLI_WORKER_BEARER_TOKEN",
+            source_secret="worker-bearer",
+            source_key="AUTH_TOKEN",
+            target_secret="x-bearer",
+            target_key="CLI_WORKER_BEARER_TOKEN",
             namespace="deile",
         )
     assert ok is True
@@ -202,12 +228,16 @@ def test_sync_bearer_copies_token_and_never_logs_it(monkeypatch, caplog):
     """Source presente → copia o token ao target; o token nunca é logado."""
     token = "bearer-secret-abc"
     monkeypatch.setattr(
-        kh.subprocess, "run", _router(get=_FakeCompleted(stdout=_b64(token))),
+        kh.subprocess,
+        "run",
+        _router(get=_FakeCompleted(stdout=_b64(token))),
     )
     with caplog.at_level(logging.DEBUG):
         ok = kh.sync_bearer_secret(
-            source_secret="worker-bearer", source_key="AUTH_TOKEN",
-            target_secret="x-bearer", target_key="CLI_WORKER_BEARER_TOKEN",
+            source_secret="worker-bearer",
+            source_key="AUTH_TOKEN",
+            target_secret="x-bearer",
+            target_key="CLI_WORKER_BEARER_TOKEN",
             namespace="deile",
         )
     assert ok is True

@@ -28,7 +28,8 @@ def wrapper_mod():
     repo_root = Path(__file__).resolve().parents[3]
     wrapper_path = repo_root / "infra" / "k8s" / "wrapper.py"
     spec = importlib.util.spec_from_file_location(
-        "wrapper_under_test_cli_worker", str(wrapper_path),
+        "wrapper_under_test_cli_worker",
+        str(wrapper_path),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -51,7 +52,9 @@ def test_main_routes_cli_worker(wrapper_mod, monkeypatch):
 
 
 def test_cli_worker_setup_wires_git_and_delegates(
-    wrapper_mod, tmp_path, monkeypatch,
+    wrapper_mod,
+    tmp_path,
+    monkeypatch,
 ):
     """O setup do cli-worker carrega allowlist + bearer + forge creds e delega.
 
@@ -60,21 +63,27 @@ def test_cli_worker_setup_wires_git_and_delegates(
     ``cli_worker_server.main`` — exatamente o gap dos findings 1/2.
     """
     calls = []
-    monkeypatch.setattr(wrapper_mod, "_harden_runtime_dirs", lambda: calls.append("harden"))
     monkeypatch.setattr(
-        wrapper_mod, "_load_allowed_repo_patterns",
+        wrapper_mod, "_harden_runtime_dirs", lambda: calls.append("harden")
+    )
+    monkeypatch.setattr(
+        wrapper_mod,
+        "_load_allowed_repo_patterns",
         lambda: (calls.append("allowlist") or ["pat"]),
     )
     monkeypatch.setattr(
-        wrapper_mod, "_install_git_repo_guard",
+        wrapper_mod,
+        "_install_git_repo_guard",
         lambda pats: calls.append("guard"),
     )
     monkeypatch.setattr(
-        wrapper_mod, "_load_secret_files",
+        wrapper_mod,
+        "_load_secret_files",
         lambda d: (calls.append("secrets") or []),
     )
     monkeypatch.setattr(
-        wrapper_mod, "_setup_forge_credentials",
+        wrapper_mod,
+        "_setup_forge_credentials",
         lambda: calls.append("forge_creds"),
     )
 
@@ -82,16 +91,19 @@ def test_cli_worker_setup_wires_git_and_delegates(
     bearer = tmp_path / "CLI_WORKER_BEARER_TOKEN"
     bearer.write_text("tok-123")
     monkeypatch.setattr(
-        wrapper_mod.Path, "is_file",
+        wrapper_mod.Path,
+        "is_file",
         lambda self: str(self).endswith("CLI_WORKER_BEARER_TOKEN"),
     )
     monkeypatch.setattr(
-        wrapper_mod.Path, "read_text",
+        wrapper_mod.Path,
+        "read_text",
         lambda self, *a, **k: "tok-123",
     )
 
     # Stub do cli_worker_server.main para não subir servidor real.
     import types
+
     fake_server = types.ModuleType("cli_worker_server")
     fake_server.main = lambda *a, **k: (calls.append("server_main") or 0)
     monkeypatch.setitem(sys.modules, "cli_worker_server", fake_server)
@@ -104,6 +116,7 @@ def test_cli_worker_setup_wires_git_and_delegates(
     assert "secrets" in calls
     # O bearer foi exportado para o env que o server lê.
     import os
+
     assert os.environ.get("DEILE_CLI_WORKER_AUTH_TOKEN") == "tok-123"
 
 

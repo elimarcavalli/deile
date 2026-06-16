@@ -13,7 +13,10 @@ from deile.orchestration.pipeline.briefs import _render_worker_pr_unified_brief
 
 def _render(repo: str = "owner/repo", number: int = 11) -> str:
     return _render_worker_pr_unified_brief(
-        repo, "main", number, gh_login="deile-one",
+        repo,
+        "main",
+        number,
+        gh_login="deile-one",
     )
 
 
@@ -74,7 +77,11 @@ class TestBriefExecutesFullWorkListWhenAuthorIsSelf:
 
     def test_brief_has_thread_open_branch(self):
         out = _render()
-        assert "thread aberta" in out.lower() or "thread/notas" in out.lower() or "threads" in out.lower()
+        assert (
+            "thread aberta" in out.lower()
+            or "thread/notas" in out.lower()
+            or "threads" in out.lower()
+        )
 
     def test_brief_has_comment_directed_to_me_branch(self):
         out = _render()

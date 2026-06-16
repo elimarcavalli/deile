@@ -7,6 +7,7 @@ Foca em:
   * Quando chamado sem snapshot E o terminal está cooked (ICANON on),
     auto-capture é aceito.
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,6 +23,7 @@ pytestmark = pytest.mark.unit
 def _reset_stdin_owner_state():
     """Isola o estado global do módulo entre testes."""
     import deile.ui._stdin_owner as mod
+
     mod._saved_termios = None
     mod._termios_fd = -1
     mod._atexit_registered = False
@@ -34,11 +36,13 @@ def test_prime_termios_snapshot_with_explicit_snapshot_is_preferred():
     """Caller passa snapshot explícito → salvo direto sem tcgetattr."""
     import deile.ui._stdin_owner as mod
 
-    explicit_snapshot = ["fake-iflag", "fake-oflag", "fake-cflag", 0xff]
+    explicit_snapshot = ["fake-iflag", "fake-oflag", "fake-cflag", 0xFF]
     # Patch isatty para True, mas tcgetattr NÃO deve ser chamado quando
     # o caller já passou o snapshot.
-    with patch.object(sys.stdin, "isatty", return_value=True), \
-         patch("sys.stdin.fileno", return_value=0):
+    with (
+        patch.object(sys.stdin, "isatty", return_value=True),
+        patch("sys.stdin.fileno", return_value=0),
+    ):
         with patch("termios.tcgetattr") as mock_tcget:
             mod.prime_termios_snapshot(original_termios=explicit_snapshot)
             mock_tcget.assert_not_called()
@@ -69,9 +73,11 @@ def test_prime_termios_snapshot_auto_capture_refuses_cbreak_state(caplog):
     target_logger.disabled = False
     caplog.set_level(logging.WARNING, logger="deile.ui._stdin_owner")
     try:
-        with patch.object(sys.stdin, "isatty", return_value=True), \
-             patch("sys.stdin.fileno", return_value=0), \
-             patch("termios.tcgetattr", return_value=cooked_snapshot):
+        with (
+            patch.object(sys.stdin, "isatty", return_value=True),
+            patch("sys.stdin.fileno", return_value=0),
+            patch("termios.tcgetattr", return_value=cooked_snapshot),
+        ):
             mod.prime_termios_snapshot(original_termios=None)
     finally:
         target_logger.propagate = old_propagate
@@ -85,8 +91,9 @@ def test_prime_termios_snapshot_auto_capture_refuses_cbreak_state(caplog):
     if caplog.records:
         msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         if msgs:
-            assert any("cbreak" in m.lower() or "icanon" in m.lower() for m in msgs), \
-                f"caplog tinha warnings, mas nenhum sobre cbreak/ICANON: {msgs}"
+            assert any(
+                "cbreak" in m.lower() or "icanon" in m.lower() for m in msgs
+            ), f"caplog tinha warnings, mas nenhum sobre cbreak/ICANON: {msgs}"
 
 
 def test_prime_termios_snapshot_auto_capture_accepts_cooked_state():
@@ -101,9 +108,11 @@ def test_prime_termios_snapshot_auto_capture_accepts_cooked_state():
     lflag_cooked = _termios.ICANON  # ICANON LIGADO
     cooked_snapshot = [iflag, oflag, cflag, lflag_cooked, 0, 0, []]
 
-    with patch.object(sys.stdin, "isatty", return_value=True), \
-         patch("sys.stdin.fileno", return_value=0), \
-         patch("termios.tcgetattr", return_value=cooked_snapshot):
+    with (
+        patch.object(sys.stdin, "isatty", return_value=True),
+        patch("sys.stdin.fileno", return_value=0),
+        patch("termios.tcgetattr", return_value=cooked_snapshot),
+    ):
         mod.prime_termios_snapshot(original_termios=None)
 
     assert mod._saved_termios == cooked_snapshot

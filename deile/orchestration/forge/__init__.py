@@ -34,24 +34,41 @@ import logging
 from threading import Lock
 from typing import Dict, Mapping, Optional, Tuple
 
-from deile.orchestration.forge.base import (ForgeClient, ForgeCliNotFound,
-                                            ForgeCommandError, ForgeConfig,
-                                            ForgeConfigError,
-                                            ForgeDetectionError, ForgeError,
-                                            ForgeKind, MergeBlocked,
-                                            MergeBlockedByPipeline,
-                                            WorkItemDetails, discover_cli)
-from deile.orchestration.forge.detection import (build_forge_config,
-                                                 declared_hosts,
-                                                 detect_forge_kind)
+from deile.orchestration.forge.base import (
+    ForgeClient,
+    ForgeCliNotFound,
+    ForgeCommandError,
+    ForgeConfig,
+    ForgeConfigError,
+    ForgeDetectionError,
+    ForgeError,
+    ForgeKind,
+    MergeBlocked,
+    MergeBlockedByPipeline,
+    WorkItemDetails,
+    discover_cli,
+)
+from deile.orchestration.forge.detection import (
+    build_forge_config,
+    declared_hosts,
+    detect_forge_kind,
+)
 from deile.orchestration.forge.github_forge import GhCommandError, GitHubForge
 from deile.orchestration.forge.gitlab_forge import GitLabForge
-from deile.orchestration.forge.refs import (CommentRef, IssueRef,
-                                            MentionTrigger, MrRef, PrRef,
-                                            compute_batch_id_for_number)
-from deile.orchestration.forge.url_parser import (ForgeUrl, find_first_pr_url,
-                                                  find_last_pr_url,
-                                                  parse_forge_url)
+from deile.orchestration.forge.refs import (
+    CommentRef,
+    IssueRef,
+    MentionTrigger,
+    MrRef,
+    PrRef,
+    compute_batch_id_for_number,
+)
+from deile.orchestration.forge.url_parser import (
+    ForgeUrl,
+    find_first_pr_url,
+    find_last_pr_url,
+    parse_forge_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +140,7 @@ class ForgeRouter:
             # Pilar 03 §7 — config-centralizado. ``settings_as_env`` projeta os
             # campos forge_* do Settings singleton de volta no shape DEILE_*.
             from deile.orchestration.forge.detection import settings_as_env
+
             env = settings_as_env()
         if url and not project_path:
             parsed = parse_forge_url(url, **declared_hosts(env))

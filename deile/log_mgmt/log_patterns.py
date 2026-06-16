@@ -145,8 +145,7 @@ RUNTIME_ERROR_PATTERNS: List[LogPattern] = [
     LogPattern(
         name="timeout",
         pattern=re.compile(
-            r"(?:timeout|timed out|TimeoutError|"
-            r"asyncio\.TimeoutError)",
+            r"(?:timeout|timed out|TimeoutError|" r"asyncio\.TimeoutError)",
             re.IGNORECASE,
         ),
         severity=Severity.WARNING,
@@ -155,8 +154,7 @@ RUNTIME_ERROR_PATTERNS: List[LogPattern] = [
     LogPattern(
         name="disk_full",
         pattern=re.compile(
-            r"(?:no space left on device|disk full|"
-            r"ENOSPC|out of disk space)",
+            r"(?:no space left on device|disk full|" r"ENOSPC|out of disk space)",
             re.IGNORECASE,
         ),
         severity=Severity.CRITICAL,
@@ -165,8 +163,7 @@ RUNTIME_ERROR_PATTERNS: List[LogPattern] = [
     LogPattern(
         name="memory_error",
         pattern=re.compile(
-            r"(?:memoryerror|out of memory|cannot allocate memory|"
-            r"killed.*oom)",
+            r"(?:memoryerror|out of memory|cannot allocate memory|" r"killed.*oom)",
             re.IGNORECASE,
         ),
         severity=Severity.CRITICAL,
@@ -201,8 +198,7 @@ PIPELINE_PATTERNS: List[LogPattern] = [
             # Accept both wire formats: canonical dot ``dispatch.completed``
             # and legacy snake ``dispatch_completed`` (a detector must never
             # miss a failed dispatch — false-negatives here = silent outages).
-            r"dispatch[._]completed.*ok=False|"
-            r"implement.*BLOCKED|review.*BLOCKED",
+            r"dispatch[._]completed.*ok=False|" r"implement.*BLOCKED|review.*BLOCKED",
             re.IGNORECASE,
         ),
         severity=Severity.ERROR,
@@ -213,10 +209,7 @@ PIPELINE_PATTERNS: List[LogPattern] = [
 # ── Catálogo completo ───────────────────────────────────────────────────────
 
 ALL_PATTERNS: List[LogPattern] = (
-    AUTH_EXPIRED_PATTERNS
-    + CRASH_PATTERNS
-    + RUNTIME_ERROR_PATTERNS
-    + PIPELINE_PATTERNS
+    AUTH_EXPIRED_PATTERNS + CRASH_PATTERNS + RUNTIME_ERROR_PATTERNS + PIPELINE_PATTERNS
 )
 
 

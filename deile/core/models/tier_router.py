@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # RoutingPolicy
 # ---------------------------------------------------------------------------
 
+
 class RoutingPolicy:
     """Maps each ModelTier to an ordered cascade of 'provider_id:model_id' keys.
 
@@ -52,7 +53,9 @@ class RoutingPolicy:
 
         policies = data.get("policies", {})
         if policy_name not in policies:
-            raise KeyError(f"Policy '{policy_name}' not found in {path}. Available: {list(policies)}")
+            raise KeyError(
+                f"Policy '{policy_name}' not found in {path}. Available: {list(policies)}"
+            )
 
         tier_map = policies[policy_name]
         cascades: Dict[ModelTier, List[str]] = {}
@@ -81,9 +84,10 @@ class RoutingPolicy:
 # CircuitBreaker
 # ---------------------------------------------------------------------------
 
+
 class BreakerState(Enum):
-    CLOSED = "closed"        # Normal — requests allowed
-    OPEN = "open"            # Tripped — requests rejected
+    CLOSED = "closed"  # Normal — requests allowed
+    OPEN = "open"  # Tripped — requests rejected
     HALF_OPEN = "half_open"  # Cooldown elapsed — one probe allowed
 
 
@@ -186,6 +190,7 @@ class CircuitBreaker:
 # NoProviderAvailable
 # ---------------------------------------------------------------------------
 
+
 class NoProviderAvailable(Exception):
     """Raised when all cascade entries are tripped or unregistered."""
 
@@ -193,6 +198,7 @@ class NoProviderAvailable(Exception):
 # ---------------------------------------------------------------------------
 # TierRouter
 # ---------------------------------------------------------------------------
+
 
 class TierRouter:
     """Tier-aware router: iterates a tier's cascade, skips tripped breakers,

@@ -254,7 +254,10 @@ class TestCompactPurge:
 class TestCompactAnalyze:
     async def test_analyze_uses_real_sessions(self):
         sessions = [
-            {"session_id": f"s{i}", "last_used_at": f"2026-0{(i%3)+1}-{(i%28)+1:02d}T10:00:00.000000Z"}
+            {
+                "session_id": f"s{i}",
+                "last_used_at": f"2026-0{(i%3)+1}-{(i%28)+1:02d}T10:00:00.000000Z",
+            }
             for i in range(5)
         ]
         ss = _mock_session_store(sessions=sessions, count=5)
@@ -273,7 +276,10 @@ class TestCompactAnalyze:
 
     async def test_analyze_no_hardcoded_topic_lists(self):
         sessions = [
-            {"session_id": f"s{i}", "last_used_at": f"2026-01-{i+1:02d}T10:00:00.000000Z"}
+            {
+                "session_id": f"s{i}",
+                "last_used_at": f"2026-01-{i+1:02d}T10:00:00.000000Z",
+            }
             for i in range(3)
         ]
         ss = _mock_session_store(sessions=sessions, count=3)

@@ -24,7 +24,6 @@ from deile.__version__ import __version__
 logger = logging.getLogger(__name__)
 
 
-
 class LogLevel(Enum):
     """Níveis de log disponíveis"""
 
@@ -206,9 +205,7 @@ def _to_optional_model_slug(value: Any) -> Optional[str]:
     if not stripped:
         return None
     if not _MODEL_SLUG_RE.match(stripped):
-        raise ValueError(
-            f"invalid model slug {stripped!r}; expected 'provider:model'"
-        )
+        raise ValueError(f"invalid model slug {stripped!r}; expected 'provider:model'")
     return stripped
 
 
@@ -236,8 +233,8 @@ def _to_optional_dispatcher(value: Any) -> Optional[str]:
         return None
     # Lazy import — evita import cycle settings → pipeline.dispatch_resolver →
     # settings (resolver consome ``get_settings()`` em runtime).
-    from deile.orchestration.pipeline.dispatch_resolver import \
-        is_valid_dispatcher
+    from deile.orchestration.pipeline.dispatch_resolver import is_valid_dispatcher
+
     if not is_valid_dispatcher(stripped):
         raise ValueError(
             f"invalid dispatcher {stripped!r}; expected one of "
@@ -267,6 +264,7 @@ def _to_optional_reasoning_effort(value: Any) -> Optional[str]:
     # Lazy import — reasoning.py não importa nada de deile, mas mantemos o
     # padrão lazy de ``_to_optional_dispatcher`` por simetria/segurança.
     from deile.core.models.reasoning import is_valid_effort
+
     if not is_valid_effort(stripped):
         raise ValueError(
             f"invalid reasoning effort {stripped!r}; expected one of "
@@ -303,9 +301,7 @@ def _to_activity_sources(value: Any) -> List[Dict[str, str]]:
             )
         deployment = item.get("deployment", "")
         if not isinstance(deployment, str) or not deployment:
-            raise ValueError(
-                f"activity_sources[{idx}].deployment: missing or empty"
-            )
+            raise ValueError(f"activity_sources[{idx}].deployment: missing or empty")
         if not _ACTIVITY_DEPLOYMENT_RE.match(deployment):
             raise ValueError(
                 f"activity_sources[{idx}].deployment={deployment!r}: "
@@ -407,54 +403,130 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.refine_max_attempts": ("pipeline_refine_max_attempts", _to_pos_int),
     "pipeline.max_parallel": ("pipeline_max_parallel", _to_pos_int_or_auto),
     # Per-stage model override (issue #305) — see _MODEL_SLUG_RE / resolver.
-    "pipeline.models.classify":   ("pipeline_model_classify",   _to_optional_model_slug),
-    "pipeline.models.refine":     ("pipeline_model_refine",     _to_optional_model_slug),
-    "pipeline.models.implement":  ("pipeline_model_implement",  _to_optional_model_slug),
-    "pipeline.models.pr_review":  ("pipeline_model_pr_review",  _to_optional_model_slug),
-    "pipeline.models.follow_ups": ("pipeline_model_follow_ups", _to_optional_model_slug),
+    "pipeline.models.classify": ("pipeline_model_classify", _to_optional_model_slug),
+    "pipeline.models.refine": ("pipeline_model_refine", _to_optional_model_slug),
+    "pipeline.models.implement": ("pipeline_model_implement", _to_optional_model_slug),
+    "pipeline.models.pr_review": ("pipeline_model_pr_review", _to_optional_model_slug),
+    "pipeline.models.follow_ups": (
+        "pipeline_model_follow_ups",
+        _to_optional_model_slug,
+    ),
     # Per-stage reasoning effort + global default — see reasoning_resolver / reasoning.py.
-    "model.reasoning_effort":       ("reasoning_effort",            _to_optional_reasoning_effort),
-    "pipeline.reasoning.classify":   ("pipeline_reasoning_classify",   _to_optional_reasoning_effort),
-    "pipeline.reasoning.refine":     ("pipeline_reasoning_refine",     _to_optional_reasoning_effort),
-    "pipeline.reasoning.implement":  ("pipeline_reasoning_implement",  _to_optional_reasoning_effort),
-    "pipeline.reasoning.pr_review":  ("pipeline_reasoning_pr_review",  _to_optional_reasoning_effort),
-    "pipeline.reasoning.follow_ups": ("pipeline_reasoning_follow_ups", _to_optional_reasoning_effort),
+    "model.reasoning_effort": ("reasoning_effort", _to_optional_reasoning_effort),
+    "pipeline.reasoning.classify": (
+        "pipeline_reasoning_classify",
+        _to_optional_reasoning_effort,
+    ),
+    "pipeline.reasoning.refine": (
+        "pipeline_reasoning_refine",
+        _to_optional_reasoning_effort,
+    ),
+    "pipeline.reasoning.implement": (
+        "pipeline_reasoning_implement",
+        _to_optional_reasoning_effort,
+    ),
+    "pipeline.reasoning.pr_review": (
+        "pipeline_reasoning_pr_review",
+        _to_optional_reasoning_effort,
+    ),
+    "pipeline.reasoning.follow_ups": (
+        "pipeline_reasoning_follow_ups",
+        _to_optional_reasoning_effort,
+    ),
     # Per-stage dispatcher override (issue #309) — see dispatch_resolver.
-    "pipeline.dispatchers.classify":   ("pipeline_dispatcher_classify",   _to_optional_dispatcher),
-    "pipeline.dispatchers.refine":     ("pipeline_dispatcher_refine",     _to_optional_dispatcher),
-    "pipeline.dispatchers.implement":  ("pipeline_dispatcher_implement",  _to_optional_dispatcher),
-    "pipeline.dispatchers.pr_review":  ("pipeline_dispatcher_pr_review",  _to_optional_dispatcher),
-    "pipeline.dispatchers.follow_ups": ("pipeline_dispatcher_follow_ups", _to_optional_dispatcher),
+    "pipeline.dispatchers.classify": (
+        "pipeline_dispatcher_classify",
+        _to_optional_dispatcher,
+    ),
+    "pipeline.dispatchers.refine": (
+        "pipeline_dispatcher_refine",
+        _to_optional_dispatcher,
+    ),
+    "pipeline.dispatchers.implement": (
+        "pipeline_dispatcher_implement",
+        _to_optional_dispatcher,
+    ),
+    "pipeline.dispatchers.pr_review": (
+        "pipeline_dispatcher_pr_review",
+        _to_optional_dispatcher,
+    ),
+    "pipeline.dispatchers.follow_ups": (
+        "pipeline_dispatcher_follow_ups",
+        _to_optional_dispatcher,
+    ),
     # Per-stage timeout override (issue #391) — seconds. None = no override.
-    "pipeline.timeouts_s.classify":   ("pipeline_timeout_s_classify",   _to_optional_pos_int),
-    "pipeline.timeouts_s.refine":     ("pipeline_timeout_s_refine",     _to_optional_pos_int),
-    "pipeline.timeouts_s.implement":  ("pipeline_timeout_s_implement",  _to_optional_pos_int),
-    "pipeline.timeouts_s.pr_review":  ("pipeline_timeout_s_pr_review",  _to_optional_pos_int),
-    "pipeline.timeouts_s.follow_ups": ("pipeline_timeout_s_follow_ups", _to_optional_pos_int),
+    "pipeline.timeouts_s.classify": (
+        "pipeline_timeout_s_classify",
+        _to_optional_pos_int,
+    ),
+    "pipeline.timeouts_s.refine": ("pipeline_timeout_s_refine", _to_optional_pos_int),
+    "pipeline.timeouts_s.implement": (
+        "pipeline_timeout_s_implement",
+        _to_optional_pos_int,
+    ),
+    "pipeline.timeouts_s.pr_review": (
+        "pipeline_timeout_s_pr_review",
+        _to_optional_pos_int,
+    ),
+    "pipeline.timeouts_s.follow_ups": (
+        "pipeline_timeout_s_follow_ups",
+        _to_optional_pos_int,
+    ),
     # Per-stage max retries override (issue #391) — 0 = no retry. None = no override.
-    "pipeline.retries.classify":   ("pipeline_retries_classify",   _to_optional_nonneg_int),
-    "pipeline.retries.refine":     ("pipeline_retries_refine",     _to_optional_nonneg_int),
-    "pipeline.retries.implement":  ("pipeline_retries_implement",  _to_optional_nonneg_int),
-    "pipeline.retries.pr_review":  ("pipeline_retries_pr_review",  _to_optional_nonneg_int),
-    "pipeline.retries.follow_ups": ("pipeline_retries_follow_ups", _to_optional_nonneg_int),
+    "pipeline.retries.classify": ("pipeline_retries_classify", _to_optional_nonneg_int),
+    "pipeline.retries.refine": ("pipeline_retries_refine", _to_optional_nonneg_int),
+    "pipeline.retries.implement": (
+        "pipeline_retries_implement",
+        _to_optional_nonneg_int,
+    ),
+    "pipeline.retries.pr_review": (
+        "pipeline_retries_pr_review",
+        _to_optional_nonneg_int,
+    ),
+    "pipeline.retries.follow_ups": (
+        "pipeline_retries_follow_ups",
+        _to_optional_nonneg_int,
+    ),
     # Global defaults for timeout and retries (issue #391).
-    "pipeline.default_timeout_s_deile":  ("pipeline_deile_timeout",       _to_optional_pos_int),
-    "pipeline.default_max_retries":      ("pipeline_default_max_retries",  _to_optional_nonneg_int),
+    "pipeline.default_timeout_s_deile": (
+        "pipeline_deile_timeout",
+        _to_optional_pos_int,
+    ),
+    "pipeline.default_max_retries": (
+        "pipeline_default_max_retries",
+        _to_optional_nonneg_int,
+    ),
     # Per-stage cost cap (issue #392) — per-run USD ceiling; None = no cap.
-    "pipeline.cost_caps_usd.classify":   ("pipeline_cost_cap_usd_classify",   _to_optional_positive_decimal),
-    "pipeline.cost_caps_usd.refine":     ("pipeline_cost_cap_usd_refine",     _to_optional_positive_decimal),
-    "pipeline.cost_caps_usd.implement":  ("pipeline_cost_cap_usd_implement",  _to_optional_positive_decimal),
-    "pipeline.cost_caps_usd.pr_review":  ("pipeline_cost_cap_usd_pr_review",  _to_optional_positive_decimal),
-    "pipeline.cost_caps_usd.follow_ups": ("pipeline_cost_cap_usd_follow_ups", _to_optional_positive_decimal),
+    "pipeline.cost_caps_usd.classify": (
+        "pipeline_cost_cap_usd_classify",
+        _to_optional_positive_decimal,
+    ),
+    "pipeline.cost_caps_usd.refine": (
+        "pipeline_cost_cap_usd_refine",
+        _to_optional_positive_decimal,
+    ),
+    "pipeline.cost_caps_usd.implement": (
+        "pipeline_cost_cap_usd_implement",
+        _to_optional_positive_decimal,
+    ),
+    "pipeline.cost_caps_usd.pr_review": (
+        "pipeline_cost_cap_usd_pr_review",
+        _to_optional_positive_decimal,
+    ),
+    "pipeline.cost_caps_usd.follow_ups": (
+        "pipeline_cost_cap_usd_follow_ups",
+        _to_optional_positive_decimal,
+    ),
     # Global cost cap fallback (issue #666) — applies to all stages when no per-stage cap set.
-    "pipeline.cost_cap_usd":             ("pipeline_cost_cap_usd",            _to_optional_positive_decimal),
+    "pipeline.cost_cap_usd": ("pipeline_cost_cap_usd", _to_optional_positive_decimal),
     # Sub-DEILEs paralelos (issue #257)
     "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
     "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
     "subagent.poll_interval_s": ("subagent_poll_interval_s", float),
     "subagent.budget_s": ("subagent_budget_s", float),
     "subagent.capture_buffer_max_bytes": (
-        "subagent_capture_buffer_max_bytes", _to_pos_int,
+        "subagent_capture_buffer_max_bytes",
+        _to_pos_int,
     ),
     # Trust boundary (issue #125): allowlist of directories whose
     # ``./.deile/settings.json`` is honored as the project layer.
@@ -798,7 +870,12 @@ class Settings:
     panel_activity_sources: List[Dict[str, str]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        for attr in ("working_directory", "config_directory", "logs_directory", "cache_directory"):
+        for attr in (
+            "working_directory",
+            "config_directory",
+            "logs_directory",
+            "cache_directory",
+        ):
             v = getattr(self, attr)
             if isinstance(v, str):
                 setattr(self, attr, Path(v))
@@ -825,7 +902,11 @@ class Settings:
         return keys
 
     def _create_directories(self) -> None:
-        for directory in (self.config_directory, self.logs_directory, self.cache_directory):
+        for directory in (
+            self.config_directory,
+            self.logs_directory,
+            self.cache_directory,
+        ):
             try:
                 directory.mkdir(parents=True, exist_ok=True)
             except Exception as exc:
@@ -873,11 +954,15 @@ class Settings:
             except (ValueError, TypeError) as exc:
                 logger.warning(
                     "settings: cannot apply %s=%r (%s); skipping this key",
-                    key_path, raw, exc,
+                    key_path,
+                    raw,
+                    exc,
                 )
         for field_name, value in pending:
             if not hasattr(self, field_name):
-                logger.error("settings: handler targets non-existent field %r", field_name)
+                logger.error(
+                    "settings: handler targets non-existent field %r", field_name
+                )
                 continue
             setattr(self, field_name, value)
 
@@ -925,7 +1010,9 @@ class Settings:
                 return cls()
 
             if "api_keys" in config_dict:
-                logger.warning("API keys found in config file. Ignoring them for security.")
+                logger.warning(
+                    "API keys found in config file. Ignoring them for security."
+                )
                 del config_dict["api_keys"]
 
             # Allowlist filter (issue #125): only attribute names that map
@@ -1020,12 +1107,18 @@ class Settings:
                 "tool_config": config.gemini.tool_config,
                 "safety_settings": config.gemini.safety_settings,
             }
-        return {"model_name": "gemini-1.5-pro-latest", "temperature": 0.1, "max_context_tokens": 8000}
+        return {
+            "model_name": "gemini-1.5-pro-latest",
+            "temperature": 0.1,
+            "max_context_tokens": 8000,
+        }
 
     def validate(self) -> List[str]:
         issues: List[str] = []
         if not self.get_api_key(self.default_model_provider):
-            issues.append(f"Missing API key for default provider: {self.default_model_provider}")
+            issues.append(
+                f"Missing API key for default provider: {self.default_model_provider}"
+            )
         if not self.working_directory.exists():
             issues.append(f"Working directory does not exist: {self.working_directory}")
         config_manager = self.get_config_manager()
@@ -1040,7 +1133,9 @@ class Settings:
         return issues
 
     def __str__(self) -> str:
-        return f"Settings(env={self.environment}, provider={self.default_model_provider})"
+        return (
+            f"Settings(env={self.environment}, provider={self.default_model_provider})"
+        )
 
     def __repr__(self) -> str:
         return f"<Settings: {self.app_name} v{self.version}>"
@@ -1166,16 +1261,20 @@ _JSON_FIELD_MAP: Dict[str, str] = _build_json_field_map()
 # non-list into one of these — silently storing a string here turns
 # ``_is_project_layer_trusted`` into a per-character iterator (the original
 # reviewer finding for ``trust_project_layer_dirs``).
-_LIST_ATTRS: frozenset = frozenset({
-    "trust_project_layer_dirs",
-    "allowed_file_extensions",
-    "blocked_directories",
-    "skills_paths",
-    "enabled_tool_categories",
-})
+_LIST_ATTRS: frozenset = frozenset(
+    {
+        "trust_project_layer_dirs",
+        "allowed_file_extensions",
+        "blocked_directories",
+        "skills_paths",
+        "enabled_tool_categories",
+    }
+)
 
 
-def _apply_nested_dict(settings: "Settings", data: Dict[str, Any], prefix: str = "") -> None:
+def _apply_nested_dict(
+    settings: "Settings", data: Dict[str, Any], prefix: str = ""
+) -> None:
     """Recursively walk a nested dict and apply matching fields to settings."""
     for key, value in data.items():
         full_key = f"{prefix}.{key}" if prefix else key
@@ -1250,9 +1349,10 @@ def _set_typed(settings: "Settings", attr: str, value: Any) -> None:
             # downstream consumer to neutralise it.
             if attr == "max_tool_iterations":
                 value = max(1, value)
-        elif isinstance(current, Path) or (current is None and attr in (
-            "pipeline_base_path", "cron_db_path", "deile_md_user_path"
-        )):
+        elif isinstance(current, Path) or (
+            current is None
+            and attr in ("pipeline_base_path", "cron_db_path", "deile_md_user_path")
+        ):
             value = Path(value) if value is not None else None
         elif isinstance(current, LogLevel):
             value = LogLevel(str(value).upper())
@@ -1273,8 +1373,10 @@ def _env_bool(raw: str) -> bool:
 
 def _int_floor(floor: int) -> Callable[[str], int]:
     """Build a converter that parses int and clamps below to ``floor``."""
+
     def _convert(raw: str) -> int:
         return max(floor, int(raw))
+
     return _convert
 
 
@@ -1302,96 +1404,200 @@ def _resolved_path(raw: str) -> Path:
 _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     # (env_var, settings_attr, converter)
     # Feature flags (deprecated but kept — used by tests + operators)
-    ("DEILE_DEBUG",                          "debug_enabled",                  _env_bool),
-    ("DEILE_PREFERRED_MODEL",                "preferred_model",                str),
-    ("DEILE_REASONING_EFFORT",               "reasoning_effort",               _to_optional_reasoning_effort),
-    ("DEILE_VISION_MODEL",                   "vision_model",                   str.strip),
-    ("DEILE_BOT_APPROVAL_AUTO",              "bot_approval_auto",              _env_bool),
+    ("DEILE_DEBUG", "debug_enabled", _env_bool),
+    ("DEILE_PREFERRED_MODEL", "preferred_model", str),
+    ("DEILE_REASONING_EFFORT", "reasoning_effort", _to_optional_reasoning_effort),
+    ("DEILE_VISION_MODEL", "vision_model", str.strip),
+    ("DEILE_BOT_APPROVAL_AUTO", "bot_approval_auto", _env_bool),
     # Loop guard knobs (deprecated but kept — used by test_loop_detection.py)
-    ("DEILE_LOOP_GUARD_DISABLE",             "loop_guard_disabled",            _env_bool),
-    ("DEILE_LOOP_GUARD_MAX_CALLS",           "loop_guard_max_calls",           _int_floor(1)),
-    ("DEILE_LOOP_GUARD_REPEAT_THRESHOLD",    "loop_guard_repeat_threshold",    _int_floor(1)),
-    ("DEILE_LOOP_GUARD_WINDOW_SIZE",         "loop_guard_window_size",         _int_floor(1)),
-    ("DEILE_LOOP_GUARD_WINDOW_THRESHOLD",    "loop_guard_window_threshold",    _int_floor(1)),
-    ("DEILE_LOOP_GUARD_NO_PROGRESS",         "loop_guard_no_progress",         _int_floor(1)),
+    ("DEILE_LOOP_GUARD_DISABLE", "loop_guard_disabled", _env_bool),
+    ("DEILE_LOOP_GUARD_MAX_CALLS", "loop_guard_max_calls", _int_floor(1)),
+    ("DEILE_LOOP_GUARD_REPEAT_THRESHOLD", "loop_guard_repeat_threshold", _int_floor(1)),
+    ("DEILE_LOOP_GUARD_WINDOW_SIZE", "loop_guard_window_size", _int_floor(1)),
+    ("DEILE_LOOP_GUARD_WINDOW_THRESHOLD", "loop_guard_window_threshold", _int_floor(1)),
+    ("DEILE_LOOP_GUARD_NO_PROGRESS", "loop_guard_no_progress", _int_floor(1)),
     # Pipeline base path (deprecated but kept — used by pipeline test fixtures)
-    ("DEILE_PIPELINE_BASE_PATH",             "pipeline_base_path",             _resolved_path),
+    ("DEILE_PIPELINE_BASE_PATH", "pipeline_base_path", _resolved_path),
     # Pipeline dispatch mode global (kept — still in use in cluster env vars)
-    ("DEILE_PIPELINE_DISPATCH_MODE",         "pipeline_dispatch_mode",         str),
+    ("DEILE_PIPELINE_DISPATCH_MODE", "pipeline_dispatch_mode", str),
     # Current knob — pipeline autostart.
-    ("DEILE_PIPELINE_AUTOSTART",             "pipeline_autostart",             _env_bool),
+    ("DEILE_PIPELINE_AUTOSTART", "pipeline_autostart", _env_bool),
     # Kubernetes namespace — used by CLI commands like /pods (issue #414).
-    ("DEILE_K8S_NAMESPACE",                  "k8s_namespace",                  str),
+    ("DEILE_K8S_NAMESPACE", "k8s_namespace", str),
     # Cron knobs (deprecated but kept — used by cron test isolation via monkeypatch)
-    ("DEILE_CRON_DB_PATH",                   "cron_db_path",                   _resolved_path),
-    ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int),
+    ("DEILE_CRON_DB_PATH", "cron_db_path", _resolved_path),
+    ("DEILE_CRON_POLL_INTERVAL", "cron_poll_interval", int),
     # Forge layer (issue #297) — current knobs. Validation of ``forge_kind``
     # is loose here (raw lowercase string) and tightened in
     # :func:`deile.orchestration.forge.detection.detect_forge_kind`.
-    ("DEILE_FORGE_REPO",                     "forge_repo",                     str),
-    ("DEILE_FORGE_KIND",                     "forge_kind",                     lambda s: s.strip().lower()),
-    ("DEILE_GITHUB_HOST",                    "forge_github_host",              str),
-    ("DEILE_GITLAB_HOST",                    "forge_gitlab_host",              str),
-    ("DEILE_FORGE_PROBE",                    "forge_probe_enabled",            _env_bool),
-    ("DEILE_FORGE_BOT_LOGIN",                "forge_bot_login",                str),
-    ("DEILE_GITLAB_API_VERSION",             "forge_gitlab_api_version",       str),
-    ("DEILE_GITHUB_API_PREFIX",              "forge_github_api_prefix",        str),
+    ("DEILE_FORGE_REPO", "forge_repo", str),
+    ("DEILE_FORGE_KIND", "forge_kind", lambda s: s.strip().lower()),
+    ("DEILE_GITHUB_HOST", "forge_github_host", str),
+    ("DEILE_GITLAB_HOST", "forge_gitlab_host", str),
+    ("DEILE_FORGE_PROBE", "forge_probe_enabled", _env_bool),
+    ("DEILE_FORGE_BOT_LOGIN", "forge_bot_login", str),
+    ("DEILE_GITLAB_API_VERSION", "forge_gitlab_api_version", str),
+    ("DEILE_GITHUB_API_PREFIX", "forge_github_api_prefix", str),
     # Current knob — agent tool-loop cap.
-    ("DEILE_MAX_TOOL_ITERATIONS",            "max_tool_iterations",            _int_floor(1)),
+    ("DEILE_MAX_TOOL_ITERATIONS", "max_tool_iterations", _int_floor(1)),
     # Sub-DEILEs paralelos (issue #257) — current knobs.
-    ("DEILE_SUBAGENT_RUNNER",                "subagent_runner",                lambda s: s.strip().lower()),
-    ("DEILE_SUBAGENT_MAX_PARALLEL",          "subagent_max_parallel",          _int_floor(1)),
-    ("DEILE_SUBAGENT_POLL_INTERVAL_S",       "subagent_poll_interval_s",       float),
-    ("DEILE_SUBAGENT_BUDGET_S",              "subagent_budget_s",              float),
-    ("DEILE_SUBAGENT_CAPTURE_BUFFER_MAX_BYTES", "subagent_capture_buffer_max_bytes", _int_floor(1)),
+    ("DEILE_SUBAGENT_RUNNER", "subagent_runner", lambda s: s.strip().lower()),
+    ("DEILE_SUBAGENT_MAX_PARALLEL", "subagent_max_parallel", _int_floor(1)),
+    ("DEILE_SUBAGENT_POLL_INTERVAL_S", "subagent_poll_interval_s", float),
+    ("DEILE_SUBAGENT_BUDGET_S", "subagent_budget_s", float),
+    (
+        "DEILE_SUBAGENT_CAPTURE_BUFFER_MAX_BYTES",
+        "subagent_capture_buffer_max_bytes",
+        _int_floor(1),
+    ),
     # Per-stage model override (issue #305) — cluster path. The panel TUI
     # writes these via ``kubectl set env deploy/deile-worker``. The CLI local
     # path uses ``pipeline.models.*`` in settings.json. Both layers run through
     # ``_to_optional_model_slug`` so a malformed slug is dropped with a warning.
-    ("DEILE_PIPELINE_MODEL_CLASSIFY",        "pipeline_model_classify",        _to_optional_model_slug),
-    ("DEILE_PIPELINE_MODEL_REFINE",          "pipeline_model_refine",          _to_optional_model_slug),
-    ("DEILE_PIPELINE_MODEL_IMPLEMENT",       "pipeline_model_implement",       _to_optional_model_slug),
-    ("DEILE_PIPELINE_MODEL_PR_REVIEW",       "pipeline_model_pr_review",       _to_optional_model_slug),
-    ("DEILE_PIPELINE_MODEL_FOLLOW_UPS",      "pipeline_model_follow_ups",      _to_optional_model_slug),
+    (
+        "DEILE_PIPELINE_MODEL_CLASSIFY",
+        "pipeline_model_classify",
+        _to_optional_model_slug,
+    ),
+    ("DEILE_PIPELINE_MODEL_REFINE", "pipeline_model_refine", _to_optional_model_slug),
+    (
+        "DEILE_PIPELINE_MODEL_IMPLEMENT",
+        "pipeline_model_implement",
+        _to_optional_model_slug,
+    ),
+    (
+        "DEILE_PIPELINE_MODEL_PR_REVIEW",
+        "pipeline_model_pr_review",
+        _to_optional_model_slug,
+    ),
+    (
+        "DEILE_PIPELINE_MODEL_FOLLOW_UPS",
+        "pipeline_model_follow_ups",
+        _to_optional_model_slug,
+    ),
     # Reasoning effort por etapa — cluster path (painel escreve via
     # ``kubectl set env deploy/deile-pipeline``). CLI local usa
     # ``pipeline.reasoning.*`` em settings.json. Validator
     # ``_to_optional_reasoning_effort`` barra typos contra a união de níveis.
-    ("DEILE_PIPELINE_REASONING_CLASSIFY",    "pipeline_reasoning_classify",    _to_optional_reasoning_effort),
-    ("DEILE_PIPELINE_REASONING_REFINE",      "pipeline_reasoning_refine",      _to_optional_reasoning_effort),
-    ("DEILE_PIPELINE_REASONING_IMPLEMENT",   "pipeline_reasoning_implement",   _to_optional_reasoning_effort),
-    ("DEILE_PIPELINE_REASONING_PR_REVIEW",   "pipeline_reasoning_pr_review",   _to_optional_reasoning_effort),
-    ("DEILE_PIPELINE_REASONING_FOLLOW_UPS",  "pipeline_reasoning_follow_ups",  _to_optional_reasoning_effort),
+    (
+        "DEILE_PIPELINE_REASONING_CLASSIFY",
+        "pipeline_reasoning_classify",
+        _to_optional_reasoning_effort,
+    ),
+    (
+        "DEILE_PIPELINE_REASONING_REFINE",
+        "pipeline_reasoning_refine",
+        _to_optional_reasoning_effort,
+    ),
+    (
+        "DEILE_PIPELINE_REASONING_IMPLEMENT",
+        "pipeline_reasoning_implement",
+        _to_optional_reasoning_effort,
+    ),
+    (
+        "DEILE_PIPELINE_REASONING_PR_REVIEW",
+        "pipeline_reasoning_pr_review",
+        _to_optional_reasoning_effort,
+    ),
+    (
+        "DEILE_PIPELINE_REASONING_FOLLOW_UPS",
+        "pipeline_reasoning_follow_ups",
+        _to_optional_reasoning_effort,
+    ),
     # Per-stage dispatcher override (issue #309) — cluster path. Operates em
     # paridade com pipeline.dispatchers.<stage> em settings.json. Validator
     # ``_to_optional_dispatcher`` consulta ``is_valid_dispatcher`` do
     # :mod:`dispatch_resolver` — aceita canônico + aliases legacy de PR #330.
-    ("DEILE_PIPELINE_DISPATCH_CLASSIFY",     "pipeline_dispatcher_classify",   _to_optional_dispatcher),
-    ("DEILE_PIPELINE_DISPATCH_REFINE",       "pipeline_dispatcher_refine",     _to_optional_dispatcher),
-    ("DEILE_PIPELINE_DISPATCH_IMPLEMENT",    "pipeline_dispatcher_implement",  _to_optional_dispatcher),
-    ("DEILE_PIPELINE_DISPATCH_PR_REVIEW",    "pipeline_dispatcher_pr_review",  _to_optional_dispatcher),
-    ("DEILE_PIPELINE_DISPATCH_FOLLOW_UPS",   "pipeline_dispatcher_follow_ups", _to_optional_dispatcher),
+    (
+        "DEILE_PIPELINE_DISPATCH_CLASSIFY",
+        "pipeline_dispatcher_classify",
+        _to_optional_dispatcher,
+    ),
+    (
+        "DEILE_PIPELINE_DISPATCH_REFINE",
+        "pipeline_dispatcher_refine",
+        _to_optional_dispatcher,
+    ),
+    (
+        "DEILE_PIPELINE_DISPATCH_IMPLEMENT",
+        "pipeline_dispatcher_implement",
+        _to_optional_dispatcher,
+    ),
+    (
+        "DEILE_PIPELINE_DISPATCH_PR_REVIEW",
+        "pipeline_dispatcher_pr_review",
+        _to_optional_dispatcher,
+    ),
+    (
+        "DEILE_PIPELINE_DISPATCH_FOLLOW_UPS",
+        "pipeline_dispatcher_follow_ups",
+        _to_optional_dispatcher,
+    ),
     # Per-stage timeout override (issue #391) — cluster path. Set via the panel
     # TUI on deploy/deile-pipeline. Paridade com pipeline.timeouts_s.<stage>.
-    ("DEILE_PIPELINE_TIMEOUT_S_CLASSIFY",    "pipeline_timeout_s_classify",    _to_optional_pos_int),
-    ("DEILE_PIPELINE_TIMEOUT_S_REFINE",      "pipeline_timeout_s_refine",      _to_optional_pos_int),
-    ("DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT",   "pipeline_timeout_s_implement",   _to_optional_pos_int),
-    ("DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW",   "pipeline_timeout_s_pr_review",   _to_optional_pos_int),
-    ("DEILE_PIPELINE_TIMEOUT_S_FOLLOW_UPS",  "pipeline_timeout_s_follow_ups",  _to_optional_pos_int),
+    (
+        "DEILE_PIPELINE_TIMEOUT_S_CLASSIFY",
+        "pipeline_timeout_s_classify",
+        _to_optional_pos_int,
+    ),
+    (
+        "DEILE_PIPELINE_TIMEOUT_S_REFINE",
+        "pipeline_timeout_s_refine",
+        _to_optional_pos_int,
+    ),
+    (
+        "DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT",
+        "pipeline_timeout_s_implement",
+        _to_optional_pos_int,
+    ),
+    (
+        "DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW",
+        "pipeline_timeout_s_pr_review",
+        _to_optional_pos_int,
+    ),
+    (
+        "DEILE_PIPELINE_TIMEOUT_S_FOLLOW_UPS",
+        "pipeline_timeout_s_follow_ups",
+        _to_optional_pos_int,
+    ),
     # Per-stage max retries override (issue #391) — cluster path.
-    ("DEILE_PIPELINE_RETRIES_CLASSIFY",      "pipeline_retries_classify",      _to_optional_nonneg_int),
-    ("DEILE_PIPELINE_RETRIES_REFINE",        "pipeline_retries_refine",        _to_optional_nonneg_int),
-    ("DEILE_PIPELINE_RETRIES_IMPLEMENT",     "pipeline_retries_implement",     _to_optional_nonneg_int),
-    ("DEILE_PIPELINE_RETRIES_PR_REVIEW",     "pipeline_retries_pr_review",     _to_optional_nonneg_int),
-    ("DEILE_PIPELINE_RETRIES_FOLLOW_UPS",    "pipeline_retries_follow_ups",    _to_optional_nonneg_int),
+    (
+        "DEILE_PIPELINE_RETRIES_CLASSIFY",
+        "pipeline_retries_classify",
+        _to_optional_nonneg_int,
+    ),
+    (
+        "DEILE_PIPELINE_RETRIES_REFINE",
+        "pipeline_retries_refine",
+        _to_optional_nonneg_int,
+    ),
+    (
+        "DEILE_PIPELINE_RETRIES_IMPLEMENT",
+        "pipeline_retries_implement",
+        _to_optional_nonneg_int,
+    ),
+    (
+        "DEILE_PIPELINE_RETRIES_PR_REVIEW",
+        "pipeline_retries_pr_review",
+        _to_optional_nonneg_int,
+    ),
+    (
+        "DEILE_PIPELINE_RETRIES_FOLLOW_UPS",
+        "pipeline_retries_follow_ups",
+        _to_optional_nonneg_int,
+    ),
     # Global timeout/retries defaults (issue #391).
-    ("DEILE_PIPELINE_DEILE_TIMEOUT",         "pipeline_deile_timeout",         _to_optional_pos_int),
-    ("DEILE_PIPELINE_DEFAULT_MAX_RETRIES",   "pipeline_default_max_retries",   _to_optional_nonneg_int),
+    ("DEILE_PIPELINE_DEILE_TIMEOUT", "pipeline_deile_timeout", _to_optional_pos_int),
+    (
+        "DEILE_PIPELINE_DEFAULT_MAX_RETRIES",
+        "pipeline_default_max_retries",
+        _to_optional_nonneg_int,
+    ),
     # Max parallel dispatches (issue #408) — cluster path. Panel TUI writes
     # via ``kubectl set env deploy/deile-pipeline``. The special value "auto"
     # instructs the pipeline to derive the limit from claude-worker replicas.
     # Numeric strings are validated via ``_to_pos_int_or_auto``; "auto" is kept as-is.
-    ("DEILE_PIPELINE_MAX_PARALLEL",          "pipeline_max_parallel",          _to_pos_int_or_auto),
+    ("DEILE_PIPELINE_MAX_PARALLEL", "pipeline_max_parallel", _to_pos_int_or_auto),
 )
 
 
@@ -1662,8 +1868,10 @@ def _load_layered_settings() -> "Settings":
     # com workingDir == HOME): aplicar o mesmo JSON duas vezes não muda
     # valores mas emite warning de "project layer sem trust".
     try:
-        same_file = global_path.exists() and project_path.exists() and (
-            global_path.resolve() == project_path.resolve()
+        same_file = (
+            global_path.exists()
+            and project_path.exists()
+            and (global_path.resolve() == project_path.resolve())
         )
     except OSError:
         same_file = False

@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
-                                       SWITCH_SESSION_KEY)
+from deile.commands._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 
 
 def persist_session(session: Any, user_input: str) -> None:
@@ -27,6 +26,7 @@ def persist_session(session: Any, user_input: str) -> None:
         return
     try:
         from .commands.builtin._session_store import SessionHistoryStore
+
         name = session.context_data.get("conversation_name", "")
         SessionHistoryStore().save(session.session_id, list(history), name)
     except Exception:
@@ -68,7 +68,7 @@ def mark_turn_cancelled(
     # Mantém a entrada user em ``baseline_len`` (se houver — algumas
     # callsites podem invocar com baseline_len == len(history)).
     if len(history) > baseline_len + 1:
-        del history[baseline_len + 1:]
+        del history[baseline_len + 1 :]
 
     # Se há uma entrada user em ``baseline_len``, adiciona placeholder
     # assistant. Sem isso, próximo turno teria duas user consecutivas
@@ -77,12 +77,15 @@ def mark_turn_cancelled(
         entry = history[baseline_len]
         if entry.get("role") == "user":
             import time as _time
-            history.append({
-                "role": "assistant",
-                "content": marker_text,
-                "timestamp": _time.time(),
-                "metadata": {"cancelled": True},
-            })
+
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": marker_text,
+                    "timestamp": _time.time(),
+                    "metadata": {"cancelled": True},
+                }
+            )
 
 
 # Alias retrocompatível para callers externos que ainda esperem
@@ -149,7 +152,9 @@ def _render_panel_summary(ui: Any, markdown_text: str, meta: dict) -> None:
     if cancelled:
         title_parts.append("cancelado")
     title = " · ".join(title_parts)
-    border = "green" if (err == 0 and not cancelled) else ("yellow" if cancelled else "red")
+    border = (
+        "green" if (err == 0 and not cancelled) else ("yellow" if cancelled else "red")
+    )
     try:
         body = Markdown(markdown_text)
     except Exception:
@@ -175,7 +180,9 @@ def check_session_switch(session: Any, agent: Any, ui: Any) -> Optional[Any]:
         return None
     new_session = agent.get_session(new_sid)
     if new_session is None:
-        ui.console.print(f"[yellow]Sessão {new_sid!r} não encontrada — mantendo atual.[/yellow]")
+        ui.console.print(
+            f"[yellow]Sessão {new_sid!r} não encontrada — mantendo atual.[/yellow]"
+        )
         return None
 
     if action == "welcome":

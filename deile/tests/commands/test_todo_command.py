@@ -25,6 +25,7 @@ from deile.commands.builtin.todo_command import TodoCommand, _is_comment_line
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _render(content) -> str:
     buf = StringIO()
     console = Console(file=buf, no_color=True, width=200)
@@ -47,10 +48,13 @@ def _run_git(cwd: Path, *args: str) -> None:
         check=True,
         capture_output=True,
         text=True,
-        env={**os.environ, "GIT_AUTHOR_NAME": "Test User",
-             "GIT_AUTHOR_EMAIL": "test@example.com",
-             "GIT_COMMITTER_NAME": "Test User",
-             "GIT_COMMITTER_EMAIL": "test@example.com"},
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Test User",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test User",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        },
     )
 
 
@@ -68,11 +72,11 @@ def git_repo_with_todos(tmp_path: Path) -> Path:
 
     # Arquivo 1: dois TODOs
     (repo / "main.py").write_text(
-        '# TODO: add error handling\n'
-        'def main():\n'
+        "# TODO: add error handling\n"
+        "def main():\n"
         '    print("hello")\n'
-        '    # FIXME: this is slow\n'
-        '    pass\n'
+        "    # FIXME: this is slow\n"
+        "    pass\n"
     )
     _run_git(repo, "add", "main.py")
     _run_git(repo, "commit", "-m", "initial commit with todos")
@@ -80,9 +84,9 @@ def git_repo_with_todos(tmp_path: Path) -> Path:
     # Arquivo 2: um HACK
     (repo / "utils.py").write_text(
         '"""Utils module."""\n'
-        '# HACK: workaround for bug #42\n'
-        'def util():\n'
-        '    return True\n'
+        "# HACK: workaround for bug #42\n"
+        "def util():\n"
+        "    return True\n"
     )
     _run_git(repo, "add", "utils.py")
     _run_git(repo, "commit", "-m", "add utils with hack")
@@ -99,9 +103,9 @@ def git_repo_no_markers(tmp_path: Path) -> Path:
 
     (repo / "clean.py").write_text(
         '"""Clean module with no TODOs."""\n'
-        'def func():\n'
-        '    # just a regular comment\n'
-        '    pass\n'
+        "def func():\n"
+        "    # just a regular comment\n"
+        "    pass\n"
     )
     _run_git(repo, "add", "clean.py")
     _run_git(repo, "commit", "-m", "clean commit")
@@ -116,14 +120,14 @@ def git_repo_case_sensitivity(tmp_path: Path) -> Path:
     _run_git(repo, "init")
 
     (repo / "mixed.py").write_text(
-        '# TODO: normal\n'
-        '# todo: lowercase\n'
-        '# Todo: title case\n'
-        '# FIXME: normal\n'
-        '# fixme: lowercase\n'
-        '# FixMe: mixed\n'
-        '# HACK: normal\n'
-        '# XXX: normal\n'
+        "# TODO: normal\n"
+        "# todo: lowercase\n"
+        "# Todo: title case\n"
+        "# FIXME: normal\n"
+        "# fixme: lowercase\n"
+        "# FixMe: mixed\n"
+        "# HACK: normal\n"
+        "# XXX: normal\n"
         'print("test")\n'
     )
     _run_git(repo, "add", "mixed.py")
@@ -325,9 +329,9 @@ class TestAgeColumn:
         assert result.success
         rendered = _render(result.content)
         # A coluna Idade deve conter ao menos um valor numérico (ex.: "0d", "1d")
-        assert re.search(r"\d+d", rendered), (
-            f"Expected a numeric age like '0d' or '1d' in table, got:\n{rendered}"
-        )
+        assert re.search(
+            r"\d+d", rendered
+        ), f"Expected a numeric age like '0d' or '1d' in table, got:\n{rendered}"
         # Não deve exibir "?" para arquivos corretamente comitados
         assert "?" not in rendered.split("Idade")[-1].split("\n")[0]
 

@@ -63,11 +63,18 @@ class TestDispatchModeProvider:
 
     def test_env_var_set_returns_env_source(self):
         from _panel_data import DispatchModeProvider
-        with patch("_panel_data._capture_json",
-                   return_value=_deployment_json_with_env({
-                       "DEILE_PIPELINE_DISPATCH_MODE": "claude",
-                   })), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch(
+                "_panel_data._capture_json",
+                return_value=_deployment_json_with_env(
+                    {
+                        "DEILE_PIPELINE_DISPATCH_MODE": "claude",
+                    }
+                ),
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entry = DispatchModeProvider().get(force=True)
         assert entry.mode == "claude"
         assert entry.source == "env"
@@ -75,11 +82,18 @@ class TestDispatchModeProvider:
 
     def test_env_var_absent_falls_back_to_configmap_default(self):
         from _panel_data import DispatchModeProvider
-        with patch("_panel_data._capture_json",
-                   return_value=_deployment_json_with_env({
-                       "SOME_OTHER_ENV": "x",
-                   })), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch(
+                "_panel_data._capture_json",
+                return_value=_deployment_json_with_env(
+                    {
+                        "SOME_OTHER_ENV": "x",
+                    }
+                ),
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entry = DispatchModeProvider().get(force=True)
         assert entry.mode is None
         assert entry.source == "default"
@@ -91,11 +105,18 @@ class TestDispatchModeProvider:
         o provider deve cair no default — não devolver string vazia como
         ``mode``."""
         from _panel_data import DispatchModeProvider
-        with patch("_panel_data._capture_json",
-                   return_value=_deployment_json_with_env({
-                       "DEILE_PIPELINE_DISPATCH_MODE": "   ",
-                   })), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch(
+                "_panel_data._capture_json",
+                return_value=_deployment_json_with_env(
+                    {
+                        "DEILE_PIPELINE_DISPATCH_MODE": "   ",
+                    }
+                ),
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entry = DispatchModeProvider().get(force=True)
         assert entry.mode is None
         assert entry.source == "default"
@@ -105,11 +126,18 @@ class TestDispatchModeProvider:
         o provider devolve a forma canônica `claude` — para a view não
         ficar comparando case-sensitively contra os modos."""
         from _panel_data import DispatchModeProvider
-        with patch("_panel_data._capture_json",
-                   return_value=_deployment_json_with_env({
-                       "DEILE_PIPELINE_DISPATCH_MODE": "CLAUDE",
-                   })), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch(
+                "_panel_data._capture_json",
+                return_value=_deployment_json_with_env(
+                    {
+                        "DEILE_PIPELINE_DISPATCH_MODE": "CLAUDE",
+                    }
+                ),
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entry = DispatchModeProvider().get(force=True)
         assert entry.mode == "claude"
 
@@ -119,18 +147,24 @@ class TestDispatchModeProvider:
         o provider canonicaliza para o conjunto whitelist da UI — o picker
         sabe destacar a linha certa em vez de mostrar um valor solto."""
         from _panel_data import DispatchModeProvider
+
         for raw, expected in [
             ("worker", "deile_worker"),
             ("deile-worker", "deile_worker"),
             ("claude_code", "claude"),
             ("claude-code", "claude"),
         ]:
-            with patch("_panel_data._capture_json",
-                       return_value=_deployment_json_with_env({
-                           "DEILE_PIPELINE_DISPATCH_MODE": raw,
-                       })), \
-                 patch("_panel_data.kubectl_bin",
-                       return_value="/fake/kubectl"):
+            with (
+                patch(
+                    "_panel_data._capture_json",
+                    return_value=_deployment_json_with_env(
+                        {
+                            "DEILE_PIPELINE_DISPATCH_MODE": raw,
+                        }
+                    ),
+                ),
+                patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            ):
                 entry = DispatchModeProvider().get(force=True)
             assert entry.mode == expected, (
                 f"alias {raw!r} deveria canonicalizar para {expected!r}, "
@@ -141,11 +175,18 @@ class TestDispatchModeProvider:
         """Valor estranho (não-alias, não-canônico) deve passar como-veio em
         lowercase — não esconde do operador o que está no cluster."""
         from _panel_data import DispatchModeProvider
-        with patch("_panel_data._capture_json",
-                   return_value=_deployment_json_with_env({
-                       "DEILE_PIPELINE_DISPATCH_MODE": "WeIrD_MoDe",
-                   })), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch(
+                "_panel_data._capture_json",
+                return_value=_deployment_json_with_env(
+                    {
+                        "DEILE_PIPELINE_DISPATCH_MODE": "WeIrD_MoDe",
+                    }
+                ),
+            ),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entry = DispatchModeProvider().get(force=True)
         assert entry.mode == "weird_mode"
 
@@ -153,14 +194,17 @@ class TestDispatchModeProvider:
         """Multi-NS (PR #315): o construtor aceita namespace= e o argv reflete."""
         from _panel_data import NS as DEFAULT_NS
         from _panel_data import DispatchModeProvider
+
         captured_argv = []
 
         def _capture(argv, timeout=None):
             captured_argv.append(list(argv))
             return _deployment_json_with_env({})
 
-        with patch("_panel_data._capture_json", side_effect=_capture), \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+        with (
+            patch("_panel_data._capture_json", side_effect=_capture),
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             DispatchModeProvider(namespace="customns").get(force=True)
         argv = captured_argv[0]
         # Posição canônica do `-n customns` no argv (kubectl convenção).
@@ -177,8 +221,11 @@ class TestDispatchModeProvider:
         sem chamar kubectl. Sem isso o operador veria erro de subprocess no
         modo local-only sempre."""
         from _panel_data import DispatchModeProvider
-        with patch("_panel_data._capture_json") as mock_capture, \
-             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+
+        with (
+            patch("_panel_data._capture_json") as mock_capture,
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+        ):
             entry = DispatchModeProvider(enabled=False).get(force=True)
         # Fallback do Cache (DispatchModeEntry com source="default").
         assert entry.source == "default"
@@ -201,22 +248,26 @@ class TestCanonicalizeDispatchAlias:
 
     def test_claude_aliases_to_canonical(self):
         from _panel_data import _canonicalize_dispatch_alias
+
         for raw in ("claude", "claude_code", "claude-code"):
             assert _canonicalize_dispatch_alias(raw) == "claude", raw
 
     def test_uppercase_normalized(self):
         from _panel_data import _canonicalize_dispatch_alias
+
         assert _canonicalize_dispatch_alias("CLAUDE") == "claude"
         assert _canonicalize_dispatch_alias("WORKER") == "deile_worker"
 
     def test_whitespace_stripped(self):
         from _panel_data import _canonicalize_dispatch_alias
+
         assert _canonicalize_dispatch_alias("  claude  ") == "claude"
 
     def test_unknown_value_passes_through(self):
         """Valor desconhecido NÃO levanta — devolve lowercase. O caller
         (provider) sabe lidar com isso (exibe no painel)."""
         from _panel_data import _canonicalize_dispatch_alias
+
         assert _canonicalize_dispatch_alias("WeIrD") == "weird"
         assert _canonicalize_dispatch_alias("xyz") == "xyz"
 
@@ -235,6 +286,7 @@ class TestSetPipelineDispatchMode:
 
     def test_rejects_unknown_mode(self):
         from _panel_data import set_pipeline_dispatch_mode
+
         ok, msg = set_pipeline_dispatch_mode("garbage")
         assert ok is False
         assert "garbage" in msg
@@ -242,12 +294,14 @@ class TestSetPipelineDispatchMode:
 
     def test_rejects_empty_string(self):
         from _panel_data import set_pipeline_dispatch_mode
+
         ok, msg = set_pipeline_dispatch_mode("")
         assert ok is False
         assert "inválido" in msg.lower()
 
     def test_rejects_non_string(self):
         from _panel_data import set_pipeline_dispatch_mode
+
         ok, msg = set_pipeline_dispatch_mode(42)  # type: ignore[arg-type]
         assert ok is False
 
@@ -257,6 +311,7 @@ class TestSetPipelineDispatchMode:
         conjunto canônico fechado em (claude | deile_worker) evita
         confusão na UI."""
         from _panel_data import set_pipeline_dispatch_mode
+
         ok, _ = set_pipeline_dispatch_mode("worker")
         assert ok is False
         ok, _ = set_pipeline_dispatch_mode("claude_code")
@@ -266,6 +321,7 @@ class TestSetPipelineDispatchMode:
 
     def test_kubectl_missing_returns_clear_error(self):
         from _panel_data import set_pipeline_dispatch_mode
+
         with patch("_panel_data.kubectl_bin", return_value=None):
             ok, msg = set_pipeline_dispatch_mode("claude")
         assert ok is False
@@ -273,10 +329,12 @@ class TestSetPipelineDispatchMode:
 
     def test_success_issues_correct_kubectl_argv(self):
         from _panel_data import set_pipeline_dispatch_mode
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   return_value=fake_proc) as mock_run:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc) as mock_run,
+        ):
             ok, _ = set_pipeline_dispatch_mode("claude")
         assert ok is True
         argv = mock_run.call_args[0][0]
@@ -289,10 +347,12 @@ class TestSetPipelineDispatchMode:
         """Operador digita `CLAUDE` na CLI — a função canonicaliza para
         `claude` antes de virar argv (sem case mismatch no Deployment)."""
         from _panel_data import set_pipeline_dispatch_mode
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   return_value=fake_proc) as mock_run:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc) as mock_run,
+        ):
             ok, _ = set_pipeline_dispatch_mode("CLAUDE")
         assert ok is True
         argv = mock_run.call_args[0][0]
@@ -301,10 +361,14 @@ class TestSetPipelineDispatchMode:
 
     def test_nonzero_returncode_surfaces_stderr(self):
         from _panel_data import set_pipeline_dispatch_mode
-        fake_proc = MagicMock(returncode=1, stdout="",
-                              stderr="forbidden: deployments.apps")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run", return_value=fake_proc):
+
+        fake_proc = MagicMock(
+            returncode=1, stdout="", stderr="forbidden: deployments.apps"
+        )
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc),
+        ):
             ok, msg = set_pipeline_dispatch_mode("claude")
         assert ok is False
         assert "forbidden" in msg
@@ -316,17 +380,23 @@ class TestSetPipelineDispatchMode:
         import subprocess as _sp
 
         from _panel_data import set_pipeline_dispatch_mode
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   side_effect=OSError("binary missing")):
+
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", side_effect=OSError("binary missing")),
+        ):
             ok, msg = set_pipeline_dispatch_mode("claude")
         assert ok is False
         assert "binary missing" in msg or "OSError" in msg or "executar" in msg.lower()
         # Pra garantir que o tipo nominal `subprocess.TimeoutExpired` continua
         # capturado também (defesa via composição de except (OSError, TE)).
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   side_effect=_sp.TimeoutExpired(cmd="kubectl", timeout=15)):
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch(
+                "_panel_data.subprocess.run",
+                side_effect=_sp.TimeoutExpired(cmd="kubectl", timeout=15),
+            ),
+        ):
             ok, msg = set_pipeline_dispatch_mode("claude")
         assert ok is False
         assert "executar" in msg.lower() or "timeout" in msg.lower()
@@ -335,10 +405,12 @@ class TestSetPipelineDispatchMode:
         """O painel TUI suporta multi-NS (PR #315). A função deve respeitar
         o ``namespace=`` kwarg em vez de hardcoded ``NS``."""
         from _panel_data import set_pipeline_dispatch_mode
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   return_value=fake_proc) as mock_run:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc) as mock_run,
+        ):
             ok, _ = set_pipeline_dispatch_mode("claude", namespace="customns")
         assert ok is True
         argv = mock_run.call_args[0][0]
@@ -360,20 +432,22 @@ class TestAuditDispatchModeChange:
 
     def test_audit_emitted_on_denied_unknown_mode(self):
         from _panel_data import set_pipeline_dispatch_mode
+
         with patch("_panel_data._audit_dispatch_mode_change") as audit:
             set_pipeline_dispatch_mode("garbage")
         # Pelo menos uma chamada com result="denied".
-        denied = [c for c in audit.call_args_list
-                  if c.kwargs.get("result") == "denied"]
+        denied = [c for c in audit.call_args_list if c.kwargs.get("result") == "denied"]
         assert denied, audit.call_args_list
 
     def test_audit_emitted_on_kubectl_missing(self):
         from _panel_data import set_pipeline_dispatch_mode
-        with patch("_panel_data.kubectl_bin", return_value=None), \
-             patch("_panel_data._audit_dispatch_mode_change") as audit:
+
+        with (
+            patch("_panel_data.kubectl_bin", return_value=None),
+            patch("_panel_data._audit_dispatch_mode_change") as audit,
+        ):
             set_pipeline_dispatch_mode("claude")
-        failed = [c for c in audit.call_args_list
-                  if c.kwargs.get("result") == "failed"]
+        failed = [c for c in audit.call_args_list if c.kwargs.get("result") == "failed"]
         assert failed, audit.call_args_list
 
     def test_audit_emitted_on_success_allowed_then_completed(self):
@@ -381,10 +455,13 @@ class TestAuditDispatchModeChange:
         subprocess (registra a intenção), ``completed`` depois (sucesso
         confirmado). Isso garante trilha mesmo se o subprocess travar."""
         from _panel_data import set_pipeline_dispatch_mode
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run", return_value=fake_proc), \
-             patch("_panel_data._audit_dispatch_mode_change") as audit:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc),
+            patch("_panel_data._audit_dispatch_mode_change") as audit,
+        ):
             set_pipeline_dispatch_mode("claude")
         results = [c.kwargs.get("result") for c in audit.call_args_list]
         assert "allowed" in results
@@ -392,21 +469,28 @@ class TestAuditDispatchModeChange:
 
     def test_audit_emitted_on_subprocess_failure(self):
         from _panel_data import set_pipeline_dispatch_mode
-        fake_proc = MagicMock(returncode=1, stdout="",
-                              stderr="forbidden: deployments.apps")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run", return_value=fake_proc), \
-             patch("_panel_data._audit_dispatch_mode_change") as audit:
+
+        fake_proc = MagicMock(
+            returncode=1, stdout="", stderr="forbidden: deployments.apps"
+        )
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc),
+            patch("_panel_data._audit_dispatch_mode_change") as audit,
+        ):
             set_pipeline_dispatch_mode("claude")
         results = [c.kwargs.get("result") for c in audit.call_args_list]
         assert "failed" in results
 
     def test_audit_emitted_on_clear_success(self):
         from _panel_data import clear_pipeline_dispatch_mode
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run", return_value=fake_proc), \
-             patch("_panel_data._audit_dispatch_mode_change") as audit:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc),
+            patch("_panel_data._audit_dispatch_mode_change") as audit,
+        ):
             clear_pipeline_dispatch_mode()
         results = [c.kwargs.get("result") for c in audit.call_args_list]
         # Clear path: allowed + completed; ``mode=None`` em todas as chamadas.
@@ -419,11 +503,14 @@ class TestAuditDispatchModeChange:
         """Smoke do envelope real: ``_audit_dispatch_mode_change`` chama o
         AuditLogger com ``SECURITY_POLICY_CHANGED`` e actor canônico."""
         from _panel_data import _audit_dispatch_mode_change
+
         with patch("deile.security.audit_logger.get_audit_logger") as gal:
             mock_logger = MagicMock()
             gal.return_value = mock_logger
             _audit_dispatch_mode_change(
-                "claude", result="completed", detail="ok",
+                "claude",
+                result="completed",
+                detail="ok",
             )
         assert mock_logger.log_event.called
         kw = mock_logger.log_event.call_args.kwargs
@@ -434,6 +521,7 @@ class TestAuditDispatchModeChange:
 class TestClearPipelineDispatchMode:
     def test_kubectl_missing_returns_clear_error(self):
         from _panel_data import clear_pipeline_dispatch_mode
+
         with patch("_panel_data.kubectl_bin", return_value=None):
             ok, msg = clear_pipeline_dispatch_mode()
         assert ok is False
@@ -444,10 +532,12 @@ class TestClearPipelineDispatchMode:
         kubectl para unset. Argv tem que carregar a forma com dash —
         qualquer outra coisa SETa string vazia em vez de limpar."""
         from _panel_data import clear_pipeline_dispatch_mode
+
         fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run",
-                   return_value=fake_proc) as mock_run:
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc) as mock_run,
+        ):
             ok, _ = clear_pipeline_dispatch_mode()
         assert ok is True
         argv = mock_run.call_args[0][0]
@@ -456,10 +546,14 @@ class TestClearPipelineDispatchMode:
 
     def test_nonzero_returncode_surfaces_stderr(self):
         from _panel_data import clear_pipeline_dispatch_mode
-        fake_proc = MagicMock(returncode=1, stdout="",
-                              stderr="forbidden: deployments.apps")
-        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
-             patch("_panel_data.subprocess.run", return_value=fake_proc):
+
+        fake_proc = MagicMock(
+            returncode=1, stdout="", stderr="forbidden: deployments.apps"
+        )
+        with (
+            patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"),
+            patch("_panel_data.subprocess.run", return_value=fake_proc),
+        ):
             ok, msg = clear_pipeline_dispatch_mode()
         assert ok is False
         assert "forbidden" in msg
@@ -477,31 +571,26 @@ class TestDispatchModeViewRendering:
         from rich.console import Console
 
         view = DispatchModeView(data=None)  # demo mode
-        app = PanelApp(views={"dispatch-mode": view}, root="dispatch-mode",
-                       data=None)
-        app.console = Console(width=width, file=StringIO(),
-                              force_terminal=True)
+        app = PanelApp(views={"dispatch-mode": view}, root="dispatch-mode", data=None)
+        app.console = Console(width=width, file=StringIO(), force_terminal=True)
         layout = view.render(app)
-        capture = Console(width=width, file=StringIO(),
-                          force_terminal=True, record=True)
+        capture = Console(
+            width=width, file=StringIO(), force_terminal=True, record=True
+        )
         capture.print(layout)
         text = capture.export_text()
         # Header da view deve aparecer em todos os breakpoints.
-        assert ("Modo de despacho" in text
-                or "MODOS DISPONÍVEIS" in text)
+        assert "Modo de despacho" in text or "MODOS DISPONÍVEIS" in text
 
     def test_demo_mode_shows_both_modes(self):
         from _panel import DispatchModeView, PanelApp
         from rich.console import Console
 
         view = DispatchModeView(data=None)
-        app = PanelApp(views={"dispatch-mode": view}, root="dispatch-mode",
-                       data=None)
-        app.console = Console(width=140, file=StringIO(),
-                              force_terminal=True)
+        app = PanelApp(views={"dispatch-mode": view}, root="dispatch-mode", data=None)
+        app.console = Console(width=140, file=StringIO(), force_terminal=True)
         layout = view.render(app)
-        capture = Console(width=140, file=StringIO(),
-                          force_terminal=True, record=True)
+        capture = Console(width=140, file=StringIO(), force_terminal=True, record=True)
         capture.print(layout)
         text = capture.export_text()
         # As 2 opções precisam aparecer na lista.
@@ -512,9 +601,9 @@ class TestDispatchModeViewRendering:
 class TestDispatchModeViewKeyHandling:
     def _new_view(self):
         from _panel import DispatchModeView, PanelApp
+
         v = DispatchModeView(data=None)  # demo mode — sem kubectl
-        app = PanelApp(views={"dispatch-mode": v}, root="dispatch-mode",
-                       data=None)
+        app = PanelApp(views={"dispatch-mode": v}, root="dispatch-mode", data=None)
         return v, app
 
     def test_enter_opens_set_confirmation(self):
@@ -644,10 +733,14 @@ class TestDispatchModeViewKeyHandling:
         """Regression: ESC dentro do modal precisa fechar o modal, não
         sair da view (mirror do test no StageModelsView)."""
         from _panel import DashboardView, DispatchModeView, PanelApp
+
         dash = DashboardView(data=None)
         view = DispatchModeView(data=None)
-        app = PanelApp(views={"dashboard": dash, "dispatch-mode": view},
-                       root="dashboard", data=None)
+        app = PanelApp(
+            views={"dashboard": dash, "dispatch-mode": view},
+            root="dashboard",
+            data=None,
+        )
         app.push("dispatch-mode")
         assert app.current_view is view
         view.mode_modal = ("set", "claude")
@@ -681,6 +774,7 @@ class TestDashboardHotkey:
 
     def test_d_hotkey_navigates_to_dispatch_mode_matrix(self):
         from _panel import Action, DashboardView, PanelApp
+
         dash = DashboardView(data=None)
         app = PanelApp(views={"dashboard": dash}, root="dashboard", data=None)
         result = dash.handle_key("d", app)
@@ -697,8 +791,13 @@ class TestDashboardHotkey:
         diferente e cause conflito de propagação (hoje o panel propaga
         global após a view não interceptar — então um ``d`` numa view
         que não tem handler local cai no dashboard handler depois)."""
-        from _panel import (DispatchMatrixView, DispatchModeView,
-                            ModelSwitcherView, PodPickerView, StageModelsView)
+        from _panel import (
+            DispatchMatrixView,
+            DispatchModeView,
+            ModelSwitcherView,
+            PodPickerView,
+            StageModelsView,
+        )
 
         # Cada view abaixo NÃO deve ter um shortcut "d" próprio. As views
         # legadas (DispatchModeView, StageModelsView) ainda existem no
@@ -707,10 +806,14 @@ class TestDashboardHotkey:
         # ``dispatch-mode`` e ``stage-models`` saíram do registry mas
         # ainda são checadas aqui para garantir que nenhuma view captura
         # ``d`` localmente.
-        nav_targets_dispatch = {"dispatch-mode", "dispatch-mode-matrix",
-                                "stage-models"}
-        for view_cls in (PodPickerView, ModelSwitcherView, StageModelsView,
-                         DispatchModeView, DispatchMatrixView):
+        nav_targets_dispatch = {"dispatch-mode", "dispatch-mode-matrix", "stage-models"}
+        for view_cls in (
+            PodPickerView,
+            ModelSwitcherView,
+            StageModelsView,
+            DispatchModeView,
+            DispatchMatrixView,
+        ):
             v = view_cls(data=None)
             result = v.handle_key("d", MagicMock())
             target = getattr(result, "target", None)
@@ -746,8 +849,11 @@ class TestBuildImplementerClaudeWarning:
         """O warning de claude ausente vive em ``get_local_claude_implementer``,
         não mais em ``build_implementer`` (que sempre retorna WorkerImplementer)."""
         from deile.orchestration.pipeline import implementer as impl_mod
-        with patch.object(impl_mod, "shutil") as mock_shutil, \
-             patch.object(impl_mod.logger, "warning") as mock_warn:
+
+        with (
+            patch.object(impl_mod, "shutil") as mock_shutil,
+            patch.object(impl_mod.logger, "warning") as mock_warn,
+        ):
             mock_shutil.which.return_value = None
             implementer = impl_mod.get_local_claude_implementer()
         assert isinstance(implementer, impl_mod.ClaudeImplementer)
@@ -758,14 +864,16 @@ class TestBuildImplementerClaudeWarning:
         # Mensagem hedged ("PODE falhar") aceita os mesmos tokens da
         # versão categórica ("vai falhar"); pra os 2 modos serem testados
         # por um único set de checks, validamos o keyword central.
-        assert ("não encontrado" in msg or "not found" in msg
-                or "enoent" in msg)
+        assert "não encontrado" in msg or "not found" in msg or "enoent" in msg
 
     def test_no_warning_when_claude_present(self):
         """``get_local_claude_implementer`` com ``claude`` no PATH não warna."""
         from deile.orchestration.pipeline import implementer as impl_mod
-        with patch.object(impl_mod, "shutil") as mock_shutil, \
-             patch.object(impl_mod.logger, "warning") as mock_warn:
+
+        with (
+            patch.object(impl_mod, "shutil") as mock_shutil,
+            patch.object(impl_mod.logger, "warning") as mock_warn,
+        ):
             mock_shutil.which.return_value = "/usr/local/bin/claude"
             implementer = impl_mod.get_local_claude_implementer()
         assert isinstance(implementer, impl_mod.ClaudeImplementer)
@@ -774,8 +882,7 @@ class TestBuildImplementerClaudeWarning:
         for call in mock_warn.call_args_list:
             text = (call[0][0] if call[0] else "").lower()
             assert not (
-                "claude" in text
-                and ("não encontrado" in text or "not found" in text)
+                "claude" in text and ("não encontrado" in text or "not found" in text)
             )
 
     def test_build_implementer_does_not_warn_about_claude(self):
@@ -784,15 +891,18 @@ class TestBuildImplementerClaudeWarning:
         seja o ``dispatch_mode``. Substitui o antigo
         ``test_no_warning_when_worker_mode``."""
         from deile.orchestration.pipeline import implementer as impl_mod
+
         for mode in ("deile_worker", "claude", "claude-worker", "", None):
-            with patch.object(impl_mod, "shutil") as mock_shutil, \
-                 patch.object(impl_mod.logger, "warning") as mock_warn:
+            with (
+                patch.object(impl_mod, "shutil") as mock_shutil,
+                patch.object(impl_mod.logger, "warning") as mock_warn,
+            ):
                 mock_shutil.which.return_value = None
                 impl = impl_mod.build_implementer(mode)
             # build_implementer SEMPRE retorna WorkerImplementer agora.
-            assert isinstance(impl, impl_mod.WorkerImplementer), (
-                f"mode={mode!r}: esperado WorkerImplementer, got {type(impl).__name__}"
-            )
+            assert isinstance(
+                impl, impl_mod.WorkerImplementer
+            ), f"mode={mode!r}: esperado WorkerImplementer, got {type(impl).__name__}"
             # E nenhum warning sobre claude ausente.
             for call in mock_warn.call_args_list:
                 text = (call[0][0] if call[0] else "").lower()
@@ -804,8 +914,11 @@ class TestBuildImplementerClaudeWarning:
     def test_empty_dispatch_mode_returns_worker_implementer(self):
         """Empty/None dispatch_mode → WorkerImplementer (sem warning)."""
         from deile.orchestration.pipeline import implementer as impl_mod
-        with patch.object(impl_mod, "shutil") as mock_shutil, \
-             patch.object(impl_mod.logger, "warning") as mock_warn:
+
+        with (
+            patch.object(impl_mod, "shutil") as mock_shutil,
+            patch.object(impl_mod.logger, "warning") as mock_warn,
+        ):
             mock_shutil.which.return_value = None
             implementer = impl_mod.build_implementer("")
         assert isinstance(implementer, impl_mod.WorkerImplementer)
@@ -814,6 +927,5 @@ class TestBuildImplementerClaudeWarning:
         for call in mock_warn.call_args_list:
             text = (call[0][0] if call[0] else "").lower()
             assert not (
-                "claude" in text
-                and ("não encontrado" in text or "not found" in text)
+                "claude" in text and ("não encontrado" in text or "not found" in text)
             )

@@ -11,14 +11,17 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from deile.infrastructure.deile_worker_client import (DispatchPayload,
-                                                      build_dispatch_payload)
+from deile.infrastructure.deile_worker_client import (
+    DispatchPayload,
+    build_dispatch_payload,
+)
 
 
 class TestPreferredModelValidator:
     def test_accepts_valid_slug(self):
         p = DispatchPayload(
-            brief="x", channel_id="c",
+            brief="x",
+            channel_id="c",
             preferred_model="deepseek:deepseek-v4-pro",
         )
         assert p.preferred_model == "deepseek:deepseek-v4-pro"
@@ -28,7 +31,8 @@ class TestPreferredModelValidator:
         # validator must accept it — otherwise the worker rejects every
         # OpenRouter dispatch at the boundary (Part-3a).
         p = DispatchPayload(
-            brief="x", channel_id="c",
+            brief="x",
+            channel_id="c",
             preferred_model="openrouter:anthropic/claude-sonnet-4.6",
         )
         assert p.preferred_model == "openrouter:anthropic/claude-sonnet-4.6"
@@ -44,24 +48,36 @@ class TestPreferredModelValidator:
         assert p.preferred_model is None
 
     def test_empty_and_whitespace_collapse_to_none(self):
-        assert DispatchPayload(brief="x", channel_id="c",
-                               preferred_model="").preferred_model is None
-        assert DispatchPayload(brief="x", channel_id="c",
-                               preferred_model="   ").preferred_model is None
+        assert (
+            DispatchPayload(
+                brief="x", channel_id="c", preferred_model=""
+            ).preferred_model
+            is None
+        )
+        assert (
+            DispatchPayload(
+                brief="x", channel_id="c", preferred_model="   "
+            ).preferred_model
+            is None
+        )
 
     def test_strips_surrounding_whitespace(self):
-        p = DispatchPayload(brief="x", channel_id="c",
-                            preferred_model="  deepseek:v4-pro  ")
+        p = DispatchPayload(
+            brief="x", channel_id="c", preferred_model="  deepseek:v4-pro  "
+        )
         assert p.preferred_model == "deepseek:v4-pro"
 
-    @pytest.mark.parametrize("bad", [
-        "garbage",
-        "ANTHROPIC:opus",
-        "provider:Model",
-        ":model",
-        "provider:",
-        "provider:with space",
-    ])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "garbage",
+            "ANTHROPIC:opus",
+            "provider:Model",
+            ":model",
+            "provider:",
+            "provider:with space",
+        ],
+    )
     def test_rejects_malformed(self, bad):
         with pytest.raises(ValidationError):
             DispatchPayload(brief="x", channel_id="c", preferred_model=bad)
@@ -70,14 +86,14 @@ class TestPreferredModelValidator:
         # 128 chars is the field cap (defends against an LLM emitting an
         # accidental novel as the slug). Validator only runs if length passes.
         with pytest.raises(ValidationError):
-            DispatchPayload(brief="x", channel_id="c",
-                            preferred_model="a:" + "b" * 200)
+            DispatchPayload(brief="x", channel_id="c", preferred_model="a:" + "b" * 200)
 
 
 class TestBuildDispatchPayload:
     def test_adds_preferred_model_when_truthy(self):
         p = build_dispatch_payload(
-            brief="x", channel_id="c",
+            brief="x",
+            channel_id="c",
             preferred_model="anthropic:claude-opus-4-8",
         )
         assert p["preferred_model"] == "anthropic:claude-opus-4-8"
@@ -85,8 +101,7 @@ class TestBuildDispatchPayload:
     def test_omits_preferred_model_when_none(self):
         # Drop the key so ``model_dump(exclude_none=True)`` keeps the payload
         # minimal AND the worker falls back to its own default cleanly.
-        p = build_dispatch_payload(brief="x", channel_id="c",
-                                   preferred_model=None)
+        p = build_dispatch_payload(brief="x", channel_id="c", preferred_model=None)
         assert "preferred_model" not in p
 
     def test_omits_preferred_model_when_default(self):
@@ -103,7 +118,10 @@ class TestBuildDispatchPayload:
         # Regression guard: per-stage payload must keep the existing fields
         # alongside the new one.
         p = build_dispatch_payload(
-            brief="x", channel_id="c", persona="reviewer", wait=False,
+            brief="x",
+            channel_id="c",
+            persona="reviewer",
+            wait=False,
             preferred_model="deepseek:deepseek-v4-pro",
         )
         assert p["brief"] == "x"

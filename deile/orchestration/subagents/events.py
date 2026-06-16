@@ -22,10 +22,10 @@ class SubAgentEventKind(Enum):
     """Tipo de evento emitido por um runner para o orquestrador/renderer."""
 
     STARTED = "started"
-    TOOL = "tool"                    # tool call em curso (TOOL_USE_END no stream)
-    TOOL_RESULT = "tool_result"      # tool concluiu (ok/erro)
-    TEXT = "text"                    # primeira linha não-vazia do TEXT_DELTA
-    PROGRESS = "progress"            # phase update (vinda do worker, p.ex.)
+    TOOL = "tool"  # tool call em curso (TOOL_USE_END no stream)
+    TOOL_RESULT = "tool_result"  # tool concluiu (ok/erro)
+    TEXT = "text"  # primeira linha não-vazia do TEXT_DELTA
+    PROGRESS = "progress"  # phase update (vinda do worker, p.ex.)
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -35,11 +35,11 @@ class SubAgentEvent:
     """Mensagem emitida pelo runner para o orquestrador (e renderer)."""
 
     kind: SubAgentEventKind
-    index: int                        # 1-based, casa com SubAgentTask.index
-    label: str = ""                   # texto curto, ≤120 chars
+    index: int  # 1-based, casa com SubAgentTask.index
+    label: str = ""  # texto curto, ≤120 chars
     tool_name: Optional[str] = None
     tool_status: Optional[str] = None  # "success" | "error"
-    file_path: Optional[str] = None   # quando a tool tocou um arquivo
+    file_path: Optional[str] = None  # quando a tool tocou um arquivo
     error: Optional[str] = None
     extra: Optional[dict] = None
 
@@ -77,7 +77,7 @@ class SubAgentState:
     files_touched: List[str] = field(default_factory=list)
     result_text: str = ""
     error: Optional[str] = None
-    task_id: Optional[str] = None     # populado só pelo WorkerSubAgentRunner
+    task_id: Optional[str] = None  # populado só pelo WorkerSubAgentRunner
 
     @property
     def elapsed_s(self) -> float:

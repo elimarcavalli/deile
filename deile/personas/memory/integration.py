@@ -31,11 +31,11 @@ class PersonaMemoryLayer:
         await self.memory_manager.semantic_memory.store_concept(
             concept=f"persona:{self.persona_id}:state",
             data={
-                'state': state,
-                'timestamp': datetime.now().isoformat(),
-                'persona_id': self.persona_id
+                "state": state,
+                "timestamp": datetime.now().isoformat(),
+                "persona_id": self.persona_id,
             },
-            metadata={'type': 'persona_state', 'persona_id': self.persona_id}
+            metadata={"type": "persona_state", "persona_id": self.persona_id},
         )
         self.logger.debug(f"Stored persona state for {self.persona_id}")
 
@@ -44,40 +44,35 @@ class PersonaMemoryLayer:
         result = await self.memory_manager.semantic_memory.get_concept(
             f"persona:{self.persona_id}:state"
         )
-        return result.get('state', {}) if result else {}
+        return result.get("state", {}) if result else {}
 
     async def store_conversation_context(
-        self,
-        session_id: str,
-        context: Dict[str, Any]
+        self, session_id: str, context: Dict[str, Any]
     ) -> None:
         """Store conversation context in DEILE's episodic memory"""
         await self.memory_manager.episodic_memory.record_event(
             event_type="persona_conversation",
             session_id=session_id,
             details={
-                'persona_id': self.persona_id,
-                'context': context,
-                'timestamp': datetime.now().isoformat()
+                "persona_id": self.persona_id,
+                "context": context,
+                "timestamp": datetime.now().isoformat(),
             },
-            metadata={'persona_id': self.persona_id}
+            metadata={"persona_id": self.persona_id},
         )
 
     async def get_conversation_history(
-        self,
-        session_id: str,
-        limit: int = 10
+        self, session_id: str, limit: int = 10
     ) -> List[Dict[str, Any]]:
         """Get conversation history from DEILE's episodic memory"""
         events = await self.memory_manager.episodic_memory.get_session_events(
-            session_id=session_id,
-            event_type="persona_conversation",
-            limit=limit
+            session_id=session_id, event_type="persona_conversation", limit=limit
         )
 
         return [
-            event for event in events
-            if event.get('details', {}).get('persona_id') == self.persona_id
+            event
+            for event in events
+            if event.get("details", {}).get("persona_id") == self.persona_id
         ]
 
     async def store_persona_preference(self, key: str, value: Any) -> None:
@@ -85,7 +80,7 @@ class PersonaMemoryLayer:
         await self.memory_manager.working_memory.set(
             key=f"persona:{self.persona_id}:pref:{key}",
             value=value,
-            ttl=3600  # 1 hour TTL
+            ttl=3600,  # 1 hour TTL
         )
 
     async def get_persona_preference(self, key: str, default: Any = None) -> Any:
@@ -96,16 +91,13 @@ class PersonaMemoryLayer:
         return result if result is not None else default
 
     async def learn_pattern(
-        self,
-        pattern_type: str,
-        pattern_data: Dict[str, Any],
-        success_rate: float = 1.0
+        self, pattern_type: str, pattern_data: Dict[str, Any], success_rate: float = 1.0
     ) -> None:
         """Learn pattern using DEILE's procedural memory"""
         await self.memory_manager.procedural_memory.learn_pattern(
             pattern_type=f"persona:{self.persona_id}:{pattern_type}",
             context=pattern_data,
-            success_metrics={'success_rate': success_rate}
+            success_metrics={"success_rate": success_rate},
         )
 
     async def get_learned_patterns(self, pattern_type: str) -> List[Dict[str, Any]]:

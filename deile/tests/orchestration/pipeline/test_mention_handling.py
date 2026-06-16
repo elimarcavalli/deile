@@ -6,19 +6,20 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
-from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
-                                                        PrRef)
+from deile.orchestration.pipeline.github_client import CommentRef, IssueRef, PrRef
 from deile.orchestration.pipeline.implementer import WorkOutcome
-from deile.orchestration.pipeline.labels import (MENTION_DONE,
-                                                 WORKFLOW_ARCHITECTURE,
-                                                 WORKFLOW_BLOCKED,
-                                                 WORKFLOW_DECOMPOSED,
-                                                 WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW, WORKFLOW_PR,
-                                                 WORKFLOW_REVIEWED,
-                                                 WORKFLOW_WAITING)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.labels import (
+    MENTION_DONE,
+    WORKFLOW_ARCHITECTURE,
+    WORKFLOW_BLOCKED,
+    WORKFLOW_DECOMPOSED,
+    WORKFLOW_IMPLEMENTING,
+    WORKFLOW_NEW,
+    WORKFLOW_PR,
+    WORKFLOW_REVIEWED,
+    WORKFLOW_WAITING,
+)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
 
 def _comment(
@@ -56,8 +57,12 @@ def _make_monitor(
     github.list_open_prs = AsyncMock(return_value=[])
     github.list_unclassified_issues = AsyncMock(return_value=[])
     github.list_unclassified_prs = AsyncMock(return_value=[])
-    github.list_issue_comments_since = AsyncMock(return_value=list(issue_comments or []))
-    github.list_pr_review_comments_since = AsyncMock(return_value=list(pr_comments or []))
+    github.list_issue_comments_since = AsyncMock(
+        return_value=list(issue_comments or [])
+    )
+    github.list_pr_review_comments_since = AsyncMock(
+        return_value=list(pr_comments or [])
+    )
     github.list_issues_assigned_to = AsyncMock(return_value=[])
     github.list_prs_assigned_to = AsyncMock(return_value=[])
     github.list_prs_with_review_requests = AsyncMock(return_value=[])
@@ -70,26 +75,38 @@ def _make_monitor(
     # issue's current ~workflow: state. Default = no labels (not gated) so the
     # legacy one-shot path is preserved; specific tests override this.
     github.get_issue = AsyncMock(
-        return_value=IssueRef(number=1, title="t", url="https://github.com/o/r/issues/1", labels=())
+        return_value=IssueRef(
+            number=1, title="t", url="https://github.com/o/r/issues/1", labels=()
+        )
     )
 
     notifier = MagicMock()
     for attr in (
-        "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "implementation_parked", "pr_picked_up", "pr_reviewed",
-        "issue_auto_classified", "error", "pr_auto_classified", "mention_processed",
+        "issue_picked_up",
+        "issue_reviewed",
+        "implementation_started",
+        "implementation_finished",
+        "implementation_parked",
+        "pr_picked_up",
+        "pr_reviewed",
+        "issue_auto_classified",
+        "error",
+        "pr_auto_classified",
+        "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
 
     worktrees = MagicMock()
     claude = MagicMock()
-    claude.run = AsyncMock(return_value=ClaudeRunResult(
-        returncode=0 if claude_ok else 1,
-        stdout="done",
-        stderr="",
-        duration_seconds=0.1,
-        cmd=("claude", "-p", "x"),
-    ))
+    claude.run = AsyncMock(
+        return_value=ClaudeRunResult(
+            returncode=0 if claude_ok else 1,
+            stdout="done",
+            stderr="",
+            duration_seconds=0.1,
+            cmd=("claude", "-p", "x"),
+        )
+    )
 
     # Issue #309 fase 2: ``build_implementer`` agora sempre constrói
     # ``WorkerImplementer``. Os testes de mention-handling não dependem
@@ -97,14 +114,20 @@ def _make_monitor(
     # injetamos um stub que respeita ``claude_ok`` para preservar a semântica
     # dos testes legacy (``claude_ok=False`` ⇒ dispatch falha).
     implementer_stub = MagicMock()
-    outcome_ok = WorkOutcome(ok=claude_ok, text="done", error="" if claude_ok else "boom")
+    outcome_ok = WorkOutcome(
+        ok=claude_ok, text="done", error="" if claude_ok else "boom"
+    )
     implementer_stub.implement = AsyncMock(return_value=outcome_ok)
     implementer_stub.review = AsyncMock(return_value=outcome_ok)
     implementer_stub.mention = AsyncMock(return_value=outcome_ok)
 
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=worktrees, claude=claude,
-        notifier=notifier, implementer=implementer_stub,
+        cfg,
+        github=github,
+        worktrees=worktrees,
+        claude=claude,
+        notifier=notifier,
+        implementer=implementer_stub,
     )
     return monitor, github, notifier
 
@@ -120,7 +143,9 @@ class TestProcessMentions:
         comment = _comment(1, "Hey @deile-one can you help?")
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
         await monitor._process_mentions()
-        notifier.mention_processed.assert_called_once_with(comment.html_url, comment.author)
+        notifier.mention_processed.assert_called_once_with(
+            comment.html_url, comment.author
+        )
         assert monitor.stats.mentions_processed == 1
 
     async def test_comment_without_mention_skipped(self):
@@ -148,7 +173,9 @@ class TestProcessMentions:
     async def test_claude_run_fails_mention_not_counted(self):
         """When claude.run returns non-ok, the mention is NOT counted."""
         comment = _comment(4, "@deile-one do something")
-        monitor, github, notifier = _make_monitor(issue_comments=[comment], claude_ok=False)
+        monitor, github, notifier = _make_monitor(
+            issue_comments=[comment], claude_ok=False
+        )
         await monitor._process_mentions()
         notifier.mention_processed.assert_not_called()
         assert monitor.stats.mentions_processed == 0
@@ -167,10 +194,18 @@ class TestProcessMentions:
         for attr in ("mention_processed", "error"):
             setattr(notifier, attr, AsyncMock())
         claude = MagicMock()
-        claude.run = AsyncMock(return_value=ClaudeRunResult(
-            returncode=0, stdout="", stderr="", duration_seconds=0.0, cmd=("claude",)
-        ))
-        monitor = PipelineMonitor(cfg, github=github, worktrees=MagicMock(), claude=claude, notifier=notifier)
+        claude.run = AsyncMock(
+            return_value=ClaudeRunResult(
+                returncode=0,
+                stdout="",
+                stderr="",
+                duration_seconds=0.0,
+                cmd=("claude",),
+            )
+        )
+        monitor = PipelineMonitor(
+            cfg, github=github, worktrees=MagicMock(), claude=claude, notifier=notifier
+        )
         await monitor._process_mentions()
         assert monitor._mention_cursor_path.exists()
 
@@ -184,7 +219,9 @@ class TestProcessMentions:
     async def test_poll_exception_does_not_crash(self):
         """Exception during GitHub poll must be caught; loop continues cleanly."""
         monitor, github, notifier = _make_monitor()
-        github.list_issue_comments_since = AsyncMock(side_effect=RuntimeError("network error"))
+        github.list_issue_comments_since = AsyncMock(
+            side_effect=RuntimeError("network error")
+        )
         # Should not raise
         await monitor._process_mentions()
         assert monitor.stats.mentions_processed == 0
@@ -205,17 +242,23 @@ class TestProcessMentions:
 
 # ----- Multi-trigger mention handling (issue #253) ------------------------
 
+
 def _issue_ref(number=100, labels=()):
     return IssueRef(
-        number=number, title="test", url=f"https://github.com/o/r/issues/{number}",
+        number=number,
+        title="test",
+        url=f"https://github.com/o/r/issues/{number}",
         labels=tuple(labels),
     )
 
 
 def _pr_ref(number=200, labels=()):
     return PrRef(
-        number=number, title="pr", url=f"https://github.com/o/r/pull/{number}",
-        labels=tuple(labels), head_ref=f"auto/issue-{number}",
+        number=number,
+        title="pr",
+        url=f"https://github.com/o/r/pull/{number}",
+        labels=tuple(labels),
+        head_ref=f"auto/issue-{number}",
     )
 
 
@@ -247,9 +290,7 @@ class TestProcessMentionsMultiTrigger:
     async def test_body_mention_issue_dispatches(self):
         """When @deile-one appears in an issue body, a dispatch fires."""
         monitor, github, notifier = _make_monitor()
-        github.search_items_mentioning = AsyncMock(
-            return_value=([_issue_ref(55)], [])
-        )
+        github.search_items_mentioning = AsyncMock(return_value=([_issue_ref(55)], []))
         await monitor._process_mentions()
         notifier.mention_processed.assert_called_once()
         assert monitor.stats.mentions_processed == 1
@@ -257,9 +298,7 @@ class TestProcessMentionsMultiTrigger:
     async def test_body_mention_pr_dispatches(self):
         """When @deile-one appears in a PR body, a dispatch fires."""
         monitor, github, notifier = _make_monitor()
-        github.search_items_mentioning = AsyncMock(
-            return_value=([], [_pr_ref(66)])
-        )
+        github.search_items_mentioning = AsyncMock(return_value=([], [_pr_ref(66)]))
         await monitor._process_mentions()
         notifier.mention_processed.assert_called_once()
         assert monitor.stats.mentions_processed == 1
@@ -289,10 +328,12 @@ class TestProcessMentionsMultiTrigger:
         c2 = _comment(201, "@deile-one", author="b")
         # Change issue_url so they point to different issues
         c2 = CommentRef(
-            comment_id=201, body="@deile-one",
+            comment_id=201,
+            body="@deile-one",
             html_url="https://github.com/o/r/issues/2#issuecomment-201",
             issue_url="https://api.github.com/repos/o/r/issues/2",
-            author="b", kind="issue",
+            author="b",
+            kind="issue",
         )
         monitor, github, notifier = _make_monitor(issue_comments=[c1, c2])
         await monitor._process_mentions()
@@ -308,7 +349,9 @@ class TestProcessMentionsMultiTrigger:
     async def test_reviewer_exception_does_not_crash(self):
         """Exception polling reviewers must not crash the mention loop."""
         monitor, github, notifier = _make_monitor()
-        github.list_prs_with_review_requests = AsyncMock(side_effect=RuntimeError("boom"))
+        github.list_prs_with_review_requests = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
         await monitor._process_mentions()
         assert monitor.stats.mentions_processed == 0
 
@@ -337,15 +380,24 @@ class TestProcessMentionsMultiTrigger:
         for attr in ("mention_processed", "error"):
             setattr(notifier, attr, AsyncMock())
         claude = MagicMock()
-        claude.run = AsyncMock(return_value=ClaudeRunResult(
-            returncode=0, stdout="", stderr="", duration_seconds=0.0, cmd=("claude",)
-        ))
-        monitor = PipelineMonitor(cfg, github=github, worktrees=MagicMock(), claude=claude, notifier=notifier)
+        claude.run = AsyncMock(
+            return_value=ClaudeRunResult(
+                returncode=0,
+                stdout="",
+                stderr="",
+                duration_seconds=0.0,
+                cmd=("claude",),
+            )
+        )
+        monitor = PipelineMonitor(
+            cfg, github=github, worktrees=MagicMock(), claude=claude, notifier=notifier
+        )
         await monitor._process_mentions()
         assert monitor._mention_cursor_path.exists()
 
 
 # ----- Cross-tick deduplication of sticky triggers (issue #253 storm fix) ----
+
 
 class TestProcessMentionsCrossTickDedup:
     """The duplicate-DM storm: assignee/reviewer/body triggers re-appear on every
@@ -461,6 +513,7 @@ class TestProcessMentionsCrossTickDedup:
 
 # ----- Role → dispatch mode routing (refactor "PR é o quadro") ---------------
 
+
 class TestProcessMentionsModeRouting:
     """Após o refactor "PR é o quadro", qualquer trigger sobre uma PR resolve
     para o mode unificado ``pr_unified`` — quem decide o que fazer é o brief
@@ -539,10 +592,14 @@ class TestCommentMentionGateIntegration:
         # parallel one-shot implementation.
         comment = _comment(1, "boa @deile-one, segue a opção A")
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
-        github.get_issue = AsyncMock(return_value=IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1",
-            labels=(WORKFLOW_ARCHITECTURE, "refinar"),
-        ))
+        github.get_issue = AsyncMock(
+            return_value=IssueRef(
+                number=1,
+                title="t",
+                url="https://github.com/o/r/issues/1",
+                labels=(WORKFLOW_ARCHITECTURE, "refinar"),
+            )
+        )
         await monitor._process_mentions()
         monitor.claude.run.assert_not_called()  # no one-shot dispatch
 
@@ -551,10 +608,14 @@ class TestCommentMentionGateIntegration:
         # waiting overlay (resume refine), no one-shot.
         comment = _comment(1, "@deile-one decisão: opção C")
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
-        github.get_issue = AsyncMock(return_value=IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1",
-            labels=(WORKFLOW_ARCHITECTURE, WORKFLOW_WAITING, "refinar"),
-        ))
+        github.get_issue = AsyncMock(
+            return_value=IssueRef(
+                number=1,
+                title="t",
+                url="https://github.com/o/r/issues/1",
+                labels=(WORKFLOW_ARCHITECTURE, WORKFLOW_WAITING, "refinar"),
+            )
+        )
         await monitor._process_mentions()
         github.remove_labels.assert_any_await("issue", 1, [WORKFLOW_WAITING])
         monitor.claude.run.assert_not_called()
@@ -582,10 +643,15 @@ class TestCommentMentionTerminalStates:
         # The exact #442 scenario: comment on an issue parked in ~workflow:em_pr.
         comment = _comment(1, "@deile-one ainda falta o teste X")
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
-        github.get_issue = AsyncMock(return_value=IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1",
-            labels=(WORKFLOW_PR,), state="open",
-        ))
+        github.get_issue = AsyncMock(
+            return_value=IssueRef(
+                number=1,
+                title="t",
+                url="https://github.com/o/r/issues/1",
+                labels=(WORKFLOW_PR,),
+                state="open",
+            )
+        )
         await monitor._process_mentions()
         monitor.implementer.mention.assert_called()
         assert monitor.implementer.mention.call_args.kwargs["mode"] == "comment"
@@ -594,10 +660,15 @@ class TestCommentMentionTerminalStates:
     async def test_comment_on_decomposed_issue_routes_one_shot(self):
         comment = _comment(1, "@deile-one adiciona a derivada Y")
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
-        github.get_issue = AsyncMock(return_value=IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1",
-            labels=(WORKFLOW_DECOMPOSED,), state="open",
-        ))
+        github.get_issue = AsyncMock(
+            return_value=IssueRef(
+                number=1,
+                title="t",
+                url="https://github.com/o/r/issues/1",
+                labels=(WORKFLOW_DECOMPOSED,),
+                state="open",
+            )
+        )
         await monitor._process_mentions()
         assert monitor.implementer.mention.call_args.kwargs["mode"] == "comment"
         assert monitor.stats.mentions_processed == 1
@@ -607,10 +678,15 @@ class TestCommentMentionTerminalStates:
         # (every stage queries OPEN issues), so the comment must one-shot, not DROP.
         comment = _comment(1, "@deile-one reabre e ajusta Z")
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
-        github.get_issue = AsyncMock(return_value=IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1",
-            labels=(WORKFLOW_IMPLEMENTING,), state="closed",
-        ))
+        github.get_issue = AsyncMock(
+            return_value=IssueRef(
+                number=1,
+                title="t",
+                url="https://github.com/o/r/issues/1",
+                labels=(WORKFLOW_IMPLEMENTING,),
+                state="closed",
+            )
+        )
         await monitor._process_mentions()
         assert monitor.implementer.mention.call_args.kwargs["mode"] == "comment"
         assert monitor.stats.mentions_processed == 1
@@ -620,10 +696,15 @@ class TestCommentMentionTerminalStates:
         # (no one-shot) — the gate's worker reads the comment on its next pass.
         comment = _comment(1, "@deile-one segue a opção A")
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
-        github.get_issue = AsyncMock(return_value=IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1",
-            labels=(WORKFLOW_REVIEWED,), state="open",
-        ))
+        github.get_issue = AsyncMock(
+            return_value=IssueRef(
+                number=1,
+                title="t",
+                url="https://github.com/o/r/issues/1",
+                labels=(WORKFLOW_REVIEWED,),
+                state="open",
+            )
+        )
         await monitor._process_mentions()
         monitor.implementer.mention.assert_not_called()
         assert monitor.stats.mentions_processed == 0
@@ -636,13 +717,18 @@ class TestCommentMentionTerminalStates:
         comment = _comment(1, "@deile-one aqui está a info que faltava")
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
         github.comment_on_issue = AsyncMock()
-        github.get_issue = AsyncMock(return_value=IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1",
-            labels=(WORKFLOW_BLOCKED,), state="open",
-        ))
+        github.get_issue = AsyncMock(
+            return_value=IssueRef(
+                number=1,
+                title="t",
+                url="https://github.com/o/r/issues/1",
+                labels=(WORKFLOW_BLOCKED,),
+                state="open",
+            )
+        )
         await monitor._process_mentions()
-        monitor.implementer.mention.assert_not_called()   # no one-shot
-        github.comment_on_issue.assert_not_called()        # no status spam
+        monitor.implementer.mention.assert_not_called()  # no one-shot
+        github.comment_on_issue.assert_not_called()  # no status spam
         assert monitor.stats.mentions_processed == 0
 
 
@@ -665,6 +751,6 @@ class TestPrBlockedMentionGuard:
         github.comment_on_pr = AsyncMock()
         github.get_pr = AsyncMock(return_value=_pr_ref(1, labels=(WORKFLOW_BLOCKED,)))
         await monitor._process_mentions()
-        monitor.implementer.mention.assert_not_called()   # no dispatch
-        github.comment_on_pr.assert_not_called()           # no status spam (anti-loop)
+        monitor.implementer.mention.assert_not_called()  # no dispatch
+        github.comment_on_pr.assert_not_called()  # no status spam (anti-loop)
         assert monitor.stats.mentions_processed == 0

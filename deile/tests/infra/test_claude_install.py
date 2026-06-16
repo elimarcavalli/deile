@@ -1,4 +1,5 @@
 """Unit tests para _claude_install.bootstrap_claude_worker (#309 fase 2)."""
+
 from __future__ import annotations
 
 import json
@@ -26,7 +27,9 @@ def claude_install_module():
 
 
 def test_bootstrap_returns_error_when_no_credentials_and_not_interactive(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """No credentials at host + interactive=False -> fail fast.
 
@@ -37,25 +40,35 @@ def test_bootstrap_returns_error_when_no_credentials_and_not_interactive(
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in", lambda: None,
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: None,
     )
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
     result = claude_install_module.bootstrap_claude_worker(
-        interactive=False, force_relogin=False, home=tmp_path,
+        interactive=False,
+        force_relogin=False,
+        home=tmp_path,
     )
     assert result.ok is False
     # Aceita tanto PT-BR ("credenciais") quanto EN ("credentials") no error
     error_lower = (result.error or "").lower()
-    assert ("credenciais" in error_lower
-            or "credentials" in error_lower
-            or "claude auth login" in error_lower)
+    assert (
+        "credenciais" in error_lower
+        or "credentials" in error_lower
+        or "claude auth login" in error_lower
+    )
 
 
 def test_bootstrap_idempotent_when_credentials_present(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """Credentials existing + cluster commands mockados -> ok=True idempotent.
 
@@ -70,19 +83,31 @@ def test_bootstrap_idempotent_when_credentials_present(
     )
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in", lambda: None,
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: None,
     )
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
     # Mock all kubectl subprocess calls to return 0
-    with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+    with (
+        patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True),
+        patch.object(
+            claude_install_module, "_kubectl_apply_manifests", return_value=True
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_module.bootstrap_claude_worker(
-            interactive=False, force_relogin=False, home=tmp_path,
+            interactive=False,
+            force_relogin=False,
+            home=tmp_path,
         )
 
     assert result.ok is True
@@ -93,7 +118,9 @@ def test_bootstrap_idempotent_when_credentials_present(
 
 
 def test_bootstrap_force_relogin_runs_claude_logout_then_login(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """force_relogin=True -> claude auth logout + claude auth login antes de continuar.
 
@@ -119,36 +146,56 @@ def test_bootstrap_force_relogin_runs_claude_logout_then_login(
     # Estado inicial: NÃO logado (força flow de login)
     auth_states = [None, {"loggedIn": True, "email": "u@x"}]  # antes / depois
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in",
-        lambda: auth_states.pop(0) if auth_states else {"loggedIn": True, "email": "u@x"},
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: (
+            auth_states.pop(0) if auth_states else {"loggedIn": True, "email": "u@x"}
+        ),
     )
     # Estado inicial: sem creds; depois do login, retorna creds.
     cred_states = [None, {"claudeAiOauth": {"access_token": "fake", "email": "u@x"}}]
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials",
-        lambda home=None: cred_states.pop(0) if cred_states else {"claudeAiOauth": {"access_token": "fake", "email": "u@x"}},
+        claude_install_module,
+        "_read_credentials",
+        lambda home=None: (
+            cred_states.pop(0)
+            if cred_states
+            else {"claudeAiOauth": {"access_token": "fake", "email": "u@x"}}
+        ),
     )
 
-    with patch.object(claude_install_module.subprocess, "run", side_effect=fake_run), \
-         patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+    with (
+        patch.object(claude_install_module.subprocess, "run", side_effect=fake_run),
+        patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True),
+        patch.object(
+            claude_install_module, "_kubectl_apply_manifests", return_value=True
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_module.bootstrap_claude_worker(
-            interactive=True, force_relogin=True, home=tmp_path,
+            interactive=True,
+            force_relogin=True,
+            home=tmp_path,
         )
 
     assert result.ok is True
     cmd_strs = [" ".join(c) if isinstance(c, list) else str(c) for c in called_commands]
     # Espera `claude auth logout` + `claude auth login` (não `claude login`).
-    assert any("auth" in s and "logout" in s for s in cmd_strs), \
-        f"expected `claude auth logout` in {cmd_strs}"
-    assert any("auth" in s and "login" in s for s in cmd_strs), \
-        f"expected `claude auth login` in {cmd_strs}"
+    assert any(
+        "auth" in s and "logout" in s for s in cmd_strs
+    ), f"expected `claude auth logout` in {cmd_strs}"
+    assert any(
+        "auth" in s and "login" in s for s in cmd_strs
+    ), f"expected `claude auth login` in {cmd_strs}"
 
 
 def test_bootstrap_failure_in_secret_apply_returns_error(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """Secret apply falha -> ClaudeLoginResult.ok=False com error explicado."""
     fake_home = tmp_path / ".claude"
@@ -156,15 +203,23 @@ def test_bootstrap_failure_in_secret_apply_returns_error(
     (fake_home / "credentials.json").write_text(json.dumps({"email": "u@x"}))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in", lambda: None,
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: None,
     )
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=False):
+    with patch.object(
+        claude_install_module, "_kubectl_apply_secret", return_value=False
+    ):
         result = claude_install_module.bootstrap_claude_worker(
-            interactive=False, force_relogin=False, home=tmp_path,
+            interactive=False,
+            force_relogin=False,
+            home=tmp_path,
         )
 
     assert result.ok is False
@@ -172,7 +227,9 @@ def test_bootstrap_failure_in_secret_apply_returns_error(
 
 
 def test_bootstrap_failure_in_rollout_returns_error(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """Rollout timeout -> ok=False, manifests aplicados mas rollout pendente."""
     fake_home = tmp_path / ".claude"
@@ -180,18 +237,32 @@ def test_bootstrap_failure_in_rollout_returns_error(
     (fake_home / "credentials.json").write_text(json.dumps({"email": "u@x"}))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in", lambda: None,
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: None,
     )
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=False):
+    with (
+        patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True),
+        patch.object(
+            claude_install_module, "_kubectl_apply_manifests", return_value=True
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_wait_rollout", return_value=False
+        ),
+    ):
         result = claude_install_module.bootstrap_claude_worker(
-            interactive=False, force_relogin=False, home=tmp_path,
+            interactive=False,
+            force_relogin=False,
+            home=tmp_path,
         )
 
     assert result.ok is False
@@ -201,10 +272,12 @@ def test_bootstrap_failure_in_rollout_returns_error(
 
 
 def test_kubectl_sync_bearer_token_warns_when_worker_bearer_missing(
-    claude_install_module, monkeypatch,
+    claude_install_module,
+    monkeypatch,
 ):
     """worker-bearer ausente -> WARN + return True (não-fatal; rollout falha
     depois com mensagem clara)."""
+
     def fake_kubectl_get_missing(cmd, *args, **kwargs):
         ret = MagicMock()
         ret.returncode = 1
@@ -212,8 +285,9 @@ def test_kubectl_sync_bearer_token_warns_when_worker_bearer_missing(
         ret.stderr = "Error from server (NotFound): secrets 'worker-bearer'"
         return ret
 
-    with patch.object(claude_install_module.subprocess, "run",
-                      side_effect=fake_kubectl_get_missing):
+    with patch.object(
+        claude_install_module.subprocess, "run", side_effect=fake_kubectl_get_missing
+    ):
         result = claude_install_module._kubectl_sync_bearer_token(
             namespace="deile",
         )
@@ -221,11 +295,13 @@ def test_kubectl_sync_bearer_token_warns_when_worker_bearer_missing(
 
 
 def test_kubectl_sync_bearer_token_succeeds_when_worker_bearer_present(
-    claude_install_module, monkeypatch,
+    claude_install_module,
+    monkeypatch,
 ):
     """worker-bearer presente -> kubectl get + base64 decode + apply do
     claude-worker-bearer com mesmo token."""
     import base64
+
     token_plain = "abc123token"
     token_b64 = base64.b64encode(token_plain.encode()).decode()
 
@@ -242,8 +318,7 @@ def test_kubectl_sync_bearer_token_succeeds_when_worker_bearer_present(
         ret.stderr = ""
         return ret
 
-    with patch.object(claude_install_module.subprocess, "run",
-                      side_effect=fake_run):
+    with patch.object(claude_install_module.subprocess, "run", side_effect=fake_run):
         result = claude_install_module._kubectl_sync_bearer_token(
             namespace="deile",
         )
@@ -252,8 +327,9 @@ def test_kubectl_sync_bearer_token_succeeds_when_worker_bearer_present(
     assert len(call_log) == 3
     # Token plain entra no --from-literal da segunda chamada (dry-run).
     dry_run_cmd = call_log[1]
-    assert any(token_plain in arg for arg in dry_run_cmd), \
-        f"token plain não encontrado em {dry_run_cmd}"
+    assert any(
+        token_plain in arg for arg in dry_run_cmd
+    ), f"token plain não encontrado em {dry_run_cmd}"
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +367,9 @@ def test_kubectl_apply_manifests_does_not_include_manifest_48(
 
 
 def test_bootstrap_syncs_bearer_before_applying_manifests(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """_kubectl_sync_bearer_token deve ser chamado ANTES de _kubectl_apply_manifests.
 
@@ -305,10 +383,14 @@ def test_bootstrap_syncs_bearer_before_applying_manifests(
     )
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in", lambda: None,
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: None,
     )
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
     call_order = []
@@ -321,24 +403,36 @@ def test_bootstrap_syncs_bearer_before_applying_manifests(
         call_order.append("apply_manifests")
         return True
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token",
-                      side_effect=fake_sync_bearer), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests",
-                      side_effect=fake_apply_manifests), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+    with (
+        patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True),
+        patch.object(
+            claude_install_module,
+            "_kubectl_sync_bearer_token",
+            side_effect=fake_sync_bearer,
+        ),
+        patch.object(
+            claude_install_module,
+            "_kubectl_apply_manifests",
+            side_effect=fake_apply_manifests,
+        ),
+        patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_module.bootstrap_claude_worker(
-            interactive=False, force_relogin=False, home=tmp_path,
+            interactive=False,
+            force_relogin=False,
+            home=tmp_path,
         )
 
     assert result.ok is True
-    assert call_order.index("sync_bearer") < call_order.index("apply_manifests"), (
-        f"sync_bearer deve preceder apply_manifests; ordem: {call_order}"
-    )
+    assert call_order.index("sync_bearer") < call_order.index(
+        "apply_manifests"
+    ), f"sync_bearer deve preceder apply_manifests; ordem: {call_order}"
 
 
 def test_bootstrap_bearer_sync_failure_before_manifests_returns_error(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """Se _kubectl_sync_bearer_token falhar, bootstrap deve retornar erro
     SEM ter chamado _kubectl_apply_manifests (evita aplicar Deployment
@@ -348,21 +442,34 @@ def test_bootstrap_bearer_sync_failure_before_manifests_returns_error(
     (fake_home / "credentials.json").write_text(json.dumps({"email": "u@x"}))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in", lambda: None,
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: None,
     )
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
     manifests_called = []
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=False), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests",
-                      side_effect=lambda **kw: manifests_called.append(True) or True), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+    with (
+        patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=False
+        ),
+        patch.object(
+            claude_install_module,
+            "_kubectl_apply_manifests",
+            side_effect=lambda **kw: manifests_called.append(True) or True,
+        ),
+        patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_module.bootstrap_claude_worker(
-            interactive=False, force_relogin=False, home=tmp_path,
+            interactive=False,
+            force_relogin=False,
+            home=tmp_path,
         )
 
     assert result.ok is False
@@ -378,7 +485,8 @@ def test_bootstrap_bearer_sync_failure_before_manifests_returns_error(
 
 
 def test_read_credentials_from_env_returns_none_when_unset(
-    claude_install_module, monkeypatch,
+    claude_install_module,
+    monkeypatch,
 ):
     """Env var ausente (ou não definida) → retorna None."""
     monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
@@ -387,7 +495,8 @@ def test_read_credentials_from_env_returns_none_when_unset(
 
 
 def test_read_credentials_from_env_returns_dict_when_set(
-    claude_install_module, monkeypatch,
+    claude_install_module,
+    monkeypatch,
 ):
     """Env var setada → retorna dict com formato Keychain canônico."""
     monkeypatch.setenv("CLAUDE_OAUTH_ACCESS_TOKEN", "my-oauth-token-abc123")
@@ -397,7 +506,8 @@ def test_read_credentials_from_env_returns_dict_when_set(
 
 
 def test_read_credentials_from_env_strips_whitespace(
-    claude_install_module, monkeypatch,
+    claude_install_module,
+    monkeypatch,
 ):
     """Env var com espaços/newline ao redor → token stripado antes de retornar."""
     monkeypatch.setenv("CLAUDE_OAUTH_ACCESS_TOKEN", "  token-with-spaces  \n")
@@ -407,7 +517,8 @@ def test_read_credentials_from_env_strips_whitespace(
 
 
 def test_read_credentials_from_env_returns_none_when_empty(
-    claude_install_module, monkeypatch,
+    claude_install_module,
+    monkeypatch,
 ):
     """Env var setada mas vazia → retorna None (equivalente a não setada)."""
     monkeypatch.setenv("CLAUDE_OAUTH_ACCESS_TOKEN", "   ")
@@ -416,7 +527,9 @@ def test_read_credentials_from_env_returns_none_when_empty(
 
 
 def test_bootstrap_uses_env_var_first_when_set(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """CLAUDE_OAUTH_ACCESS_TOKEN setada → usada como credencial, sem tocar Keychain/file.
 
@@ -434,10 +547,13 @@ def test_bootstrap_uses_env_var_first_when_set(
         return None  # mesmo que retorne None, registra a chamada indevida
 
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in", lambda: None,
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: None,
     )
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain",
+        claude_install_module,
+        "_read_credentials_from_keychain",
         _keychain_should_not_be_called,
     )
     # Não criamos ~/.claude/credentials.json — file também não deve ser lido.
@@ -448,36 +564,54 @@ def test_bootstrap_uses_env_var_first_when_set(
         captured_creds.update(creds)
         return True
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret", side_effect=fake_apply_secret), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+    with (
+        patch.object(
+            claude_install_module,
+            "_kubectl_apply_secret",
+            side_effect=fake_apply_secret,
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_apply_manifests", return_value=True
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_module.bootstrap_claude_worker(
-            interactive=False, force_relogin=False, home=tmp_path,
+            interactive=False,
+            force_relogin=False,
+            home=tmp_path,
         )
 
     assert result.ok is True
     # Env var foi usada: Secret deve conter o token da env var.
     oauth = captured_creds.get("claudeAiOauth", {})
-    assert oauth.get("accessToken") == "env-token-xyz", \
-        f"expected env-token-xyz, got {captured_creds!r}"
+    assert (
+        oauth.get("accessToken") == "env-token-xyz"
+    ), f"expected env-token-xyz, got {captured_creds!r}"
     # Keychain não deveria ter sido chamado.
     assert keychain_called == [], "Keychain foi chamado mesmo com env var setada"
 
 
 def test_bootstrap_falls_back_to_keychain_when_env_unset(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """Env var ausente → cai para Keychain (segunda prioridade)."""
     monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in", lambda: None,
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: None,
     )
 
     fake_keychain_creds = {"claudeAiOauth": {"accessToken": "keychain-token"}}
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain",
+        claude_install_module,
+        "_read_credentials_from_keychain",
         lambda: fake_keychain_creds,
     )
     # Sem credentials.json — se o código cair no file path, terá None do file.
@@ -488,29 +622,49 @@ def test_bootstrap_falls_back_to_keychain_when_env_unset(
         captured_creds.update(creds)
         return True
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret", side_effect=fake_apply_secret), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+    with (
+        patch.object(
+            claude_install_module,
+            "_kubectl_apply_secret",
+            side_effect=fake_apply_secret,
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_apply_manifests", return_value=True
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_module.bootstrap_claude_worker(
-            interactive=False, force_relogin=False, home=tmp_path,
+            interactive=False,
+            force_relogin=False,
+            home=tmp_path,
         )
 
     assert result.ok is True
-    assert captured_creds.get("claudeAiOauth", {}).get("accessToken") == "keychain-token"
+    assert (
+        captured_creds.get("claudeAiOauth", {}).get("accessToken") == "keychain-token"
+    )
 
 
 def test_bootstrap_falls_back_to_file_when_env_and_keychain_unset(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """Env var ausente + Keychain ausente → cai para ~/.claude/credentials.json."""
     monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_install_module, "_check_claude_logged_in", lambda: None,
+        claude_install_module,
+        "_check_claude_logged_in",
+        lambda: None,
     )
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
     # Cria credentials.json no path esperado.
@@ -525,12 +679,24 @@ def test_bootstrap_falls_back_to_file_when_env_and_keychain_unset(
         captured_creds.update(creds)
         return True
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret", side_effect=fake_apply_secret), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+    with (
+        patch.object(
+            claude_install_module,
+            "_kubectl_apply_secret",
+            side_effect=fake_apply_secret,
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_apply_manifests", return_value=True
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_module.bootstrap_claude_worker(
-            interactive=False, force_relogin=False, home=tmp_path,
+            interactive=False,
+            force_relogin=False,
+            home=tmp_path,
         )
 
     assert result.ok is True
@@ -542,14 +708,17 @@ def test_bootstrap_falls_back_to_file_when_env_and_keychain_unset(
 # ============================================================================
 
 
-def test_renew_fails_when_credentials_absent(claude_install_module, tmp_path,
-                                              monkeypatch):
+def test_renew_fails_when_credentials_absent(
+    claude_install_module, tmp_path, monkeypatch
+):
     """Sem credentials (Keychain + file + env) -> ok=False com mensagem
     apontando pra `claude auth login` (não tenta browser autônomo)."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
     result = claude_install_module.renew_claude_worker(home=tmp_path)
@@ -559,7 +728,9 @@ def test_renew_fails_when_credentials_absent(claude_install_module, tmp_path,
 
 
 def test_renew_success_path_calls_secret_then_restart(
-    claude_install_module, tmp_path, monkeypatch,
+    claude_install_module,
+    tmp_path,
+    monkeypatch,
 ):
     """Credentials presentes + kubectl ok → re-apply Secret + rollout
     restart + wait. NÃO chama _kubectl_apply_manifests (lightweight)."""
@@ -571,7 +742,9 @@ def test_renew_success_path_calls_secret_then_restart(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
     call_log = []
@@ -592,14 +765,22 @@ def test_renew_success_path_calls_secret_then_restart(
         call_log.append(("wait_rollout", namespace, timeout_s))
         return True
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret",
-                      side_effect=fake_apply_secret), \
-         patch.object(claude_install_module.subprocess, "run",
-                      side_effect=fake_run), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout",
-                      side_effect=fake_wait_rollout):
+    with (
+        patch.object(
+            claude_install_module,
+            "_kubectl_apply_secret",
+            side_effect=fake_apply_secret,
+        ),
+        patch.object(claude_install_module.subprocess, "run", side_effect=fake_run),
+        patch.object(
+            claude_install_module,
+            "_kubectl_wait_rollout",
+            side_effect=fake_wait_rollout,
+        ),
+    ):
         result = claude_install_module.renew_claude_worker(
-            namespace="my-ns", home=tmp_path,
+            namespace="my-ns",
+            home=tmp_path,
         )
 
     assert result.ok is True
@@ -614,8 +795,9 @@ def test_renew_success_path_calls_secret_then_restart(
     assert call_log[2] == ("wait_rollout", "my-ns", 180)
 
 
-def test_renew_propagates_apply_secret_failure(claude_install_module,
-                                                 tmp_path, monkeypatch):
+def test_renew_propagates_apply_secret_failure(
+    claude_install_module, tmp_path, monkeypatch
+):
     """kubectl apply secret falha -> ok=False, sem rollout (early return)."""
     fake_home = tmp_path / ".claude"
     fake_home.mkdir()
@@ -625,7 +807,9 @@ def test_renew_propagates_apply_secret_failure(claude_install_module,
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
     rollout_called = []
@@ -638,10 +822,14 @@ def test_renew_propagates_apply_secret_failure(claude_install_module,
         ret.stderr = ""
         return ret
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret",
-                      return_value=False), \
-         patch.object(claude_install_module.subprocess, "run",
-                      side_effect=fake_run_rollout):
+    with (
+        patch.object(
+            claude_install_module, "_kubectl_apply_secret", return_value=False
+        ),
+        patch.object(
+            claude_install_module.subprocess, "run", side_effect=fake_run_rollout
+        ),
+    ):
         result = claude_install_module.renew_claude_worker(home=tmp_path)
 
     assert result.ok is False
@@ -650,13 +838,16 @@ def test_renew_propagates_apply_secret_failure(claude_install_module,
     assert rollout_called == []
 
 
-def test_renew_uses_env_var_credentials_when_present(claude_install_module,
-                                                       tmp_path, monkeypatch):
+def test_renew_uses_env_var_credentials_when_present(
+    claude_install_module, tmp_path, monkeypatch
+):
     """CLAUDE_OAUTH_ACCESS_TOKEN seta -> usa diretamente (sem Keychain/file)."""
     monkeypatch.setenv("CLAUDE_OAUTH_ACCESS_TOKEN", "sk-from-env-12345")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+        claude_install_module,
+        "_read_credentials_from_keychain",
+        lambda: None,
     )
 
     captured = {}
@@ -672,12 +863,15 @@ def test_renew_uses_env_var_credentials_when_present(claude_install_module,
         ret.stderr = ""
         return ret
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret",
-                      side_effect=fake_apply_secret), \
-         patch.object(claude_install_module.subprocess, "run",
-                      side_effect=fake_run), \
-         patch.object(claude_install_module, "_kubectl_wait_rollout",
-                      return_value=True):
+    with (
+        patch.object(
+            claude_install_module,
+            "_kubectl_apply_secret",
+            side_effect=fake_apply_secret,
+        ),
+        patch.object(claude_install_module.subprocess, "run", side_effect=fake_run),
+        patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_module.renew_claude_worker(home=tmp_path)
 
     assert result.ok is True
@@ -699,12 +893,19 @@ def test_bootstrap_in_pod_applies_placeholder_credentials(claude_install_module)
         captured["ns"] = namespace
         return True
 
-    with patch.object(claude_install_module, "_kubectl_apply_secret",
-                      side_effect=fake_apply_secret), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token",
-                      return_value=True), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests",
-                      return_value=True):
+    with (
+        patch.object(
+            claude_install_module,
+            "_kubectl_apply_secret",
+            side_effect=fake_apply_secret,
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_apply_manifests", return_value=True
+        ),
+    ):
         result = claude_install_module.bootstrap_claude_worker_in_pod(
             namespace="deile-test",
         )
@@ -720,8 +921,9 @@ def test_bootstrap_in_pod_applies_placeholder_credentials(claude_install_module)
 
 def test_bootstrap_in_pod_fails_on_secret_error(claude_install_module):
     """Falha no apply do Secret placeholder propagada como ok=False."""
-    with patch.object(claude_install_module, "_kubectl_apply_secret",
-                      return_value=False):
+    with patch.object(
+        claude_install_module, "_kubectl_apply_secret", return_value=False
+    ):
         result = claude_install_module.bootstrap_claude_worker_in_pod()
 
     assert result.ok is False
@@ -730,10 +932,12 @@ def test_bootstrap_in_pod_fails_on_secret_error(claude_install_module):
 
 def test_bootstrap_in_pod_fails_on_bearer_sync_error(claude_install_module):
     """Falha no sync do bearer retorna secret_applied=True, ok=False."""
-    with patch.object(claude_install_module, "_kubectl_apply_secret",
-                      return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token",
-                      return_value=False):
+    with (
+        patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=False
+        ),
+    ):
         result = claude_install_module.bootstrap_claude_worker_in_pod()
 
     assert result.ok is False
@@ -742,12 +946,15 @@ def test_bootstrap_in_pod_fails_on_bearer_sync_error(claude_install_module):
 
 def test_bootstrap_in_pod_fails_on_manifest_error(claude_install_module):
     """Falha nos manifests propagada com deployment_applied=False."""
-    with patch.object(claude_install_module, "_kubectl_apply_secret",
-                      return_value=True), \
-         patch.object(claude_install_module, "_kubectl_sync_bearer_token",
-                      return_value=True), \
-         patch.object(claude_install_module, "_kubectl_apply_manifests",
-                      return_value=False):
+    with (
+        patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True),
+        patch.object(
+            claude_install_module, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(
+            claude_install_module, "_kubectl_apply_manifests", return_value=False
+        ),
+    ):
         result = claude_install_module.bootstrap_claude_worker_in_pod()
 
     assert result.ok is False

@@ -40,7 +40,8 @@ def claude_worker_module():
         sys.path.insert(0, k8s_dir)
     server_path = repo_root / "infra" / "k8s" / "claude_worker_server.py"
     spec = importlib.util.spec_from_file_location(
-        "claude_worker_server_under_test", str(server_path),
+        "claude_worker_server_under_test",
+        str(server_path),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -50,7 +51,8 @@ def claude_worker_module():
 
 
 async def test_health_returns_200_when_binary_present(
-    claude_worker_module, monkeypatch,
+    claude_worker_module,
+    monkeypatch,
 ):
     """``/v1/health`` retorna 200 + caminho do binário quando ``claude``
     está no ``PATH``."""
@@ -70,7 +72,8 @@ async def test_health_returns_200_when_binary_present(
 
 
 async def test_health_returns_500_when_binary_missing(
-    claude_worker_module, monkeypatch,
+    claude_worker_module,
+    monkeypatch,
 ):
     """``/v1/health`` retorna 500 quando o binário ``claude`` não está no
     ``PATH`` — o pod é removido do Service pelo readinessProbe."""
@@ -92,33 +95,34 @@ async def test_health_returns_500_when_binary_missing(
 
 
 @pytest.mark.asyncio
-async def test_progress_returns_404_for_unknown_task(claude_worker_module, monkeypatch, tmp_path):
+async def test_progress_returns_404_for_unknown_task(
+    claude_worker_module, monkeypatch, tmp_path
+):
     """task_id válido mas progress file não existe → 404."""
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         # 16-char hex valid format mas inexistente
-        resp = await client.get("/v1/progress/0123456789abcdef",
-                                headers=_AUTH_HEADERS)
+        resp = await client.get("/v1/progress/0123456789abcdef", headers=_AUTH_HEADERS)
         assert resp.status == 404
 
 
 @pytest.mark.asyncio
-async def test_progress_returns_400_for_invalid_task_id(claude_worker_module, monkeypatch, tmp_path):
+async def test_progress_returns_400_for_invalid_task_id(
+    claude_worker_module, monkeypatch, tmp_path
+):
     """task_id formato inválido (não-hex 16-char) → 400."""
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         # Not hex
-        resp = await client.get("/v1/progress/garbage-no-hex",
-                                headers=_AUTH_HEADERS)
+        resp = await client.get("/v1/progress/garbage-no-hex", headers=_AUTH_HEADERS)
         assert resp.status == 400
 
         # Wrong length
-        resp = await client.get("/v1/progress/abc123",
-                                headers=_AUTH_HEADERS)
+        resp = await client.get("/v1/progress/abc123", headers=_AUTH_HEADERS)
         assert resp.status == 400
 
 
@@ -127,15 +131,16 @@ async def test_progress_returns_tails(claude_worker_module, monkeypatch, tmp_pat
     """Quando progress files existem, devolve tail dos últimos N bytes."""
     progress_dir = tmp_path / ".progress"
     progress_dir.mkdir()
-    (progress_dir / "abcdef0123456789.stdout.log").write_text("line 1\nline 2\nline 3\n")
+    (progress_dir / "abcdef0123456789.stdout.log").write_text(
+        "line 1\nline 2\nline 3\n"
+    )
     (progress_dir / "abcdef0123456789.stderr.log").write_text("err A\nerr B\n")
 
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/v1/progress/abcdef0123456789",
-                                headers=_AUTH_HEADERS)
+        resp = await client.get("/v1/progress/abcdef0123456789", headers=_AUTH_HEADERS)
         assert resp.status == 200
         body = await resp.json()
         assert "stdout" in body
@@ -146,7 +151,9 @@ async def test_progress_returns_tails(claude_worker_module, monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_progress_handles_only_stdout_present(claude_worker_module, monkeypatch, tmp_path):
+async def test_progress_handles_only_stdout_present(
+    claude_worker_module, monkeypatch, tmp_path
+):
     """Se só stdout file existe (stderr vazio), ainda retorna 200."""
     progress_dir = tmp_path / ".progress"
     progress_dir.mkdir()
@@ -157,8 +164,7 @@ async def test_progress_handles_only_stdout_present(claude_worker_module, monkey
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/v1/progress/fedcba9876543210",
-                                headers=_AUTH_HEADERS)
+        resp = await client.get("/v1/progress/fedcba9876543210", headers=_AUTH_HEADERS)
         assert resp.status == 200
         body = await resp.json()
         assert body["stdout"] == "partial\n"
@@ -166,7 +172,9 @@ async def test_progress_handles_only_stdout_present(claude_worker_module, monkey
 
 
 @pytest.mark.asyncio
-async def test_progress_tail_caps_long_stdout(claude_worker_module, monkeypatch, tmp_path):
+async def test_progress_tail_caps_long_stdout(
+    claude_worker_module, monkeypatch, tmp_path
+):
     """Stdout muito longo é truncado pra tail 50KB."""
     progress_dir = tmp_path / ".progress"
     progress_dir.mkdir()
@@ -178,8 +186,7 @@ async def test_progress_tail_caps_long_stdout(claude_worker_module, monkeypatch,
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/v1/progress/1111222233334444",
-                                headers=_AUTH_HEADERS)
+        resp = await client.get("/v1/progress/1111222233334444", headers=_AUTH_HEADERS)
         assert resp.status == 200
         body = await resp.json()
         assert len(body["stdout"]) == 50_000
@@ -202,12 +209,16 @@ async def test_dispatch_rejects_non_anthropic_model(claude_worker_module, monkey
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "test",
-            "channel_id": "x",
-            "preferred_model": "openai:gpt-4",
-            "stage": "implement",
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "test",
+                "channel_id": "x",
+                "preferred_model": "openai:gpt-4",
+                "stage": "implement",
+            },
+        )
         assert resp.status == 400
         body = await resp.json()
         assert "anthropic" in body["error"].lower()
@@ -215,7 +226,9 @@ async def test_dispatch_rejects_non_anthropic_model(claude_worker_module, monkey
 
 @pytest.mark.asyncio
 async def test_dispatch_translates_model_slug(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Slug ``anthropic:claude-opus-4-8`` vira ``--model claude-opus-4-8`` na call.
 
@@ -228,7 +241,10 @@ async def test_dispatch_translates_model_slug(
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         captured["args"] = list(args)
         return claude_worker_module.SubprocessResult(
-            returncode=0, stdout="ok\n", stderr="", duration_seconds=1.0,
+            returncode=0,
+            stdout="ok\n",
+            stderr="",
+            duration_seconds=1.0,
         )
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -237,14 +253,18 @@ async def test_dispatch_translates_model_slug(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "implement #1",
-            "channel_id": "auto/issue-1",
-            "preferred_model": "anthropic:claude-opus-4-8",
-            "stage": "implement",
-            "issue_number": 1,
-            "branch": "auto/issue-1",
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "implement #1",
+                "channel_id": "auto/issue-1",
+                "preferred_model": "anthropic:claude-opus-4-8",
+                "stage": "implement",
+                "issue_number": 1,
+                "branch": "auto/issue-1",
+            },
+        )
         assert resp.status == 200
 
     args = captured["args"]
@@ -260,20 +280,32 @@ async def test_dispatch_translates_model_slug(
 
 @pytest.mark.asyncio
 async def test_dispatch_response_shape(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Response inclui ``ok``, ``stdout``, ``stderr``, ``task_id``,
     ``session_id``, ``attempt``, ``duration_seconds`` e ``returncode``
     — contrato consumido pelo ``deile-pipeline`` e pelo painel TUI."""
     import json as _json
+
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         # Com --output-format json, stdout é UM JSON object (resultado final).
-        out = _json.dumps({
-            "is_error": False, "result": "ok", "session_id": "abc-123",
-            "total_cost_usd": 0.05, "duration_ms": 42000, "num_turns": 3,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "ok",
+                "session_id": "abc-123",
+                "total_cost_usd": 0.05,
+                "duration_ms": 42000,
+                "num_turns": 3,
+            }
+        )
         return claude_worker_module.SubprocessResult(
-            returncode=0, stdout=out, stderr="", duration_seconds=42.0,
+            returncode=0,
+            stdout=out,
+            stderr="",
+            duration_seconds=42.0,
         )
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -283,10 +315,15 @@ async def test_dispatch_response_shape(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x", "channel_id": "y",
-            "preferred_model": "anthropic:claude-sonnet-4-6",
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "channel_id": "y",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+            },
+        )
         assert resp.status == 200
         body = await resp.json()
         assert body["ok"] is True
@@ -305,7 +342,9 @@ async def test_dispatch_response_shape(
 
 @pytest.mark.asyncio
 async def test_dispatch_creates_workspace_dir(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Cada dispatch cria ``DEILE_CLAUDE_WORKER_ROOT/<task_id>/`` fresh.
 
@@ -325,10 +364,15 @@ async def test_dispatch_creates_workspace_dir(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x", "channel_id": "y",
-            "preferred_model": "anthropic:claude-haiku-4-5",
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "channel_id": "y",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+            },
+        )
         assert resp.status == 200
         body = await resp.json()
 
@@ -339,7 +383,9 @@ async def test_dispatch_creates_workspace_dir(
 
 @pytest.mark.asyncio
 async def test_dispatch_passes_brief_with_preamble(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Brief recebido pelo dispatch vai como sufixo do preamble do stage.
 
@@ -358,13 +404,17 @@ async def test_dispatch_passes_brief_with_preamble(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "MARKER_BRIEF_TEXT_42",
-            "channel_id": "y",
-            "preferred_model": "anthropic:claude-haiku-4-5",
-            "stage": "implement",
-            "branch": "auto/issue-42",
-        })
+        await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "MARKER_BRIEF_TEXT_42",
+                "channel_id": "y",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+                "stage": "implement",
+                "branch": "auto/issue-42",
+            },
+        )
 
     # O último argumento do CLI ``claude`` é o ``full_prompt`` (preamble + brief).
     full_prompt = captured_args[-1]
@@ -384,8 +434,7 @@ async def test_dispatch_passes_brief_with_preamble(
 # ============================================================================
 
 
-async def test_health_endpoint_does_not_require_auth(claude_worker_module,
-                                                     monkeypatch):
+async def test_health_endpoint_does_not_require_auth(claude_worker_module, monkeypatch):
     """``/v1/health`` está whitelisted no middleware — readiness probe do
     Kubernetes não tem token."""
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
@@ -396,8 +445,9 @@ async def test_health_endpoint_does_not_require_auth(claude_worker_module,
         assert resp.status == 200
 
 
-async def test_dispatch_rejects_request_without_bearer(claude_worker_module,
-                                                       monkeypatch):
+async def test_dispatch_rejects_request_without_bearer(
+    claude_worker_module, monkeypatch
+):
     """``/v1/dispatch`` sem ``Authorization`` header → 401 UNAUTHORIZED."""
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     app = claude_worker_module.build_app(auth_token="test-token")
@@ -408,8 +458,9 @@ async def test_dispatch_rejects_request_without_bearer(claude_worker_module,
         assert body["error"]["code"] == "UNAUTHORIZED"
 
 
-async def test_dispatch_rejects_request_with_wrong_bearer(claude_worker_module,
-                                                          monkeypatch):
+async def test_dispatch_rejects_request_with_wrong_bearer(
+    claude_worker_module, monkeypatch
+):
     """Token incorreto → 401 (constant-time compare via ``hmac.compare_digest``)."""
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     app = claude_worker_module.build_app(auth_token="real-token")
@@ -422,8 +473,9 @@ async def test_dispatch_rejects_request_with_wrong_bearer(claude_worker_module,
         assert resp.status == 401
 
 
-async def test_progress_rejects_request_without_bearer(claude_worker_module,
-                                                       monkeypatch, tmp_path):
+async def test_progress_rejects_request_without_bearer(
+    claude_worker_module, monkeypatch, tmp_path
+):
     """``/v1/progress/{task_id}`` também exige Bearer (stdout/stderr podem
     conter secrets do brief)."""
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
@@ -434,7 +486,8 @@ async def test_progress_rejects_request_without_bearer(claude_worker_module,
 
 
 async def test_build_app_raises_when_token_missing_and_not_provided(
-    claude_worker_module, monkeypatch,
+    claude_worker_module,
+    monkeypatch,
 ):
     """Sem ``auth_token`` explícito + sem Secret file + sem env var → raise
     no build_app (server abort no startup pra forçar fix).
@@ -458,15 +511,17 @@ async def test_build_app_raises_when_token_missing_and_not_provided(
         claude_worker_module.build_app()
 
 
-async def test_client_max_size_rejects_oversized_payload(claude_worker_module,
-                                                         monkeypatch):
+async def test_client_max_size_rejects_oversized_payload(
+    claude_worker_module, monkeypatch
+):
     """Body > 512 KiB → 413 Request Entity Too Large (anti-abuse PVC)."""
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     app = claude_worker_module.build_app(auth_token="test-token")
     huge_brief = "x" * (600 * 1024)  # 600 KiB > 512 KiB limit
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": huge_brief},
         )
         # aiohttp 3.x devolve 400 com body "Content-Length X exceeds maximum
@@ -486,7 +541,9 @@ def test_detect_auth_expired_recognizes_claude_signatures(claude_worker_module):
     # Padrões reais do claude CLI no Linux quando ANTHROPIC_AUTH_TOKEN está
     # ausente, expirado ou inválido.
     assert detect("Not logged in · Please run /login", "")
-    assert detect("Failed to authenticate. API Error: 401 Invalid authentication credentials", "")
+    assert detect(
+        "Failed to authenticate. API Error: 401 Invalid authentication credentials", ""
+    )
     assert detect("Please run `claude auth login`", "")
     assert detect("ERROR: 401 unauthorized", "")
     # Case-insensitive: claude pode variar capitalização.
@@ -511,7 +568,9 @@ def test_detect_auth_expired_ignores_other_failures(claude_worker_module):
 
 
 async def test_dispatch_returns_auth_expired_when_claude_reports_not_logged_in(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Integração: ``claude -p`` produz "Not logged in" → response inclui
     ``error_code=WORKER_AUTH_EXPIRED`` + ``ok=False`` + mensagem clara."""
@@ -530,13 +589,16 @@ async def test_dispatch_returns_auth_expired_when_claude_reports_not_logged_in(
         )
 
     monkeypatch.setattr(
-        claude_worker_module, "run_subprocess_with_progress", fake_run_subprocess,
+        claude_worker_module,
+        "run_subprocess_with_progress",
+        fake_run_subprocess,
     )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "review PR #1", "stage": "pr_review"},
         )
         assert resp.status == 200
@@ -547,7 +609,9 @@ async def test_dispatch_returns_auth_expired_when_claude_reports_not_logged_in(
 
 
 async def test_dispatch_returns_ok_when_claude_succeeds_normally(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Sanity: dispatch normal NÃO seta ``error_code`` — só quando há
     detecção real de auth-expired."""
@@ -558,12 +622,16 @@ async def test_dispatch_returns_ok_when_claude_succeeds_normally(
     import types
 
     async def fake_run_subprocess(args, *, cwd, task_id, timeout, lease_path=None):
-        out = _json.dumps({
-            "is_error": False,
-            "result": "Review completed STATUS: APPROVE",
-            "session_id": "review-session", "total_cost_usd": 0.1,
-            "duration_ms": 10000, "num_turns": 5,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "Review completed STATUS: APPROVE",
+                "session_id": "review-session",
+                "total_cost_usd": 0.1,
+                "duration_ms": 10000,
+                "num_turns": 5,
+            }
+        )
         return types.SimpleNamespace(
             returncode=0,
             stdout=out,
@@ -572,14 +640,17 @@ async def test_dispatch_returns_ok_when_claude_succeeds_normally(
         )
 
     monkeypatch.setattr(
-        claude_worker_module, "run_subprocess_with_progress", fake_run_subprocess,
+        claude_worker_module,
+        "run_subprocess_with_progress",
+        fake_run_subprocess,
     )
     monkeypatch.setenv("HOME", str(tmp_path))
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "review PR #1", "stage": "pr_review"},
         )
         body = await resp.json()
@@ -594,17 +665,25 @@ async def test_dispatch_returns_ok_when_claude_succeeds_normally(
 
 @pytest.mark.asyncio
 async def test_dispatch_persists_session_metadata(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Fresh dispatch grava ``~/.claude/tasks/<task_id>/session.json`` com
     session_id, workdir, stage, attempt=1, started_at, last_*."""
     import json as _json
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
-        out = _json.dumps({
-            "is_error": False, "result": "done", "session_id": "fake-sess",
-            "total_cost_usd": 0.07, "duration_ms": 5000, "num_turns": 2,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "done",
+                "session_id": "fake-sess",
+                "total_cost_usd": 0.07,
+                "duration_ms": 5000,
+                "num_turns": 2,
+            }
+        )
         return claude_worker_module.SubprocessResult(0, out, "", 5.0)
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -614,10 +693,16 @@ async def test_dispatch_persists_session_metadata(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x", "stage": "pr_review", "branch": "main",
-            "preferred_model": "anthropic:claude-sonnet-4-6",
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "stage": "pr_review",
+                "branch": "main",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+            },
+        )
         body = await resp.json()
 
     meta_path = tmp_path / ".claude" / "tasks" / body["task_id"] / "session.json"
@@ -636,11 +721,14 @@ async def test_dispatch_persists_session_metadata(
 
 @pytest.mark.asyncio
 async def test_dispatch_passes_session_id_flag_to_claude(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Fresh dispatch passa ``--session-id <uuid>`` e ``--output-format json``
     pro claude CLI. Resume dispatch usa ``-r <session_id>`` em vez."""
     import json as _json
+
     captured = {}
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
@@ -655,9 +743,14 @@ async def test_dispatch_passes_session_id_flag_to_claude(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x", "preferred_model": "anthropic:claude-haiku-4-5",
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+            },
+        )
         body = await resp.json()
 
     args = captured["args"]
@@ -674,19 +767,23 @@ async def test_dispatch_passes_session_id_flag_to_claude(
 
 @pytest.mark.asyncio
 async def test_dispatch_resume_uses_minus_r_flag(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Resume dispatch lê metadata do prev_task_id, reutiliza workdir,
     spawna com ``-r <session_id>`` em vez de ``--session-id``."""
     import json as _json
+
     captured = {}
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         captured["args"] = list(args)
         captured["cwd"] = cwd
         captured["task_id"] = task_id
-        out = _json.dumps({"is_error": False, "result": "resumed ok",
-                           "session_id": "the-session"})
+        out = _json.dumps(
+            {"is_error": False, "result": "resumed ok", "session_id": "the-session"}
+        )
         return claude_worker_module.SubprocessResult(0, out, "", 2.0)
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -700,19 +797,33 @@ async def test_dispatch_resume_uses_minus_r_flag(
     workdir.mkdir(parents=True)
     meta_dir = tmp_path / ".claude" / "tasks" / prev_task_id
     meta_dir.mkdir(parents=True)
-    (meta_dir / "session.json").write_text(_json.dumps({
-        "task_id": prev_task_id, "session_id": "the-session",
-        "workdir": str(workdir), "stage": "pr_review", "branch": "auto/test",
-        "attempt": 1, "started_at": 1000, "last_is_error": False,
-    }))
+    (meta_dir / "session.json").write_text(
+        _json.dumps(
+            {
+                "task_id": prev_task_id,
+                "session_id": "the-session",
+                "workdir": str(workdir),
+                "stage": "pr_review",
+                "branch": "auto/test",
+                "attempt": 1,
+                "started_at": 1000,
+                "last_is_error": False,
+            }
+        )
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x", "preferred_model": "anthropic:claude-sonnet-4-6",
-            "resume_session_id": "the-session",
-            "prev_task_id": prev_task_id,
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+                "resume_session_id": "the-session",
+                "prev_task_id": prev_task_id,
+            },
+        )
         assert resp.status == 200
         body = await resp.json()
 
@@ -732,7 +843,9 @@ async def test_dispatch_resume_uses_minus_r_flag(
 
 @pytest.mark.asyncio
 async def test_dispatch_resume_rejects_invalid_prev_task_id(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """prev_task_id com formato inválido (não hex 16-char) → 400."""
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
@@ -741,11 +854,15 @@ async def test_dispatch_resume_rejects_invalid_prev_task_id(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x",
-            "resume_session_id": "session-id-here",
-            "prev_task_id": "../etc/passwd",  # path traversal attempt
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "resume_session_id": "session-id-here",
+                "prev_task_id": "../etc/passwd",  # path traversal attempt
+            },
+        )
         assert resp.status == 400
         body = await resp.json()
         assert "prev_task_id" in body["error"].lower()
@@ -753,7 +870,9 @@ async def test_dispatch_resume_rejects_invalid_prev_task_id(
 
 @pytest.mark.asyncio
 async def test_dispatch_resume_404_when_meta_missing(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """prev_task_id formato OK mas sem session.json no PVC (pod recreated)
     → 404 com error_code RESUME_META_MISSING."""
@@ -763,11 +882,15 @@ async def test_dispatch_resume_404_when_meta_missing(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x",
-            "resume_session_id": "sid",
-            "prev_task_id": "0123456789abcdef",  # válido formato, não existe
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "resume_session_id": "sid",
+                "prev_task_id": "0123456789abcdef",  # válido formato, não existe
+            },
+        )
         assert resp.status == 404
         body = await resp.json()
         assert body["error_code"] == "RESUME_META_MISSING"
@@ -775,10 +898,13 @@ async def test_dispatch_resume_404_when_meta_missing(
 
 @pytest.mark.asyncio
 async def test_dispatch_resume_410_when_workdir_lost(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """prev_task_id OK + meta OK MAS workdir não existe → 410 Gone."""
     import json as _json
+
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -786,19 +912,29 @@ async def test_dispatch_resume_410_when_workdir_lost(
     prev_task_id = "abcdef0123456789"
     meta_dir = tmp_path / ".claude" / "tasks" / prev_task_id
     meta_dir.mkdir(parents=True)
-    (meta_dir / "session.json").write_text(_json.dumps({
-        "task_id": prev_task_id, "session_id": "sid",
-        "workdir": str(tmp_path / "nonexistent"),
-        "attempt": 1, "started_at": 1000,
-    }))
+    (meta_dir / "session.json").write_text(
+        _json.dumps(
+            {
+                "task_id": prev_task_id,
+                "session_id": "sid",
+                "workdir": str(tmp_path / "nonexistent"),
+                "attempt": 1,
+                "started_at": 1000,
+            }
+        )
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x",
-            "resume_session_id": "sid",
-            "prev_task_id": prev_task_id,
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "resume_session_id": "sid",
+                "prev_task_id": prev_task_id,
+            },
+        )
         assert resp.status == 410
         body = await resp.json()
         assert body["error_code"] == "RESUME_WORKDIR_LOST"
@@ -806,11 +942,14 @@ async def test_dispatch_resume_410_when_workdir_lost(
 
 @pytest.mark.asyncio
 async def test_dispatch_resume_409_when_session_mismatch(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Meta diz session=X, payload pede resume_session=Y → 409 Conflict
     (corrupção do mini-ledger ou IDs trocados)."""
     import json as _json
+
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -820,18 +959,29 @@ async def test_dispatch_resume_409_when_session_mismatch(
     workdir.mkdir(parents=True)
     meta_dir = tmp_path / ".claude" / "tasks" / prev_task_id
     meta_dir.mkdir(parents=True)
-    (meta_dir / "session.json").write_text(_json.dumps({
-        "task_id": prev_task_id, "session_id": "real-session-X",
-        "workdir": str(workdir), "attempt": 1, "started_at": 1000,
-    }))
+    (meta_dir / "session.json").write_text(
+        _json.dumps(
+            {
+                "task_id": prev_task_id,
+                "session_id": "real-session-X",
+                "workdir": str(workdir),
+                "attempt": 1,
+                "started_at": 1000,
+            }
+        )
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x",
-            "resume_session_id": "different-session-Y",
-            "prev_task_id": prev_task_id,
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "resume_session_id": "different-session-Y",
+                "prev_task_id": prev_task_id,
+            },
+        )
         assert resp.status == 409
         body = await resp.json()
         assert body["error_code"] == "RESUME_SESSION_MISMATCH"
@@ -839,19 +989,26 @@ async def test_dispatch_resume_409_when_session_mismatch(
 
 @pytest.mark.asyncio
 async def test_dispatch_detects_auth_expired_via_json_output(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Bug Opus: claude rc=0 + JSON output ``is_error=true`` + result
     'Not logged in' → ok=False, error_code=WORKER_AUTH_EXPIRED.
     """
     import json as _json
+
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
-        out = _json.dumps({
-            "is_error": True,
-            "result": "Not logged in · Please run /login",
-            "session_id": "x", "total_cost_usd": 0, "duration_ms": 50,
-            "num_turns": 1,
-        })
+        out = _json.dumps(
+            {
+                "is_error": True,
+                "result": "Not logged in · Please run /login",
+                "session_id": "x",
+                "total_cost_usd": 0,
+                "duration_ms": 50,
+                "num_turns": 1,
+            }
+        )
         return claude_worker_module.SubprocessResult(0, out, "", 0.05)
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -861,9 +1018,14 @@ async def test_dispatch_detects_auth_expired_via_json_output(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x", "preferred_model": "anthropic:claude-haiku-4-5",
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+            },
+        )
         body = await resp.json()
 
     assert body["ok"] is False
@@ -878,7 +1040,9 @@ async def test_dispatch_detects_auth_expired_via_json_output(
 
 @pytest.mark.asyncio
 async def test_resume_info_returns_404_for_unknown_task(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
     app = claude_worker_module.build_app(auth_token="test-token")
@@ -892,7 +1056,9 @@ async def test_resume_info_returns_404_for_unknown_task(
 
 @pytest.mark.asyncio
 async def test_resume_info_returns_400_for_invalid_task_id(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
     app = claude_worker_module.build_app(auth_token="test-token")
@@ -906,10 +1072,13 @@ async def test_resume_info_returns_400_for_invalid_task_id(
 
 @pytest.mark.asyncio
 async def test_resume_info_returns_full_meta(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Endpoint retorna todos campos pro pipeline decidir resume vs fresh."""
     import json as _json
+
     monkeypatch.setenv("HOME", str(tmp_path))
 
     task_id = "abcdef0123456789"
@@ -917,16 +1086,27 @@ async def test_resume_info_returns_full_meta(
     workdir.mkdir(parents=True)
     meta_dir = tmp_path / ".claude" / "tasks" / task_id
     meta_dir.mkdir(parents=True)
-    (meta_dir / "session.json").write_text(_json.dumps({
-        "task_id": task_id, "session_id": "sess-uuid",
-        "workdir": str(workdir), "stage": "pr_review",
-        "branch": "auto/issue-99", "model": "claude-sonnet-4-6",
-        "started_at": 1716000000, "last_completed_at": 1716000420,
-        "last_is_error": False, "last_result_summary": "Review postada e aprovada.",
-        "last_returncode": 0, "last_duration_seconds": 420.5,
-        "last_total_cost_usd": 0.137, "attempt": 2,
-        "prev_task_id": "fedcba9876543210",
-    }))
+    (meta_dir / "session.json").write_text(
+        _json.dumps(
+            {
+                "task_id": task_id,
+                "session_id": "sess-uuid",
+                "workdir": str(workdir),
+                "stage": "pr_review",
+                "branch": "auto/issue-99",
+                "model": "claude-sonnet-4-6",
+                "started_at": 1716000000,
+                "last_completed_at": 1716000420,
+                "last_is_error": False,
+                "last_result_summary": "Review postada e aprovada.",
+                "last_returncode": 0,
+                "last_duration_seconds": 420.5,
+                "last_total_cost_usd": 0.137,
+                "attempt": 2,
+                "prev_task_id": "fedcba9876543210",
+            }
+        )
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
@@ -956,20 +1136,29 @@ async def test_resume_info_returns_full_meta(
 
 @pytest.mark.asyncio
 async def test_resume_info_detects_workdir_lost(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Se workdir foi GC'd / pod recriado, ``workdir_exists=False``."""
     import json as _json
+
     monkeypatch.setenv("HOME", str(tmp_path))
 
     task_id = "1111aaaa2222bbbb"
     meta_dir = tmp_path / ".claude" / "tasks" / task_id
     meta_dir.mkdir(parents=True)
-    (meta_dir / "session.json").write_text(_json.dumps({
-        "task_id": task_id, "session_id": "s",
-        "workdir": "/nonexistent/path",  # workdir não existe
-        "attempt": 1, "started_at": 100,
-    }))
+    (meta_dir / "session.json").write_text(
+        _json.dumps(
+            {
+                "task_id": task_id,
+                "session_id": "s",
+                "workdir": "/nonexistent/path",  # workdir não existe
+                "attempt": 1,
+                "started_at": 100,
+            }
+        )
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
@@ -998,7 +1187,9 @@ def test_parse_claude_json_output_handles_empty_stdout(claude_worker_module):
 
 def test_parse_claude_json_output_handles_garbage(claude_worker_module):
     """Stdout não-JSON (corruption / crash) → defaults seguros."""
-    result = claude_worker_module._parse_claude_json_output("just some text\nnot json\n")
+    result = claude_worker_module._parse_claude_json_output(
+        "just some text\nnot json\n"
+    )
     assert result["is_error"] is True
 
 
@@ -1039,7 +1230,9 @@ def test_is_claude_process_alive_returns_false_for_empty_session(claude_worker_m
     assert claude_worker_module._is_claude_process_alive("") is False
 
 
-def test_is_claude_process_alive_when_proc_missing(claude_worker_module, monkeypatch, tmp_path):
+def test_is_claude_process_alive_when_proc_missing(
+    claude_worker_module, monkeypatch, tmp_path
+):
     """Se /proc não está acessível (ex: macOS local), retorna False
     best-effort sem crashar."""
     nonexistent = tmp_path / "no-such-dir"
@@ -1047,13 +1240,17 @@ def test_is_claude_process_alive_when_proc_missing(claude_worker_module, monkeyp
     assert claude_worker_module._is_claude_process_alive("session-id") is False
 
 
-def test_is_claude_process_alive_finds_match(claude_worker_module, monkeypatch, tmp_path):
+def test_is_claude_process_alive_finds_match(
+    claude_worker_module, monkeypatch, tmp_path
+):
     """Detecta session-id na cmdline de algum /proc/<pid>/."""
     proc_root = tmp_path / "fake_proc"
     proc_root.mkdir()
     pid1 = proc_root / "12345"
     pid1.mkdir()
-    (pid1 / "cmdline").write_bytes(b"claude\x00-p\x00--session-id\x00the-target-session\x00")
+    (pid1 / "cmdline").write_bytes(
+        b"claude\x00-p\x00--session-id\x00the-target-session\x00"
+    )
     pid2 = proc_root / "67890"
     pid2.mkdir()
     (pid2 / "cmdline").write_bytes(b"bash\x00-c\x00echo\x00hi\x00")
@@ -1071,7 +1268,9 @@ def test_is_claude_process_alive_finds_match(claude_worker_module, monkeypatch, 
 # pensando que estava morto → triple-dispatch de Opus 4.8 paralelos.
 # Fix: fallback pra mtime do JSONL na PVC compartilhada.
 def test_is_claude_alive_falls_back_to_jsonl_mtime_when_proc_does_not_see_it(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Multi-replica safe: claude vivo em OUTRA réplica = JSONL recém-modificado."""
     # /proc local vazio (não enxerga claude que está em outro pod).
@@ -1094,11 +1293,14 @@ def test_is_claude_alive_falls_back_to_jsonl_mtime_when_proc_does_not_see_it(
 
 
 def test_is_claude_alive_returns_false_when_jsonl_stale(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """JSONL antigo (> threshold) = sessão morta, fallback retorna False."""
     import os
     import time
+
     empty_proc = tmp_path / "fake_proc_empty"
     empty_proc.mkdir()
     monkeypatch.setattr(claude_worker_module, "_PROC_ROOT", str(empty_proc))
@@ -1142,24 +1344,30 @@ def _write_session_meta(home: Path, task_id: str, meta: dict) -> Path:
 
 
 async def test_sessions_list_returns_summary(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """``GET /v1/sessions`` returns one row per valid session.json file."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    _write_session_meta(tmp_path, "0123456789abcdef", {
-        "task_id": "0123456789abcdef",
-        "session_id": "sess-1",
-        "stage": "implement",
-        "branch": "auto/issue-1",
-        "model": "claude-sonnet-4-6",
-        "started_at": 1716830000,
-        "last_completed_at": 1716830420,
-        "last_is_error": False,
-        "last_returncode": 0,
-        "last_total_cost_usd": 0.13,
-        "attempt": 1,
-        "workdir": str(tmp_path / "work" / "0123456789abcdef"),
-    })
+    _write_session_meta(
+        tmp_path,
+        "0123456789abcdef",
+        {
+            "task_id": "0123456789abcdef",
+            "session_id": "sess-1",
+            "stage": "implement",
+            "branch": "auto/issue-1",
+            "model": "claude-sonnet-4-6",
+            "started_at": 1716830000,
+            "last_completed_at": 1716830420,
+            "last_is_error": False,
+            "last_returncode": 0,
+            "last_total_cost_usd": 0.13,
+            "attempt": 1,
+            "workdir": str(tmp_path / "work" / "0123456789abcdef"),
+        },
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
@@ -1179,7 +1387,9 @@ async def test_sessions_list_returns_summary(
 
 
 async def test_sessions_list_filters_orphan_dirs(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Directories without a valid session.json (or with invalid task_id
     names) must be skipped silently — no 500, no garbage rows."""
@@ -1187,9 +1397,15 @@ async def test_sessions_list_filters_orphan_dirs(
     base = tmp_path / ".claude" / "tasks"
     base.mkdir(parents=True)
     # valid session
-    _write_session_meta(tmp_path, "abcdef0123456789", {
-        "task_id": "abcdef0123456789", "session_id": "sx", "attempt": 1,
-    })
+    _write_session_meta(
+        tmp_path,
+        "abcdef0123456789",
+        {
+            "task_id": "abcdef0123456789",
+            "session_id": "sx",
+            "attempt": 1,
+        },
+    )
     # orphan dir without session.json (valid hex name)
     (base / "fedcba9876543210").mkdir()
     # invalid name (not hex 16)
@@ -1206,7 +1422,9 @@ async def test_sessions_list_filters_orphan_dirs(
 
 
 async def test_session_command_redacts_secrets(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """``GET /v1/sessions/{id}/command`` redacts secrets in env AND in cmd argv.
 
@@ -1221,18 +1439,23 @@ async def test_session_command_redacts_secrets(
     # recognises at ≥0.95 confidence and will redact.
     secret_token = "ghp_" + "A" * 36
     full_prompt = f"implement the feature using token {secret_token}"
-    _write_session_meta(tmp_path, "deadbeefcafebabe", {
-        "task_id": "deadbeefcafebabe",
-        "session_id": "sx",
-        "command": ["claude", "-p", "--session-id", "sx", full_prompt],
-        "full_prompt": full_prompt,
-        "subprocess_pid": 1234,
-    })
+    _write_session_meta(
+        tmp_path,
+        "deadbeefcafebabe",
+        {
+            "task_id": "deadbeefcafebabe",
+            "session_id": "sx",
+            "command": ["claude", "-p", "--session-id", "sx", full_prompt],
+            "full_prompt": full_prompt,
+            "subprocess_pid": 1234,
+        },
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/sessions/deadbeefcafebabe/command", headers=_AUTH_HEADERS,
+            "/v1/sessions/deadbeefcafebabe/command",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 200
         body = await resp.json()
@@ -1252,7 +1475,9 @@ async def test_session_command_redacts_secrets(
 
 
 async def test_session_command_raw_exposes_unredacted_cmd(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """``?raw=true`` with admin bearer returns unredacted cmd and full_prompt.
 
@@ -1269,13 +1494,17 @@ async def test_session_command_raw_exposes_unredacted_cmd(
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ADMIN_AUTH_TOKEN", "test-token")
     secret_token = "ghp_" + "B" * 36
     full_prompt = f"implement the feature using token {secret_token}"
-    _write_session_meta(tmp_path, "cafebabe01234567", {
-        "task_id": "cafebabe01234567",
-        "session_id": "sy",
-        "command": ["claude", "-p", "--session-id", "sy", full_prompt],
-        "full_prompt": full_prompt,
-        "subprocess_pid": 5678,
-    })
+    _write_session_meta(
+        tmp_path,
+        "cafebabe01234567",
+        {
+            "task_id": "cafebabe01234567",
+            "session_id": "sy",
+            "command": ["claude", "-p", "--session-id", "sy", full_prompt],
+            "full_prompt": full_prompt,
+            "subprocess_pid": 5678,
+        },
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
@@ -1295,56 +1524,68 @@ async def test_session_command_raw_exposes_unredacted_cmd(
 
 
 async def test_session_command_returns_404_for_unknown_task(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Valid task_id format but no session metadata → 404."""
     monkeypatch.setenv("HOME", str(tmp_path))
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/sessions/0000000000000000/command", headers=_AUTH_HEADERS,
+            "/v1/sessions/0000000000000000/command",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 404
 
 
 async def test_session_command_returns_400_for_invalid_task_id(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Bad task_id format must 400 (path traversal guard)."""
     monkeypatch.setenv("HOME", str(tmp_path))
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/sessions/..%2Fetc%2Fpasswd/command", headers=_AUTH_HEADERS,
+            "/v1/sessions/..%2Fetc%2Fpasswd/command",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 400
 
 
 async def test_session_chat_returns_parsed_turns(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """``GET /v1/sessions/{id}/chat`` returns parsed turns from the JSONL."""
     monkeypatch.setenv("HOME", str(tmp_path))
     workdir = tmp_path / "work" / "1111111122222222"
     workdir.mkdir(parents=True)
-    _write_session_meta(tmp_path, "1111111122222222", {
-        "task_id": "1111111122222222",
-        "session_id": "sid-chat",
-        "workdir": str(workdir),
-    })
+    _write_session_meta(
+        tmp_path,
+        "1111111122222222",
+        {
+            "task_id": "1111111122222222",
+            "session_id": "sid-chat",
+            "workdir": str(workdir),
+        },
+    )
     # Build the JSONL where the worker expects it.
     workspace_hash = "-" + str(workdir).lstrip("/").replace("/", "-")
     jsonl_dir = tmp_path / ".claude" / "projects" / workspace_hash
     jsonl_dir.mkdir(parents=True)
     (jsonl_dir / "sid-chat.jsonl").write_text(
-        '{"type":"user","content":"hi"}\n'
-        '{"type":"assistant","content":"hello"}\n',
+        '{"type":"user","content":"hi"}\n' '{"type":"assistant","content":"hello"}\n',
     )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/sessions/1111111122222222/chat", headers=_AUTH_HEADERS,
+            "/v1/sessions/1111111122222222/chat",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
 
@@ -1356,16 +1597,23 @@ async def test_session_chat_returns_parsed_turns(
 
 
 async def test_session_chat_supports_tail(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """``?tail=N`` caps the response (latest N turns)."""
     monkeypatch.setenv("HOME", str(tmp_path))
     workdir = tmp_path / "work" / "2222222233333333"
     workdir.mkdir(parents=True)
-    _write_session_meta(tmp_path, "2222222233333333", {
-        "task_id": "2222222233333333", "session_id": "sid-tail",
-        "workdir": str(workdir),
-    })
+    _write_session_meta(
+        tmp_path,
+        "2222222233333333",
+        {
+            "task_id": "2222222233333333",
+            "session_id": "sid-tail",
+            "workdir": str(workdir),
+        },
+    )
     workspace_hash = "-" + str(workdir).lstrip("/").replace("/", "-")
     jsonl_dir = tmp_path / ".claude" / "projects" / workspace_hash
     jsonl_dir.mkdir(parents=True)
@@ -1375,7 +1623,8 @@ async def test_session_chat_supports_tail(
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/sessions/2222222233333333/chat?tail=3", headers=_AUTH_HEADERS,
+            "/v1/sessions/2222222233333333/chat?tail=3",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert len(body["turns"]) == 3
@@ -1384,20 +1633,28 @@ async def test_session_chat_supports_tail(
 
 
 async def test_session_chat_handles_missing_jsonl(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """When the JSONL is absent, response carries ``missing=True`` (200)."""
     monkeypatch.setenv("HOME", str(tmp_path))
     workdir = tmp_path / "work" / "3333333344444444"
     workdir.mkdir(parents=True)
-    _write_session_meta(tmp_path, "3333333344444444", {
-        "task_id": "3333333344444444", "session_id": "missing-sid",
-        "workdir": str(workdir),
-    })
+    _write_session_meta(
+        tmp_path,
+        "3333333344444444",
+        {
+            "task_id": "3333333344444444",
+            "session_id": "missing-sid",
+            "workdir": str(workdir),
+        },
+    )
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/sessions/3333333344444444/chat", headers=_AUTH_HEADERS,
+            "/v1/sessions/3333333344444444/chat",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 200
         body = await resp.json()
@@ -1406,27 +1663,34 @@ async def test_session_chat_handles_missing_jsonl(
 
 
 async def test_session_chat_handles_malformed_jsonl(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """A malformed line is reported in ``skipped_malformed_lines``."""
     monkeypatch.setenv("HOME", str(tmp_path))
     workdir = tmp_path / "work" / "4444444455555555"
     workdir.mkdir(parents=True)
-    _write_session_meta(tmp_path, "4444444455555555", {
-        "task_id": "4444444455555555", "session_id": "sid-bad",
-        "workdir": str(workdir),
-    })
+    _write_session_meta(
+        tmp_path,
+        "4444444455555555",
+        {
+            "task_id": "4444444455555555",
+            "session_id": "sid-bad",
+            "workdir": str(workdir),
+        },
+    )
     workspace_hash = "-" + str(workdir).lstrip("/").replace("/", "-")
     jsonl_dir = tmp_path / ".claude" / "projects" / workspace_hash
     jsonl_dir.mkdir(parents=True)
     (jsonl_dir / "sid-bad.jsonl").write_text(
-        '{"type":"user","content":"ok"}\n'
-        "garbage-not-json\n",
+        '{"type":"user","content":"ok"}\n' "garbage-not-json\n",
     )
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/sessions/4444444455555555/chat", headers=_AUTH_HEADERS,
+            "/v1/sessions/4444444455555555/chat",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert len(body["turns"]) == 1
@@ -1434,7 +1698,9 @@ async def test_session_chat_handles_malformed_jsonl(
 
 
 async def test_session_stdout_returns_tails(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """``GET /v1/sessions/{id}/stdout`` returns capped tails for both streams."""
     root = tmp_path / "work"
@@ -1448,7 +1714,8 @@ async def test_session_stdout_returns_tails(
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/sessions/5555555566666666/stdout", headers=_AUTH_HEADERS,
+            "/v1/sessions/5555555566666666/stdout",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert resp.status == 200
@@ -1457,17 +1724,25 @@ async def test_session_stdout_returns_tails(
 
 
 async def test_kill_requires_confirm_token(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """``POST /v1/sessions/{id}/kill`` without the right confirm → 400."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    _write_session_meta(tmp_path, "6666666677777777", {
-        "task_id": "6666666677777777", "session_id": "sid-alive",
-    })
+    _write_session_meta(
+        tmp_path,
+        "6666666677777777",
+        {
+            "task_id": "6666666677777777",
+            "session_id": "sid-alive",
+        },
+    )
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/sessions/6666666677777777/kill", headers=_AUTH_HEADERS,
+            "/v1/sessions/6666666677777777/kill",
+            headers=_AUTH_HEADERS,
             json={"confirm": "wrong"},
         )
         assert resp.status == 400
@@ -1476,32 +1751,46 @@ async def test_kill_requires_confirm_token(
 
 
 async def test_kill_returns_409_when_no_live_process(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Without a live claude subprocess we cannot kill — 409 (not 500)."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_worker_module, "_find_claude_pid", lambda _sid: None,
+        claude_worker_module,
+        "_find_claude_pid",
+        lambda _sid: None,
     )
-    _write_session_meta(tmp_path, "7777777788888888", {
-        "task_id": "7777777788888888", "session_id": "sid-dead",
-    })
+    _write_session_meta(
+        tmp_path,
+        "7777777788888888",
+        {
+            "task_id": "7777777788888888",
+            "session_id": "sid-dead",
+        },
+    )
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/sessions/7777777788888888/kill", headers=_AUTH_HEADERS,
+            "/v1/sessions/7777777788888888/kill",
+            headers=_AUTH_HEADERS,
             json={"confirm": "yes-task-77777777"},
         )
         assert resp.status == 409
 
 
 async def test_kill_returns_200_when_pid_found(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """When a PID is discoverable, kill issues SIGKILL and reports the PID."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_worker_module, "_find_claude_pid", lambda _sid: 4321,
+        claude_worker_module,
+        "_find_claude_pid",
+        lambda _sid: 4321,
     )
     sent = {}
 
@@ -1510,13 +1799,19 @@ async def test_kill_returns_200_when_pid_found(
         sent["sig"] = sig
 
     monkeypatch.setattr(claude_worker_module.os, "kill", fake_kill)
-    _write_session_meta(tmp_path, "8888888899999999", {
-        "task_id": "8888888899999999", "session_id": "sid-target",
-    })
+    _write_session_meta(
+        tmp_path,
+        "8888888899999999",
+        {
+            "task_id": "8888888899999999",
+            "session_id": "sid-target",
+        },
+    )
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/sessions/8888888899999999/kill", headers=_AUTH_HEADERS,
+            "/v1/sessions/8888888899999999/kill",
+            headers=_AUTH_HEADERS,
             json={"confirm": "yes-task-88888888"},
         )
         body = await resp.json()
@@ -1527,26 +1822,33 @@ async def test_kill_returns_200_when_pid_found(
 
 
 async def test_kill_returns_404_for_unknown_task(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Task without session.json → 404."""
     monkeypatch.setenv("HOME", str(tmp_path))
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/sessions/9999999900000000/kill", headers=_AUTH_HEADERS,
+            "/v1/sessions/9999999900000000/kill",
+            headers=_AUTH_HEADERS,
             json={"confirm": "yes-task-99999999"},
         )
         assert resp.status == 404
 
 
 async def test_cleanup_removes_workdir_and_jsonl(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """``DELETE /v1/sessions/{id}/cleanup`` removes workdir + jsonl + session."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_worker_module, "_is_claude_process_alive", lambda _sid: False,
+        claude_worker_module,
+        "_is_claude_process_alive",
+        lambda _sid: False,
     )
     workdir = tmp_path / "work" / "aaaa0000aaaa0000"
     workdir.mkdir(parents=True)
@@ -1555,16 +1857,21 @@ async def test_cleanup_removes_workdir_and_jsonl(
     jsonl_dir = tmp_path / ".claude" / "projects" / workspace_hash
     jsonl_dir.mkdir(parents=True)
     (jsonl_dir / "sid-clean.jsonl").write_text("...")
-    _write_session_meta(tmp_path, "aaaa0000aaaa0000", {
-        "task_id": "aaaa0000aaaa0000",
-        "session_id": "sid-clean",
-        "workdir": str(workdir),
-    })
+    _write_session_meta(
+        tmp_path,
+        "aaaa0000aaaa0000",
+        {
+            "task_id": "aaaa0000aaaa0000",
+            "session_id": "sid-clean",
+            "workdir": str(workdir),
+        },
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.delete(
-            "/v1/sessions/aaaa0000aaaa0000/cleanup", headers=_AUTH_HEADERS,
+            "/v1/sessions/aaaa0000aaaa0000/cleanup",
+            headers=_AUTH_HEADERS,
         )
         body = await resp.json()
     assert resp.status == 200
@@ -1574,26 +1881,38 @@ async def test_cleanup_removes_workdir_and_jsonl(
 
 
 async def test_cleanup_returns_409_when_task_is_alive(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Cleanup MUST refuse to drop a live task — operator must kill first."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        claude_worker_module, "_is_claude_process_alive", lambda _sid: True,
+        claude_worker_module,
+        "_is_claude_process_alive",
+        lambda _sid: True,
     )
-    _write_session_meta(tmp_path, "bbbbcccc1111dddd", {
-        "task_id": "bbbbcccc1111dddd", "session_id": "alive",
-    })
+    _write_session_meta(
+        tmp_path,
+        "bbbbcccc1111dddd",
+        {
+            "task_id": "bbbbcccc1111dddd",
+            "session_id": "alive",
+        },
+    )
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.delete(
-            "/v1/sessions/bbbbcccc1111dddd/cleanup", headers=_AUTH_HEADERS,
+            "/v1/sessions/bbbbcccc1111dddd/cleanup",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 409
 
 
 async def test_observability_endpoints_require_bearer(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """All new endpoints honor the Bearer auth middleware."""
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -1624,15 +1943,16 @@ def test_cleanup_scan_empty_root(claude_worker_module, tmp_path):
     assert result["total_candidate_bytes"] == 0
 
 
-def test_cleanup_scan_skips_active_lease(claude_worker_module, tmp_path,
-                                         monkeypatch):
+def test_cleanup_scan_skips_active_lease(claude_worker_module, tmp_path, monkeypatch):
     """Active lease (fresh heartbeat) protects a workdir from cleanup."""
     root = tmp_path / "work"
     workdir = root / "aabb0011aabb0011"
     workdir.mkdir(parents=True)
     import time
+
     lease = {
-        "pod": "p1", "pid": 99999,
+        "pod": "p1",
+        "pid": 99999,
         "started_at": time.time(),
         "heartbeat_at": time.time(),  # fresh
     }
@@ -1650,8 +1970,10 @@ def test_cleanup_scan_detects_dead_lease(claude_worker_module, tmp_path):
     workdir.mkdir(parents=True)
     import json
     import time
+
     lease = {
-        "pod": "p1", "pid": 999999999,  # non-existent PID
+        "pod": "p1",
+        "pid": 999999999,  # non-existent PID
         "started_at": time.time() - 3600,
         "heartbeat_at": time.time() - 3600,  # very old
     }
@@ -1661,8 +1983,9 @@ def test_cleanup_scan_detects_dead_lease(claude_worker_module, tmp_path):
     assert any(lp in result["dead_leases"] for lp in lease_paths)
 
 
-def test_cleanup_scan_detects_empty_workdir(claude_worker_module, tmp_path,
-                                             monkeypatch):
+def test_cleanup_scan_detects_empty_workdir(
+    claude_worker_module, tmp_path, monkeypatch
+):
     """Workdir without session JSONL (no claude run) detected as empty."""
     root = tmp_path / "work"
     workdir = root / "eeff0033eeff0033"
@@ -1673,24 +1996,23 @@ def test_cleanup_scan_detects_empty_workdir(claude_worker_module, tmp_path,
     assert str(workdir) in result["empty_workdirs"]
 
 
-def test_do_cleanup_dry_run_deletes_nothing(claude_worker_module, tmp_path,
-                                             monkeypatch):
+def test_do_cleanup_dry_run_deletes_nothing(
+    claude_worker_module, tmp_path, monkeypatch
+):
     """dry_run=True returns scan but does NOT delete anything."""
     root = tmp_path / "work"
     workdir = root / "ff110044ff110044"
     workdir.mkdir(parents=True)
     (workdir / "somefile.txt").write_text("important")
     monkeypatch.setenv("HOME", str(tmp_path))
-    result = claude_worker_module._do_cleanup(root, retention_days=365,
-                                               dry_run=True)
+    result = claude_worker_module._do_cleanup(root, retention_days=365, dry_run=True)
     assert result["dry_run"] is True
     assert result["removed_leases"] == []
     assert result["removed_workdirs"] == []
     assert workdir.exists()  # not deleted
 
 
-async def test_cleanup_preview_endpoint(claude_worker_module, monkeypatch,
-                                         tmp_path):
+async def test_cleanup_preview_endpoint(claude_worker_module, monkeypatch, tmp_path):
     """GET /v1/cleanup returns preview without deleting."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
@@ -1706,8 +2028,7 @@ async def test_cleanup_preview_endpoint(claude_worker_module, monkeypatch,
     assert "empty_workdirs" in body
 
 
-async def test_cleanup_execute_endpoint(claude_worker_module, monkeypatch,
-                                         tmp_path):
+async def test_cleanup_execute_endpoint(claude_worker_module, monkeypatch, tmp_path):
     """POST /v1/cleanup executes cleanup and returns result."""
     root = tmp_path / "work"
     root.mkdir()
@@ -1724,8 +2045,9 @@ async def test_cleanup_execute_endpoint(claude_worker_module, monkeypatch,
     assert "freed_bytes" in body
 
 
-async def test_cleanup_endpoints_require_bearer(claude_worker_module,
-                                                 monkeypatch, tmp_path):
+async def test_cleanup_endpoints_require_bearer(
+    claude_worker_module, monkeypatch, tmp_path
+):
     """Cleanup endpoints respect bearer auth middleware."""
     monkeypatch.setenv("HOME", str(tmp_path))
     app = claude_worker_module.build_app(auth_token="test-token")
@@ -1744,7 +2066,9 @@ async def test_cleanup_endpoints_require_bearer(claude_worker_module,
 
 
 async def test_pod_status_endpoint_returns_lease_when_active(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Active lease.json with recent heartbeat → lease dict is returned."""
     import time as _time
@@ -1785,7 +2109,9 @@ async def test_pod_status_endpoint_returns_lease_when_active(
 
 
 async def test_pod_status_endpoint_returns_null_lease_when_idle(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """No lease.json in workspace → lease is null (pod is idle)."""
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
@@ -1802,7 +2128,9 @@ async def test_pod_status_endpoint_returns_null_lease_when_idle(
 
 
 async def test_pod_status_endpoint_returns_null_lease_when_heartbeat_stale(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Lease with expired heartbeat (> TTL) → treated as dead, returns null."""
     import time as _time
@@ -1833,7 +2161,9 @@ async def test_pod_status_endpoint_returns_null_lease_when_heartbeat_stale(
 
 
 async def test_pod_status_endpoint_redacts_lease_payload(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Only task_id, heartbeat_at, pid are exposed — no extra fields leak."""
     import time as _time
@@ -1866,9 +2196,9 @@ async def test_pod_status_endpoint_redacts_lease_payload(
     lease = body["lease"]
     assert lease is not None
     allowed_keys = {"task_id", "heartbeat_at", "pid", "claude_pid", "claude_running"}
-    assert set(lease.keys()) <= allowed_keys, (
-        f"Lease exposed extra fields: {set(lease.keys()) - allowed_keys}"
-    )
+    assert (
+        set(lease.keys()) <= allowed_keys
+    ), f"Lease exposed extra fields: {set(lease.keys()) - allowed_keys}"
     assert "secret_prompt" not in lease
     assert "credentials" not in lease
     assert "pod" not in lease
@@ -1876,7 +2206,9 @@ async def test_pod_status_endpoint_redacts_lease_payload(
 
 
 async def test_pod_status_endpoint_requires_bearer(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """/v1/pod-status requires Bearer auth — no anonymous access."""
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
@@ -1889,13 +2221,15 @@ async def test_pod_status_endpoint_requires_bearer(
 
 
 async def test_pod_status_endpoint_returns_disk_usage_via_shutil(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """disk field is populated from shutil.disk_usage — no subprocess."""
     import collections
 
     DiskUsage = collections.namedtuple("DiskUsage", ["total", "used", "free"])
-    fake_du = DiskUsage(total=10 * 1024 ** 3, used=3 * 1024 ** 3, free=7 * 1024 ** 3)
+    fake_du = DiskUsage(total=10 * 1024**3, used=3 * 1024**3, free=7 * 1024**3)
 
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
     monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
@@ -1910,13 +2244,15 @@ async def test_pod_status_endpoint_returns_disk_usage_via_shutil(
 
     disk = body["disk"]
     assert disk is not None
-    assert disk["used_bytes"] == 3 * 1024 ** 3
-    assert disk["total_bytes"] == 10 * 1024 ** 3
+    assert disk["used_bytes"] == 3 * 1024**3
+    assert disk["total_bytes"] == 10 * 1024**3
     assert "mount" in disk
 
 
 async def test_pod_status_endpoint_counts_claude_processes_via_psutil(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """claude_processes reflects the value returned by _count_claude_processes."""
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
@@ -1999,7 +2335,8 @@ async def test_auth_status_returns_idle_initially(claude_worker_module):
 
 
 async def test_auth_start_returns_error_when_claude_not_found(
-    claude_worker_module, monkeypatch,
+    claude_worker_module,
+    monkeypatch,
 ):
     """/v1/auth/start retorna error se claude binary não está no PATH."""
     import subprocess as _sp  # noqa: PLC0415
@@ -2022,7 +2359,8 @@ async def test_auth_start_returns_error_when_claude_not_found(
 
 
 async def test_auth_start_captures_oauth_url_from_claude_output(
-    claude_worker_module, monkeypatch,
+    claude_worker_module,
+    monkeypatch,
 ):
     """/v1/auth/start captura URL OAuth impressa pelo claude auth login."""
     import io  # noqa: PLC0415
@@ -2035,10 +2373,10 @@ async def test_auth_start_captures_oauth_url_from_claude_output(
 
     class FakeProc:
         returncode = 0
-        stdout = io.StringIO(
-            f"Opening browser...\nIf not opened, visit:\n{fake_url}\n"
-        )
-        def wait(self): pass
+        stdout = io.StringIO(f"Opening browser...\nIf not opened, visit:\n{fake_url}\n")
+
+        def wait(self):
+            pass
 
     def fake_popen(cmd, *args, **kwargs):
         if cmd and cmd[0] == "claude":
@@ -2060,7 +2398,8 @@ async def test_auth_start_captures_oauth_url_from_claude_output(
 
 
 async def test_auth_start_captures_callback_port_from_percent_encoded_url(
-    claude_worker_module, monkeypatch,
+    claude_worker_module,
+    monkeypatch,
 ):
     """/v1/auth/start extrai callback_port mesmo com redirect_uri percent-encoded."""
     import io  # noqa: PLC0415
@@ -2074,10 +2413,10 @@ async def test_auth_start_captures_callback_port_from_percent_encoded_url(
 
     class FakeProc:
         returncode = 0
-        stdout = io.StringIO(
-            f"Opening browser...\nIf not opened, visit:\n{fake_url}\n"
-        )
-        def wait(self): pass
+        stdout = io.StringIO(f"Opening browser...\nIf not opened, visit:\n{fake_url}\n")
+
+        def wait(self):
+            pass
 
     def fake_popen(cmd, *args, **kwargs):
         if cmd and cmd[0] == "claude":
@@ -2094,9 +2433,9 @@ async def test_auth_start_captures_callback_port_from_percent_encoded_url(
         body = await resp.json()
 
     assert body.get("oauth_url") == fake_url, f"URL não capturada; body={body}"
-    assert body.get("callback_port") == 54321, (
-        f"Porta não detectada com redirect_uri percent-encoded; body={body}"
-    )
+    assert (
+        body.get("callback_port") == 54321
+    ), f"Porta não detectada com redirect_uri percent-encoded; body={body}"
 
 
 def test_oauth_broker_state_reset(claude_worker_module):
@@ -2119,7 +2458,9 @@ def test_oauth_broker_state_reset(claude_worker_module):
 
 @pytest.mark.asyncio
 async def test_dispatch_409_lease_conflict_emits_dispatch_failed(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """AC #435 §2 — 409 lease conflict é caminho terminal; precisa emitir
     ``dispatch.failed`` para o painel limpar ``current_task`` (senão fica
@@ -2152,14 +2493,18 @@ async def test_dispatch_409_lease_conflict_emits_dispatch_failed(
     try:
         app = claude_worker_module.build_app(auth_token="test-token")
         async with TestClient(TestServer(app)) as client:
-            resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-                "brief": "test",
-                "channel_id": "auto/issue-1",
-                "preferred_model": "anthropic:claude-sonnet-4-6",
-                "stage": "implement",
-                "issue_number": 1,
-                "branch": "auto/issue-1",
-            })
+            resp = await client.post(
+                "/v1/dispatch",
+                headers=_AUTH_HEADERS,
+                json={
+                    "brief": "test",
+                    "channel_id": "auto/issue-1",
+                    "preferred_model": "anthropic:claude-sonnet-4-6",
+                    "stage": "implement",
+                    "issue_number": 1,
+                    "branch": "auto/issue-1",
+                },
+            )
             assert resp.status == 409
             body = await resp.json()
             assert body.get("error_code") == "TASK_ALREADY_RUNNING"
@@ -2176,11 +2521,13 @@ async def test_dispatch_409_lease_conflict_emits_dispatch_failed(
 
 # --- Channel-based fresh-dispatch dedup (anti dup-dispatch #433/#446) --------
 
+
 def test_find_live_task_for_channel(claude_worker_module, monkeypatch, tmp_path):
     """Dedup por channel: encontra o task_id de um workdir cujo lease casa o
     channel E cujo claude está vivo; ignora channel divergente, claude morto,
     lease ausente/corrompido e channel vazio."""
     import json
+
     cws = claude_worker_module
     # A: channel alvo + claude vivo
     (tmp_path / "aaaa").mkdir()
@@ -2201,7 +2548,9 @@ def test_find_live_task_for_channel(claude_worker_module, monkeypatch, tmp_path)
     (tmp_path / "dddd").mkdir()
 
     monkeypatch.setattr(
-        cws, "_is_claude_process_alive", lambda sid: sid in {"sid-a", "sid-b"},
+        cws,
+        "_is_claude_process_alive",
+        lambda sid: sid in {"sid-a", "sid-b"},
     )
     # acha A (channel casa + vivo); ignora C (mesmo channel, claude morto)
     assert cws._find_live_task_for_channel(tmp_path, "pipeline-issue-446") == "aaaa"
@@ -2212,10 +2561,13 @@ def test_find_live_task_for_channel(claude_worker_module, monkeypatch, tmp_path)
 
 
 def test_find_live_task_for_channel_dead_only_returns_none(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Channel casa mas o único claude está morto → None (permite fresh)."""
     import json
+
     cws = claude_worker_module
     (tmp_path / "x1").mkdir()
     (tmp_path / "x1" / ".lease.json").write_text(
@@ -2328,7 +2680,9 @@ def test_build_failure_reason_trunca_stdout_longo(claude_worker_module):
 
 @pytest.mark.asyncio
 async def test_dispatch_error_contém_stderr_quando_subprocess_falha(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """F1a: quando subprocess falha (rc != 0) com stderr não-vazio, a resposta
     JSON deve incluir ``error`` com a cauda do stderr — e NÃO deve ser
@@ -2349,7 +2703,10 @@ async def test_dispatch_error_contém_stderr_quando_subprocess_falha(
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         # Subprocess falha com rc=1 e stderr não-vazio; stdout sem JSON válido.
         return claude_worker_module.SubprocessResult(
-            returncode=1, stdout="", stderr=stderr_msg, duration_seconds=557.0,
+            returncode=1,
+            stdout="",
+            stderr=stderr_msg,
+            duration_seconds=557.0,
         )
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -2358,7 +2715,8 @@ async def test_dispatch_error_contém_stderr_quando_subprocess_falha(
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "review PR #42", "stage": "pr_review"},
         )
         body = await resp.json()
@@ -2369,14 +2727,16 @@ async def test_dispatch_error_contém_stderr_quando_subprocess_falha(
     assert error, "response deve ter campo 'error' preenchido"
     assert error.lower() != "unknown", f"error não deve ser 'unknown', got: {error!r}"
     # Deve conter informação do stderr real.
-    assert "api.anthropic.com" in error or "timeout" in error or "rc=1" in error, (
-        f"error deve referenciar o stderr, got: {error!r}"
-    )
+    assert (
+        "api.anthropic.com" in error or "timeout" in error or "rc=1" in error
+    ), f"error deve referenciar o stderr, got: {error!r}"
 
 
 @pytest.mark.asyncio
 async def test_dispatch_error_contém_stderr_truncado_quando_gigante(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """F1a: stderr gigante (> 2000 bytes) resulta num campo ``error`` truncado.
 
@@ -2398,7 +2758,10 @@ async def test_dispatch_error_contém_stderr_truncado_quando_gigante(
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         return claude_worker_module.SubprocessResult(
-            returncode=2, stdout="", stderr=stderr_gigante, duration_seconds=10.0,
+            returncode=2,
+            stdout="",
+            stderr=stderr_gigante,
+            duration_seconds=10.0,
         )
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -2407,7 +2770,8 @@ async def test_dispatch_error_contém_stderr_truncado_quando_gigante(
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "implement #1", "stage": "implement"},
         )
         body = await resp.json()
@@ -2418,18 +2782,18 @@ async def test_dispatch_error_contém_stderr_truncado_quando_gigante(
     assert error, "campo 'error' deve ser preenchido quando subprocess falha"
     assert error.lower() != "unknown", f"error não deve ser 'unknown', got: {error!r}"
     # Deve mencionar que é stderr (prefixo da _build_failure_reason).
-    assert "stderr" in error or "rc=2" in error, (
-        f"error deve indicar a origem do erro, got: {error!r}"
-    )
+    assert (
+        "stderr" in error or "rc=2" in error
+    ), f"error deve indicar a origem do erro, got: {error!r}"
     # O campo error deve ser limitado pelo handler (≤500 chars do motivo + prefixo).
-    assert len(error) <= 550, (
-        f"error deve ser truncado, got len={len(error)}"
-    )
+    assert len(error) <= 550, f"error deve ser truncado, got len={len(error)}"
 
 
 @pytest.mark.asyncio
 async def test_dispatch_timeout_error_contém_motivo_legível(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """F1a: timeout (rc=124) sem saída resulta em error descritivo mencionando
     timeout — nunca ``'unknown'``."""
@@ -2451,7 +2815,8 @@ async def test_dispatch_timeout_error_contém_motivo_legível(
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "implement #99", "stage": "implement", "timeout_s": 30},
         )
         body = await resp.json()
@@ -2461,29 +2826,40 @@ async def test_dispatch_timeout_error_contém_motivo_legível(
     assert error, "deve ter campo 'error'"
     assert error.lower() != "unknown"
     # Deve mencionar timeout ou rc=124.
-    assert "timeout" in error.lower() or "124" in error, (
-        f"error de timeout deve mencionar timeout ou rc=124, got: {error!r}"
-    )
+    assert (
+        "timeout" in error.lower() or "124" in error
+    ), f"error de timeout deve mencionar timeout ou rc=124, got: {error!r}"
 
 
 @pytest.mark.asyncio
 async def test_dispatch_ok_nao_preenche_error(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Sanidade: dispatch bem-sucedido NÃO deve ter campo ``error`` na resposta
     (não-regressão — a nova lógica de falha só dispara quando ok=False)."""
     import json as _json
+
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
-        out = _json.dumps({
-            "is_error": False, "result": "STATUS: SUCCESS",
-            "session_id": "s1", "total_cost_usd": 0.02,
-            "duration_ms": 5000, "num_turns": 3,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "STATUS: SUCCESS",
+                "session_id": "s1",
+                "total_cost_usd": 0.02,
+                "duration_ms": 5000,
+                "num_turns": 3,
+            }
+        )
         return claude_worker_module.SubprocessResult(
-            returncode=0, stdout=out, stderr="", duration_seconds=5.0,
+            returncode=0,
+            stdout=out,
+            stderr="",
+            duration_seconds=5.0,
         )
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -2492,15 +2868,16 @@ async def test_dispatch_ok_nao_preenche_error(
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "implement #7", "stage": "implement"},
         )
         body = await resp.json()
 
     assert body["ok"] is True
-    assert "error" not in body, (
-        f"dispatch bem-sucedido não deve ter 'error', got: {body.get('error')}"
-    )
+    assert (
+        "error" not in body
+    ), f"dispatch bem-sucedido não deve ter 'error', got: {body.get('error')}"
 
 
 # =============================================================================
@@ -2510,7 +2887,9 @@ async def test_dispatch_ok_nao_preenche_error(
 
 @pytest.mark.asyncio
 async def test_resume_info_expõe_last_result_full_completo(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """T1: resume_info_handler deve devolver ``last_result_full`` completo —
     sem truncar a 300 chars como o ``last_result_summary`` faz.
@@ -2531,20 +2910,24 @@ async def test_resume_info_expõe_last_result_full_completo(
     veredito_longo = "CLARO: " + "X" * 493  # total 500 chars
     assert len(veredito_longo) == 500
 
-    (meta_dir / "session.json").write_text(_json.dumps({
-        "task_id": task_id,
-        "session_id": "sess-full",
-        "workdir": str(workdir),
-        "stage": "pr_review",
-        "branch": "auto/issue-1",
-        "started_at": 1000,
-        "last_completed_at": 1420,
-        "last_is_error": False,
-        "last_result_summary": veredito_longo[:300],   # como grava o handler
-        "last_result_full": veredito_longo,            # novo campo T1
-        "last_returncode": 0,
-        "attempt": 1,
-    }))
+    (meta_dir / "session.json").write_text(
+        _json.dumps(
+            {
+                "task_id": task_id,
+                "session_id": "sess-full",
+                "workdir": str(workdir),
+                "stage": "pr_review",
+                "branch": "auto/issue-1",
+                "started_at": 1000,
+                "last_completed_at": 1420,
+                "last_is_error": False,
+                "last_result_summary": veredito_longo[:300],  # como grava o handler
+                "last_result_full": veredito_longo,  # novo campo T1
+                "last_returncode": 0,
+                "attempt": 1,
+            }
+        )
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
@@ -2567,7 +2950,9 @@ async def test_resume_info_expõe_last_result_full_completo(
 
 @pytest.mark.asyncio
 async def test_dispatch_persiste_last_result_full_no_session_json(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """T1: após um dispatch bloqueante (wait_for_result=True), o session.json
     deve conter ``last_result_full`` com o texto completo do resultado do claude.
@@ -2578,14 +2963,16 @@ async def test_dispatch_persiste_last_result_full_no_session_json(
     assert len(veredito) > 300
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
-        out = _json.dumps({
-            "is_error": False,
-            "result": veredito,
-            "session_id": "s-full",
-            "total_cost_usd": 0.01,
-            "duration_ms": 1000,
-            "num_turns": 1,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": veredito,
+                "session_id": "s-full",
+                "total_cost_usd": 0.01,
+                "duration_ms": 1000,
+                "num_turns": 1,
+            }
+        )
         return claude_worker_module.SubprocessResult(0, out, "", 1.0)
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -2595,11 +2982,15 @@ async def test_dispatch_persiste_last_result_full_no_session_json(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "implement #1",
-            "stage": "implement",
-            "preferred_model": "anthropic:claude-sonnet-4-6",
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "implement #1",
+                "stage": "implement",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+            },
+        )
         body = await resp.json()
 
     assert resp.status == 200
@@ -2613,14 +3004,16 @@ async def test_dispatch_persiste_last_result_full_no_session_json(
     # last_result_summary = truncado a 300.
     assert meta["last_result_summary"] == veredito[:300]
     # last_result_full = texto completo (não truncado a 300).
-    assert meta["last_result_full"] == veredito, (
-        f"last_result_full foi truncado: len={len(meta['last_result_full'])}"
-    )
+    assert (
+        meta["last_result_full"] == veredito
+    ), f"last_result_full foi truncado: len={len(meta['last_result_full'])}"
 
 
 @pytest.mark.asyncio
 async def test_resume_info_retorna_string_vazia_quando_last_result_full_ausente(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """T1 retrocompat: metadados antigos (sem last_result_full) → campo
     ausente retorna string vazia (não KeyError nem None).
@@ -2633,15 +3026,19 @@ async def test_resume_info_retorna_string_vazia_quando_last_result_full_ausente(
     meta_dir = tmp_path / ".claude" / "tasks" / task_id
     meta_dir.mkdir(parents=True)
     # session.json sem o campo last_result_full (metadado antigo).
-    (meta_dir / "session.json").write_text(_json.dumps({
-        "task_id": task_id,
-        "session_id": "s-old",
-        "workdir": "/tmp/nonexistent",
-        "attempt": 1,
-        "started_at": 100,
-        "last_result_summary": "ok",
-        # last_result_full ausente intencionalmente.
-    }))
+    (meta_dir / "session.json").write_text(
+        _json.dumps(
+            {
+                "task_id": task_id,
+                "session_id": "s-old",
+                "workdir": "/tmp/nonexistent",
+                "attempt": 1,
+                "started_at": 100,
+                "last_result_summary": "ok",
+                # last_result_full ausente intencionalmente.
+            }
+        )
+    )
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
@@ -2663,7 +3060,9 @@ async def test_resume_info_retorna_string_vazia_quando_last_result_full_ausente(
 
 @pytest.mark.asyncio
 async def test_dispatch_nowait_retorna_202_com_task_id(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """T2: POST dispatch com ``wait_for_result=False`` retorna 202 imediatamente
     com ``{"task_id": ..., "status": "running"}`` sem esperar o subprocess.
@@ -2678,10 +3077,16 @@ async def test_dispatch_nowait_retorna_202_com_task_id(
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         subprocess_started.set()
         await subprocess_may_finish.wait()
-        out = _json.dumps({
-            "is_error": False, "result": "done", "session_id": "s",
-            "total_cost_usd": 0.01, "duration_ms": 10, "num_turns": 1,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "done",
+                "session_id": "s",
+                "total_cost_usd": 0.01,
+                "duration_ms": 10,
+                "num_turns": 1,
+            }
+        )
         return claude_worker_module.SubprocessResult(0, out, "", 0.01)
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -2691,12 +3096,16 @@ async def test_dispatch_nowait_retorna_202_com_task_id(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "implement #2",
-            "stage": "implement",
-            "preferred_model": "anthropic:claude-sonnet-4-6",
-            "wait_for_result": False,
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "implement #2",
+                "stage": "implement",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+                "wait_for_result": False,
+            },
+        )
         body = await resp.json()
 
     # 202 deve chegar ANTES do subprocess terminar.
@@ -2712,7 +3121,9 @@ async def test_dispatch_nowait_retorna_202_com_task_id(
 
 @pytest.mark.asyncio
 async def test_dispatch_nowait_grava_session_json_antes_do_subprocess(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """T2: session.json com task_id deve existir IMEDIATAMENTE após o 202,
     antes mesmo de o subprocess terminar — permite que resume-info funcione
@@ -2725,10 +3136,16 @@ async def test_dispatch_nowait_grava_session_json_antes_do_subprocess(
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
         await subprocess_may_finish.wait()
-        out = _json.dumps({
-            "is_error": False, "result": "done", "session_id": "s",
-            "total_cost_usd": 0.0, "duration_ms": 1, "num_turns": 1,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "done",
+                "session_id": "s",
+                "total_cost_usd": 0.0,
+                "duration_ms": 1,
+                "num_turns": 1,
+            }
+        )
         return claude_worker_module.SubprocessResult(0, out, "", 0.01)
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -2738,11 +3155,15 @@ async def test_dispatch_nowait_grava_session_json_antes_do_subprocess(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "x",
-            "preferred_model": "anthropic:claude-haiku-4-5",
-            "wait_for_result": False,
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+                "wait_for_result": False,
+            },
+        )
         body = await resp.json()
 
     assert resp.status == 202
@@ -2750,9 +3171,9 @@ async def test_dispatch_nowait_grava_session_json_antes_do_subprocess(
 
     # session.json deve existir imediatamente (gravado ANTES do spawn).
     meta_path = tmp_path / ".claude" / "tasks" / task_id / "session.json"
-    assert meta_path.exists(), (
-        f"session.json deve existir imediatamente após 202, não encontrado: {meta_path}"
-    )
+    assert (
+        meta_path.exists()
+    ), f"session.json deve existir imediatamente após 202, não encontrado: {meta_path}"
     meta = _json.loads(meta_path.read_text())
     assert meta["task_id"] == task_id
     assert "session_id" in meta
@@ -2763,7 +3184,9 @@ async def test_dispatch_nowait_grava_session_json_antes_do_subprocess(
 
 @pytest.mark.asyncio
 async def test_dispatch_nowait_grava_last_completed_ao_terminar(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """T2: após o subprocess terminar em background, session.json deve ter
     ``last_completed_at`` e ``last_result_full`` preenchidos.
@@ -2775,10 +3198,16 @@ async def test_dispatch_nowait_grava_last_completed_ao_terminar(
     subprocess_done = _asyncio.Event()
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
-        out = _json.dumps({
-            "is_error": False, "result": resultado, "session_id": "s",
-            "total_cost_usd": 0.05, "duration_ms": 500, "num_turns": 3,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": resultado,
+                "session_id": "s",
+                "total_cost_usd": 0.05,
+                "duration_ms": 500,
+                "num_turns": 3,
+            }
+        )
         result = claude_worker_module.SubprocessResult(0, out, "", 0.5)
         subprocess_done.set()
         return result
@@ -2790,12 +3219,16 @@ async def test_dispatch_nowait_grava_last_completed_ao_terminar(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "implement #3",
-            "stage": "implement",
-            "preferred_model": "anthropic:claude-sonnet-4-6",
-            "wait_for_result": False,
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "implement #3",
+                "stage": "implement",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+                "wait_for_result": False,
+            },
+        )
         body = await resp.json()
 
     assert resp.status == 202
@@ -2813,19 +3246,21 @@ async def test_dispatch_nowait_grava_last_completed_ao_terminar(
     meta_path = tmp_path / ".claude" / "tasks" / task_id / "session.json"
     meta = _json.loads(meta_path.read_text())
 
-    assert meta["last_completed_at"] is not None, (
-        "last_completed_at deve ser gravado após conclusão do subprocess"
-    )
+    assert (
+        meta["last_completed_at"] is not None
+    ), "last_completed_at deve ser gravado após conclusão do subprocess"
     assert meta["last_is_error"] is False
-    assert meta["last_result_full"] == resultado, (
-        f"last_result_full incompleto: len={len(meta['last_result_full'])}"
-    )
+    assert (
+        meta["last_result_full"] == resultado
+    ), f"last_result_full incompleto: len={len(meta['last_result_full'])}"
     assert meta["last_result_summary"] == resultado[:300]
 
 
 @pytest.mark.asyncio
 async def test_dispatch_nowait_limpa_lease_ao_terminar(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """T2: após o subprocess terminar em background, o lease deve ser removido
     — sem lease órfão deixado no filesystem.
@@ -2836,10 +3271,16 @@ async def test_dispatch_nowait_limpa_lease_ao_terminar(
     subprocess_done = _asyncio.Event()
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
-        out = _json.dumps({
-            "is_error": False, "result": "ok", "session_id": "s",
-            "total_cost_usd": 0.0, "duration_ms": 1, "num_turns": 1,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "ok",
+                "session_id": "s",
+                "total_cost_usd": 0.0,
+                "duration_ms": 1,
+                "num_turns": 1,
+            }
+        )
         result = claude_worker_module.SubprocessResult(0, out, "", 0.01)
         subprocess_done.set()
         return result
@@ -2851,11 +3292,15 @@ async def test_dispatch_nowait_limpa_lease_ao_terminar(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "check lease",
-            "preferred_model": "anthropic:claude-haiku-4-5",
-            "wait_for_result": False,
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "check lease",
+                "preferred_model": "anthropic:claude-haiku-4-5",
+                "wait_for_result": False,
+            },
+        )
         body = await resp.json()
 
     assert resp.status == 202
@@ -2872,14 +3317,16 @@ async def test_dispatch_nowait_limpa_lease_ao_terminar(
     # Aguarda o cleanup após o subprocess.
     await _asyncio.sleep(0.1)
 
-    assert not lease_path.exists(), (
-        f"lease.json deve ser removido após conclusão do nowait; ainda existe: {lease_path}"
-    )
+    assert (
+        not lease_path.exists()
+    ), f"lease.json deve ser removido após conclusão do nowait; ainda existe: {lease_path}"
 
 
 @pytest.mark.asyncio
 async def test_dispatch_wait_true_mantem_comportamento_bloqueante(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """T2 retrocompat: ``wait_for_result=True`` (explícito) retorna 200 com
     resultado completo — comportamento original preservado.
@@ -2887,10 +3334,16 @@ async def test_dispatch_wait_true_mantem_comportamento_bloqueante(
     import json as _json
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
-        out = _json.dumps({
-            "is_error": False, "result": "done", "session_id": "s",
-            "total_cost_usd": 0.02, "duration_ms": 200, "num_turns": 2,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "done",
+                "session_id": "s",
+                "total_cost_usd": 0.02,
+                "duration_ms": 200,
+                "num_turns": 2,
+            }
+        )
         return claude_worker_module.SubprocessResult(0, out, "", 0.2)
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -2900,14 +3353,20 @@ async def test_dispatch_wait_true_mantem_comportamento_bloqueante(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "implement #5",
-            "preferred_model": "anthropic:claude-sonnet-4-6",
-            "wait_for_result": True,  # explícito
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "implement #5",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+                "wait_for_result": True,  # explícito
+            },
+        )
         body = await resp.json()
 
-    assert resp.status == 200, f"wait_for_result=True deve retornar 200, got {resp.status}"
+    assert (
+        resp.status == 200
+    ), f"wait_for_result=True deve retornar 200, got {resp.status}"
     assert body["ok"] is True
     assert "task_id" in body
     assert body["returncode"] == 0
@@ -2915,7 +3374,9 @@ async def test_dispatch_wait_true_mantem_comportamento_bloqueante(
 
 @pytest.mark.asyncio
 async def test_dispatch_sem_wait_for_result_mantem_comportamento_bloqueante(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """T2 retrocompat: ausência de ``wait_for_result`` no payload (campo
     omitido) retorna 200 bloqueante — default compatível com clientes legados.
@@ -2923,10 +3384,16 @@ async def test_dispatch_sem_wait_for_result_mantem_comportamento_bloqueante(
     import json as _json
 
     async def fake_run(args, *, cwd, task_id, timeout, lease_path=None):
-        out = _json.dumps({
-            "is_error": False, "result": "done", "session_id": "s",
-            "total_cost_usd": 0.01, "duration_ms": 100, "num_turns": 1,
-        })
+        out = _json.dumps(
+            {
+                "is_error": False,
+                "result": "done",
+                "session_id": "s",
+                "total_cost_usd": 0.01,
+                "duration_ms": 100,
+                "num_turns": 1,
+            }
+        )
         return claude_worker_module.SubprocessResult(0, out, "", 0.1)
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -2936,11 +3403,15 @@ async def test_dispatch_sem_wait_for_result_mantem_comportamento_bloqueante(
 
     app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
-            "brief": "implement #6",
-            "preferred_model": "anthropic:claude-sonnet-4-6",
-            # wait_for_result ausente propositalmente.
-        })
+        resp = await client.post(
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "implement #6",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+                # wait_for_result ausente propositalmente.
+            },
+        )
         body = await resp.json()
 
     assert resp.status == 200, f"default deve ser 200 bloqueante, got {resp.status}"
@@ -2949,7 +3420,9 @@ async def test_dispatch_sem_wait_for_result_mantem_comportamento_bloqueante(
 
 # --- _estimate_context_tokens: pico de contexto, não soma (issue #445 FU) -----
 def test_estimate_context_tokens_uses_peak_not_sum(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """Mede o CONTEXTO OCUPADO (pico de um round), não a soma dos rounds.
 
@@ -2959,23 +3432,29 @@ def test_estimate_context_tokens_uses_peak_not_sum(
     ~255K, mas o contexto real ocupado (pico de 1 round) é só 51K.
     """
     import json as _json
+
     mod = claude_worker_module
     jsonl = tmp_path / "sess.jsonl"
     lines = []
     for i in range(5):
-        lines.append(_json.dumps({
-            "type": "assistant",
-            "requestId": f"r{i}",
-            "message": {
-                "id": f"m{i}", "role": "assistant",
-                "usage": {
-                    "input_tokens": 1000,
-                    "cache_read_input_tokens": 50000,
-                    "cache_creation_input_tokens": 0,
-                    "output_tokens": 800,
-                },
-            },
-        }))
+        lines.append(
+            _json.dumps(
+                {
+                    "type": "assistant",
+                    "requestId": f"r{i}",
+                    "message": {
+                        "id": f"m{i}",
+                        "role": "assistant",
+                        "usage": {
+                            "input_tokens": 1000,
+                            "cache_read_input_tokens": 50000,
+                            "cache_creation_input_tokens": 0,
+                            "output_tokens": 800,
+                        },
+                    },
+                }
+            )
+        )
     jsonl.write_text("\n".join(lines), encoding="utf-8")
     monkeypatch.setattr(mod, "_resolve_jsonl_path", lambda s, w: jsonl)
 
@@ -2984,7 +3463,9 @@ def test_estimate_context_tokens_uses_peak_not_sum(
 
 
 def test_estimate_context_tokens_zero_when_missing(
-    claude_worker_module, monkeypatch, tmp_path,
+    claude_worker_module,
+    monkeypatch,
+    tmp_path,
 ):
     """JSONL ausente → 0 (fallback conservador, não promove por falha de medir)."""
     mod = claude_worker_module
@@ -2996,7 +3477,6 @@ def test_estimate_context_tokens_zero_when_missing(
 # Issue #515 — versioned agent personalization: skill/CLAUDE.md injection
 # ─────────────────────────────────────────────────────────────────────────────
 
-import stat
 
 _AGENTS_DIR_CW = (
     Path(__file__).resolve().parents[3] / "infra" / "k8s" / "agents" / "claude-worker"
@@ -3012,17 +3492,17 @@ def test_versioned_skill_file_exists_and_readable() -> None:
         "(issue #515 AC#1)."
     )
     content = skill_path.read_text(encoding="utf-8")
-    assert len(content) > 100, (
-        f"Skill {skill_path} parece vazia ou truncada ({len(content)} chars)."
-    )
+    assert (
+        len(content) > 100
+    ), f"Skill {skill_path} parece vazia ou truncada ({len(content)} chars)."
 
 
 def test_versioned_claude_md_exists_and_readable() -> None:
     """Issue #515 AC#2 — CLAUDE.md versionado deve existir na fonte."""
     claude_md = _AGENTS_DIR_CW / "CLAUDE.md"
-    assert claude_md.is_file(), (
-        f"CLAUDE.md versionado ausente: {claude_md} (issue #515 AC#2)."
-    )
+    assert (
+        claude_md.is_file()
+    ), f"CLAUDE.md versionado ausente: {claude_md} (issue #515 AC#2)."
     content = claude_md.read_text(encoding="utf-8")
     assert len(content) > 50, f"CLAUDE.md parece vazio ({len(content)} chars)."
 
@@ -3030,9 +3510,7 @@ def test_versioned_claude_md_exists_and_readable() -> None:
 def test_versioned_command_plan_exists() -> None:
     """Issue #515 — command plan.md deve existir na fonte versionada."""
     cmd_path = _AGENTS_DIR_CW / "commands" / "plan.md"
-    assert cmd_path.is_file(), (
-        f"Command plan.md ausente: {cmd_path} (issue #515)."
-    )
+    assert cmd_path.is_file(), f"Command plan.md ausente: {cmd_path} (issue #515)."
 
 
 def test_initcontainer_script_uses_chmod_0644() -> None:
@@ -3046,21 +3524,21 @@ def test_initcontainer_script_uses_chmod_0644() -> None:
 
     manifest_path = (
         Path(__file__).resolve().parents[3]
-        / "infra" / "k8s" / "manifests" / "50-claude-worker-deployment.yaml"
+        / "infra"
+        / "k8s"
+        / "manifests"
+        / "50-claude-worker-deployment.yaml"
     )
     assert manifest_path.is_file(), f"Manifest ausente: {manifest_path}"
     docs = list(yaml.safe_load_all(manifest_path.read_text(encoding="utf-8")))
-    deployment = next(
-        (d for d in docs if d and d.get("kind") == "Deployment"), None
-    )
+    deployment = next((d for d in docs if d and d.get("kind") == "Deployment"), None)
     assert deployment is not None, "Deployment não encontrado no manifest 50."
-    init_containers = (
-        (deployment.get("spec", {}) or {})
-        .get("template", {})
-        .get("spec", {})
-        .get("initContainers") or []
+    init_containers = (deployment.get("spec", {}) or {}).get("template", {}).get(
+        "spec", {}
+    ).get("initContainers") or []
+    inject = next(
+        (c for c in init_containers if c.get("name") == "inject-agents"), None
     )
-    inject = next((c for c in init_containers if c.get("name") == "inject-agents"), None)
     assert inject is not None, "initContainer 'inject-agents' não encontrado."
     args = inject.get("args") or []
     script = " ".join(str(a) for a in args)
@@ -3080,18 +3558,20 @@ def test_initcontainer_script_fails_fast_on_missing_source() -> None:
 
     manifest_path = (
         Path(__file__).resolve().parents[3]
-        / "infra" / "k8s" / "manifests" / "50-claude-worker-deployment.yaml"
+        / "infra"
+        / "k8s"
+        / "manifests"
+        / "50-claude-worker-deployment.yaml"
     )
     docs = list(yaml.safe_load_all(manifest_path.read_text(encoding="utf-8")))
     deployment = next((d for d in docs if d and d.get("kind") == "Deployment"), None)
     assert deployment is not None
-    init_containers = (
-        (deployment.get("spec", {}) or {})
-        .get("template", {})
-        .get("spec", {})
-        .get("initContainers") or []
+    init_containers = (deployment.get("spec", {}) or {}).get("template", {}).get(
+        "spec", {}
+    ).get("initContainers") or []
+    inject = next(
+        (c for c in init_containers if c.get("name") == "inject-agents"), None
     )
-    inject = next((c for c in init_containers if c.get("name") == "inject-agents"), None)
     assert inject is not None
     args = inject.get("args") or []
     script = " ".join(str(a) for a in args)

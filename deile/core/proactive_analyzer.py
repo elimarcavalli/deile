@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 class ProactiveAction(Enum):
     """Tipos de ações proativas disponíveis"""
+
     READ_FILE = "read_file"
     LIST_FILES = "list_files"
     LIST_DIRECTORY = "list_directory"
@@ -31,6 +32,7 @@ class ProactiveAction(Enum):
 @dataclass
 class ProactiveIntent:
     """Intenção proativa detectada na entrada do usuário"""
+
     action: ProactiveAction
     target: str
     confidence: float
@@ -38,7 +40,7 @@ class ProactiveIntent:
     priority: int = 1
     # New fields for enhanced functionality
     resolved_file: Optional[FileMatch] = None
-    chained_actions: List['ProactiveIntent'] = field(default_factory=list)
+    chained_actions: List["ProactiveIntent"] = field(default_factory=list)
     autonomous_eligible: bool = False
 
     def resolve_target(self, resolver=None) -> Optional[FileMatch]:
@@ -48,7 +50,10 @@ class ProactiveIntent:
         the analyzer's configured workspace; otherwise a CWD-default resolver
         is used as a fallback.
         """
-        if self.resolved_file is None and self.action in [ProactiveAction.READ_FILE, ProactiveAction.CHECK_FILE_EXISTS]:
+        if self.resolved_file is None and self.action in [
+            ProactiveAction.READ_FILE,
+            ProactiveAction.CHECK_FILE_EXISTS,
+        ]:
             if resolver is None:
                 resolver = get_file_resolver()
             self.resolved_file = resolver.get_best_match(self.target)
@@ -72,13 +77,11 @@ class ProactiveAnalyzer:
             r"(?:conteúdo|contents?)\s+(?:do|of)\s+([^\s]+)",
             r"(?:mostra?|show)\s+(?:o\s+)?([^\s]+\.?[\w]*)",
             r"(?:código|code)\s+(?:em|in|do|of)\s+([^\s]+\.?[\w]*)",
-
             # English patterns
             r"(?:read|open|show|display|examine|check)\s+(?:the\s+)?([^\s]+)",
             r"(?:what'?s|what\s+is)\s+in\s+(?:the\s+)?([^\s]+)",
             r"(?:contents?\s+of|inside)\s+(?:the\s+)?([^\s]+)",
             r"(?:look\s+at|view)\s+(?:the\s+)?([^\s]+)",
-
             # Natural language patterns (high confidence). The verb prefix is
             # mandatory — without it, every mention of "main", "config", etc.
             # in casual conversation ("o que seria um bloco main?") would
@@ -90,10 +93,9 @@ class ProactiveAnalyzer:
             # distinguishes "README.md" / "main.py" / "config.yaml" from
             # the bare word "main" in casual chat.
             r"\b(readme|config|license|changelog|main|setup|requirements)\.(?:md|txt|yaml|yml|json|toml|cfg|ini|py|sh|rst|html|css|xml|csv)\b",
-
             # Multiple file patterns
             r"(?:compare|compare|confronte)\s+(?:os\s+)?(?:arquivos|files)\s+([^\s]+)\s+(?:e|and)\s+([^\s]+)",
-            r"(?:examine|analise)\s+(?:os\s+)?(?:arquivos|files)\s+([^\s]+)\s+(?:e|and)\s+([^\s]+)"
+            r"(?:examine|analise)\s+(?:os\s+)?(?:arquivos|files)\s+([^\s]+)\s+(?:e|and)\s+([^\s]+)",
         ]
 
         # Enhanced patterns for listing operations
@@ -102,20 +104,17 @@ class ProactiveAnalyzer:
             r"(?:liste|list|mostre|show)\s+(?:os\s+)?(?:arquivos|files)",
             r"(?:quais|what)\s+(?:são\s+os\s+|files\s+)?(?:arquivos|files)\s*(?:are|estão)?\s*(?:here|aqui)?",
             r"(?:what\s+files|which\s+files)\s+(?:are\s+)?(?:here|available|aqui|disponíveis)?",
-
             # Directory-specific
             r"(?:arquivos|files)\s+(?:no|in)\s+(?:diretório|directory|pasta|folder)\s+([^\s]+)",
             r"(?:estrutura|structure)\s+(?:do\s+)?(?:projeto|project|diretório|directory)",
             r"(?:o\s+que\s+(?:tem|há|está))\s+(?:neste|nessa|no)\s+(?:diretório|directory|pasta|folder)",
-
             # Command-like patterns
             r"(?:ls|dir)(?:\s+.*)?$",
             r"(?:show\s+me\s+the\s+files)",
             r"(?:directory\s+contents?)",
-
             # Specific file type listing
             r"(?:mostre|show|liste|list)\s+(?:todos\s+os\s+)?(?:arquivos|files)\s+(?:python|py|javascript|js)",
-            r"(?:todos\s+os\s+)?(?:arquivos|files)\s+(?:.*?)\s+(?:do\s+projeto|project)"
+            r"(?:todos\s+os\s+)?(?:arquivos|files)\s+(?:.*?)\s+(?:do\s+projeto|project)",
         ]
 
         # Padrões que sugerem análise de projeto
@@ -126,7 +125,7 @@ class ProactiveAnalyzer:
             r"(?:componentes|components)\s+(?:do\s+)?(?:projeto|project)",
             r"(?:principais|main)\s+(?:arquivos|files)",
             r"(?:overview|visão\s+geral)\s+(?:do\s+)?(?:projeto|project)",
-            r"(?:como\s+(?:funciona|works))\s+(?:este|this|o)\s+(?:projeto|project|sistema|system)"
+            r"(?:como\s+(?:funciona|works))\s+(?:este|this|o)\s+(?:projeto|project|sistema|system)",
         ]
 
         # Confidence thresholds for autonomous execution
@@ -135,7 +134,9 @@ class ProactiveAnalyzer:
         self.autonomous_threshold = 0.7
         self.file_resolution_threshold = 0.8
 
-    async def analyze(self, user_input: str, session_context: Dict = None) -> List[ProactiveIntent]:
+    async def analyze(
+        self, user_input: str, session_context: Dict = None
+    ) -> List[ProactiveIntent]:
         """Async alias for ``analyze_input``.
 
         Provided so callers can ``await`` the analyzer without depending on the
@@ -143,12 +144,16 @@ class ProactiveAnalyzer:
         """
         return self.analyze_input(user_input, session_context)
 
-    async def analyze_enhanced(self, user_input: str, session_context: Dict = None) -> List[ProactiveIntent]:
+    async def analyze_enhanced(
+        self, user_input: str, session_context: Dict = None
+    ) -> List[ProactiveIntent]:
         """Async alias for ``analyze_input`` (enhanced semantics are already
         included in the sync implementation)."""
         return self.analyze_input(user_input, session_context)
 
-    def analyze_input(self, user_input: str, session_context: Dict = None) -> List[ProactiveIntent]:
+    def analyze_input(
+        self, user_input: str, session_context: Dict = None
+    ) -> List[ProactiveIntent]:
         """Enhanced analysis with smart file resolution and action chaining"""
         if session_context is None:
             session_context = {}
@@ -165,7 +170,9 @@ class ProactiveAnalyzer:
         intents.extend(list_intents)
 
         # 3. Detect project analysis intents
-        project_intents = self._detect_project_analysis_intents(user_input, user_input_lower)
+        project_intents = self._detect_project_analysis_intents(
+            user_input, user_input_lower
+        )
         intents.extend(project_intents)
 
         # 4. Resolve targets and determine autonomy eligibility
@@ -181,7 +188,9 @@ class ProactiveAnalyzer:
 
         return intents
 
-    def _detect_file_read_intents(self, original_input: str, user_input_lower: str) -> List[ProactiveIntent]:
+    def _detect_file_read_intents(
+        self, original_input: str, user_input_lower: str
+    ) -> List[ProactiveIntent]:
         """Detect file reading intents with enhanced pattern matching"""
         intents = []
 
@@ -196,20 +205,28 @@ class ProactiveAnalyzer:
                             target = target.strip()
 
                             # Calculate confidence based on pattern specificity
-                            confidence = self._calculate_enhanced_confidence(pattern, match, original_input, target)
+                            confidence = self._calculate_enhanced_confidence(
+                                pattern, match, original_input, target
+                            )
 
                             intent = ProactiveIntent(
                                 action=ProactiveAction.READ_FILE,
                                 target=target,
                                 confidence=confidence,
                                 context=original_input,
-                                priority=2 if confidence > self.high_confidence_threshold else 1
+                                priority=(
+                                    2
+                                    if confidence > self.high_confidence_threshold
+                                    else 1
+                                ),
                             )
                             intents.append(intent)
 
         return intents
 
-    def _detect_list_intents(self, original_input: str, user_input_lower: str) -> List[ProactiveIntent]:
+    def _detect_list_intents(
+        self, original_input: str, user_input_lower: str
+    ) -> List[ProactiveIntent]:
         """Detect directory listing intents"""
         intents = []
 
@@ -221,27 +238,33 @@ class ProactiveAnalyzer:
                 if match.groups() and match.group(1):
                     target_dir = match.group(1).strip()
 
-                confidence = self._calculate_enhanced_confidence(pattern, match, original_input, target_dir, "list")
+                confidence = self._calculate_enhanced_confidence(
+                    pattern, match, original_input, target_dir, "list"
+                )
 
                 intent = ProactiveIntent(
                     action=ProactiveAction.LIST_DIRECTORY,
                     target=target_dir,
                     confidence=confidence,
                     context=original_input,
-                    priority=1
+                    priority=1,
                 )
                 intents.append(intent)
                 break  # Only one list intent per input
 
         return intents
 
-    def _detect_project_analysis_intents(self, original_input: str, user_input_lower: str) -> List[ProactiveIntent]:
+    def _detect_project_analysis_intents(
+        self, original_input: str, user_input_lower: str
+    ) -> List[ProactiveIntent]:
         """Detect general project analysis intents"""
         intents = []
 
         for pattern in self.project_analysis_patterns:
             if re.search(pattern, original_input, re.IGNORECASE):
-                confidence = self._calculate_enhanced_confidence(pattern, None, original_input, ".", "project_analysis")
+                confidence = self._calculate_enhanced_confidence(
+                    pattern, None, original_input, ".", "project_analysis"
+                )
 
                 # For project analysis, list main files
                 intent = ProactiveIntent(
@@ -249,7 +272,7 @@ class ProactiveAnalyzer:
                     target=".",
                     confidence=confidence,
                     context=original_input,
-                    priority=1
+                    priority=1,
                 )
                 intents.append(intent)
 
@@ -261,21 +284,32 @@ class ProactiveAnalyzer:
                         target=file_path,
                         confidence=confidence * 0.8,  # Slightly lower confidence
                         context=f"Key project file: '{file_path}'",
-                        priority=3
+                        priority=3,
                     )
                     intents.append(intent)
 
         return intents
 
-    def _calculate_enhanced_confidence(self, pattern: str, match: Optional[re.Match],
-                                     user_input: str, target: str, intent_type: str = "file_read") -> float:
+    def _calculate_enhanced_confidence(
+        self,
+        pattern: str,
+        match: Optional[re.Match],
+        user_input: str,
+        target: str,
+        intent_type: str = "file_read",
+    ) -> float:
         """Calculate enhanced confidence score for a pattern match"""
         base_confidence = 0.7
 
         # Boost confidence for specific high-value patterns
         high_confidence_indicators = {
-            'readme': 0.2, 'config': 0.15, 'license': 0.1, 'main': 0.15,
-            'requirements': 0.15, 'setup': 0.1, 'package': 0.1
+            "readme": 0.2,
+            "config": 0.15,
+            "license": 0.1,
+            "main": 0.15,
+            "requirements": 0.15,
+            "setup": 0.1,
+            "package": 0.1,
         }
 
         # Check if target matches high-value patterns
@@ -286,12 +320,14 @@ class ProactiveAnalyzer:
                 break
 
         # Boost confidence for explicit action words
-        action_words = ['read', 'show', 'open', 'examine', 'leia', 'mostre', 'analise']
+        action_words = ["read", "show", "open", "examine", "leia", "mostre", "analise"]
         if any(word in user_input.lower() for word in action_words):
             base_confidence += 0.1
 
         # Boost confidence for natural language patterns
-        if any(keyword in pattern for keyword in ['readme', 'config', 'license', 'main']):
+        if any(
+            keyword in pattern for keyword in ["readme", "config", "license", "main"]
+        ):
             base_confidence += 0.15
 
         # Penalize very short targets unless they're known patterns
@@ -314,7 +350,10 @@ class ProactiveAnalyzer:
 
         # Check file resolution for read operations
         if intent.action == ProactiveAction.READ_FILE:
-            if intent.resolved_file and intent.resolved_file.confidence >= self.file_resolution_threshold:
+            if (
+                intent.resolved_file
+                and intent.resolved_file.confidence >= self.file_resolution_threshold
+            ):
                 return True
             # Even without perfect resolution, allow if confidence is very high
             elif intent.confidence >= 0.9:
@@ -326,7 +365,9 @@ class ProactiveAnalyzer:
 
         return False
 
-    def _generate_chained_actions(self, intents: List[ProactiveIntent]) -> List[ProactiveIntent]:
+    def _generate_chained_actions(
+        self, intents: List[ProactiveIntent]
+    ) -> List[ProactiveIntent]:
         """Generate chained actions for ambiguous file requests"""
         enhanced_intents = []
 
@@ -334,9 +375,14 @@ class ProactiveAnalyzer:
             enhanced_intents.append(intent)
 
             # If file read intent but no good resolution, chain list and suggest actions
-            if (intent.action == ProactiveAction.READ_FILE and
-                intent.confidence >= self.medium_confidence_threshold and
-                (not intent.resolved_file or intent.resolved_file.confidence < self.file_resolution_threshold)):
+            if (
+                intent.action == ProactiveAction.READ_FILE
+                and intent.confidence >= self.medium_confidence_threshold
+                and (
+                    not intent.resolved_file
+                    or intent.resolved_file.confidence < self.file_resolution_threshold
+                )
+            ):
 
                 # Add chained list action
                 list_intent = ProactiveIntent(
@@ -344,7 +390,7 @@ class ProactiveAnalyzer:
                     target=".",
                     confidence=0.6,
                     context=f"Chained from: {intent.context}",
-                    priority=1
+                    priority=1,
                 )
 
                 # Add suggest alternatives action
@@ -353,7 +399,7 @@ class ProactiveAnalyzer:
                     target=intent.target,
                     confidence=0.7,
                     context=f"Alternatives for: {intent.target}",
-                    priority=1
+                    priority=1,
                 )
 
                 intent.chained_actions = [list_intent, suggest_intent]
@@ -364,13 +410,14 @@ class ProactiveAnalyzer:
     def _is_valid_file_reference(self, file_path: str) -> bool:
         """Valida se a referência parece ser um arquivo real"""
         # Remove caracteres especiais e verifica formato básico
-        chars_to_strip = '.,!?;"\'()[]{}'
+        chars_to_strip = ".,!?;\"'()[]{}"
         file_path = file_path.strip(chars_to_strip)
 
         # Allow references without extensions (common patterns like 'readme', 'config')
-        if '.' not in file_path:
+        if "." not in file_path:
             # Check if it's a known pattern
             from .file_resolver import CommonFilePatterns
+
             return CommonFilePatterns.find_matching_pattern(file_path) is not None
 
         # Não deve ser muito longo (provavelmente não é um arquivo)
@@ -378,25 +425,39 @@ class ProactiveAnalyzer:
             return False
 
         # Não deve conter espaços (arquivos geralmente não têm espaços em paths)
-        if ' ' in file_path and not (file_path.startswith('"') and file_path.endswith('"')):
+        if " " in file_path and not (
+            file_path.startswith('"') and file_path.endswith('"')
+        ):
             return False
 
         return True
 
-    def _calculate_confidence(self, user_input: str, target: str, intent_type: str) -> float:
+    def _calculate_confidence(
+        self, user_input: str, target: str, intent_type: str
+    ) -> float:
         """Calcula nível de confiança da intenção detectada (legacy method)"""
-        return self._calculate_enhanced_confidence("", None, user_input, target, intent_type)
+        return self._calculate_enhanced_confidence(
+            "", None, user_input, target, intent_type
+        )
 
     def _find_key_project_files(self) -> List[str]:
         """Encontra arquivos chave do projeto que devem ser lidos proativamente"""
         key_files = []
         potential_files = [
-            "README.md", "README.txt", "README",
-            "requirements.txt", "requirements.in",
-            "setup.py", "pyproject.toml",
-            "package.json", "Cargo.toml",
-            "main.py", "app.py", "index.py",
-            "config.py", "settings.py"
+            "README.md",
+            "README.txt",
+            "README",
+            "requirements.txt",
+            "requirements.in",
+            "setup.py",
+            "pyproject.toml",
+            "package.json",
+            "Cargo.toml",
+            "main.py",
+            "app.py",
+            "index.py",
+            "config.py",
+            "settings.py",
         ]
 
         for filename in potential_files:
@@ -406,7 +467,9 @@ class ProactiveAnalyzer:
 
         return key_files[:3]  # Limita aos 3 primeiros encontrados
 
-    def _prioritize_intents(self, intents: List[ProactiveIntent]) -> List[ProactiveIntent]:
+    def _prioritize_intents(
+        self, intents: List[ProactiveIntent]
+    ) -> List[ProactiveIntent]:
         """Prioriza e filtra intenções para evitar sobrecarga"""
         if not intents:
             return []
@@ -431,7 +494,9 @@ class ProactiveAnalyzer:
         """Determina se uma intenção deve ser executada proativamente"""
         return intent.autonomous_eligible
 
-    def create_proactive_context(self, intent: ProactiveIntent, session_context: Dict) -> ToolContext:
+    def create_proactive_context(
+        self, intent: ProactiveIntent, session_context: Dict
+    ) -> ToolContext:
         """Cria contexto para execução proativa de ferramenta"""
         context_data = session_context.copy()
 
@@ -449,8 +514,17 @@ class ProactiveAnalyzer:
             if intent.resolved_file and intent.resolved_file.exists:
                 target_path = str(intent.resolved_file.path)
             parsed_args = {"file_path": target_path}
-        elif intent.action in [ProactiveAction.LIST_FILES, ProactiveAction.LIST_DIRECTORY]:
-            parsed_args = {"directory": intent.target if intent.target != "." else str(self.working_directory)}
+        elif intent.action in [
+            ProactiveAction.LIST_FILES,
+            ProactiveAction.LIST_DIRECTORY,
+        ]:
+            parsed_args = {
+                "directory": (
+                    intent.target
+                    if intent.target != "."
+                    else str(self.working_directory)
+                )
+            }
 
         # Why: tools fall back to parsing ``user_input`` with regex when their
         # named args are unset. A synthetic natural-language string here would
@@ -467,12 +541,28 @@ class ProactiveAnalyzer:
                 "proactive_target": intent.target,
                 "proactive_confidence": intent.confidence,
                 "proactive_execution": intent.autonomous_eligible,
-                "resolved_file_info": {
-                    "path": str(intent.resolved_file.path) if intent.resolved_file else None,
-                    "confidence": intent.resolved_file.confidence if intent.resolved_file else None,
-                    "match_type": intent.resolved_file.match_type.value if intent.resolved_file else None
-                } if intent.resolved_file else None
-            }
+                "resolved_file_info": (
+                    {
+                        "path": (
+                            str(intent.resolved_file.path)
+                            if intent.resolved_file
+                            else None
+                        ),
+                        "confidence": (
+                            intent.resolved_file.confidence
+                            if intent.resolved_file
+                            else None
+                        ),
+                        "match_type": (
+                            intent.resolved_file.match_type.value
+                            if intent.resolved_file
+                            else None
+                        ),
+                    }
+                    if intent.resolved_file
+                    else None
+                ),
+            },
         )
 
 

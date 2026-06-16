@@ -19,8 +19,9 @@ from deile.orchestration.sqlite_task_manager import SQLiteTaskManager
 
 class TestSQLiteTaskManagerDefaultPath:
     def _make(self, *args, **kwargs) -> SQLiteTaskManager:
-        with patch("asyncio.create_task"), patch.object(
-            SQLiteTaskManager, "_initialize_database", return_value=None
+        with (
+            patch("asyncio.create_task"),
+            patch.object(SQLiteTaskManager, "_initialize_database", return_value=None),
         ):
             return SQLiteTaskManager(*args, **kwargs)
 

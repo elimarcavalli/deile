@@ -17,10 +17,16 @@ from pathlib import Path
 
 import pytest
 
-from deile.runtime.instance_state import (DETAIL_MAX_LEN, SCHEMA_VERSION,
-                                          VALID_ACTION_KINDS, VALID_ROLES,
-                                          InstanceState, get_instance_state,
-                                          pid_alive, reset_instance_state)
+from deile.runtime.instance_state import (
+    DETAIL_MAX_LEN,
+    SCHEMA_VERSION,
+    VALID_ACTION_KINDS,
+    VALID_ROLES,
+    InstanceState,
+    get_instance_state,
+    pid_alive,
+    reset_instance_state,
+)
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -41,8 +47,12 @@ def test_schema_has_all_required_fields():
         assert data["instance_id"] == state.instance_id
         assert data["pid"] == os.getpid()
         assert data["role"] == "cli"
-        assert isinstance(data["started_at"], str) and data["started_at"].endswith("+00:00")
-        assert isinstance(data["last_heartbeat_at"], str) and data["last_heartbeat_at"].endswith("+00:00")
+        assert isinstance(data["started_at"], str) and data["started_at"].endswith(
+            "+00:00"
+        )
+        assert isinstance(data["last_heartbeat_at"], str) and data[
+            "last_heartbeat_at"
+        ].endswith("+00:00")
         assert data["current_action"] is None
         stats = data["stats"]
         assert stats == {
@@ -364,6 +374,7 @@ def test_pid_alive_zero_or_negative_returns_false():
 
 def test_pid_alive_permission_error_treated_as_alive(monkeypatch):
     """``EPERM`` significa "processo existe mas é de outro user" — está vivo."""
+
     def fake_kill(pid, sig):
         raise PermissionError("denied")
 
@@ -373,6 +384,7 @@ def test_pid_alive_permission_error_treated_as_alive(monkeypatch):
 
 def test_pid_alive_other_oserror_treated_as_alive(monkeypatch):
     """OSError genérico (Windows quirks) → false positive de vivo, não GC."""
+
     def fake_kill(pid, sig):
         raise OSError("weird")
 

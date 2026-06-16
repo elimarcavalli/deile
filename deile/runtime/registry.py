@@ -31,8 +31,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from deile.runtime.instance_state import (_DEFAULT_RUNTIME_DIR,
-                                          _ENV_RUNTIME_DIR, pid_alive)
+from deile.runtime.instance_state import (
+    _DEFAULT_RUNTIME_DIR,
+    _ENV_RUNTIME_DIR,
+    pid_alive,
+)
 
 __all__ = [
     "Registry",
@@ -213,7 +216,8 @@ class Registry:
         except json.JSONDecodeError as exc:
             logger.warning(
                 "Registry %s contém JSON inválido (%s); tratando como vazio.",
-                self._path, exc,
+                self._path,
+                exc,
             )
             return None
         if not isinstance(payload, dict):
@@ -225,7 +229,9 @@ class Registry:
         if sv != REGISTRY_SCHEMA_VERSION:
             logger.warning(
                 "Registry %s schema_version=%s não suportado (esperado %s); ignorando.",
-                self._path, sv, REGISTRY_SCHEMA_VERSION,
+                self._path,
+                sv,
+                REGISTRY_SCHEMA_VERSION,
             )
             return None
         return payload
@@ -273,7 +279,9 @@ class Registry:
             os.replace(tmp, self._path)
         except OSError as exc:
             logger.warning(
-                "Registry.write(%s) falhou: %s", self._path, exc,
+                "Registry.write(%s) falhou: %s",
+                self._path,
+                exc,
             )
             # tenta limpar o tmp se ficou pra trás
             try:
@@ -295,6 +303,7 @@ class Registry:
             yield
             return
         import fcntl  # POSIX-only — import tardio
+
         lock_path = self._path.with_suffix(self._path.suffix + ".lock")
         # Garante que o diretório existe (caso primeira chamada antes do
         # registry.json ser criado).

@@ -37,7 +37,9 @@ def python_skill_router(monkeypatch: pytest.MonkeyPatch) -> SkillRouter:
             ),
         )
     )
-    router = SkillRouter(registry, language_detector=LanguageDetector(), max_skills_per_turn=4)
+    router = SkillRouter(
+        registry, language_detector=LanguageDetector(), max_skills_per_turn=4
+    )
 
     async def _fake_bootstrap(config=None, **kwargs):
         return router
@@ -55,7 +57,9 @@ class TestSkillsInjectionViaContextManager:
         self, python_skill_router: SkillRouter
     ) -> None:
         cm = ContextManager()  # no persona_manager → uses fallback path
-        parse_result = ParseResult(status=ParseStatus.SUCCESS, file_references=["script.py"])
+        parse_result = ParseResult(
+            status=ParseStatus.SUCCESS, file_references=["script.py"]
+        )
         session = SimpleNamespace(
             conversation_history=[{"role": "user", "content": "fix script.py please"}],
             context_data={},
@@ -76,7 +80,9 @@ class TestSkillsInjectionViaContextManager:
         self, python_skill_router: SkillRouter
     ) -> None:
         cm = ContextManager()
-        parse_result = ParseResult(status=ParseStatus.SUCCESS, file_references=["README.md"])
+        parse_result = ParseResult(
+            status=ParseStatus.SUCCESS, file_references=["README.md"]
+        )
         session = SimpleNamespace(
             conversation_history=[{"role": "user", "content": "explain the readme"}],
             context_data={},
@@ -113,7 +119,9 @@ class TestSkillsInjectionViaContextManager:
         # Skills") must be in the system prompt so the LLM can call
         # ``invoke_skill`` on the python skill.
         cm = ContextManager()
-        parse_result = ParseResult(status=ParseStatus.SUCCESS, file_references=["README.md"])
+        parse_result = ParseResult(
+            status=ParseStatus.SUCCESS, file_references=["README.md"]
+        )
         session = SimpleNamespace(
             conversation_history=[{"role": "user", "content": "no triggers here"}],
             context_data={},

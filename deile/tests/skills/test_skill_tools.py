@@ -66,7 +66,9 @@ class TestInvokeSkillTool:
         _register("python", body="USE PEP 8")
         tool = InvokeSkillTool()
 
-        result = await tool.execute(ToolContext(user_input="", parsed_args={"name": "python"}))
+        result = await tool.execute(
+            ToolContext(user_input="", parsed_args={"name": "python"})
+        )
         assert result.is_success
         assert result.message == "USE PEP 8"
         assert result.data["body"] == "USE PEP 8"
@@ -76,7 +78,9 @@ class TestInvokeSkillTool:
         _register("python")
         tool = InvokeSkillTool()
 
-        result = await tool.execute(ToolContext(user_input="", parsed_args={"name": "ghost"}))
+        result = await tool.execute(
+            ToolContext(user_input="", parsed_args={"name": "ghost"})
+        )
         assert result.is_error
         assert "ghost" in result.message
         # The error lists what IS available so the LLM can recover.
@@ -84,7 +88,9 @@ class TestInvokeSkillTool:
 
     async def test_returns_error_when_name_empty(self) -> None:
         tool = InvokeSkillTool()
-        result = await tool.execute(ToolContext(user_input="", parsed_args={"name": ""}))
+        result = await tool.execute(
+            ToolContext(user_input="", parsed_args={"name": ""})
+        )
         assert result.is_error
         assert "non-empty" in result.message.lower()
 
@@ -97,7 +103,9 @@ class TestInvokeSkillTool:
         _register("python", body="X")
         tool = InvokeSkillTool()
 
-        result = await tool.execute(ToolContext(user_input="", parsed_args={"name": "  python  "}))
+        result = await tool.execute(
+            ToolContext(user_input="", parsed_args={"name": "  python  "})
+        )
         assert result.is_success
         assert result.data["name"] == "python"
 
@@ -142,4 +150,5 @@ class TestAutoDiscovery:
         # Guard against accidental removal — if these aren't auto-discovered,
         # the LLM can't call them.
         from deile.tools.discovery import DEFAULT_TOOL_PACKAGES
+
         assert "deile.tools.skill_tools" in DEFAULT_TOOL_PACKAGES

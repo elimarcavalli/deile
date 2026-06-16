@@ -37,8 +37,10 @@ def test_harvested_ids_reads_key_per_server(tmp_path):
     """A CHAVE de dedup é parametrizada (task_id para cli, session_id p/ claude)."""
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(
-        json.dumps({"task_id": "t1", "session_id": "s1"}) + "\n"
-        + json.dumps({"task_id": "t2", "session_id": "s2"}) + "\n"
+        json.dumps({"task_id": "t1", "session_id": "s1"})
+        + "\n"
+        + json.dumps({"task_id": "t2", "session_id": "s2"})
+        + "\n"
     )
     assert core.ledger_harvested_ids(ledger, key="task_id") == {"t1", "t2"}
     assert core.ledger_harvested_ids(ledger, key="session_id") == {"s1", "s2"}
@@ -48,12 +50,15 @@ def test_harvested_ids_tolerates_partial_corruption(tmp_path):
     """Linhas vazias, JSON malformado, não-dict e sem-a-chave são puladas."""
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(
-        "\n"                                   # vazia
-        + "{not valid json\n"                  # malformada
-        + "[1, 2, 3]\n"                        # JSON válido mas não-dict
-        + json.dumps({"other": "x"}) + "\n"    # dict sem a chave
-        + json.dumps({"task_id": ""}) + "\n"   # chave falsy → ignorada
-        + json.dumps({"task_id": "ok"}) + "\n"  # único válido
+        "\n"  # vazia
+        + "{not valid json\n"  # malformada
+        + "[1, 2, 3]\n"  # JSON válido mas não-dict
+        + json.dumps({"other": "x"})
+        + "\n"  # dict sem a chave
+        + json.dumps({"task_id": ""})
+        + "\n"  # chave falsy → ignorada
+        + json.dumps({"task_id": "ok"})
+        + "\n"  # único válido
     )
     assert core.ledger_harvested_ids(ledger, key="task_id") == {"ok"}
 

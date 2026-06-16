@@ -28,7 +28,9 @@ async def test_success_path_calls_facade(fake_client, fake_permission, fake_audi
     assert call["text"] == "hello"
 
 
-async def test_permission_denied_short_circuits(fake_client, fake_denied_permission, fake_audit):
+async def test_permission_denied_short_circuits(
+    fake_client, fake_denied_permission, fake_audit
+):
     tool = DiscordSendMessageTool()
     ctx = make_context(
         args={"channel_id": "100", "text": "x"},
@@ -82,7 +84,8 @@ async def test_emits_audit_event_on_permission_denied(
         )
     )
     assert any(
-        e.get("event_type") == AuditEventType.PERMISSION_DENIED for e in fake_audit.events
+        e.get("event_type") == AuditEventType.PERMISSION_DENIED
+        for e in fake_audit.events
     )
 
 
@@ -95,6 +98,7 @@ async def test_disabled_facade_returns_typed_error(monkeypatch, fake_audit):
     """
     from deile.integrations.bot import BotClientFacade, BotIntegrationSettings
     from deile.tools.messaging import _base as base_mod
+
     forced_facade = BotClientFacade(BotIntegrationSettings(endpoint="", auth_token=""))
     monkeypatch.setattr(base_mod, "_resolve_facade", lambda _ctx: forced_facade)
 
@@ -257,9 +261,7 @@ def test_upstream_error_without_channel_direct():
     from deile.integrations.bot.client import BotClientUpstreamError
 
     tool = DiscordSendMessageTool()
-    result = tool._map_exception(
-        BotClientUpstreamError("discord 500"), args={}
-    )
+    result = tool._map_exception(BotClientUpstreamError("discord 500"), args={})
     _assert_error_details(result, error_code="BOT_UPSTREAM", recoverable=True)
     assert "discord_send_message" in result.message
     # Without channel_id, no "canal <id>" in message — but "Discord" should appear
@@ -285,11 +287,13 @@ async def test_unknown_error_format(fake_permission, fake_audit):
 
 async def test_error_messages_never_leak_sensitive_data(fake_permission, fake_audit):
     """All error messages must be free of sensitive values (token, full text)."""
-    from deile.integrations.bot.client import (BotClientAuthError,
-                                               BotClientNotReady,
-                                               BotClientRateLimited,
-                                               BotClientTimeoutError,
-                                               BotClientUpstreamError)
+    from deile.integrations.bot.client import (
+        BotClientAuthError,
+        BotClientNotReady,
+        BotClientRateLimited,
+        BotClientTimeoutError,
+        BotClientUpstreamError,
+    )
 
     exceptions = [
         BotClientAuthError("tok_ABC123_secret"),
@@ -310,9 +314,9 @@ async def test_error_messages_never_leak_sensitive_data(fake_permission, fake_au
         )
         result = await tool.execute(ctx)
         # The full message text must never appear in the error message
-        assert "my-secret-payload" not in result.message, (
-            f"{type(exc).__name__} message leaked text payload"
-        )
+        assert (
+            "my-secret-payload" not in result.message
+        ), f"{type(exc).__name__} message leaked text payload"
         # The raw exception message with token-like content must not leak
         if isinstance(exc, BotClientAuthError):
             assert "tok_ABC123" not in result.message

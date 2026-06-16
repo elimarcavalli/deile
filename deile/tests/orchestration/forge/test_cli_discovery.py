@@ -29,6 +29,7 @@ def test_github_forge_legacy_constructor_fails_fast_without_gh(monkeypatch):
     when ``gh`` is not on PATH must raise :class:`ForgeCliNotFound`
     immediately — not at first call. That keeps the failure obvious."""
     from deile.orchestration.forge import GitHubForge
+
     monkeypatch.setattr("shutil.which", lambda name: None)
     with pytest.raises(ForgeCliNotFound):
         GitHubForge("owner/repo")
@@ -36,6 +37,7 @@ def test_github_forge_legacy_constructor_fails_fast_without_gh(monkeypatch):
 
 def test_gitlab_forge_legacy_constructor_fails_fast_without_glab(monkeypatch):
     from deile.orchestration.forge import GitLabForge
+
     monkeypatch.setattr("shutil.which", lambda name: None)
     with pytest.raises(ForgeCliNotFound):
         GitLabForge("group/project")

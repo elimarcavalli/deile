@@ -7,12 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import PrRef
-from deile.orchestration.pipeline.labels import (REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
-from deile.orchestration.pipeline.post_merge_callback import \
-    make_post_merge_callback
+from deile.orchestration.pipeline.labels import REVIEW_IN_PROGRESS, REVIEW_PENDING
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
+from deile.orchestration.pipeline.post_merge_callback import make_post_merge_callback
 
 
 class TestMakePostMergeCallback:
@@ -81,6 +78,7 @@ class TestMakePostMergeCallback:
 # Integration: PipelineMonitor calls post_merge_callback after PR merge
 # ---------------------------------------------------------------------------
 
+
 def _make_monitor_with_cb(
     *,
     claude_stdout: str = "merged.",
@@ -95,12 +93,17 @@ def _make_monitor_with_cb(
     github = MagicMock()
     github.ensure_pipeline_labels = AsyncMock()
     github.list_issues_with_label = AsyncMock(return_value=[])
-    github.list_open_prs = AsyncMock(return_value=[
-        PrRef(
-            number=77, title="feat: something", url="https://github.com/o/r/pull/77",
-            labels=(REVIEW_PENDING,), head_ref="auto/issue-5",
-        )
-    ])
+    github.list_open_prs = AsyncMock(
+        return_value=[
+            PrRef(
+                number=77,
+                title="feat: something",
+                url="https://github.com/o/r/pull/77",
+                labels=(REVIEW_PENDING,),
+                head_ref="auto/issue-5",
+            )
+        ]
+    )
     github.list_unclassified_issues = AsyncMock(return_value=[])
     github.list_unclassified_prs = AsyncMock(return_value=[])
     github.list_issue_comments_since = AsyncMock(return_value=[])
@@ -115,34 +118,50 @@ def _make_monitor_with_cb(
 
     notifier = MagicMock()
     for attr in (
-        "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "implementation_parked", "pr_picked_up", "pr_reviewed",
-        "issue_auto_classified", "follow_ups_processed", "error",
-        "pr_auto_classified", "mention_processed",
+        "issue_picked_up",
+        "issue_reviewed",
+        "implementation_started",
+        "implementation_finished",
+        "implementation_parked",
+        "pr_picked_up",
+        "pr_reviewed",
+        "issue_auto_classified",
+        "follow_ups_processed",
+        "error",
+        "pr_auto_classified",
+        "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
 
     worktrees = MagicMock()
     from deile.orchestration.pipeline.worktree_manager import Worktree
+
     worktrees.create_branch_worktree = AsyncMock(
-        return_value=Worktree(path=Path("/tmp/fake/.wt"), branch="x", base_repo=Path("/tmp/fake"))
+        return_value=Worktree(
+            path=Path("/tmp/fake/.wt"), branch="x", base_repo=Path("/tmp/fake")
+        )
     )
 
     claude = MagicMock()
-    claude.run = AsyncMock(return_value=ClaudeRunResult(
-        returncode=claude_rc,
-        stdout=claude_stdout,
-        stderr="",
-        duration_seconds=0.1,
-        cmd=("claude", "-p", "x"),
-    ))
+    claude.run = AsyncMock(
+        return_value=ClaudeRunResult(
+            returncode=claude_rc,
+            stdout=claude_stdout,
+            stderr="",
+            duration_seconds=0.1,
+            cmd=("claude", "-p", "x"),
+        )
+    )
 
     # Issue #309 fase 2 + #373: pr_review fresh é fire-and-forget — reusa o fake
     # do test_monitor (grava task_id no ledger + simula resume-info concluído).
-    from deile.tests.orchestration.pipeline.test_monitor import \
-        _FakeFireAndForgetImplementer
+    from deile.tests.orchestration.pipeline.test_monitor import (
+        _FakeFireAndForgetImplementer,
+    )
+
     implementer_stub = _FakeFireAndForgetImplementer(
-        claude_stdout=claude_stdout, claude_rc=claude_rc,
+        claude_stdout=claude_stdout,
+        claude_rc=claude_rc,
     )
 
     monitor = PipelineMonitor(
@@ -163,8 +182,11 @@ async def _tick_then_merge_reconcile(monitor) -> None:
     """Dispatch fresh (tick 1) + reconcile-merge por ground-truth (tick 2)."""
     await monitor.tick()
     in_progress = PrRef(
-        number=77, title="feat: something", url="https://github.com/o/r/pull/77",
-        labels=(REVIEW_IN_PROGRESS,), head_ref="auto/issue-5",
+        number=77,
+        title="feat: something",
+        url="https://github.com/o/r/pull/77",
+        labels=(REVIEW_IN_PROGRESS,),
+        head_ref="auto/issue-5",
     )
     monitor.github.list_open_prs = AsyncMock(return_value=[in_progress])
     monitor.github.get_pr = AsyncMock(return_value=None)  # merged → não-aberta
@@ -178,7 +200,9 @@ class TestMonitorCallsPostMergeCallback:
         async def _cb(pr_number: int, pr_title: str, pr_url: str) -> None:
             called_with.append((pr_number, pr_title, pr_url))
 
-        monitor, _ = _make_monitor_with_cb(claude_stdout="merged.", post_merge_callback=_cb)
+        monitor, _ = _make_monitor_with_cb(
+            claude_stdout="merged.", post_merge_callback=_cb
+        )
         await _tick_then_merge_reconcile(monitor)
         assert len(called_with) == 1
         assert called_with[0][0] == 77
@@ -190,7 +214,9 @@ class TestMonitorCallsPostMergeCallback:
         async def _cb(pr_number: int, pr_title: str, pr_url: str) -> None:
             called_with.append((pr_number, pr_title, pr_url))
 
-        monitor, _ = _make_monitor_with_cb(claude_stdout="review done", post_merge_callback=_cb)
+        monitor, _ = _make_monitor_with_cb(
+            claude_stdout="review done", post_merge_callback=_cb
+        )
         await monitor.tick()
         assert called_with == []
 
@@ -198,7 +224,9 @@ class TestMonitorCallsPostMergeCallback:
         async def _cb(pr_number: int, pr_title: str, pr_url: str) -> None:
             raise RuntimeError("episodic db unavailable")
 
-        monitor, _ = _make_monitor_with_cb(claude_stdout="merged.", post_merge_callback=_cb)
+        monitor, _ = _make_monitor_with_cb(
+            claude_stdout="merged.", post_merge_callback=_cb
+        )
         # Must not raise
         await _tick_then_merge_reconcile(monitor)
         assert monitor.stats.prs_reviewed == 1

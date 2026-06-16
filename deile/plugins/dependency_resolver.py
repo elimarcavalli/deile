@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DependencyNode:
     """Nó no grafo de dependências"""
+
     plugin_id: str
     dependencies: Set[str]
     dependents: Set[str]
@@ -26,29 +27,28 @@ class DependencyResolver:
         """Adiciona plugin ao grafo de dependências"""
         if plugin_id not in self.dependency_graph:
             self.dependency_graph[plugin_id] = DependencyNode(
-                plugin_id=plugin_id,
-                dependencies=set(dependencies),
-                dependents=set()
+                plugin_id=plugin_id, dependencies=set(dependencies), dependents=set()
             )
 
             # Atualiza dependents nos plugins dependidos
             for dep_id in dependencies:
                 if dep_id not in self.dependency_graph:
                     self.dependency_graph[dep_id] = DependencyNode(
-                        plugin_id=dep_id,
-                        dependencies=set(),
-                        dependents=set()
+                        plugin_id=dep_id, dependencies=set(), dependents=set()
                     )
                 self.dependency_graph[dep_id].dependents.add(plugin_id)
 
     def resolve_load_order(self, plugins: List[str]) -> List[str]:
         """Resolve ordem de carregamento usando topological sort"""
         # Cria cópia do grafo para não modificar original
-        graph = {k: DependencyNode(
-            plugin_id=v.plugin_id,
-            dependencies=v.dependencies.copy(),
-            dependents=v.dependents.copy()
-        ) for k, v in self.dependency_graph.items()}
+        graph = {
+            k: DependencyNode(
+                plugin_id=v.plugin_id,
+                dependencies=v.dependencies.copy(),
+                dependents=v.dependents.copy(),
+            )
+            for k, v in self.dependency_graph.items()
+        }
 
         load_order = []
         queue = []

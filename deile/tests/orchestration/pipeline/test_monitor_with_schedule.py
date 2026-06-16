@@ -17,11 +17,13 @@ from unittest.mock import AsyncMock, MagicMock
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.labels import WORKFLOW_NEW, WORKFLOW_REVIEWED
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
-from deile.orchestration.pipeline.scheduler import (OneshotEntry,
-                                                    RecurringEntry, Schedule,
-                                                    ScheduleStore)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
+from deile.orchestration.pipeline.scheduler import (
+    OneshotEntry,
+    RecurringEntry,
+    Schedule,
+    ScheduleStore,
+)
 from deile.orchestration.pipeline.worktree_manager import Worktree
 
 # ---------------------------------------------------------------------------
@@ -213,9 +215,7 @@ class TestMonitorScheduleIntegration:
         store = ScheduleStore(tmp_path, monitor_id="default")
         s = Schedule()
         past = datetime.now(timezone.utc) - timedelta(minutes=5)
-        s.add_oneshot(
-            OneshotEntry(id="os-review", action="review", run_at=past)
-        )
+        s.add_oneshot(OneshotEntry(id="os-review", action="review", run_at=past))
         store.save(s)
 
         issue_nova = IssueRef(

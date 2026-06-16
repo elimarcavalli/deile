@@ -17,9 +17,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deile.core.context_manager import (ContextManager,
-                                        _build_preferences_block,
-                                        _resolve_user_id)
+from deile.core.context_manager import (
+    ContextManager,
+    _build_preferences_block,
+    _resolve_user_id,
+)
 
 # PreferenceStore is imported lazily inside _build_preferences_block via
 # ``from deile.preferences.store import PreferenceStore``.  Patch that
@@ -73,7 +75,9 @@ class TestBuildPreferencesBlock:
     async def test_injection_with_preferences(self, session_with_user):
         with patch(
             _PREF_STORE,
-            return_value=_make_store({"response_language": "pt-BR", "subagents.mode": "manual"}),
+            return_value=_make_store(
+                {"response_language": "pt-BR", "subagents.mode": "manual"}
+            ),
         ):
             block = await _build_preferences_block(session_with_user)
 
@@ -87,7 +91,9 @@ class TestBuildPreferencesBlock:
 
         assert block == ""
 
-    async def test_no_injection_when_no_user_id(self, session_without_user, monkeypatch):
+    async def test_no_injection_when_no_user_id(
+        self, session_without_user, monkeypatch
+    ):
         # Simulate session without user_id AND no os.getuid fallback
         monkeypatch.setattr(os, "getuid", lambda: None, raising=False)
         monkeypatch.setattr(os, "environ", {}, raising=False)
@@ -170,7 +176,9 @@ class TestResolveUserId:
         uid = _resolve_user_id(None)
         assert uid == "unknown"
 
-    def test_session_user_id_is_none_falls_back(self, session_without_user, monkeypatch):
+    def test_session_user_id_is_none_falls_back(
+        self, session_without_user, monkeypatch
+    ):
         monkeypatch.setattr(os, "getuid", lambda: 1002)
         uid = _resolve_user_id(session_without_user)
         assert uid == "1002"
@@ -233,9 +241,7 @@ class TestContextManagerIntegration:
         assert "PERSONA_PROMPT" in out
         assert "📋 Preferências do Usuário" not in out
 
-    async def test_fallback_instruction_includes_preferences(
-        self, session_with_user
-    ):
+    async def test_fallback_instruction_includes_preferences(self, session_with_user):
         """Fallback path also injects preferences block."""
         ctx = ContextManager(persona_manager=None)
         ctx.instruction_loader = MagicMock()
@@ -256,9 +262,7 @@ class TestContextManagerIntegration:
         assert "📋 Preferências do Usuário" in out
         assert "`ui.theme`: dark" in out
 
-    async def test_fallback_instruction_no_prefs_when_empty(
-        self, session_with_user
-    ):
+    async def test_fallback_instruction_no_prefs_when_empty(self, session_with_user):
         """Fallback does NOT add block when empty."""
         ctx = ContextManager(persona_manager=None)
         ctx.instruction_loader = MagicMock()
@@ -287,6 +291,7 @@ class TestContextManagerIntegration:
         ctx = ContextManager(persona_manager=persona_manager)
         # Bootstrap skills so _build_skills_block returns something
         from deile.skills.registry import get_skill_registry
+
         _ = get_skill_registry()
         ctx._skills_bootstrapped = True
         ctx._skill_router = None  # no skills = "" block

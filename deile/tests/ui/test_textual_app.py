@@ -151,7 +151,12 @@ def test_cli_flag_routes_to_textual_runner(monkeypatch):
     from deile import cli as cli_module
 
     # Limpa qualquer env de chave que possa fazer a CLI tentar bootstrap.
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY"):
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GOOGLE_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
 
     # ``main`` so cai no ``sys.stdin.read()`` quando o stdin nao e TTY (o pytest

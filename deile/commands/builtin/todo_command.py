@@ -82,6 +82,7 @@ class TodoCommand(DirectCommand):
             style="bold",
         )
         from rich.console import Group
+
         return CommandResult.success_result(
             Group(header, table), "rich", marker_count=len(markers)
         )
@@ -130,13 +131,15 @@ class TodoCommand(DirectCommand):
                 blame = blame_info.get(line_no, {})
                 author = blame.get("author", "?")
                 age_days = self._calc_age_days(blame.get("committer_time"))
-                markers.append({
-                    "file": rel_path,
-                    "line": line_no,
-                    "marker": m["marker"],
-                    "author": author,
-                    "age_days": age_days,
-                })
+                markers.append(
+                    {
+                        "file": rel_path,
+                        "line": line_no,
+                        "marker": m["marker"],
+                        "author": author,
+                        "age_days": age_days,
+                    }
+                )
 
         return markers
 
@@ -166,11 +169,15 @@ class TodoCommand(DirectCommand):
         try:
             result = subprocess.run(
                 ["git", "blame", "--line-porcelain", rel_path],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
                 cwd=str(repo_root),
             )
             if result.returncode != 0:
-                logger.debug("git blame falhou para %s: %s", rel_path, result.stderr.strip())
+                logger.debug(
+                    "git blame falhou para %s: %s", rel_path, result.stderr.strip()
+                )
                 return blame_map
 
             # Parse do formato --line-porcelain:
@@ -195,7 +202,11 @@ class TodoCommand(DirectCommand):
                 if not parts:
                     continue
 
-                if len(parts) >= 4 and all(p.isdigit() for p in parts[1:4]) and len(parts[0]) == 40:
+                if (
+                    len(parts) >= 4
+                    and all(p.isdigit() for p in parts[1:4])
+                    and len(parts[0]) == 40
+                ):
                     # Header: commit_hash orig_line final_line num_lines
                     current_line = int(parts[2])
                     current_info = {}
@@ -203,7 +214,7 @@ class TodoCommand(DirectCommand):
                     # key-value (primeiro espaço separa chave do valor)
                     idx = raw_line.index(" ")
                     key = raw_line[:idx].replace("-", "_")
-                    value = raw_line[idx + 1:]
+                    value = raw_line[idx + 1 :]
                     if current_line is not None:
                         current_info[key] = value
 

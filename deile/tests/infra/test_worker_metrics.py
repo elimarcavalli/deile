@@ -4,6 +4,7 @@ FIAÇÃO: POST /v1/dispatch (com ``_run_task`` mockado para não chamar LLM) →
 GET /v1/metrics → parse do Prometheus text format → valida as métricas
 nomeadas + o histograma skeleton (``_count=0``).
 """
+
 from __future__ import annotations
 
 import sys
@@ -43,9 +44,7 @@ def _clean_state():
 @pytest.fixture
 async def client(_clean_state):
     app = worker_server.build_app(_TOKEN)
-    async with aiohttp_test_utils.TestClient(
-        aiohttp_test_utils.TestServer(app)
-    ) as cli:
+    async with aiohttp_test_utils.TestClient(aiohttp_test_utils.TestServer(app)) as cli:
         yield cli
 
 
@@ -53,12 +52,17 @@ def _fake_run_task_factory(ok: bool = True):
     async def _fake(task_id, brief, channel_id, *a, **kw):
         result = {
             "schema_version": worker_server.RESULT_SCHEMA_VERSION,
-            "task_id": task_id, "ok": ok, "elapsed_s": 0.01,
-            "brief": brief, "summary": "done", "files": [],
+            "task_id": task_id,
+            "ok": ok,
+            "elapsed_s": 0.01,
+            "brief": brief,
+            "summary": "done",
+            "files": [],
             "channel_id": channel_id,
         }
         worker_server._TASKS[task_id] = result
         return result
+
     return _fake
 
 
@@ -99,8 +103,15 @@ async def test_metrics_requires_auth(client):
 
 async def test_metrics_content_type_and_named_metrics(client, monkeypatch):
     monkeypatch.setattr(worker_server, "_run_task", _fake_run_task_factory(True))
-    r = await _post(client, {"brief": "do it", "channel_id": "111",
-                             "stage": "implement", "persona": "developer"})
+    r = await _post(
+        client,
+        {
+            "brief": "do it",
+            "channel_id": "111",
+            "stage": "implement",
+            "persona": "developer",
+        },
+    )
     assert r.status == 200
 
     resp = await _get_metrics(client)
@@ -121,15 +132,21 @@ async def test_metrics_content_type_and_named_metrics(client, monkeypatch):
 
 async def test_dispatch_counter_increments_with_labels(client, monkeypatch):
     monkeypatch.setattr(worker_server, "_run_task", _fake_run_task_factory(True))
-    await _post(client, {"brief": "a", "channel_id": "222",
-                         "stage": "implement", "persona": "developer"})
+    await _post(
+        client,
+        {
+            "brief": "a",
+            "channel_id": "222",
+            "stage": "implement",
+            "persona": "developer",
+        },
+    )
 
     text = await (await _get_metrics(client)).text()
     parsed = _parse_prom(text)
     series = parsed["deile_worker_dispatches_total"]
     # Há uma série com labels stage/persona/ok="true".
-    matched = [s for s in series
-               if 'stage="implement"' in s[0] and 'ok="true"' in s[0]]
+    matched = [s for s in series if 'stage="implement"' in s[0] and 'ok="true"' in s[0]]
     assert matched, f"série com labels esperados ausente: {series}"
     assert matched[0][1] == "1"
 
@@ -157,17 +174,18 @@ async def test_in_flight_gauge_zero_when_idle(client):
 # .dockerignore), senão o deile-worker pod crasha na importação no startup.
 # Mesma disciplina de test_monitor_packaging.py (incidente do cost-ledger).
 
+
 @pytest.mark.parametrize("mod", ("worker_metrics.py", "worker_rate_limit.py"))
 def test_dockerfile_copies_worker_hardening_module(mod):
     dockerfile = (_REPO / "Dockerfile").read_text(encoding="utf-8")
-    assert f"COPY --chown=deile:deile infra/k8s/{mod} /app/{mod}" in dockerfile, (
-        f"{mod} deve ser COPY'd para /app no Dockerfile ou o pod crasha no import"
-    )
+    assert (
+        f"COPY --chown=deile:deile infra/k8s/{mod} /app/{mod}" in dockerfile
+    ), f"{mod} deve ser COPY'd para /app no Dockerfile ou o pod crasha no import"
 
 
 @pytest.mark.parametrize("mod", ("worker_metrics.py", "worker_rate_limit.py"))
 def test_dockerignore_excepts_worker_hardening_module(mod):
     dockerignore = (_REPO / ".dockerignore").read_text(encoding="utf-8")
-    assert f"!infra/k8s/{mod}" in dockerignore, (
-        f"{mod} precisa de exceção `!infra/k8s/{mod}` no .dockerignore ou o COPY falha"
-    )
+    assert (
+        f"!infra/k8s/{mod}" in dockerignore
+    ), f"{mod} precisa de exceção `!infra/k8s/{mod}` no .dockerignore ou o COPY falha"

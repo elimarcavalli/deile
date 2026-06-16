@@ -46,7 +46,9 @@ PROMISE_PATTERNS: List[str] = [
 ]
 
 VALIDATION_TOOL_NAMES = {
-    "bash_execute", "python_execute", "run_tests",
+    "bash_execute",
+    "python_execute",
+    "run_tests",
 }
 
 # Eager-compile the promise patterns once at module-load (item 12). Avoids the
@@ -60,6 +62,7 @@ _COMPILED_PROMISE_RE: List[re.Pattern[str]] = [
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
+
 
 def contains_promise_pattern(text: str) -> bool:
     """Return True when ``text`` contains one of the promise patterns.
@@ -76,15 +79,15 @@ def detect_unvalidated_writes(tool_results: List[ToolResult]) -> List[ToolResult
     """Return write_file results for executable files that lack a following validation tool call."""
     # All write_file results that the tool flagged as needing validation
     flagged_writes = [
-        tr for tr in tool_results
+        tr
+        for tr in tool_results
         if tr.metadata.get("post_write_validation_required") is True
     ]
     if not flagged_writes:
         return []
     # Any subsequent execution tool counts as "the model tried to validate"
     validated = any(
-        tr.metadata.get("function_name") in VALIDATION_TOOL_NAMES
-        for tr in tool_results
+        tr.metadata.get("function_name") in VALIDATION_TOOL_NAMES for tr in tool_results
     )
     if validated:
         return []
@@ -132,9 +135,7 @@ async def apply_validation_gate(
     # actually intending to invoke a tool. The gate's value is catching
     # the model saying "vou rodar agora!" and stopping cold.
     promise_without_action = (
-        not tool_results
-        and len(content) <= 500
-        and contains_promise_pattern(content)
+        not tool_results and len(content) <= 500 and contains_promise_pattern(content)
     )
 
     if not unvalidated and not promise_without_action:
@@ -147,7 +148,9 @@ async def apply_validation_gate(
             for tr in unvalidated
             if tr.metadata.get("post_write_validation_command")
         ]
-        cmd_block = "\n".join(f"  - {c}" for c in cmds) if cmds else "  (none suggested)"
+        cmd_block = (
+            "\n".join(f"  - {c}" for c in cmds) if cmds else "  (none suggested)"
+        )
         gate_prompt = (
             "[INTERNAL_VALIDATION_GATE] You wrote the following executable file(s) "
             "but did not validate them in the same turn:\n"

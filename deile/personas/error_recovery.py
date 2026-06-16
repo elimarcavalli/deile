@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class RecoveryStrategy(Enum):
     """Available recovery strategies"""
+
     RETRY = "retry"
     FALLBACK = "fallback"
     RESET = "reset"
@@ -26,20 +27,12 @@ class RecoveryAction(ABC):
     """Abstract base class for recovery actions"""
 
     @abstractmethod
-    async def execute(
-        self,
-        error: PersonaError,
-        context: ErrorContext
-    ) -> bool:
+    async def execute(self, error: PersonaError, context: ErrorContext) -> bool:
         """Execute recovery action. Returns True if successful."""
         pass
 
     @abstractmethod
-    def can_handle(
-        self,
-        error: PersonaError,
-        context: ErrorContext
-    ) -> bool:
+    def can_handle(self, error: PersonaError, context: ErrorContext) -> bool:
         """Check if this recovery action can handle the error"""
         pass
 
@@ -61,21 +54,19 @@ class RetryRecoveryAction(RecoveryAction):
     def strategy_name(self) -> str:
         return "retry"
 
-    async def execute(
-        self,
-        error: PersonaError,
-        context: ErrorContext
-    ) -> bool:
+    async def execute(self, error: PersonaError, context: ErrorContext) -> bool:
         """Retry the operation with exponential backoff"""
         logger.info(f"Attempting retry recovery for {error.error_code}")
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                logger.info(f"Retry attempt {attempt}/{self.max_retries} for {error.operation}")
+                logger.info(
+                    f"Retry attempt {attempt}/{self.max_retries} for {error.operation}"
+                )
 
                 # Wait with exponential backoff
                 if attempt > 1:
-                    wait_time = (self.backoff_factor ** (attempt - 1))
+                    wait_time = self.backoff_factor ** (attempt - 1)
                     await asyncio.sleep(wait_time)
 
                 # For retry to work properly, we would need the original operation function
@@ -96,11 +87,7 @@ class RetryRecoveryAction(RecoveryAction):
         logger.error(f"All {self.max_retries} retry attempts failed")
         return False
 
-    def can_handle(
-        self,
-        error: PersonaError,
-        context: ErrorContext
-    ) -> bool:
+    def can_handle(self, error: PersonaError, context: ErrorContext) -> bool:
         """Can handle transient errors that might succeed on retry"""
         transient_error_codes = {
             "PERSONA_LOAD_TIMEOUT",
@@ -108,7 +95,7 @@ class RetryRecoveryAction(RecoveryAction):
             "PERSONA_EXECUTION_TIMEOUT",
             "NETWORK_ERROR",
             "TEMPORARY_RESOURCE_UNAVAILABLE",
-            "RATE_LIMITED"
+            "RATE_LIMITED",
         }
         return error.error_code in transient_error_codes
 
@@ -120,11 +107,7 @@ class FallbackRecoveryAction(RecoveryAction):
     def strategy_name(self) -> str:
         return "fallback"
 
-    async def execute(
-        self,
-        error: PersonaError,
-        context: ErrorContext
-    ) -> bool:
+    async def execute(self, error: PersonaError, context: ErrorContext) -> bool:
         """Execute fallback strategy based on operation type"""
         logger.info(f"Executing fallback recovery for {error.operation}")
 
@@ -149,9 +132,7 @@ class FallbackRecoveryAction(RecoveryAction):
             return False
 
     async def _fallback_load_default_persona(
-        self,
-        error: PersonaError,
-        context: ErrorContext
+        self, error: PersonaError, context: ErrorContext
     ) -> bool:
         """Fallback to default persona when specific persona fails to load"""
         logger.info("Falling back to default persona")
@@ -161,9 +142,7 @@ class FallbackRecoveryAction(RecoveryAction):
         return True
 
     async def _fallback_keep_current_persona(
-        self,
-        error: PersonaError,
-        context: ErrorContext
+        self, error: PersonaError, context: ErrorContext
     ) -> bool:
         """Keep current persona when switch fails"""
         logger.info("Keeping current persona due to switch failure")
@@ -172,9 +151,7 @@ class FallbackRecoveryAction(RecoveryAction):
         return True
 
     async def _fallback_basic_capability(
-        self,
-        error: PersonaError,
-        context: ErrorContext
+        self, error: PersonaError, context: ErrorContext
     ) -> bool:
         """Use basic capability when advanced capability fails"""
         logger.info("Using basic capability as fallback")
@@ -183,9 +160,7 @@ class FallbackRecoveryAction(RecoveryAction):
         return True
 
     async def _fallback_default_config(
-        self,
-        error: PersonaError,
-        context: ErrorContext
+        self, error: PersonaError, context: ErrorContext
     ) -> bool:
         """Use default configuration when validation fails"""
         logger.info("Using default configuration as fallback")
@@ -194,9 +169,7 @@ class FallbackRecoveryAction(RecoveryAction):
         return True
 
     async def _fallback_minimal_initialization(
-        self,
-        error: PersonaError,
-        context: ErrorContext
+        self, error: PersonaError, context: ErrorContext
     ) -> bool:
         """Perform minimal initialization when full init fails"""
         logger.info("Performing minimal persona initialization")
@@ -204,11 +177,7 @@ class FallbackRecoveryAction(RecoveryAction):
         context.add_metadata("minimal_init", True)
         return True
 
-    def can_handle(
-        self,
-        error: PersonaError,
-        context: ErrorContext
-    ) -> bool:
+    def can_handle(self, error: PersonaError, context: ErrorContext) -> bool:
         """Can handle most errors with fallback strategies"""
         # Fallback can handle most errors except critical system errors
         if context.severity == ErrorSeverity.CRITICAL:
@@ -223,11 +192,7 @@ class ResetRecoveryAction(RecoveryAction):
     def strategy_name(self) -> str:
         return "reset"
 
-    async def execute(
-        self,
-        error: PersonaError,
-        context: ErrorContext
-    ) -> bool:
+    async def execute(self, error: PersonaError, context: ErrorContext) -> bool:
         """Reset persona to clean state"""
         logger.info(f"Executing reset recovery for {error.persona_id}")
 
@@ -242,16 +207,12 @@ class ResetRecoveryAction(RecoveryAction):
             logger.error(f"Reset recovery failed: {reset_error}")
             return False
 
-    def can_handle(
-        self,
-        error: PersonaError,
-        context: ErrorContext
-    ) -> bool:
+    def can_handle(self, error: PersonaError, context: ErrorContext) -> bool:
         """Can handle state corruption errors"""
         state_corruption_codes = {
             "PERSONA_STATE_CORRUPTED",
             "PERSONA_MEMORY_CORRUPTED",
-            "PERSONA_CONFIG_CORRUPTED"
+            "PERSONA_CONFIG_CORRUPTED",
         }
         return error.error_code in state_corruption_codes
 
@@ -263,22 +224,21 @@ class ErrorRecoveryManager:
         self.recovery_actions: List[RecoveryAction] = [
             RetryRecoveryAction(),
             FallbackRecoveryAction(),
-            ResetRecoveryAction()
+            ResetRecoveryAction(),
         ]
         self.recovery_history: Dict[str, List[str]] = {}
         self.success_rates: Dict[str, Dict[str, float]] = {}
 
     async def attempt_recovery(
-        self,
-        error: PersonaError,
-        context: ErrorContext
+        self, error: PersonaError, context: ErrorContext
     ) -> bool:
         """Attempt to recover from error using appropriate strategies"""
         logger.info(f"Attempting recovery for error: {error.error_code}")
 
         # Find applicable recovery actions
         applicable_actions = [
-            action for action in self.recovery_actions
+            action
+            for action in self.recovery_actions
             if action.can_handle(error, context)
         ]
 
@@ -301,8 +261,7 @@ class ErrorRecoveryManager:
                 if recovery_success:
                     logger.info(f"Recovery successful using {action.strategy_name}")
                     context.mark_auto_recovery_attempted(
-                        success=True,
-                        strategy=action.strategy_name
+                        success=True, strategy=action.strategy_name
                     )
                     self._record_recovery_result(error, action, True)
                     return True
@@ -311,7 +270,9 @@ class ErrorRecoveryManager:
                     self._record_recovery_result(error, action, False)
 
             except Exception as recovery_error:
-                logger.error(f"Recovery action {action.strategy_name} raised exception: {recovery_error}")
+                logger.error(
+                    f"Recovery action {action.strategy_name} raised exception: {recovery_error}"
+                )
                 self._record_recovery_result(error, action, False)
                 continue
 
@@ -320,11 +281,10 @@ class ErrorRecoveryManager:
         return False
 
     def _sort_actions_by_success_rate(
-        self,
-        actions: List[RecoveryAction],
-        error_code: str
+        self, actions: List[RecoveryAction], error_code: str
     ) -> List[RecoveryAction]:
         """Sort recovery actions by their historical success rate for this error type"""
+
         def get_success_rate(action: RecoveryAction) -> float:
             if error_code in self.success_rates:
                 return self.success_rates[error_code].get(action.strategy_name, 0.5)
@@ -333,10 +293,7 @@ class ErrorRecoveryManager:
         return sorted(actions, key=get_success_rate, reverse=True)
 
     def _record_recovery_result(
-        self,
-        error: PersonaError,
-        action: RecoveryAction,
-        success: bool
+        self, error: PersonaError, action: RecoveryAction, success: bool
     ) -> None:
         """Record recovery attempt result for future optimization"""
         error_key = error.error_code or "UNKNOWN"
@@ -372,7 +329,8 @@ class ErrorRecoveryManager:
         """Remove recovery action by strategy name"""
         original_count = len(self.recovery_actions)
         self.recovery_actions = [
-            action for action in self.recovery_actions
+            action
+            for action in self.recovery_actions
             if action.strategy_name != strategy_name
         ]
         removed = len(self.recovery_actions) < original_count
@@ -383,11 +341,13 @@ class ErrorRecoveryManager:
     def get_recovery_stats(self) -> Dict[str, Any]:
         """Get recovery statistics and performance metrics"""
         return {
-            'recovery_actions_count': len(self.recovery_actions),
-            'recovery_history': dict(self.recovery_history),
-            'success_rates': dict(self.success_rates),
-            'most_successful_strategies': self._get_most_successful_strategies(),
-            'available_strategies': [action.strategy_name for action in self.recovery_actions]
+            "recovery_actions_count": len(self.recovery_actions),
+            "recovery_history": dict(self.recovery_history),
+            "success_rates": dict(self.success_rates),
+            "most_successful_strategies": self._get_most_successful_strategies(),
+            "available_strategies": [
+                action.strategy_name for action in self.recovery_actions
+            ],
         }
 
     def _get_most_successful_strategies(self) -> Dict[str, str]:
@@ -398,8 +358,8 @@ class ErrorRecoveryManager:
             if strategies:
                 best_strategy = max(strategies.items(), key=lambda x: x[1])
                 most_successful[error_code] = {
-                    'strategy': best_strategy[0],
-                    'success_rate': f"{best_strategy[1]:.2%}"
+                    "strategy": best_strategy[0],
+                    "success_rate": f"{best_strategy[1]:.2%}",
                 }
 
         return most_successful
@@ -411,9 +371,7 @@ class ErrorRecoveryManager:
         logger.info("Recovery history cleared")
 
     async def get_recovery_recommendations(
-        self,
-        error_code: str,
-        context: ErrorContext
+        self, error_code: str, context: ErrorContext
     ) -> List[Dict[str, Any]]:
         """Get recovery recommendations for specific error type"""
         recommendations = []
@@ -421,9 +379,9 @@ class ErrorRecoveryManager:
         for action in self.recovery_actions:
             # Create mock error to test if action can handle it
             from ..core.exceptions import PersonaError
+
             mock_error = PersonaError(
-                message="Mock error for testing",
-                error_code=error_code
+                message="Mock error for testing", error_code=error_code
             )
 
             if action.can_handle(mock_error, context):
@@ -433,15 +391,20 @@ class ErrorRecoveryManager:
                         action.strategy_name, 0.5
                     )
 
-                recommendations.append({
-                    'strategy': action.strategy_name,
-                    'success_rate': success_rate,
-                    'historical_attempts': len([
-                        h for h in self.recovery_history.get(error_code, [])
-                        if h == action.strategy_name
-                    ])
-                })
+                recommendations.append(
+                    {
+                        "strategy": action.strategy_name,
+                        "success_rate": success_rate,
+                        "historical_attempts": len(
+                            [
+                                h
+                                for h in self.recovery_history.get(error_code, [])
+                                if h == action.strategy_name
+                            ]
+                        ),
+                    }
+                )
 
         # Sort by success rate
-        recommendations.sort(key=lambda x: x['success_rate'], reverse=True)
+        recommendations.sort(key=lambda x: x["success_rate"], reverse=True)
         return recommendations

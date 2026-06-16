@@ -17,13 +17,23 @@ import logging
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from deile.core.loop_guard import (ToolLoopGuard, format_loop_break_message,
-                                   make_guard, tool_result_made_progress)
-from deile.core.models.base import (DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage,
-                                    ModelProvider)
+from deile.core.loop_guard import (
+    ToolLoopGuard,
+    format_loop_break_message,
+    make_guard,
+    tool_result_made_progress,
+)
+from deile.core.models.base import (
+    DEFAULT_MAX_TOOL_ITERATIONS,
+    ModelMessage,
+    ModelProvider,
+)
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
-from deile.core.models.tool_execution import (OUTCOME_EXCEPTION, OUTCOME_RAN,
-                                              build_tool_result_payload)
+from deile.core.models.tool_execution import (
+    OUTCOME_EXCEPTION,
+    OUTCOME_RAN,
+    build_tool_result_payload,
+)
 from deile.core.tool_result_summary import summarize
 from deile.core.tool_scenario_kwargs import build_tool_stage_kwargs
 from deile.tools.base import ToolContext, ToolResult, ToolStatus
@@ -42,7 +52,10 @@ def _set_tool_span_status(span: Any, is_success: bool) -> None:
         return
     try:
         from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
-        span.set_attribute("deile.tool.result.status", "success" if is_success else "error")
+
+        span.set_attribute(
+            "deile.tool.result.status", "success" if is_success else "error"
+        )
         if not is_success:
             span.set_status(Status(StatusCode.ERROR))
     except Exception:  # noqa: BLE001 — observability nunca quebra a loop
@@ -55,6 +68,7 @@ def _set_tool_span_error(span: Any, exc: BaseException) -> None:
         return
     try:
         from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+
         span.set_attribute("deile.tool.result.status", "error")
         span.set_status(Status(StatusCode.ERROR, description=type(exc).__name__))
         span.record_exception(exc)
@@ -73,6 +87,7 @@ def _record_tool_metrics(tool_name: str, status: str, t0: float) -> None:
     """Emite ``deile.tool.duration_ms``."""
     try:
         from deile.observability import get_metrics  # noqa: PLC0415
+
         get_metrics().record_tool_duration(
             tool_name=tool_name,
             status=status,
@@ -92,6 +107,7 @@ def _resolve_max_iterations() -> int:
     """
     try:
         from deile.config.settings import get_settings
+
         value = int(getattr(get_settings(), "max_tool_iterations", MAX_TOOL_ITERATIONS))
         return value if value > 0 else MAX_TOOL_ITERATIONS
     except Exception:  # noqa: BLE001 — config errors must not disable tool use
@@ -130,7 +146,9 @@ class ToolLoopExecutor:
         self._max_iterations = (
             max_iterations if max_iterations is not None else _resolve_max_iterations()
         )
-        self._event_publisher = event_publisher  # callable: (kind, name, **kw) -> awaitable
+        self._event_publisher = (
+            event_publisher  # callable: (kind, name, **kw) -> awaitable
+        )
         # Each ``run()`` invocation builds its own guard (one per turn). The
         # constructor accepts an explicit guard only so tests can inject a
         # pre-configured detector — production callers leave it as ``None``.
@@ -160,8 +178,7 @@ class ToolLoopExecutor:
         # the same call when its previous tool returned an error or empty
         # data — see deile.core.loop_guard for the detection rules.
         guard = self._loop_guard_override or make_guard(
-            session_id=str((session_data or {}).get("session_id", ""))
-            or None,
+            session_id=str((session_data or {}).get("session_id", "")) or None,
         )
 
         for iteration in range(self._max_iterations):
@@ -183,7 +200,9 @@ class ToolLoopExecutor:
                 tools=tools,
                 reasoning_effort=reasoning_effort,
             )
-            cascade_key = "await_first_token" if iteration == 0 else "await_next_response"
+            cascade_key = (
+                "await_first_token" if iteration == 0 else "await_next_response"
+            )
             cascade_ctx: Dict[str, Any] = (
                 {} if iteration == 0 else {"iteration": str(iteration + 1)}
             )
@@ -217,7 +236,8 @@ class ToolLoopExecutor:
                 # context_length_exceeded, then abort the loop.
                 if (
                     last_error_envelope is not None
-                    and getattr(last_error_envelope, "error_type", None) == "context_length_exceeded"
+                    and getattr(last_error_envelope, "error_type", None)
+                    == "context_length_exceeded"
                 ):
                     model_id = getattr(last_error_envelope, "model_id", "modelo")
                     yield UnifiedStreamEvent(
@@ -311,11 +331,13 @@ class ToolLoopExecutor:
                 _istate = None
                 try:
                     from deile.runtime.instance_state import get_instance_state
+
                     _istate = get_instance_state()
                     _istate.update_action(
                         "tool_execution",
                         detail=tc_name,
-                        session_id=str((session_data or {}).get("session_id", "")) or None,
+                        session_id=str((session_data or {}).get("session_id", ""))
+                        or None,
                     )
                 except Exception:  # noqa: BLE001 — observability nunca quebra a loop
                     _istate = None
@@ -326,8 +348,10 @@ class ToolLoopExecutor:
                 _tool_span: Any = None
                 try:
                     from deile.observability import get_tracer
+
                     _tool_span_cm = get_tracer().tool(
-                        tc_name, args_size=len(str(tc_args or {})),
+                        tc_name,
+                        args_size=len(str(tc_args or {})),
                     )
                     _tool_span = _tool_span_cm.__enter__()
                 except Exception:  # noqa: BLE001
@@ -355,7 +379,10 @@ class ToolLoopExecutor:
                                 yield item
                     except Exception as exc:  # pylint: disable=broad-except
                         logger.error(
-                            "Tool '%s' raised in ToolLoopExecutor: %s", tc_name, exc, exc_info=True
+                            "Tool '%s' raised in ToolLoopExecutor: %s",
+                            tc_name,
+                            exc,
+                            exc_info=True,
                         )
                         # Issue #303 fase 4 — span ERROR + métrica.
                         _set_tool_span_error(_tool_span, exc)
@@ -439,9 +466,7 @@ class ToolLoopExecutor:
                     )
                     # Feed the result into the guard so the no-progress rule can
                     # observe consecutive empty/error returns.
-                    guard.record_result(
-                        made_progress=tool_result_made_progress(result)
-                    )
+                    guard.record_result(made_progress=tool_result_made_progress(result))
                     if _istate is not None:
                         try:
                             _istate.update_stats(
@@ -474,7 +499,9 @@ class ToolLoopExecutor:
 
         yield UnifiedStreamEvent(
             type=StreamEventType.STAGE,
-            stage=get_stage_message("max_iterations", "initial", max=self._max_iterations),
+            stage=get_stage_message(
+                "max_iterations", "initial", max=self._max_iterations
+            ),
         )
         logger.warning(
             "ToolLoopExecutor: hit max_iterations=%d for provider=%s",
@@ -489,4 +516,6 @@ class ToolLoopExecutor:
         try:
             await self._event_publisher(kind, tool_name, **kw)
         except Exception as exc:  # pylint: disable=broad-except
-            logger.debug("event_publisher failed (kind=%s, tool=%s): %s", kind, tool_name, exc)
+            logger.debug(
+                "event_publisher failed (kind=%s, tool=%s): %s", kind, tool_name, exc
+            )

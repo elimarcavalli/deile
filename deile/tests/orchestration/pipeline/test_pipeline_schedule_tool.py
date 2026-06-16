@@ -24,10 +24,14 @@ class TestList:
 class TestAddRecurring:
     async def test_add_then_list(self, repo_git_tmp):
         tool = PipelineScheduleTool()
-        r = await tool.execute(_ctx(
-            action="add_recurring", trigger_action="review",
-            cron="*/5 * * * *", id="r1",
-        ))
+        r = await tool.execute(
+            _ctx(
+                action="add_recurring",
+                trigger_action="review",
+                cron="*/5 * * * *",
+                id="r1",
+            )
+        )
         assert r.status == ToolStatus.SUCCESS
         listing = await tool.execute(_ctx(action="list"))
         assert len(listing.data["recurring"]) == 1
@@ -41,10 +45,14 @@ class TestAddRecurring:
 
     async def test_invalid_cron(self, repo_git_tmp):
         tool = PipelineScheduleTool()
-        r = await tool.execute(_ctx(
-            action="add_recurring", trigger_action="review",
-            cron="totally invalid", id="r1",
-        ))
+        r = await tool.execute(
+            _ctx(
+                action="add_recurring",
+                trigger_action="review",
+                cron="totally invalid",
+                id="r1",
+            )
+        )
         assert r.status == ToolStatus.ERROR
         assert r.metadata["error_code"] == "SCHEDULE_ERROR"
 
@@ -52,20 +60,27 @@ class TestAddRecurring:
 class TestAddOneshot:
     async def test_add_oneshot_with_target_issue(self, repo_git_tmp):
         tool = PipelineScheduleTool()
-        r = await tool.execute(_ctx(
-            action="add_oneshot", trigger_action="implement",
-            run_at="2026-05-06T18:00:00Z", target_issue=99,
-        ))
+        r = await tool.execute(
+            _ctx(
+                action="add_oneshot",
+                trigger_action="implement",
+                run_at="2026-05-06T18:00:00Z",
+                target_issue=99,
+            )
+        )
         assert r.status == ToolStatus.SUCCESS
         # auto-generated id
         assert r.data["id"].startswith("oneshot-implement-")
 
     async def test_invalid_run_at(self, repo_git_tmp):
         tool = PipelineScheduleTool()
-        r = await tool.execute(_ctx(
-            action="add_oneshot", trigger_action="implement",
-            run_at="not a date",
-        ))
+        r = await tool.execute(
+            _ctx(
+                action="add_oneshot",
+                trigger_action="implement",
+                run_at="not a date",
+            )
+        )
         assert r.status == ToolStatus.ERROR
         assert r.metadata["error_code"] == "INVALID_DATETIME"
 
@@ -73,10 +88,14 @@ class TestAddOneshot:
 class TestRemove:
     async def test_remove_existing(self, repo_git_tmp):
         tool = PipelineScheduleTool()
-        await tool.execute(_ctx(
-            action="add_recurring", trigger_action="review",
-            cron="*/5 * * * *", id="r1",
-        ))
+        await tool.execute(
+            _ctx(
+                action="add_recurring",
+                trigger_action="review",
+                cron="*/5 * * * *",
+                id="r1",
+            )
+        )
         r = await tool.execute(_ctx(action="remove", id="r1"))
         assert r.status == ToolStatus.SUCCESS
 
@@ -90,10 +109,14 @@ class TestRemove:
 class TestEnableDisable:
     async def test_disable_then_enable(self, repo_git_tmp):
         tool = PipelineScheduleTool()
-        await tool.execute(_ctx(
-            action="add_recurring", trigger_action="review",
-            cron="*/5 * * * *", id="r1",
-        ))
+        await tool.execute(
+            _ctx(
+                action="add_recurring",
+                trigger_action="review",
+                cron="*/5 * * * *",
+                id="r1",
+            )
+        )
         r = await tool.execute(_ctx(action="disable", id="r1"))
         assert r.status == ToolStatus.SUCCESS and r.data["enabled"] is False
         r = await tool.execute(_ctx(action="enable", id="r1"))
@@ -103,14 +126,24 @@ class TestEnableDisable:
 class TestPerMonitorIsolation:
     async def test_two_monitors_use_separate_files(self, repo_git_tmp):
         tool = PipelineScheduleTool()
-        await tool.execute(_ctx(
-            action="add_recurring", trigger_action="review",
-            cron="*/5 * * * *", id="alfa-loop", monitor_id="m-alfa",
-        ))
-        await tool.execute(_ctx(
-            action="add_recurring", trigger_action="implement",
-            cron="*/2 * * * *", id="beta-loop", monitor_id="m-beta",
-        ))
+        await tool.execute(
+            _ctx(
+                action="add_recurring",
+                trigger_action="review",
+                cron="*/5 * * * *",
+                id="alfa-loop",
+                monitor_id="m-alfa",
+            )
+        )
+        await tool.execute(
+            _ctx(
+                action="add_recurring",
+                trigger_action="implement",
+                cron="*/2 * * * *",
+                id="beta-loop",
+                monitor_id="m-beta",
+            )
+        )
         # Each monitor sees only its own entries.
         list_alfa = await tool.execute(_ctx(action="list", monitor_id="m-alfa"))
         list_beta = await tool.execute(_ctx(action="list", monitor_id="m-beta"))

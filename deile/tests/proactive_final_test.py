@@ -14,8 +14,7 @@ from pathlib import Path
 
 # Professional logging setup
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
 # File lives at scripts/tests/, project root is two parents up
@@ -55,12 +54,15 @@ class EnterpriseProactiveValidator:
             agent = DeileAgent(
                 model_router=model_router,
                 tool_registry=get_tool_registry(),
-                parser_registry=get_parser_registry()
+                parser_registry=get_parser_registry(),
             )
 
             # Initialize proactive analyzer manually for testing
             from deile.core.proactive_analyzer import get_proactive_analyzer
-            agent.proactive_analyzer = get_proactive_analyzer(str(self.settings.working_directory))
+
+            agent.proactive_analyzer = get_proactive_analyzer(
+                str(self.settings.working_directory)
+            )
 
             self.logger.info("✅ Test agent created and initialized successfully")
             yield agent
@@ -83,13 +85,13 @@ class EnterpriseProactiveValidator:
                 "name": "File Analysis Request",
                 "input": "examine o arquivo deile.py e me explique como funciona",
                 "expected_proactive_tools": ["read_file"],
-                "expected_confidence": 0.8
+                "expected_confidence": 0.8,
             },
             {
                 "name": "Project Structure Analysis",
                 "input": "analise a estrutura do projeto DEILE",
                 "expected_proactive_tools": ["list_files"],
-                "expected_confidence": 0.7
+                "expected_confidence": 0.7,
             },
             {
                 # Two real files at the repo root so both reads can actually
@@ -97,7 +99,7 @@ class EnterpriseProactiveValidator:
                 "name": "Multiple File Reference",
                 "input": "compare os arquivos requirements.txt e README.md",
                 "expected_proactive_tools": ["read_file", "read_file"],
-                "expected_confidence": 0.6
+                "expected_confidence": 0.6,
             },
             {
                 # The pattern_match for "mostre arquivos python" yields ~0.75
@@ -106,8 +108,8 @@ class EnterpriseProactiveValidator:
                 "name": "Directory Listing Request",
                 "input": "mostre todos os arquivos Python do projeto",
                 "expected_proactive_tools": ["list_files"],
-                "expected_confidence": 0.7
-            }
+                "expected_confidence": 0.7,
+            },
         ]
 
         async with self.create_test_agent() as agent:
@@ -129,22 +131,19 @@ class EnterpriseProactiveValidator:
             # Create test session
             session = AgentSession(
                 session_id=f"test_{scenario_name.lower().replace(' ', '_')}",
-                working_directory=Path(self.settings.working_directory)
+                working_directory=Path(self.settings.working_directory),
             )
 
             # Test proactive detection
             proactive_results = await agent._execute_proactive_tools(
-                scenario["input"],
-                session
+                scenario["input"], session
             )
 
             execution_time = time.time() - start_time
 
             # Analyze results following industry best practices
             result = self._analyze_scenario_results(
-                scenario,
-                proactive_results,
-                execution_time
+                scenario, proactive_results, execution_time
             )
 
             self.test_results.append(result)
@@ -154,25 +153,33 @@ class EnterpriseProactiveValidator:
             self.logger.info(f"{status} {scenario_name} - {execution_time:.3f}s")
 
             if result["passed"]:
-                self.logger.info(f"   Proactive tools executed: {len(proactive_results)}")
+                self.logger.info(
+                    f"   Proactive tools executed: {len(proactive_results)}"
+                )
                 for i, tool_result in enumerate(proactive_results):
-                    confidence = tool_result.metadata.get('proactive_confidence', 0)
-                    self.logger.info(f"   [{i+1}] {tool_result.metadata.get('proactive_execution', 'Unknown')} - confidence: {confidence:.3f}")
+                    confidence = tool_result.metadata.get("proactive_confidence", 0)
+                    self.logger.info(
+                        f"   [{i+1}] {tool_result.metadata.get('proactive_execution', 'Unknown')} - confidence: {confidence:.3f}"
+                    )
             else:
                 self.logger.warning(f"   Issues: {result['issues']}")
 
         except Exception as e:
             self.logger.error(f"❌ Scenario {scenario_name} failed with exception: {e}")
-            self.test_results.append({
-                "scenario": scenario_name,
-                "passed": False,
-                "execution_time": time.time() - start_time,
-                "issues": [f"Exception: {str(e)}"],
-                "proactive_tools_executed": 0,
-                "confidence_scores": []
-            })
+            self.test_results.append(
+                {
+                    "scenario": scenario_name,
+                    "passed": False,
+                    "execution_time": time.time() - start_time,
+                    "issues": [f"Exception: {str(e)}"],
+                    "proactive_tools_executed": 0,
+                    "confidence_scores": [],
+                }
+            )
 
-    def _analyze_scenario_results(self, scenario: dict, proactive_results: list, execution_time: float) -> dict:
+    def _analyze_scenario_results(
+        self, scenario: dict, proactive_results: list, execution_time: float
+    ) -> dict:
         """Professional result analysis following 2025 best practices"""
 
         issues = []
@@ -186,19 +193,23 @@ class EnterpriseProactiveValidator:
             issues.append("No proactive tools were executed")
             passed = False
         elif actual_tool_count < expected_tool_count:
-            issues.append(f"Expected {expected_tool_count} tools, got {actual_tool_count}")
+            issues.append(
+                f"Expected {expected_tool_count} tools, got {actual_tool_count}"
+            )
 
         # Check confidence scores
         confidence_scores = []
         for result in proactive_results:
-            confidence = result.metadata.get('proactive_confidence', 0)
+            confidence = result.metadata.get("proactive_confidence", 0)
             confidence_scores.append(confidence)
 
             # Use math.isclose for the boundary case: float arithmetic in the
             # analyzer (e.g. 1.0 - 0.2 = 0.7999999...) would otherwise reject
             # a confidence that meets the spec at the displayed precision.
             expected = scenario["expected_confidence"]
-            if confidence < expected and not math.isclose(confidence, expected, abs_tol=1e-9):
+            if confidence < expected and not math.isclose(
+                confidence, expected, abs_tol=1e-9
+            ):
                 issues.append(f"Low confidence score: {confidence:.3f}")
 
         # Check execution success
@@ -218,7 +229,8 @@ class EnterpriseProactiveValidator:
             "issues": issues,
             "proactive_tools_executed": actual_tool_count,
             "confidence_scores": confidence_scores,
-            "success_rate": len([r for r in proactive_results if r.is_success]) / max(1, len(proactive_results))
+            "success_rate": len([r for r in proactive_results if r.is_success])
+            / max(1, len(proactive_results)),
         }
 
     def _generate_validation_report(self):
@@ -230,8 +242,12 @@ class EnterpriseProactiveValidator:
         passed_tests = len([r for r in self.test_results if r["passed"]])
         success_rate = (passed_tests / total_tests) * 100 if total_tests > 0 else 0
 
-        avg_execution_time = sum(r["execution_time"] for r in self.test_results) / max(1, total_tests)
-        total_tools_executed = sum(r["proactive_tools_executed"] for r in self.test_results)
+        avg_execution_time = sum(r["execution_time"] for r in self.test_results) / max(
+            1, total_tests
+        )
+        total_tools_executed = sum(
+            r["proactive_tools_executed"] for r in self.test_results
+        )
 
         self.logger.info(f"""
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -257,7 +273,9 @@ class EnterpriseProactiveValidator:
             all_issues.extend(result["issues"])
 
         if all_issues:
-            self.logger.warning(f"🔍 Issues found: {len(set(all_issues))} unique issues")
+            self.logger.warning(
+                f"🔍 Issues found: {len(set(all_issues))} unique issues"
+            )
             for issue in set(all_issues):
                 count = all_issues.count(issue)
                 self.logger.warning(f"   • {issue} (occurs {count}x)")

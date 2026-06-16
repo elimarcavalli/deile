@@ -17,6 +17,7 @@ O módulo ``claude_worker_server`` vive em ``infra/k8s/`` (fora do pacote
 ``deile``). O path é inserido manualmente — mesma convenção dos demais
 testes de infra (ver ``test_worker_resume.py``).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +26,6 @@ import os
 import sys
 import time
 from pathlib import Path
-from threading import Thread
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,12 +47,14 @@ def _make_lease(workspace: Path, *, pod: str = "pod-a", age_s: float = 0.0) -> P
     """Cria um .lease.json com heartbeat_at = now - age_s."""
     lease_path = workspace / ".lease.json"
     lease_path.write_text(
-        json.dumps({
-            "pod": pod,
-            "pid": 999,
-            "started_at": time.time() - age_s,
-            "heartbeat_at": time.time() - age_s,
-        }),
+        json.dumps(
+            {
+                "pod": pod,
+                "pid": 999,
+                "started_at": time.time() - age_s,
+                "heartbeat_at": time.time() - age_s,
+            }
+        ),
         encoding="utf-8",
     )
     return lease_path
@@ -263,7 +265,8 @@ class TestClaudePidInLease:
 
     @pytest.mark.unit
     async def test_find_active_lease_exposes_claude_running_true(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ):
         """``_find_active_lease`` reporta ``claude_running=True`` para PID vivo."""
         root = tmp_path / "root"
@@ -281,7 +284,8 @@ class TestClaudePidInLease:
 
     @pytest.mark.unit
     async def test_find_active_lease_exposes_claude_running_false(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ):
         """PID de um processo morto → ``claude_running=False`` (mistério #3)."""
         root = tmp_path / "root"
@@ -299,7 +303,8 @@ class TestClaudePidInLease:
 
     @pytest.mark.unit
     async def test_find_active_lease_claude_running_false_when_field_missing(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ):
         """Lease antigo sem ``claude_pid`` → ``claude_running=False``."""
         root = tmp_path / "root"
@@ -337,12 +342,17 @@ class TestAuthSetupToken:
     @pytest.mark.unit
     def test_no_bare_passes(self):
         """argv sem --bare → sem exceção."""
-        cws._assert_no_bare_in_argv([
-            "claude", "-p",
-            "--permission-mode", "bypassPermissions",
-            "--output-format", "json",
-            "do something",
-        ])
+        cws._assert_no_bare_in_argv(
+            [
+                "claude",
+                "-p",
+                "--permission-mode",
+                "bypassPermissions",
+                "--output-format",
+                "json",
+                "do something",
+            ]
+        )
 
     @pytest.mark.unit
     def test_empty_argv_passes(self):
@@ -526,10 +536,13 @@ class TestDispatch409WhenLeaseHeld:
 
         with (
             patch.object(cws, "_acquire_lease", side_effect=_always_deny),
-            patch.dict(os.environ, {
-                "DEILE_CLAUDE_WORKER_ROOT": str(tmp_path),
-                "HOSTNAME": "pod-test",
-            }),
+            patch.dict(
+                os.environ,
+                {
+                    "DEILE_CLAUDE_WORKER_ROOT": str(tmp_path),
+                    "HOSTNAME": "pod-test",
+                },
+            ),
         ):
             response = await cws.dispatch_handler(request)
 
@@ -585,19 +598,25 @@ class TestCountLiveLeases:
         from unittest.mock import AsyncMock as _AM
 
         request = MagicMock()
-        request.json = _AM(return_value={
-            "brief": "review PR", "stage": "pr_review",
-            "channel_id": "pipeline-mention-pr-99",
-        })
+        request.json = _AM(
+            return_value={
+                "brief": "review PR",
+                "stage": "pr_review",
+                "channel_id": "pipeline-mention-pr-99",
+            }
+        )
         request.app = {"auth_token": "test-token"}
 
         with (
             patch.object(cws, "_CLAUDE_MAX_CONCURRENT", 2),
             patch.object(cws, "_LEASE_TTL_S", 30),
-            patch.dict(os.environ, {
-                "DEILE_CLAUDE_WORKER_ROOT": str(root),
-                "HOSTNAME": "pod-test",
-            }),
+            patch.dict(
+                os.environ,
+                {
+                    "DEILE_CLAUDE_WORKER_ROOT": str(root),
+                    "HOSTNAME": "pod-test",
+                },
+            ),
         ):
             response = await cws.dispatch_handler(request)
 

@@ -16,23 +16,36 @@ import pytest
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import (
-    GhCommandError, IssueRef, PrRef, compute_batch_id_for_number)
+    GhCommandError,
+    IssueRef,
+    PrRef,
+    compute_batch_id_for_number,
+)
 from deile.orchestration.pipeline.identity import MonitorIdentity
-from deile.orchestration.pipeline.labels import (REVIEW_PENDING, WORKFLOW_NEW,
-                                                 WORKFLOW_REVIEWED,
-                                                 WORKFLOW_REVIEWING)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor,
-                                                  _extract_pr_url)
+from deile.orchestration.pipeline.labels import (
+    REVIEW_PENDING,
+    WORKFLOW_NEW,
+    WORKFLOW_REVIEWED,
+    WORKFLOW_REVIEWING,
+)
+from deile.orchestration.pipeline.monitor import (
+    PipelineConfig,
+    PipelineMonitor,
+    _extract_pr_url,
+)
 from deile.orchestration.pipeline.notifier import DiscordNotifier
-from deile.orchestration.pipeline.scheduler import (OneshotEntry,
-                                                    RecurringEntry, Schedule,
-                                                    ScheduleStore)
+from deile.orchestration.pipeline.scheduler import (
+    OneshotEntry,
+    RecurringEntry,
+    Schedule,
+    ScheduleStore,
+)
 from deile.orchestration.pipeline.worktree_manager import Worktree
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _issue(number: int, labels: tuple, body: str = "filled body") -> IssueRef:
     return IssueRef(
@@ -122,13 +135,22 @@ def _make_monitor(
 
     notifier = MagicMock()
     for attr in (
-        "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "implementation_parked", "pr_picked_up", "pr_reviewed",
-        "issue_auto_classified", "follow_ups_processed", "error",
+        "issue_picked_up",
+        "issue_reviewed",
+        "implementation_started",
+        "implementation_finished",
+        "implementation_parked",
+        "pr_picked_up",
+        "pr_reviewed",
+        "issue_auto_classified",
+        "follow_ups_processed",
+        "error",
     ):
         setattr(notifier, attr, AsyncMock())
 
-    monitor = PipelineMonitor(cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier)
+    monitor = PipelineMonitor(
+        cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier
+    )
     return monitor, github, notifier
 
 
@@ -136,18 +158,21 @@ def _make_monitor(
 # gap #1: schedule fallback for stages not in recurring
 # ---------------------------------------------------------------------------
 
+
 class TestGap1ScheduleFallback:
     async def test_stages_missing_from_recurring_run_as_legacy(self, tmp_path):
         """When schedule has recurring entries but only 'review', classify/implement/pr_review
         should run as legacy fallback."""
         store = ScheduleStore(tmp_path, monitor_id="default")
         s = Schedule()
-        s.add_recurring(RecurringEntry(
-            id="rev",
-            action="review",
-            cron="*/5 * * * *",
-            last_run_at=datetime.now(timezone.utc) - timedelta(hours=2),
-        ))
+        s.add_recurring(
+            RecurringEntry(
+                id="rev",
+                action="review",
+                cron="*/5 * * * *",
+                last_run_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            )
+        )
         store.save(s)
 
         unclassified = [_issue(10, ("intent",), body="body")]
@@ -177,7 +202,11 @@ class TestGap1ScheduleFallback:
         )
 
         monitor = PipelineMonitor(
-            cfg, github=github, notifier=notifier, worktrees=worktrees, schedule_store=store
+            cfg,
+            github=github,
+            notifier=notifier,
+            worktrees=worktrees,
+            schedule_store=store,
         )
         await monitor.tick()
         # list_unclassified_issues was called via legacy fallback even though
@@ -189,12 +218,14 @@ class TestGap1ScheduleFallback:
         store = ScheduleStore(tmp_path, monitor_id="default")
         s = Schedule()
         # Only classify, set last_run_at in the past so it's due
-        s.add_recurring(RecurringEntry(
-            id="cls",
-            action="classify",
-            cron="*/2 * * * *",
-            last_run_at=datetime.now(timezone.utc) - timedelta(hours=1),
-        ))
+        s.add_recurring(
+            RecurringEntry(
+                id="cls",
+                action="classify",
+                cron="*/2 * * * *",
+                last_run_at=datetime.now(timezone.utc) - timedelta(hours=1),
+            )
+        )
         store.save(s)
 
         cfg = PipelineConfig(
@@ -218,7 +249,11 @@ class TestGap1ScheduleFallback:
         )
 
         monitor = PipelineMonitor(
-            cfg, github=github, notifier=notifier, worktrees=worktrees, schedule_store=store
+            cfg,
+            github=github,
+            notifier=notifier,
+            worktrees=worktrees,
+            schedule_store=store,
         )
         await monitor.tick()
         # classify ran once (via schedule), not twice
@@ -228,6 +263,7 @@ class TestGap1ScheduleFallback:
 # ---------------------------------------------------------------------------
 # gap #4: "security" label is classifiable by default
 # ---------------------------------------------------------------------------
+
 
 class TestGap4SecurityLabel:
     async def test_security_label_is_classifiable(self):
@@ -240,6 +276,7 @@ class TestGap4SecurityLabel:
 # ---------------------------------------------------------------------------
 # gap #5: empty body accepted + reminder comment posted
 # ---------------------------------------------------------------------------
+
 
 class TestGap5EmptyBodyAccepted:
     async def test_empty_body_classified_with_reminder(self):
@@ -264,6 +301,7 @@ class TestGap5EmptyBodyAccepted:
 # gap #6: Stage 0 uses claim_with_batch
 # ---------------------------------------------------------------------------
 
+
 class TestGap6Stage0UsesClaim:
     """Gap #6: with PARALLEL monitors Stage 0 claims a ~batch: lock BEFORE
     labelling (TOCTOU mitigation). A SINGLE monitor skips the claim entirely so
@@ -282,7 +320,9 @@ class TestGap6Stage0UsesClaim:
         # Stub a 2-monitor identity that owns everything (decouple from title hash).
         monitor.identity = SimpleNamespace(shard_count=2, owns=lambda key: True)
         call_order = []
-        github.claim_with_batch.side_effect = lambda *a, **_: call_order.append("claim") or "abc"
+        github.claim_with_batch.side_effect = (
+            lambda *a, **_: call_order.append("claim") or "abc"
+        )
         github.add_labels.side_effect = lambda *a, **_: call_order.append("label")
         await monitor._classify_new_issues()
         assert "claim" in call_order
@@ -301,11 +341,14 @@ class TestGap6Stage0UsesClaim:
 # gap #7: Stage 2 accepts issue with ownership label even without ~batch:
 # ---------------------------------------------------------------------------
 
+
 class TestGap7Stage2AcceptsOwnershipLabel:
     async def test_implements_issue_with_ownership_label_no_batch(self):
         ownership = MonitorIdentity().ownership_label()
         rev = IssueRef(
-            number=10, title="t", url="u",
+            number=10,
+            title="t",
+            url="u",
             labels=(WORKFLOW_REVIEWED, ownership),  # ~by:default but no ~batch:
         )
         monitor, _, notifier = _make_monitor(issues_reviewed=[rev])
@@ -316,7 +359,9 @@ class TestGap7Stage2AcceptsOwnershipLabel:
 
     async def test_skips_issue_without_batch_or_ownership(self):
         rev = IssueRef(
-            number=11, title="t", url="u",
+            number=11,
+            title="t",
+            url="u",
             labels=(WORKFLOW_REVIEWED,),  # neither batch nor ownership
         )
         monitor, _, notifier = _make_monitor(issues_reviewed=[rev])
@@ -329,6 +374,7 @@ class TestGap7Stage2AcceptsOwnershipLabel:
 # ---------------------------------------------------------------------------
 # gap #8: enable_review_human_prs flag
 # ---------------------------------------------------------------------------
+
 
 class TestGap8ReviewHumanPrs:
     async def test_human_pr_reviewed_when_flag_set(self):
@@ -354,6 +400,7 @@ class TestGap8ReviewHumanPrs:
 # gap #9: Stage 3 clears ~batch: label after conclude
 # ---------------------------------------------------------------------------
 
+
 class TestGap9BatchClearedAfterPrReview:
     async def test_clear_batch_called_after_pr_review(self):
         pr = _pr(30, (REVIEW_PENDING,), head_ref="auto/issue-1")
@@ -368,6 +415,7 @@ class TestGap9BatchClearedAfterPrReview:
 # gap #10: compute_batch_id_for_number uses number, not title
 # ---------------------------------------------------------------------------
 
+
 class TestGap10BatchIdByNumber:
     def test_different_numbers_different_ids(self):
         a = compute_batch_id_for_number("issue", 1)
@@ -375,21 +423,20 @@ class TestGap10BatchIdByNumber:
         assert a != b
 
     def test_same_number_same_id_deterministic(self):
-        assert (
-            compute_batch_id_for_number("issue", 42)
-            == compute_batch_id_for_number("issue", 42)
+        assert compute_batch_id_for_number("issue", 42) == compute_batch_id_for_number(
+            "issue", 42
         )
 
     def test_issue_and_pr_same_number_differ(self):
-        assert (
-            compute_batch_id_for_number("issue", 10)
-            != compute_batch_id_for_number("pr", 10)
+        assert compute_batch_id_for_number("issue", 10) != compute_batch_id_for_number(
+            "pr", 10
         )
 
 
 # ---------------------------------------------------------------------------
 # gap #13: Stage 1 atomicity — revert on failure
 # ---------------------------------------------------------------------------
+
 
 class TestGap13Stage1Atomic:
     async def test_review_failure_reverts_to_nova(self):
@@ -407,7 +454,8 @@ class TestGap13Stage1Atomic:
 
         # The issue should have been transitioned back to WORKFLOW_NEW
         revert_calls = [
-            c for c in github.transition_issue.call_args_list
+            c
+            for c in github.transition_issue.call_args_list
             if c.kwargs.get("to_label") == WORKFLOW_NEW
         ]
         assert revert_calls, "expected revert to ~workflow:nova on review failure"
@@ -417,6 +465,7 @@ class TestGap13Stage1Atomic:
 # ---------------------------------------------------------------------------
 # gap #14: _extract_pr_url uses last match
 # ---------------------------------------------------------------------------
+
 
 class TestGap14ExtractPrUrlLastMatch:
     def test_returns_last_url_when_multiple_present(self):
@@ -428,8 +477,10 @@ class TestGap14ExtractPrUrlLastMatch:
         assert _extract_pr_url(text) == "https://github.com/o/r/pull/99"
 
     def test_single_url_still_returned(self):
-        assert _extract_pr_url("https://github.com/o/r/pull/42") == \
-            "https://github.com/o/r/pull/42"
+        assert (
+            _extract_pr_url("https://github.com/o/r/pull/42")
+            == "https://github.com/o/r/pull/42"
+        )
 
     def test_none_when_no_url(self):
         assert _extract_pr_url("no url here") is None
@@ -438,6 +489,7 @@ class TestGap14ExtractPrUrlLastMatch:
 # ---------------------------------------------------------------------------
 # gap #17/#18: GhCommandError → ERROR level + stats.gh_errors
 # ---------------------------------------------------------------------------
+
 
 class TestGap17_18GhErrorCounting:
     async def test_gh_error_in_review_increments_gh_errors(self):
@@ -473,12 +525,12 @@ class TestGap17_18GhErrorCounting:
         # error recovery on subsequent ticks.
         ownership = MonitorIdentity().ownership_label()
         rev = IssueRef(
-            number=20, title="t", url="u",
+            number=20,
+            title="t",
+            url="u",
             labels=(WORKFLOW_REVIEWED, ownership, "~batch:abc12345"),
         )
-        monitor, github, notifier = _make_monitor(
-            issues_reviewed=[rev], claude_rc=1
-        )
+        monitor, github, notifier = _make_monitor(issues_reviewed=[rev], claude_rc=1)
         monitor.config.enable_review = False
         monitor.config.enable_pr_review = False
         await monitor.tick()
@@ -491,6 +543,7 @@ class TestGap17_18GhErrorCounting:
 # ---------------------------------------------------------------------------
 # gap #19: DiscordNotifier warns once when dm_fn is None
 # ---------------------------------------------------------------------------
+
 
 class TestGap19NotifierWarnsOnce:
     async def test_warning_emitted_once_when_no_dm_fn(self, monkeypatch):
@@ -508,10 +561,13 @@ class TestGap19NotifierWarnsOnce:
         # Patch the resolver to always return None so no real DM fn is loaded.
         # Use patch on the logger directly (more robust than caplog against
         # logging.disable() side-effects from other tests in the suite).
-        with patch(
-            "deile.orchestration.pipeline.notifier._resolve_dm_function",
-            return_value=None,
-        ), patch("deile.orchestration.pipeline.notifier.logger") as mock_logger:
+        with (
+            patch(
+                "deile.orchestration.pipeline.notifier._resolve_dm_function",
+                return_value=None,
+            ),
+            patch("deile.orchestration.pipeline.notifier.logger") as mock_logger,
+        ):
             await notifier._send("msg 1")
             await notifier._send("msg 2")
 
@@ -524,6 +580,7 @@ class TestGap19NotifierWarnsOnce:
 # ---------------------------------------------------------------------------
 # gap #22: _owns_pr_branch logs warning on empty head_ref
 # ---------------------------------------------------------------------------
+
 
 class TestGap22EmptyHeadRef:
     def test_empty_head_ref_returns_false(self):
@@ -541,12 +598,15 @@ class TestGap22EmptyHeadRef:
             await monitor._review_one_open_pr()
         warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
         head_ref_warnings = [c for c in warning_calls if "head_ref" in c.lower()]
-        assert head_ref_warnings, f"expected warning about empty head_ref; got: {warning_calls}"
+        assert (
+            head_ref_warnings
+        ), f"expected warning about empty head_ref; got: {warning_calls}"
 
 
 # ---------------------------------------------------------------------------
 # gap #25: gc_completed_oneshots removes old completed entries
 # ---------------------------------------------------------------------------
+
 
 class TestGap25GcCompletedOneshots:
     def test_removes_completed_entries_older_than_max_age(self):
@@ -586,6 +646,7 @@ class TestGap25GcCompletedOneshots:
 # gap #27: use_pid_lock defaults to True
 # ---------------------------------------------------------------------------
 
+
 class TestGap27PidLockDefault:
     def test_use_pid_lock_defaults_to_true(self):
         cfg = PipelineConfig(repo="o/r", base_repo_path=Path("/tmp/r"))
@@ -595,6 +656,7 @@ class TestGap27PidLockDefault:
 # ---------------------------------------------------------------------------
 # gap #29: GhCommandError.__str__ includes full subcommand
 # ---------------------------------------------------------------------------
+
 
 class TestGap29GhCommandErrorStr:
     def test_error_message_includes_full_subcommand(self):
@@ -612,6 +674,7 @@ class TestGap29GhCommandErrorStr:
 # gap #33: classifiable_labels includes "security" by default
 # ---------------------------------------------------------------------------
 
+
 class TestGap33ClassifiableLabelsDefault:
     def test_security_in_default_classifiable_labels(self):
         cfg = PipelineConfig(repo="o/r", base_repo_path=Path("/tmp"))
@@ -622,12 +685,15 @@ class TestGap33ClassifiableLabelsDefault:
 # gap #34: pipeline reset command
 # ---------------------------------------------------------------------------
 
+
 class TestGap34PipelineReset:
     async def test_reset_removes_batch_and_by_labels(self):
         from deile.commands.builtin.pipeline_command import _reset_issue
 
         issue = IssueRef(
-            number=42, title="t", url="u",
+            number=42,
+            title="t",
+            url="u",
             labels=("intent", "~batch:abc12345", "~by:default"),
         )
         monitor, github, _ = _make_monitor()
@@ -644,7 +710,9 @@ class TestGap34PipelineReset:
         from deile.commands.builtin.pipeline_command import _reset_issue
 
         issue = IssueRef(
-            number=43, title="t", url="u",
+            number=43,
+            title="t",
+            url="u",
             labels=("intent", "bug"),
         )
         monitor, github, _ = _make_monitor()
@@ -659,10 +727,13 @@ class TestGap34PipelineReset:
 # gap #35: log flush / schedule reflects actual stage runs
 # ---------------------------------------------------------------------------
 
+
 class TestGap35ScheduleCoversAllStages:
     def test_default_schedule_has_all_four_stages(self, tmp_path):
         """The default schedule file must have recurring entries for all 4 stages."""
-        default_schedule_path = Path(__file__).parents[5] / "config" / "pipeline_schedule_default.yaml"
+        default_schedule_path = (
+            Path(__file__).parents[5] / "config" / "pipeline_schedule_default.yaml"
+        )
         if not default_schedule_path.exists():
             pytest.skip("config/pipeline_schedule_default.yaml not found")
         store = ScheduleStore(default_schedule_path.parent, monitor_id="default")
@@ -678,14 +749,14 @@ class TestGap35ScheduleCoversAllStages:
 # Reviewer fixes: bugs found during code review
 # ---------------------------------------------------------------------------
 
+
 class TestGcCompletedOneshotsNoDuplicateCutoff:
     """gc_completed_oneshots had a dead first assignment to cutoff (dead code removed)."""
 
     def test_removes_entries_correctly_with_fixed_cutoff(self):
         from datetime import timedelta
 
-        from deile.orchestration.pipeline.scheduler import (OneshotEntry,
-                                                            Schedule)
+        from deile.orchestration.pipeline.scheduler import OneshotEntry, Schedule
 
         s = Schedule()
         old_completed = OneshotEntry(
@@ -718,11 +789,11 @@ class TestGcCompletedOneshotsNoDuplicateCutoff:
 
 class TestCleanupMergedBranchesNestedPath:
     """cleanup_merged_branches previously used candidate.name (last component only),
-    which never matched full branch names like 'auto/issue-42'. Now uses relative_to()."""
+    which never matched full branch names like 'auto/issue-42'. Now uses relative_to().
+    """
 
     async def test_deletes_nested_worktree_when_branch_merged(self, tmp_path):
-        from deile.orchestration.pipeline.worktree_manager import \
-            WorktreeManager
+        from deile.orchestration.pipeline.worktree_manager import WorktreeManager
 
         # Create a fake git repo
         (tmp_path / ".git").mkdir()
@@ -739,8 +810,7 @@ class TestCleanupMergedBranchesNestedPath:
         assert not wt_dir.exists()
 
     async def test_no_delete_when_branch_not_merged(self, tmp_path):
-        from deile.orchestration.pipeline.worktree_manager import \
-            WorktreeManager
+        from deile.orchestration.pipeline.worktree_manager import WorktreeManager
 
         (tmp_path / ".git").mkdir()
         wm = WorktreeManager(base_repo=tmp_path)

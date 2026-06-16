@@ -24,22 +24,49 @@ from deile.core.models import reasoning as R
 class TestVocabulary:
     def test_claude_code_efforts_are_the_user_spec(self):
         assert R.CLAUDE_CODE_EFFORTS == (
-            "low", "medium", "high", "xhigh", "max", "ultracode", "auto",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode",
+            "auto",
         )
 
     def test_valid_efforts_claude_worker_always_claude_vocab(self):
-        assert R.valid_efforts_for(worker="claude-worker", provider_id="anthropic") == R.CLAUDE_CODE_EFFORTS
+        assert (
+            R.valid_efforts_for(worker="claude-worker", provider_id="anthropic")
+            == R.CLAUDE_CODE_EFFORTS
+        )
         # claude-worker is anthropic-only; provider_id is ignored for it.
-        assert R.valid_efforts_for(worker="claude-worker", provider_id=None) == R.CLAUDE_CODE_EFFORTS
+        assert (
+            R.valid_efforts_for(worker="claude-worker", provider_id=None)
+            == R.CLAUDE_CODE_EFFORTS
+        )
 
     def test_valid_efforts_deile_worker_by_provider(self):
-        assert R.valid_efforts_for(worker="deile-worker", provider_id="anthropic") == R.CLAUDE_CODE_EFFORTS
-        assert R.valid_efforts_for(worker="deile-worker", provider_id="openai") == R.OPENAI_EFFORTS
-        assert R.valid_efforts_for(worker="deile-worker", provider_id="gemini") == R.GEMINI_EFFORTS
-        assert R.valid_efforts_for(worker="deile-worker", provider_id="deepseek") == R.DEEPSEEK_EFFORTS
+        assert (
+            R.valid_efforts_for(worker="deile-worker", provider_id="anthropic")
+            == R.CLAUDE_CODE_EFFORTS
+        )
+        assert (
+            R.valid_efforts_for(worker="deile-worker", provider_id="openai")
+            == R.OPENAI_EFFORTS
+        )
+        assert (
+            R.valid_efforts_for(worker="deile-worker", provider_id="gemini")
+            == R.GEMINI_EFFORTS
+        )
+        assert (
+            R.valid_efforts_for(worker="deile-worker", provider_id="deepseek")
+            == R.DEEPSEEK_EFFORTS
+        )
 
     def test_unknown_provider_falls_back_to_claude_vocab(self):
-        assert R.valid_efforts_for(worker="deile-worker", provider_id="weird") == R.CLAUDE_CODE_EFFORTS
+        assert (
+            R.valid_efforts_for(worker="deile-worker", provider_id="weird")
+            == R.CLAUDE_CODE_EFFORTS
+        )
 
     def test_is_valid_effort(self):
         assert R.is_valid_effort("XHigh") is True  # case-insensitive
@@ -58,15 +85,25 @@ class TestVocabulary:
 @pytest.mark.unit
 class TestAnthropicMapping:
     def test_opus_supports_all_levels(self):
-        assert R.request_overrides("anthropic", "claude-opus-4-8", "xhigh") == {"output_config": {"effort": "xhigh"}}
-        assert R.request_overrides("anthropic", "claude-opus-4-8", "max") == {"output_config": {"effort": "max"}}
+        assert R.request_overrides("anthropic", "claude-opus-4-8", "xhigh") == {
+            "output_config": {"effort": "xhigh"}
+        }
+        assert R.request_overrides("anthropic", "claude-opus-4-8", "max") == {
+            "output_config": {"effort": "max"}
+        }
 
     def test_sonnet_has_no_xhigh_falls_back_to_max(self):
-        assert R.request_overrides("anthropic", "claude-sonnet-4-6", "xhigh") == {"output_config": {"effort": "max"}}
-        assert R.request_overrides("anthropic", "claude-sonnet-4-6", "high") == {"output_config": {"effort": "high"}}
+        assert R.request_overrides("anthropic", "claude-sonnet-4-6", "xhigh") == {
+            "output_config": {"effort": "max"}
+        }
+        assert R.request_overrides("anthropic", "claude-sonnet-4-6", "high") == {
+            "output_config": {"effort": "high"}
+        }
 
     def test_ultracode_maps_to_max(self):
-        assert R.request_overrides("anthropic", "claude-opus-4-8", "ultracode") == {"output_config": {"effort": "max"}}
+        assert R.request_overrides("anthropic", "claude-opus-4-8", "ultracode") == {
+            "output_config": {"effort": "max"}
+        }
 
     def test_auto_omits(self):
         assert R.request_overrides("anthropic", "claude-opus-4-8", "auto") == {}
@@ -78,12 +115,20 @@ class TestAnthropicMapping:
 @pytest.mark.unit
 class TestOpenAIMapping:
     def test_levels_passthrough(self):
-        assert R.request_overrides("openai", "gpt-5.5", "medium") == {"reasoning_effort": "medium"}
-        assert R.request_overrides("openai", "gpt-5.4", "none") == {"reasoning_effort": "none"}
+        assert R.request_overrides("openai", "gpt-5.5", "medium") == {
+            "reasoning_effort": "medium"
+        }
+        assert R.request_overrides("openai", "gpt-5.4", "none") == {
+            "reasoning_effort": "none"
+        }
 
     def test_max_ultracode_map_to_xhigh(self):
-        assert R.request_overrides("openai", "gpt-5.5", "max") == {"reasoning_effort": "xhigh"}
-        assert R.request_overrides("openai", "gpt-5.5", "ultracode") == {"reasoning_effort": "xhigh"}
+        assert R.request_overrides("openai", "gpt-5.5", "max") == {
+            "reasoning_effort": "xhigh"
+        }
+        assert R.request_overrides("openai", "gpt-5.5", "ultracode") == {
+            "reasoning_effort": "xhigh"
+        }
 
     def test_nano_omits(self):
         assert R.request_overrides("openai", "gpt-5.4-nano", "high") == {}
@@ -95,15 +140,25 @@ class TestOpenAIMapping:
 @pytest.mark.unit
 class TestDeepSeekMapping:
     def test_off_disables_thinking(self):
-        assert R.request_overrides("deepseek", "deepseek-v4-pro", "off") == {"thinking": {"type": "disabled"}}
+        assert R.request_overrides("deepseek", "deepseek-v4-pro", "off") == {
+            "thinking": {"type": "disabled"}
+        }
 
     def test_high_and_max(self):
-        assert R.request_overrides("deepseek", "deepseek-v4-pro", "high") == {"reasoning_effort": "high"}
-        assert R.request_overrides("deepseek", "deepseek-v4-flash", "max") == {"reasoning_effort": "max"}
-        assert R.request_overrides("deepseek", "deepseek-v4-pro", "ultracode") == {"reasoning_effort": "max"}
+        assert R.request_overrides("deepseek", "deepseek-v4-pro", "high") == {
+            "reasoning_effort": "high"
+        }
+        assert R.request_overrides("deepseek", "deepseek-v4-flash", "max") == {
+            "reasoning_effort": "max"
+        }
+        assert R.request_overrides("deepseek", "deepseek-v4-pro", "ultracode") == {
+            "reasoning_effort": "max"
+        }
 
     def test_low_medium_alias_to_high(self):
-        assert R.request_overrides("deepseek", "deepseek-v4-pro", "low") == {"reasoning_effort": "high"}
+        assert R.request_overrides("deepseek", "deepseek-v4-pro", "low") == {
+            "reasoning_effort": "high"
+        }
 
     def test_auto_omits(self):
         assert R.request_overrides("deepseek", "deepseek-v4-pro", "auto") == {}
@@ -116,19 +171,33 @@ class TestGeminiMapping:
         assert R.request_overrides("gemini", "gemini-3.5-flash", "high") == {}
 
     def test_3x_uses_thinking_level(self):
-        assert R.gemini_thinking_kwargs("gemini-3.5-flash", "medium") == {"thinking_level": "medium"}
-        assert R.gemini_thinking_kwargs("gemini-3.1-flash-lite", "off") == {"thinking_level": "minimal"}
+        assert R.gemini_thinking_kwargs("gemini-3.5-flash", "medium") == {
+            "thinking_level": "medium"
+        }
+        assert R.gemini_thinking_kwargs("gemini-3.1-flash-lite", "off") == {
+            "thinking_level": "minimal"
+        }
         # xhigh/max collapse to high for 3.x
-        assert R.gemini_thinking_kwargs("gemini-3.1-pro-preview", "max") == {"thinking_level": "high"}
+        assert R.gemini_thinking_kwargs("gemini-3.1-pro-preview", "max") == {
+            "thinking_level": "high"
+        }
 
     def test_25_uses_thinking_budget(self):
-        assert R.gemini_thinking_kwargs("gemini-2.5-flash", "off") == {"thinking_budget": 0}
-        assert R.gemini_thinking_kwargs("gemini-2.5-flash", "low") == {"thinking_budget": 1024}
-        assert R.gemini_thinking_kwargs("gemini-2.5-flash", "high") == {"thinking_budget": 24576}
+        assert R.gemini_thinking_kwargs("gemini-2.5-flash", "off") == {
+            "thinking_budget": 0
+        }
+        assert R.gemini_thinking_kwargs("gemini-2.5-flash", "low") == {
+            "thinking_budget": 1024
+        }
+        assert R.gemini_thinking_kwargs("gemini-2.5-flash", "high") == {
+            "thinking_budget": 24576
+        }
 
     def test_25_pro_cannot_disable(self):
         # 2.5-pro min budget is 128; "off" clamps up.
-        assert R.gemini_thinking_kwargs("gemini-2.5-pro", "off") == {"thinking_budget": 128}
+        assert R.gemini_thinking_kwargs("gemini-2.5-pro", "off") == {
+            "thinking_budget": 128
+        }
 
     def test_auto_omits(self):
         assert R.gemini_thinking_kwargs("gemini-3.5-flash", "auto") is None
@@ -139,6 +208,7 @@ class TestGeminiMapping:
 class TestSessionResolver:
     def test_context_data_wins(self, monkeypatch):
         from deile.config.settings import get_settings, reset_settings
+
         monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
         reset_settings()
         get_settings().reasoning_effort = "low"
@@ -151,6 +221,7 @@ class TestSessionResolver:
 
     def test_falls_back_to_settings(self, monkeypatch):
         from deile.config.settings import get_settings, reset_settings
+
         monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
         reset_settings()
         get_settings().reasoning_effort = "high"
@@ -163,6 +234,7 @@ class TestSessionResolver:
 
     def test_none_when_unset(self, monkeypatch):
         from deile.config.settings import reset_settings
+
         monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
         reset_settings()
 
@@ -175,6 +247,7 @@ class TestSessionResolver:
     def test_forced_wins_over_soft(self, monkeypatch):
         monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
         from deile.config.settings import reset_settings
+
         reset_settings()
 
         class _S:
@@ -188,6 +261,7 @@ class TestSessionResolver:
 
     def test_forced_wins_over_settings(self, monkeypatch):
         from deile.config.settings import get_settings, reset_settings
+
         monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
         reset_settings()
         get_settings().reasoning_effort = "high"
@@ -201,6 +275,7 @@ class TestSessionResolver:
     def test_forced_auto_stores_not_clears(self, monkeypatch):
         monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
         from deile.config.settings import reset_settings
+
         reset_settings()
 
         class _S:
@@ -212,6 +287,7 @@ class TestSessionResolver:
     def test_soft_used_when_no_forced(self, monkeypatch):
         monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
         from deile.config.settings import reset_settings
+
         reset_settings()
 
         class _S:
@@ -224,6 +300,7 @@ class TestSessionResolver:
         """Simula injeção per-turn do worker em reasoning_effort: o forced vence."""
         monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
         from deile.config.settings import reset_settings
+
         reset_settings()
 
         class _S:
@@ -237,8 +314,10 @@ class TestSessionResolver:
 
     def test_forced_debug_log_emitted(self, monkeypatch, caplog):
         import logging
+
         monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
         from deile.config.settings import reset_settings
+
         reset_settings()
 
         class _S:

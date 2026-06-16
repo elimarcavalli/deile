@@ -13,7 +13,9 @@ import pytest
 from deile.config.settings import reset_settings
 from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES
 from deile.orchestration.pipeline.reasoning_resolver import (
-    _STAGE_DEFAULT_REASONING_EFFORT, resolve_stage_reasoning)
+    _STAGE_DEFAULT_REASONING_EFFORT,
+    resolve_stage_reasoning,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -30,14 +32,18 @@ def _isolate(monkeypatch):
 # Stage defaults (level 3 — no operator override)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
-@pytest.mark.parametrize("stage,expected", [
-    ("classify", "low"),
-    ("refine", "low"),
-    ("implement", "medium"),
-    ("pr_review", "high"),
-    ("follow_ups", "low"),
-])
+@pytest.mark.parametrize(
+    "stage,expected",
+    [
+        ("classify", "low"),
+        ("refine", "low"),
+        ("implement", "medium"),
+        ("pr_review", "high"),
+        ("follow_ups", "low"),
+    ],
+)
 def test_stage_default_returned_when_no_override(stage, expected):
     assert resolve_stage_reasoning(stage) == expected
 
@@ -50,6 +56,7 @@ def test_stage_defaults_mapping_covers_all_stages():
 # ---------------------------------------------------------------------------
 # Level 1 — per-stage settings override (via env var → settings object)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 def test_per_stage_env_overrides_default(monkeypatch):
@@ -71,6 +78,7 @@ def test_per_stage_env_overrides_pr_review_default(monkeypatch):
 # Level 2 — global settings override
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 def test_global_reasoning_effort_overrides_stage_default(monkeypatch):
     monkeypatch.setenv("DEILE_REASONING_EFFORT", "xhigh")
@@ -82,6 +90,7 @@ def test_global_reasoning_effort_overrides_stage_default(monkeypatch):
 # ---------------------------------------------------------------------------
 # Precedence: level 1 beats level 2 beats level 3
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 def test_per_stage_wins_over_global(monkeypatch):
@@ -108,6 +117,7 @@ def test_global_wins_over_stage_default(monkeypatch):
 # for any known stage)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 def test_no_stage_has_none_as_default():
     for stage in PIPELINE_STAGES:
@@ -118,6 +128,7 @@ def test_no_stage_has_none_as_default():
 # ---------------------------------------------------------------------------
 # Error cases
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 def test_unknown_stage_raises():

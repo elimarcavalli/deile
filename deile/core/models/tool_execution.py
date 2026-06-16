@@ -39,6 +39,7 @@ def payload_to_text(payload: Any) -> str:
     except (TypeError, ValueError):
         return str(payload)
 
+
 # Outcome markers returned alongside the ToolResult. The provider uses these to
 # pick the right payload shape (e.g. a not-found / exception error vs an error
 # the tool itself reported), keeping each provider's payload byte-identical to

@@ -19,6 +19,7 @@ from ._git_helpers import git_ls_files
 
 logger = logging.getLogger(__name__)
 
+
 class LocCommand(DirectCommand):
     """``/loc`` — exibe estatísticas do código-base."""
 
@@ -28,6 +29,7 @@ class LocCommand(DirectCommand):
 
     def __init__(self) -> None:
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="loc",
             description="Exibe estatísticas do código-base (linhas, arquivos, testes).",
@@ -68,20 +70,28 @@ class LocCommand(DirectCommand):
         test_dir = Path(cwd) / "deile" / "tests"
         if not test_dir.exists():
             return 0
-        
+
         count = 0
         for root, _, files in os.walk(test_dir):
             for file in files:
                 if file.endswith(".py"):
                     filepath = os.path.join(root, file)
                     try:
-                        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        with open(
+                            filepath, "r", encoding="utf-8", errors="ignore"
+                        ) as f:
                             for line in f:
                                 stripped = line.strip()
-                                if stripped.startswith("def test_") or stripped.startswith("async def test_"):
+                                if stripped.startswith(
+                                    "def test_"
+                                ) or stripped.startswith("async def test_"):
                                     count += 1
-                    except Exception as exc:  # open por arquivo é best-effort — ignora arquivo ilegível
-                        logger.debug("loc: falha ao contar testes em %s: %s", filepath, exc)
+                    except (
+                        Exception
+                    ) as exc:  # open por arquivo é best-effort — ignora arquivo ilegível
+                        logger.debug(
+                            "loc: falha ao contar testes em %s: %s", filepath, exc
+                        )
         return count
 
     def _collect_stats(self, cwd: str) -> dict:
@@ -95,7 +105,9 @@ class LocCommand(DirectCommand):
         """
         files = self._get_git_files(cwd)
 
-        lang_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"files": 0, "lines": 0})
+        lang_stats: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"files": 0, "lines": 0}
+        )
         file_sizes: list[tuple[str, int]] = []
 
         total_files = 0
@@ -143,7 +155,9 @@ class LocCommand(DirectCommand):
         total_tests = stats["total_tests"]
 
         # Ordenar linguagens por número de linhas (decrescente)
-        sorted_langs = sorted(lang_stats.items(), key=lambda x: x[1]["lines"], reverse=True)
+        sorted_langs = sorted(
+            lang_stats.items(), key=lambda x: x[1]["lines"], reverse=True
+        )
 
         # Top 5 maiores arquivos
         top_files = sorted(file_sizes, key=lambda x: x[1], reverse=True)[:5]
@@ -153,32 +167,30 @@ class LocCommand(DirectCommand):
         table.add_column("Linguagem", style="cyan")
         table.add_column("Arquivos", justify="right", style="green")
         table.add_column("Linhas", justify="right", style="yellow")
-        
+
         for lang, lang_row in sorted_langs:
             table.add_row(lang, str(lang_row["files"]), str(lang_row["lines"]))
-            
+
         # --- Top 5 Arquivos ---
         top_files_text = Text()
         top_files_text.append("Top 5 maiores arquivos\n", style="bold")
         for file, lines in top_files:
             top_files_text.append(f"- {file} — {lines} linhas\n")
-            
+
         # --- Resumo ---
-        summary_text = Text(f"\nTotal: {total_files} arquivos · {total_lines} linhas · {total_tests} testes pytest", style="bold")
-        
-        content = Group(
-            table,
-            Text(""),
-            top_files_text,
-            summary_text
+        summary_text = Text(
+            f"\nTotal: {total_files} arquivos · {total_lines} linhas · {total_tests} testes pytest",
+            style="bold",
         )
-        
+
+        content = Group(table, Text(""), top_files_text, summary_text)
+
         panel = Panel(
             content,
             title="[bold]📊 DEILE — Estatísticas do código-base[/bold]",
             border_style="blue",
         )
-        
+
         return CommandResult.success_result(
             panel,
             "rich",
@@ -186,5 +198,5 @@ class LocCommand(DirectCommand):
             total_lines=total_lines,
             total_tests=total_tests,
             lang_stats=dict(lang_stats),
-            top_files=top_files
+            top_files=top_files,
         )

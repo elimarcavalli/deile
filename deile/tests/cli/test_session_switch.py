@@ -16,8 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from deile.cli import _DeileCLI
-from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
-                                       SWITCH_SESSION_KEY)
+from deile.commands._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 
 
 def _make_session(
@@ -73,7 +72,12 @@ class TestCheckSessionSwitch:
             sid="resumed-sid",
             history=[
                 {"role": "user", "content": "hi", "timestamp": 1.0, "metadata": {}},
-                {"role": "assistant", "content": "hello", "timestamp": 1.1, "metadata": {}},
+                {
+                    "role": "assistant",
+                    "content": "hello",
+                    "timestamp": 1.1,
+                    "metadata": {},
+                },
             ],
         )
         current = _make_session(
@@ -113,10 +117,12 @@ class TestCheckSessionSwitch:
 
     @pytest.mark.unit
     def test_sentinels_are_consumed_even_when_target_missing(self):
-        sess = _make_session(context_data={
-            SWITCH_SESSION_KEY: "missing-sid",
-            POST_SWITCH_ACTION_KEY: "welcome",
-        })
+        sess = _make_session(
+            context_data={
+                SWITCH_SESSION_KEY: "missing-sid",
+                POST_SWITCH_ACTION_KEY: "welcome",
+            }
+        )
         cli = _make_cli(sess, target_session=None)
         cli._check_session_switch()
         assert SWITCH_SESSION_KEY not in sess.context_data
@@ -140,7 +146,8 @@ class TestReplayHistory:
         assert cli.ui.display_response.call_count == 2
         # Two user entries → two console.print calls with the "> " prefix.
         user_prints = [
-            c for c in cli.ui.console.print.call_args_list
+            c
+            for c in cli.ui.console.print.call_args_list
             if c.args and isinstance(c.args[0], str) and c.args[0].startswith("\n > ")
         ]
         assert len(user_prints) == 2
@@ -159,7 +166,8 @@ class TestReplayHistory:
         cli._replay_history(history)
         # Only the non-empty user entry rendered.
         user_prints = [
-            c for c in cli.ui.console.print.call_args_list
+            c
+            for c in cli.ui.console.print.call_args_list
             if c.args and isinstance(c.args[0], str) and c.args[0].startswith("\n > ")
         ]
         assert len(user_prints) == 1
@@ -171,6 +179,7 @@ class TestReplayHistory:
         sess = _make_session()
         cli = _make_cli(sess)
         from rich.panel import Panel
+
         history = [
             {"role": "assistant", "content": Panel("rendered"), "timestamp": 1.0},
         ]

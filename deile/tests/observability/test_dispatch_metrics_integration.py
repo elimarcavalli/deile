@@ -28,10 +28,13 @@ class TestRealWiring:
         """emit_dispatch_completed REAL → total{completed}+=1 + duration_ms."""
         monkeypatch.setenv("DEILE_ROLE", "worker")
         from deile.observability.config import reset_observability_config
+
         reset_observability_config()
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_completed, emit_dispatch_received)
+            emit_dispatch_completed,
+            emit_dispatch_received,
+        )
 
         emit_dispatch_received("T1", session_id="s1")
         # elapsed_s=5.432 → 5432 ms.
@@ -55,10 +58,13 @@ class TestRealWiring:
         """emit_dispatch_failed REAL → total{failed} + failed{reason} + duration."""
         monkeypatch.setenv("DEILE_ROLE", "worker")
         from deile.observability.config import reset_observability_config
+
         reset_observability_config()
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_failed, emit_dispatch_received)
+            emit_dispatch_failed,
+            emit_dispatch_received,
+        )
 
         emit_dispatch_received("T2", session_id="s1")
         emit_dispatch_failed("T2", reason="auth_expired", elapsed_s=2.0)
@@ -85,10 +91,13 @@ class TestRealWiring:
         """emit_dispatch_tool_burst(count=65) REAL → bucket '100-'."""
         monkeypatch.setenv("DEILE_ROLE", "worker")
         from deile.observability.config import reset_observability_config
+
         reset_observability_config()
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_received, emit_dispatch_tool_burst)
+            emit_dispatch_received,
+            emit_dispatch_tool_burst,
+        )
 
         emit_dispatch_received("T3", session_id="s1")
         emit_dispatch_tool_burst("T3", tools="read,write", count=65)
@@ -99,16 +108,17 @@ class TestRealWiring:
         )
         assert _point_with(burst, {"role": "worker", "bucket": "100-"})
 
-    def test_git_push_real_wiring(
-        self, in_memory_dispatch_metrics_reader, monkeypatch
-    ):
+    def test_git_push_real_wiring(self, in_memory_dispatch_metrics_reader, monkeypatch):
         """emit_git_push(status='ok') REAL → git.push.total{outcome=ok}."""
         monkeypatch.setenv("DEILE_ROLE", "worker")
         from deile.observability.config import reset_observability_config
+
         reset_observability_config()
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_received, emit_git_push)
+            emit_dispatch_received,
+            emit_git_push,
+        )
 
         emit_dispatch_received("T4", session_id="s1")
         emit_git_push("T4", repo="o/r", branch="b", status="ok")
@@ -124,10 +134,13 @@ class TestRealWiring:
         """emit_forge_pr_review(status='APPROVED') REAL → pr_review{decision}."""
         monkeypatch.setenv("DEILE_ROLE", "worker")
         from deile.observability.config import reset_observability_config
+
         reset_observability_config()
 
         from deile.observability.dispatch_export import (
-            emit_dispatch_received, emit_forge_pr_review)
+            emit_dispatch_received,
+            emit_forge_pr_review,
+        )
 
         emit_dispatch_received("T5", session_id="s1")
         emit_forge_pr_review("T5", repo="o/r", pr_number=42, status="APPROVED")
@@ -147,6 +160,7 @@ class TestRealWiring:
         """
         monkeypatch.setenv("DEILE_ROLE", "worker")
         from deile.observability.config import reset_observability_config
+
         reset_observability_config()
 
         # Nenhum emit chamado → zero pontos de dispatch.total.

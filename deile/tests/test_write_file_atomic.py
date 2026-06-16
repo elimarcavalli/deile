@@ -71,9 +71,7 @@ class TestAtomicWrite:
     def test_no_leftover_temp_files_on_success(
         self, tool: WriteFileTool, tmp_path: Path
     ) -> None:
-        result = tool.execute_sync(
-            _ctx(tmp_path, file_path="hi.txt", content="x")
-        )
+        result = tool.execute_sync(_ctx(tmp_path, file_path="hi.txt", content="x"))
 
         assert result.status == ToolStatus.SUCCESS
         leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
@@ -116,17 +114,13 @@ class TestFidelity:
     ) -> None:
         # Exotic content: emoji, BOM-like char, mixed newlines, accented text.
         content = "Olá Mundo! 🌍\r\nlinha 2\nlinha 3\n"
-        result = tool.execute_sync(
-            _ctx(tmp_path, file_path="x.txt", content=content)
-        )
+        result = tool.execute_sync(_ctx(tmp_path, file_path="x.txt", content=content))
 
         assert result.status == ToolStatus.SUCCESS
         on_disk = (tmp_path / "x.txt").read_bytes()
         assert on_disk == content.encode("utf-8")
 
-    def test_no_newline_translation(
-        self, tool: WriteFileTool, tmp_path: Path
-    ) -> None:
+    def test_no_newline_translation(self, tool: WriteFileTool, tmp_path: Path) -> None:
         # If the tool used text-mode write_text, Windows would translate \n
         # to \r\n. We require raw fidelity on every platform.
         result = tool.execute_sync(
@@ -155,6 +149,7 @@ class TestFidelity:
         def corrupting_open(path, mode="r", *args, **kwargs):  # noqa: ANN001
             fh = real_open(path, mode, *args, **kwargs)
             if mode == "rb" and str(path).endswith(".tmp"):
+
                 class _Fake:
                     def read(self_inner) -> bytes:  # noqa: D401
                         return b"corrupted"

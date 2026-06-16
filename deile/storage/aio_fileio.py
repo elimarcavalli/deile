@@ -21,17 +21,17 @@ from typing import Any, Dict
 
 
 def _read_json_sync(path: Path) -> Dict[str, Any]:
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def _write_json_sync(path: Path, data: Dict[str, Any]) -> None:
-    with open(path, 'w', encoding='utf-8') as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def _write_text_sync(path: Path, text: str) -> None:
-    with open(path, 'w', encoding='utf-8') as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(text)
 
 

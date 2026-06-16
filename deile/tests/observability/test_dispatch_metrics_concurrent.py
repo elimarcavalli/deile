@@ -30,8 +30,7 @@ def test_ten_threads_increment(in_memory_dispatch_metrics_reader):
     )
     # Soma de todos os data points com (role=worker, outcome=completed).
     total = sum(
-        v for v, attrs in points
-        if attrs == {"role": "worker", "outcome": "completed"}
+        v for v, attrs in points if attrs == {"role": "worker", "outcome": "completed"}
     )
     assert total >= 10
 

@@ -15,7 +15,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from deile.orchestration.pipeline.cost_estimator import (
-    _FALLBACK_TOKENS, StageCostEstimator, reset_pricing_provider)
+    _FALLBACK_TOKENS,
+    StageCostEstimator,
+    reset_pricing_provider,
+)
 from deile.storage.usage_repository import UsageRecord
 
 
@@ -26,7 +29,9 @@ def _reset_pricing():
     reset_pricing_provider()
 
 
-def _make_record(prompt: int, completion: int, model: str = "anthropic:claude-sonnet-4-6") -> UsageRecord:
+def _make_record(
+    prompt: int, completion: int, model: str = "anthropic:claude-sonnet-4-6"
+) -> UsageRecord:
     return UsageRecord(
         provider_id="anthropic",
         model_id=model,
@@ -38,8 +43,9 @@ def _make_record(prompt: int, completion: int, model: str = "anthropic:claude-so
     )
 
 
-def _make_pricing_provider(input_price: str = "0.000003",
-                           output_price: str = "0.000015") -> MagicMock:
+def _make_pricing_provider(
+    input_price: str = "0.000003", output_price: str = "0.000015"
+) -> MagicMock:
     pp = MagicMock()
     pp.get_pricing.return_value = (Decimal(input_price), Decimal(output_price))
     return pp
@@ -57,10 +63,9 @@ class TestStageCostEstimatorFallback:
         cost = estimator.estimate_run_cost("implement", "anthropic:claude-opus-4-8")
 
         fallback_in, fallback_out = _FALLBACK_TOKENS["implement"]
-        expected = (
-            Decimal(fallback_in) * Decimal("0.000003")
-            + Decimal(fallback_out) * Decimal("0.000015")
-        )
+        expected = Decimal(fallback_in) * Decimal("0.000003") + Decimal(
+            fallback_out
+        ) * Decimal("0.000015")
         assert cost == expected
 
     def test_no_history_uses_fallback_classify(self):
@@ -72,10 +77,9 @@ class TestStageCostEstimatorFallback:
         cost = estimator.estimate_run_cost("classify", "anthropic:claude-haiku-4-5")
 
         fallback_in, fallback_out = _FALLBACK_TOKENS["classify"]
-        expected = (
-            Decimal(fallback_in) * Decimal("0.000001")
-            + Decimal(fallback_out) * Decimal("0.000005")
-        )
+        expected = Decimal(fallback_in) * Decimal("0.000001") + Decimal(
+            fallback_out
+        ) * Decimal("0.000005")
         assert cost == expected
 
     def test_single_record_falls_back_to_heuristic(self):
@@ -91,10 +95,9 @@ class TestStageCostEstimatorFallback:
 
         # Should use fallback (30000 in / 15000 out), not the single record.
         fallback_in, fallback_out = _FALLBACK_TOKENS["implement"]
-        expected = (
-            Decimal(fallback_in) * Decimal("0.000003")
-            + Decimal(fallback_out) * Decimal("0.000015")
-        )
+        expected = Decimal(fallback_in) * Decimal("0.000003") + Decimal(
+            fallback_out
+        ) * Decimal("0.000015")
         assert cost == expected
 
 
@@ -112,11 +115,10 @@ class TestStageCostEstimatorHistory:
 
         cost = estimator.estimate_run_cost("implement", "anthropic:claude-sonnet-4-6")
 
-        avg_in = int((10_000 + 6_000) / 2)   # 8000
-        avg_out = int((4_000 + 2_000) / 2)    # 3000
-        expected = (
-            Decimal(avg_in) * Decimal("0.000003")
-            + Decimal(avg_out) * Decimal("0.000015")
+        avg_in = int((10_000 + 6_000) / 2)  # 8000
+        avg_out = int((4_000 + 2_000) / 2)  # 3000
+        expected = Decimal(avg_in) * Decimal("0.000003") + Decimal(avg_out) * Decimal(
+            "0.000015"
         )
         assert cost == expected
 
@@ -132,15 +134,15 @@ class TestStageCostEstimatorHistory:
 
         payload_tokens = 50_000
         cost = estimator.estimate_run_cost(
-            "implement", "anthropic:claude-sonnet-4-6",
+            "implement",
+            "anthropic:claude-sonnet-4-6",
             payload_size_tokens=payload_tokens,
         )
 
         # prompt = payload_tokens, completion = average
-        expected = (
-            Decimal(payload_tokens) * Decimal("0.000003")
-            + Decimal(4_000) * Decimal("0.000015")
-        )
+        expected = Decimal(payload_tokens) * Decimal("0.000003") + Decimal(
+            4_000
+        ) * Decimal("0.000015")
         assert cost == expected
 
 
@@ -168,8 +170,7 @@ class TestStageCostEstimatorPricingFallback:
         cost = estimator.estimate_run_cost("implement", "anthropic:claude-opus-4-8")
 
         fallback_in, fallback_out = _FALLBACK_TOKENS["implement"]
-        expected = (
-            Decimal(fallback_in) * Decimal("0.000003")
-            + Decimal(fallback_out) * Decimal("0.000015")
-        )
+        expected = Decimal(fallback_in) * Decimal("0.000003") + Decimal(
+            fallback_out
+        ) * Decimal("0.000015")
         assert cost == expected

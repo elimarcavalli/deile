@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 class TaskStatus(Enum):
     """Status de uma task"""
+
     TODO = "todo"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -31,6 +32,7 @@ class TaskStatus(Enum):
 
 class TaskPriority(Enum):
     """Prioridade de uma task"""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -40,6 +42,7 @@ class TaskPriority(Enum):
 @dataclass
 class Task:
     """Representa uma task individual com validação robusta"""
+
     id: str
     title: str
     description: str = ""
@@ -84,17 +87,23 @@ class Task:
             "blocks": json.dumps(self.blocks),
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "estimated_duration": self.estimated_duration.total_seconds() if self.estimated_duration else None,
+            "completed_at": (
+                self.completed_at.isoformat() if self.completed_at else None
+            ),
+            "estimated_duration": (
+                self.estimated_duration.total_seconds()
+                if self.estimated_duration
+                else None
+            ),
             "tags": json.dumps(self.tags),
             "metadata": json.dumps(self.metadata),
             "success": self.success,
             "result_data": json.dumps(self.result_data) if self.result_data else None,
-            "error_message": self.error_message
+            "error_message": self.error_message,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Task':
+    def from_dict(cls, data: Dict[str, Any]) -> "Task":
         """Cria instância a partir de dict com validação"""
         try:
             task_data = data.copy()
@@ -123,7 +132,9 @@ class Task:
             if data.get("completed_at"):
                 task_data["completed_at"] = datetime.fromisoformat(data["completed_at"])
             if data.get("estimated_duration"):
-                task_data["estimated_duration"] = timedelta(seconds=data["estimated_duration"])
+                task_data["estimated_duration"] = timedelta(
+                    seconds=data["estimated_duration"]
+                )
 
             return cls(**task_data)
         except Exception as e:
@@ -133,6 +144,7 @@ class Task:
 @dataclass
 class TaskList:
     """Representa uma lista de tasks com fluxo sequencial"""
+
     id: str
     title: str
     description: str = ""
@@ -173,11 +185,11 @@ class TaskList:
             "current_task_id": self.current_task_id,
             "total_tasks": self.total_tasks,
             "completed_tasks": self.completed_tasks,
-            "failed_tasks": self.failed_tasks
+            "failed_tasks": self.failed_tasks,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'TaskList':
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskList":
         """Cria instância a partir de dict"""
         list_data = data.copy()
         list_data["created_at"] = datetime.fromisoformat(data["created_at"])
@@ -279,15 +291,26 @@ class SQLiteTaskManager:
             """)
 
             # Índices para performance
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_list_id ON tasks(list_id)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)")
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_list_id ON tasks(list_id)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)"
+            )
 
             await db.commit()
             logger.info(f"SQLite database initialized at {self.db_path}")
 
-    async def create_task_list(self, title: str, description: str = "",
-                              sequential: bool = True, auto_start: bool = True) -> TaskList:
+    async def create_task_list(
+        self,
+        title: str,
+        description: str = "",
+        sequential: bool = True,
+        auto_start: bool = True,
+    ) -> TaskList:
         """Cria nova lista de tasks com persistência SQLite"""
         await self._ensure_schema()
         list_id = str(uuid.uuid4())[:8]
@@ -297,20 +320,28 @@ class SQLiteTaskManager:
             title=title,
             description=description,
             sequential_mode=sequential,
-            auto_start_next=auto_start
+            auto_start_next=auto_start,
         )
 
         async with self._db_lock:
             async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
+                await db.execute(
+                    """
                     INSERT INTO task_lists
                     (id, title, description, created_at, sequential_mode, auto_start_next, stop_on_failure, active)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    task_list.id, task_list.title, task_list.description,
-                    task_list.created_at.isoformat(), task_list.sequential_mode,
-                    task_list.auto_start_next, task_list.stop_on_failure, task_list.active
-                ))
+                """,
+                    (
+                        task_list.id,
+                        task_list.title,
+                        task_list.description,
+                        task_list.created_at.isoformat(),
+                        task_list.sequential_mode,
+                        task_list.auto_start_next,
+                        task_list.stop_on_failure,
+                        task_list.active,
+                    ),
+                )
                 await db.commit()
 
         # Atualiza cache
@@ -328,18 +359,23 @@ class SQLiteTaskManager:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
                     "UPDATE task_lists SET active = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (list_id,)
+                    (list_id,),
                 )
                 await db.commit()
         self._invalidate_cache(list_id)
         logger.info("Activated task list %s", list_id)
 
-    async def add_task_to_list(self, list_id: str, title: str, description: str = "",
-                              depends_on: Optional[List[str]] = None,
-                              priority: TaskPriority = TaskPriority.MEDIUM,
-                              estimated_duration: Optional[timedelta] = None,
-                              metadata: Optional[Dict[str, Any]] = None,
-                              tags: Optional[List[str]] = None) -> Task:
+    async def add_task_to_list(
+        self,
+        list_id: str,
+        title: str,
+        description: str = "",
+        depends_on: Optional[List[str]] = None,
+        priority: TaskPriority = TaskPriority.MEDIUM,
+        estimated_duration: Optional[timedelta] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Task:
         """Adiciona task a uma lista com validação de integridade."""
         await self._ensure_schema()
 
@@ -367,7 +403,9 @@ class SQLiteTaskManager:
                 existing_task_ids = {t.id for t in existing_tasks}
                 invalid_deps = set(depends_on) - existing_task_ids
                 if invalid_deps:
-                    logger.warning(f"Some dependencies not found yet: {invalid_deps}. Will be validated later.")
+                    logger.warning(
+                        f"Some dependencies not found yet: {invalid_deps}. Will be validated later."
+                    )
                     # Em vez de falhar, apenas avisa - permite dependências futuras
             except Exception as e:
                 logger.warning(f"Could not validate dependencies: {e}")
@@ -376,27 +414,45 @@ class SQLiteTaskManager:
             async with aiosqlite.connect(self.db_path) as db:
                 # Insere task
                 task_dict = task.to_dict()
-                await db.execute("""
+                await db.execute(
+                    """
                     INSERT INTO tasks
                     (id, list_id, title, description, status, priority, depends_on, blocks,
                      created_at, started_at, completed_at, estimated_duration, tags, metadata,
                      success, result_data, error_message)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    task.id, list_id, task.title, task.description, task.status.value,
-                    task.priority.value, task_dict["depends_on"], task_dict["blocks"],
-                    task_dict["created_at"], task_dict["started_at"], task_dict["completed_at"],
-                    task_dict["estimated_duration"], task_dict["tags"], task_dict["metadata"],
-                    task.success, task_dict["result_data"], task.error_message
-                ))
+                """,
+                    (
+                        task.id,
+                        list_id,
+                        task.title,
+                        task.description,
+                        task.status.value,
+                        task.priority.value,
+                        task_dict["depends_on"],
+                        task_dict["blocks"],
+                        task_dict["created_at"],
+                        task_dict["started_at"],
+                        task_dict["completed_at"],
+                        task_dict["estimated_duration"],
+                        task_dict["tags"],
+                        task_dict["metadata"],
+                        task.success,
+                        task_dict["result_data"],
+                        task.error_message,
+                    ),
+                )
 
                 # Atualiza contadores da lista
-                await db.execute("""
+                await db.execute(
+                    """
                     UPDATE task_lists
                     SET total_tasks = (SELECT COUNT(*) FROM tasks WHERE list_id = ?),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
-                """, (list_id, list_id))
+                """,
+                    (list_id, list_id),
+                )
 
                 await db.commit()
 
@@ -416,7 +472,9 @@ class SQLiteTaskManager:
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM task_lists WHERE id = ?", (list_id,)) as cursor:
+            async with db.execute(
+                "SELECT * FROM task_lists WHERE id = ?", (list_id,)
+            ) as cursor:
                 row = await cursor.fetchone()
 
                 if not row:
@@ -444,9 +502,12 @@ class SQLiteTaskManager:
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute("""
+            async with db.execute(
+                """
                 SELECT * FROM tasks WHERE list_id = ? ORDER BY created_at ASC
-            """, (list_id,)) as cursor:
+            """,
+                (list_id,),
+            ) as cursor:
                 rows = await cursor.fetchall()
 
                 tasks = []
@@ -487,17 +548,24 @@ class SQLiteTaskManager:
 
         return ready_tasks
 
-    async def mark_task_completed(self, list_id: str, task_id: str,
-                                success: bool = True, result_data: Optional[Dict] = None,
-                                error_message: Optional[str] = None) -> bool:
+    async def mark_task_completed(
+        self,
+        list_id: str,
+        task_id: str,
+        success: bool = True,
+        result_data: Optional[Dict] = None,
+        error_message: Optional[str] = None,
+    ) -> bool:
         """Marca task como completada com transação atômica"""
         await self._ensure_schema()
 
         async with self._db_lock:
             async with aiosqlite.connect(self.db_path) as db:
                 # Verifica se task existe
-                async with db.execute("SELECT id FROM tasks WHERE id = ? AND list_id = ?",
-                                    (task_id, list_id)) as cursor:
+                async with db.execute(
+                    "SELECT id FROM tasks WHERE id = ? AND list_id = ?",
+                    (task_id, list_id),
+                ) as cursor:
                     if not await cursor.fetchone():
                         return False
 
@@ -505,26 +573,36 @@ class SQLiteTaskManager:
                 status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
                 now = datetime.now().isoformat()
 
-                await db.execute("""
+                await db.execute(
+                    """
                     UPDATE tasks
                     SET status = ?, completed_at = ?, success = ?,
                         result_data = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ? AND list_id = ?
-                """, (
-                    status.value, now, success,
-                    json.dumps(result_data) if result_data else None,
-                    error_message, task_id, list_id
-                ))
+                """,
+                    (
+                        status.value,
+                        now,
+                        success,
+                        json.dumps(result_data) if result_data else None,
+                        error_message,
+                        task_id,
+                        list_id,
+                    ),
+                )
 
                 # Atualiza estatísticas da lista
-                await db.execute("""
+                await db.execute(
+                    """
                     UPDATE task_lists
                     SET completed_tasks = (SELECT COUNT(*) FROM tasks WHERE list_id = ? AND status = 'completed'),
                         failed_tasks = (SELECT COUNT(*) FROM tasks WHERE list_id = ? AND status = 'failed'),
                         current_task_id = CASE WHEN current_task_id = ? THEN NULL ELSE current_task_id END,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
-                """, (list_id, list_id, task_id, list_id))
+                """,
+                    (list_id, list_id, task_id, list_id),
+                )
 
                 await db.commit()
 
@@ -548,7 +626,8 @@ class SQLiteTaskManager:
             "id": task_list.id,
             "title": task_list.title,
             "active": task_list.active,
-            "progress": (task_list.completed_tasks / max(1, task_list.total_tasks)) * 100,
+            "progress": (task_list.completed_tasks / max(1, task_list.total_tasks))
+            * 100,
             "total_tasks": task_list.total_tasks,
             "completed_tasks": task_list.completed_tasks,
             "failed_tasks": task_list.failed_tasks,
@@ -556,24 +635,25 @@ class SQLiteTaskManager:
             "is_completed": task_list.completed_tasks == task_list.total_tasks,
             "has_failures": task_list.failed_tasks > 0,
             "next_tasks": [
-                {
-                    "id": task.id,
-                    "title": task.title,
-                    "priority": task.priority.value
-                }
+                {"id": task.id, "title": task.title, "priority": task.priority.value}
                 for task in next_tasks
-            ]
+            ],
         }
 
-    async def _update_task_list_stats(self, task_list: TaskList, db: aiosqlite.Connection):
+    async def _update_task_list_stats(
+        self, task_list: TaskList, db: aiosqlite.Connection
+    ):
         """Atualiza estatísticas da task list"""
-        async with db.execute("""
+        async with db.execute(
+            """
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
             FROM tasks WHERE list_id = ?
-        """, (task_list.id,)) as cursor:
+        """,
+            (task_list.id,),
+        ) as cursor:
             row = await cursor.fetchone()
             if row:
                 task_list.total_tasks = row[0]
@@ -601,10 +681,13 @@ class SQLiteTaskManager:
 
         async with self._db_lock:
             async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
+                await db.execute(
+                    """
                     DELETE FROM task_lists
                     WHERE created_at < ? AND active = FALSE
-                """, (cutoff_date,))
+                """,
+                    (cutoff_date,),
+                )
                 await db.commit()
 
         logger.info(f"Cleaned up tasks older than {days} days")

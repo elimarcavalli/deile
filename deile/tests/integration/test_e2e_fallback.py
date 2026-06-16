@@ -45,6 +45,8 @@ async def test_cascade_falls_back_to_openai():
     )
     provider = OpenAIProvider(handle, config)
 
-    msgs = [ModelMessage(role="user", content="What is 2+2? Reply with just the number.")]
+    msgs = [
+        ModelMessage(role="user", content="What is 2+2? Reply with just the number.")
+    ]
     response = await provider.generate(msgs)
     assert "4" in response.content

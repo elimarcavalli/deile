@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile.orchestration.pipeline.identity import (IdentityError,
-                                                   MonitorIdentity)
+from deile.orchestration.pipeline.identity import IdentityError, MonitorIdentity
 
 
 class TestParallelMonitorSafety:
@@ -30,9 +29,9 @@ class TestParallelMonitorSafety:
             owns_a = id_a.owns(title)
             owns_b = id_b.owns(title)
             # Exactly one shard must own each title.
-            assert owns_a != owns_b, (
-                f"Both or neither shard owns {title!r}: a={owns_a}, b={owns_b}"
-            )
+            assert (
+                owns_a != owns_b
+            ), f"Both or neither shard owns {title!r}: a={owns_a}, b={owns_b}"
 
     def test_sharding_partitions_across_three_shards(self):
         """For shard_count=3, exactly one of three monitors owns each title."""
@@ -43,9 +42,9 @@ class TestParallelMonitorSafety:
         for i in range(200):
             title = f"title-{i}"
             owners = [m for m in monitors if m.owns(title)]
-            assert len(owners) == 1, (
-                f"Expected exactly 1 owner for {title!r}, got {len(owners)}"
-            )
+            assert (
+                len(owners) == 1
+            ), f"Expected exactly 1 owner for {title!r}, got {len(owners)}"
 
     def test_default_identity_owns_all(self):
         """With shard_count=1 (default), owns() always returns True."""

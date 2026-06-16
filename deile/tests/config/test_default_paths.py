@@ -8,6 +8,7 @@ ao cwd), o que sujava qualquer diretório de execução.
 
 Agora resolvem a partir de ``__file__`` (pacote-relativo).
 """
+
 from __future__ import annotations
 
 from pathlib import Path

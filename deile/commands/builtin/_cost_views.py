@@ -131,9 +131,7 @@ def build_session_panel(session_cost: float) -> Panel:
     )
 
 
-def build_categories_table(
-    categories: Mapping[str, Any], total_amount: float
-) -> Table:
+def build_categories_table(categories: Mapping[str, Any], total_amount: float) -> Table:
     """Render the ``/cost categories`` table (30-day window)."""
     table = Table(
         title="📊 Custos por Categoria (30 dias)",

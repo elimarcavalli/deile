@@ -51,6 +51,7 @@ def _restore_termios() -> None:
         return
     try:
         import termios
+
         if _termios_fd >= 0:
             termios.tcsetattr(_termios_fd, termios.TCSADRAIN, _saved_termios)
     except Exception:
@@ -90,6 +91,7 @@ def prime_termios_snapshot(original_termios=None) -> None:
         if _saved_termios is None and sys.stdin.isatty():
             try:
                 import termios
+
                 fd = sys.stdin.fileno()
                 if original_termios is not None:
                     _saved_termios = original_termios
@@ -147,6 +149,7 @@ def claim_stdin_for_panel(original_termios=None) -> None:
     if sys.stdin.isatty():
         try:
             import termios
+
             termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
         except Exception:
             pass

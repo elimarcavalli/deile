@@ -13,6 +13,7 @@ Esses testes cobrem o helper ``_DeileCLI._erase_empty_prompt_echo``
 sem precisar de TTY real nem de inicialização completa do CLI (que
 requer API keys).
 """
+
 from __future__ import annotations
 
 import io
@@ -45,13 +46,9 @@ def test_erase_empty_prompt_echo_writes_two_line_cleanup_when_tty() -> None:
 
     # Deve conter o cursor-up + erase-line REPETIDOS (2x).
     up_count = written.count("\033[A")
-    assert up_count == 2, (
-        f"deveria ter 2 cursor-up; got {up_count}: {written!r}"
-    )
+    assert up_count == 2, f"deveria ter 2 cursor-up; got {up_count}: {written!r}"
     erase_count = written.count("\033[2K")
-    assert erase_count == 2, (
-        f"deveria ter 2 erase-line; got {erase_count}: {written!r}"
-    )
+    assert erase_count == 2, f"deveria ter 2 erase-line; got {erase_count}: {written!r}"
     # E reposicionar ao início (carriage return).
     assert written.endswith("\r"), f"deveria terminar em \\r: {written!r}"
 
@@ -72,9 +69,9 @@ def test_erase_empty_prompt_echo_writes_nothing_when_not_tty() -> None:
     fake_stdout = _NotTTYBuf()
     with patch.object(sys, "stdout", fake_stdout):
         cli._erase_empty_prompt_echo()
-    assert fake_stdout.getvalue() == "", (
-        f"deveria ser silencioso sem TTY: {fake_stdout.getvalue()!r}"
-    )
+    assert (
+        fake_stdout.getvalue() == ""
+    ), f"deveria ser silencioso sem TTY: {fake_stdout.getvalue()!r}"
 
 
 @pytest.mark.unit

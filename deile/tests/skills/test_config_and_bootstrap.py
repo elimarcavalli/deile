@@ -7,8 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from deile.skills.bootstrap import (BootstrapResult, bootstrap_skills,
-                                    bootstrap_skills_with_handle)
+from deile.skills.bootstrap import (
+    BootstrapResult,
+    bootstrap_skills,
+    bootstrap_skills_with_handle,
+)
 from deile.skills.config import SkillsConfig, load_skills_config
 from deile.skills.registry import get_skill_registry, reset_skill_registry
 
@@ -130,7 +133,9 @@ class TestBootstrapSkills:
         assert router is not None
         assert "mythril" in get_skill_registry().list_names()
 
-    async def test_bundled_library_loads_via_default_config(self, tmp_path: Path) -> None:
+    async def test_bundled_library_loads_via_default_config(
+        self, tmp_path: Path
+    ) -> None:
         # Default skills.yaml is enabled; isolate user/project to verify the
         # bundled library is auto-included.
         router = await bootstrap_skills(
@@ -146,7 +151,8 @@ class TestBootstrapSkills:
 class TestBootstrapHandle:
     async def test_with_handle_returns_typed_dataclass(self, tmp_path: Path) -> None:
         result = await bootstrap_skills_with_handle(
-            project_dir=tmp_path / "p", user_home=tmp_path / "h",
+            project_dir=tmp_path / "p",
+            user_home=tmp_path / "h",
         )
         assert isinstance(result, BootstrapResult)
         assert result.router is not None
@@ -157,9 +163,12 @@ class TestBootstrapHandle:
         result = await bootstrap_skills_with_handle(SkillsConfig(enabled=False))
         assert result is None
 
-    async def test_legacy_bootstrap_skills_returns_just_router(self, tmp_path: Path) -> None:
+    async def test_legacy_bootstrap_skills_returns_just_router(
+        self, tmp_path: Path
+    ) -> None:
         router = await bootstrap_skills(
-            project_dir=tmp_path / "p", user_home=tmp_path / "h",
+            project_dir=tmp_path / "p",
+            user_home=tmp_path / "h",
         )
         assert router is not None
         # watcher attribute exists on the router for direct access.

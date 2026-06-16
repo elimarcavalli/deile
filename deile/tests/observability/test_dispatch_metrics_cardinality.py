@@ -13,8 +13,7 @@ from deile.observability import dispatch_metrics as dm
 
 pytestmark = pytest.mark.unit
 
-_FORBIDDEN = {"task_id", "session_id", "branch", "sha", "pr", "model",
-              "error_code"}
+_FORBIDDEN = {"task_id", "session_id", "branch", "sha", "pr", "model", "error_code"}
 
 
 def test_no_forbidden_labels_anywhere(in_memory_dispatch_metrics_reader):
@@ -34,9 +33,9 @@ def test_no_forbidden_labels_anywhere(in_memory_dispatch_metrics_reader):
                 for dp in metric.data.data_points:
                     keys = set(dp.attributes.keys())
                     overlap = keys & _FORBIDDEN
-                    assert not overlap, (
-                        f"{metric.name} carrega label proibida: {overlap}"
-                    )
+                    assert (
+                        not overlap
+                    ), f"{metric.name} carrega label proibida: {overlap}"
     # 6 métricas públicas emitidas (otlp_drop é interno).
     assert dm.METRIC_DISPATCH_TOTAL in seen_metrics
     assert dm.METRIC_GIT_PUSH_TOTAL in seen_metrics

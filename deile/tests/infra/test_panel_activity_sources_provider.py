@@ -19,7 +19,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import List
 from unittest.mock import MagicMock, patch
 
 _REPO = Path(__file__).resolve().parents[3]
@@ -27,20 +26,20 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import _panel_data as pd  # noqa: E402
 import pytest
 
-import _panel_data as pd  # noqa: E402
 
-
-def _make_source(deployment: str = "my-deploy",
-                 role: str = "my-role",
-                 color: str = "cyan") -> pd.ActivitySource:
+def _make_source(
+    deployment: str = "my-deploy", role: str = "my-role", color: str = "cyan"
+) -> pd.ActivitySource:
     return pd.ActivitySource(deployment=deployment, role=role, color=color)
 
 
 # ---------------------------------------------------------------------------
 # 1: ActivitySource dataclass
 # ---------------------------------------------------------------------------
+
 
 class TestActivitySourceDataclass:
     def test_immutable(self):
@@ -58,6 +57,7 @@ class TestActivitySourceDataclass:
 # ---------------------------------------------------------------------------
 # 2–6: MultiSourceActivityProvider construction
 # ---------------------------------------------------------------------------
+
 
 class TestProviderConstruction:
     def test_default_sources_is_five(self):
@@ -85,10 +85,7 @@ class TestProviderConstruction:
 
     def test_seven_sources_accepted(self):
         """AC: 7 fontes incluindo nome novo → provider stores all 7."""
-        sources = [
-            _make_source(f"my-pod-{i}", f"role-{i}", "cyan")
-            for i in range(7)
-        ]
+        sources = [_make_source(f"my-pod-{i}", f"role-{i}", "cyan") for i in range(7)]
         prov = pd.MultiSourceActivityProvider(enabled=False, sources=sources)
         assert len(prov._sources) == 7
 
@@ -97,10 +94,13 @@ class TestProviderConstruction:
 # 7: Color map update
 # ---------------------------------------------------------------------------
 
+
 class TestColorMapUpdate:
     def test_custom_sources_update_role_color_map(self):
         sources = [
-            pd.ActivitySource(deployment="special-pod", role="special-role", color="yellow"),
+            pd.ActivitySource(
+                deployment="special-pod", role="special-role", color="yellow"
+            ),
         ]
         pd.MultiSourceActivityProvider(enabled=False, sources=sources)
         assert pd._ROLE_COLOR_MAP.get("special-role") == "yellow"
@@ -114,6 +114,7 @@ class TestColorMapUpdate:
 # ---------------------------------------------------------------------------
 # 4–5: _fetch uses self._sources
 # ---------------------------------------------------------------------------
+
 
 class TestFetchUsesCustomSources:
     def _empty_kubectl(self) -> CompletedProcess:
@@ -134,7 +135,7 @@ class TestFetchUsesCustomSources:
             # Extract deployment name from "deploy/<name>" argument
             for arg in cmd:
                 if arg.startswith("deploy/"):
-                    called_deploys.append(arg[len("deploy/"):])
+                    called_deploys.append(arg[len("deploy/") :])
                     break
             return self._empty_kubectl()
 
@@ -167,6 +168,7 @@ class TestFetchUsesCustomSources:
 # ---------------------------------------------------------------------------
 # 8–10: _sources_from_settings helper
 # ---------------------------------------------------------------------------
+
 
 class TestSourcesFromSettings:
     def test_returns_none_when_settings_empty(self):
@@ -207,10 +209,16 @@ class TestSourcesFromSettings:
 # 11: V1 defaults
 # ---------------------------------------------------------------------------
 
+
 class TestDefaultV1:
     def test_default_deployments(self):
         prov = pd.MultiSourceActivityProvider(enabled=False)
         deployments = [s.deployment for s in prov._sources]
-        expected = ["deile-pipeline", "deile-worker", "claude-worker",
-                    "deilebot", "deile-monitor"]
+        expected = [
+            "deile-pipeline",
+            "deile-worker",
+            "claude-worker",
+            "deilebot",
+            "deile-monitor",
+        ]
         assert sorted(deployments) == sorted(expected)

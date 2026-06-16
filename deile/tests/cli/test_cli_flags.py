@@ -22,9 +22,13 @@ from unittest.mock import patch
 import pytest
 
 from deile.cli import main as cli_main
-from deile.commands.cli_flags import (CLIFlagSpec, add_command_flags_to_parser,
-                                      build_cli_flag_specs, find_active_spec,
-                                      get_arg_value)
+from deile.commands.cli_flags import (
+    CLIFlagSpec,
+    add_command_flags_to_parser,
+    build_cli_flag_specs,
+    find_active_spec,
+    get_arg_value,
+)
 from deile.commands.registry import CommandRegistry
 
 # ---------------------------------------------------------------------------
@@ -41,6 +45,7 @@ def _make_registry() -> CommandRegistry:
 def _purge_registry_singleton() -> None:
     """Reset the module-level singleton so tests are deterministic."""
     import deile.commands.registry as reg
+
     reg._command_registry = None
 
 
@@ -83,25 +88,30 @@ class TestSlashCommandMetadata:
 
     def test_base_has_cli_flag_attribute(self):
         from deile.commands.base import SlashCommand
+
         assert hasattr(SlashCommand, "cli_flag")
         assert SlashCommand.cli_flag is None
 
     def test_base_has_cli_takes_arg_attribute(self):
         from deile.commands.base import SlashCommand
+
         assert hasattr(SlashCommand, "cli_takes_arg")
         assert SlashCommand.cli_takes_arg is False
 
     def test_base_has_cli_arg_metavar_attribute(self):
         from deile.commands.base import SlashCommand
+
         assert hasattr(SlashCommand, "cli_arg_metavar")
         assert SlashCommand.cli_arg_metavar is None
 
     def test_base_has_cli_help_attribute(self):
         from deile.commands.base import SlashCommand
+
         assert hasattr(SlashCommand, "cli_help")
 
     def test_base_has_cli_requires_provider_attribute(self):
         from deile.commands.base import SlashCommand
+
         assert hasattr(SlashCommand, "cli_requires_provider")
         assert SlashCommand.cli_requires_provider is False
 
@@ -168,12 +178,24 @@ class TestBuildSpecsFromRegistry:
         # 19 listed in the issue MUST all be present.
         expected = {
             # 11 high-priority
-            "--status", "--config", "--debug", "--cost", "--tools",
-            "--memory", "--skills", "--model-current", "--model-list",
+            "--status",
+            "--config",
+            "--debug",
+            "--cost",
+            "--tools",
+            "--memory",
+            "--skills",
+            "--model-current",
+            "--model-list",
             "--version",  # --help is argparse-builtin, not in specs
             # 8 medium-priority
-            "--pipeline-status", "--pipeline-start", "--pipeline-stop",
-            "--logs", "--export", "--clear", "--model-strategy",
+            "--pipeline-status",
+            "--pipeline-start",
+            "--pipeline-stop",
+            "--logs",
+            "--export",
+            "--clear",
+            "--model-strategy",
             "--model-budget",
         }
         actual = {s.flag for s in specs}
@@ -214,13 +236,17 @@ class TestArgparseIntegration:
     def test_find_active_spec_skips_modifier_flags(self):
         """Modifier flags (``dispatch=False``) must NOT be selected for one-shot dispatch."""
         modifier = CLIFlagSpec(
-            flag="--noop-modifier", command_name="debug", dispatch=False,
+            flag="--noop-modifier",
+            command_name="debug",
+            dispatch=False,
         )
         dispatchable = CLIFlagSpec(
-            flag="--noop-dispatch", command_name="status",
+            flag="--noop-dispatch",
+            command_name="status",
         )
         ns = argparse.Namespace(
-            noop_modifier=True, noop_dispatch=True,
+            noop_modifier=True,
+            noop_dispatch=True,
         )
         active = find_active_spec([modifier, dispatchable], ns)
         assert active is dispatchable, "modifier flag must be skipped"
@@ -235,15 +261,19 @@ class TestArgparseIntegration:
 
     def test_get_arg_value_combines_subcommand_and_value(self):
         spec = CLIFlagSpec(
-            flag="--export", command_name="export",
-            takes_arg=True, metavar="PATH",
+            flag="--export",
+            command_name="export",
+            takes_arg=True,
+            metavar="PATH",
         )
         ns = argparse.Namespace(export="/tmp/foo")
         assert get_arg_value(spec, ns) == "/tmp/foo"
 
     def test_get_arg_value_subcommand_only(self):
         spec = CLIFlagSpec(
-            flag="--model-list", command_name="model", subcommand="list",
+            flag="--model-list",
+            command_name="model",
+            subcommand="list",
         )
         ns = argparse.Namespace(model_list=True)
         assert get_arg_value(spec, ns) == "list"
@@ -275,8 +305,7 @@ class TestHelpListsEveryCommand:
         # Count commands listed in help by counting unique '/cmd ' occurrences.
         # Make this resilient to ordering by checking each name individually.
         listed = sum(
-            1 for cmd in registry.get_enabled_commands()
-            if f"/{cmd.name}" in stdout
+            1 for cmd in registry.get_enabled_commands() if f"/{cmd.name}" in stdout
         )
         assert listed == len(registry.get_enabled_commands())
 
@@ -369,8 +398,7 @@ class TestRegistryEdgeCases:
 
     def test_command_without_cli_flag_metadata_is_skipped(self):
         """Commands that don't declare cli_flag/cli_extra_flags produce no spec."""
-        from deile.commands.base import (CommandContext, CommandResult,
-                                         DirectCommand)
+        from deile.commands.base import CommandContext, CommandResult, DirectCommand
         from deile.config.manager import CommandConfig
 
         class _Silent(DirectCommand):
@@ -389,8 +417,7 @@ class TestRegistryEdgeCases:
         """Two commands declaring the same cli_flag: builder warns, keeps first."""
         import logging
 
-        from deile.commands.base import (CommandContext, CommandResult,
-                                         DirectCommand)
+        from deile.commands.base import CommandContext, CommandResult, DirectCommand
         from deile.config.manager import CommandConfig
 
         class _A(DirectCommand):
@@ -436,16 +463,19 @@ class TestVersionCommand:
     async def test_version_command_returns_version_string(self):
         from deile.commands.base import CommandContext
         from deile.commands.builtin.version_command import VersionCommand
+
         cmd = VersionCommand()
         ctx = CommandContext(user_input="/version", args="")
         result = await cmd.execute(ctx)
         assert result.success
         from deile.__version__ import __version__
+
         assert result.metadata.get("version") == __version__
 
     def test_version_flag_prints_version(self, no_api_keys):
         code, stdout, _ = _run_cli(["--version"])
         from deile.__version__ import __version__
+
         assert code == 0
         assert __version__ in stdout
 
@@ -462,8 +492,10 @@ class TestDebugFlagIsModifier:
         It must instead enter interactive mode. We patch _DeileCLI to avoid
         actually starting the REPL.
         """
-        with patch("deile.cli._DeileCLI") as mock_cli_cls, \
-                patch("sys.stdin.isatty", return_value=True):
+        with (
+            patch("deile.cli._DeileCLI") as mock_cli_cls,
+            patch("sys.stdin.isatty", return_value=True),
+        ):
             mock_instance = mock_cli_cls.return_value
 
             async def _fake_interactive():
@@ -477,9 +509,12 @@ class TestDebugFlagIsModifier:
     def test_debug_flag_sets_settings_debug_enabled(self, no_api_keys):
         # Reset settings singleton so we observe the change
         import deile.config.settings as _sm
+
         _sm._settings = None
-        with patch("deile.cli._DeileCLI") as mock_cli_cls, \
-                patch("sys.stdin.isatty", return_value=True):
+        with (
+            patch("deile.cli._DeileCLI") as mock_cli_cls,
+            patch("sys.stdin.isatty", return_value=True),
+        ):
             mock_instance = mock_cli_cls.return_value
 
             async def _fake_interactive():
@@ -488,4 +523,5 @@ class TestDebugFlagIsModifier:
             mock_instance.run_interactive.return_value = _fake_interactive()
             _run_cli(["--debug"])
         from deile.config.settings import get_settings
+
         assert get_settings().debug_enabled is True

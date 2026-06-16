@@ -28,8 +28,7 @@ from deilebot.runtime.control_plane import ControlPlaneSettings  # noqa: E402
 
 from deile.integrations.bot import get_bot_client  # noqa: E402
 from deile.integrations.bot import reset_bot_client  # noqa: E402
-from deile.integrations.bot.config import \
-    reset_bot_settings_cache  # noqa: E402
+from deile.integrations.bot.config import reset_bot_settings_cache  # noqa: E402
 from deile.tools.base import ToolContext  # noqa: E402
 from deile.tools.messaging import DiscordSendMessageTool  # noqa: E402
 
@@ -52,7 +51,9 @@ class FakeAdapter:
         has_conversation_window=True,
         max_message_chars=2000,
         max_attachments_per_message=10,
-        supported_attachment_kinds=frozenset({AttachmentKind.IMAGE, AttachmentKind.FILE}),
+        supported_attachment_kinds=frozenset(
+            {AttachmentKind.IMAGE, AttachmentKind.FILE}
+        ),
     )
     _client = object()
 
@@ -64,7 +65,9 @@ class FakeAdapter:
         return "msg-1"
 
     async def react(self, channel, message_id, emoji):
-        self.outbound.append({"react": (channel.provider_channel_id, message_id, emoji)})
+        self.outbound.append(
+            {"react": (channel.provider_channel_id, message_id, emoji)}
+        )
 
     async def send_dm(self, user, text, attachments=()):
         self.outbound.append({"dm": (user.provider_user_id, text)})

@@ -19,10 +19,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 # ─── shared test helpers ─────────────────────────────────────────────────────
 
+
 def _make_monitor():
     monitor = MagicMock()
     monitor.config = SimpleNamespace(
-        repo="owner/name", main_branch="main", base_repo_path=Path("/tmp/fake"),
+        repo="owner/name",
+        main_branch="main",
+        base_repo_path=Path("/tmp/fake"),
         mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
@@ -36,7 +39,9 @@ def _issue(number: int = 1):
 
 def _pr(number: int = 7):
     return SimpleNamespace(
-        number=number, title="t", head_ref="auto/issue-7",
+        number=number,
+        title="t",
+        head_ref="auto/issue-7",
         url=f"https://github.com/owner/name/pull/{number}",
     )
 
@@ -58,6 +63,7 @@ class _RecordingClient:
 
 
 # ─── Bug A: wait_for_result in payload ───────────────────────────────────────
+
 
 class TestBugAWaitForResult:
     """``_dispatch(nowait=True)`` must set ``wait_for_result=False`` in the
@@ -85,9 +91,9 @@ class TestBugAWaitForResult:
             "Bug A regression: implement() must send wait_for_result=False "
             "for fire-and-forget dispatch (nowait=True)"
         )
-        assert client.last_wait is False, (
-            "Transport wait kwarg must also be False for fire-and-forget"
-        )
+        assert (
+            client.last_wait is False
+        ), "Transport wait kwarg must also be False for fire-and-forget"
 
     async def test_review_payload_has_wait_for_result_true(self):
         """Review resume dispatch é síncrono (wait_for_result=True).
@@ -109,9 +115,9 @@ class TestBugAWaitForResult:
 
         assert out.ok is True
         assert client.last_payload is not None
-        assert client.last_payload["wait_for_result"] is True, (
-            "Review resume dispatch deve ser síncrono (wait_for_result=True)"
-        )
+        assert (
+            client.last_payload["wait_for_result"] is True
+        ), "Review resume dispatch deve ser síncrono (wait_for_result=True)"
         assert client.last_wait is True
 
     async def test_review_fresh_payload_has_wait_for_result_false(self):
@@ -129,13 +135,14 @@ class TestBugAWaitForResult:
         assert out.ok is True
         assert out.task_id == "rev-xyz"
         assert client.last_payload is not None
-        assert client.last_payload["wait_for_result"] is False, (
-            "Review fresh dispatch deve ser fire-and-forget (wait_for_result=False)"
-        )
+        assert (
+            client.last_payload["wait_for_result"] is False
+        ), "Review fresh dispatch deve ser fire-and-forget (wait_for_result=False)"
         assert client.last_wait is False
 
 
 # ─── Bug B: status server startup order ─────────────────────────────────────
+
 
 class TestBugBStartupOrder:
     """``_start_status_server()`` must be awaited BEFORE ``monitor.start()``

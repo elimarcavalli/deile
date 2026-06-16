@@ -11,13 +11,18 @@ from __future__ import annotations
 import pytest
 
 from deile.infrastructure.deile_worker_client import (
-    DispatchPayload, WorkerDispatchError, build_dispatch_payload,
-    validate_dispatch_payload)
+    DispatchPayload,
+    WorkerDispatchError,
+    build_dispatch_payload,
+    validate_dispatch_payload,
+)
 
 
 @pytest.mark.unit
 def test_builder_includes_reasoning_when_set():
-    p = build_dispatch_payload(brief="x", channel_id="c", preferred_reasoning="ultracode")
+    p = build_dispatch_payload(
+        brief="x", channel_id="c", preferred_reasoning="ultracode"
+    )
     assert p["preferred_reasoning"] == "ultracode"
 
 

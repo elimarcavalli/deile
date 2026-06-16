@@ -25,8 +25,11 @@ from typing import Iterator, List, Optional
 
 from deile.core.exceptions import DEILEError
 from deile.cron.constants import CRON_RESULT_MAX_CHARS
-from deile.orchestration.pipeline._time_utils import (format_iso_utc, now_utc,
-                                                      parse_iso_utc)
+from deile.orchestration.pipeline._time_utils import (
+    format_iso_utc,
+    now_utc,
+    parse_iso_utc,
+)
 from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 
 logger = logging.getLogger(__name__)
@@ -179,11 +182,17 @@ class CronStore:
                         created_by, notify_user_id, enabled, created_at, last_result)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        entry.id, entry.prompt, entry.cron,
-                        format_iso_utc(entry.run_at), format_iso_utc(entry.next_fire_at),
-                        format_iso_utc(entry.last_fired_at), entry.created_by,
-                        entry.notify_user_id, int(entry.enabled),
-                        format_iso_utc(entry.created_at), entry.last_result,
+                        entry.id,
+                        entry.prompt,
+                        entry.cron,
+                        format_iso_utc(entry.run_at),
+                        format_iso_utc(entry.next_fire_at),
+                        format_iso_utc(entry.last_fired_at),
+                        entry.created_by,
+                        entry.notify_user_id,
+                        int(entry.enabled),
+                        format_iso_utc(entry.created_at),
+                        entry.last_result,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -220,13 +229,16 @@ class CronStore:
 
     def remove(self, entry_id: str) -> bool:
         with self._connect() as conn:
-            cur = conn.execute(
-                "DELETE FROM cron_entries WHERE id = ?", (entry_id,)
-            )
+            cur = conn.execute("DELETE FROM cron_entries WHERE id = ?", (entry_id,))
             return cur.rowcount > 0
 
-    def mark_fired(self, entry_id: str, *, when: Optional[datetime] = None,
-                   result: Optional[str] = None) -> None:
+    def mark_fired(
+        self,
+        entry_id: str,
+        *,
+        when: Optional[datetime] = None,
+        result: Optional[str] = None,
+    ) -> None:
         """Update ``last_fired_at`` + ``next_fire_at`` after firing (atomic)."""
         when = when or now_utc()
         with self._connect() as conn:

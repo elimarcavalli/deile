@@ -8,9 +8,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deile.core.models.tier import ModelTier
-from deile.core.models.tier_router import (CircuitBreaker, RoutingPolicy,
-                                           TierRouter, get_tier_router,
-                                           reset_tier_router)
+from deile.core.models.tier_router import (
+    CircuitBreaker,
+    RoutingPolicy,
+    TierRouter,
+    get_tier_router,
+    reset_tier_router,
+)
 
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
 
@@ -25,6 +29,7 @@ def _make_provider(provider_id: str):
 # ---------------------------------------------------------------------------
 # get_tier_router() factory
 # ---------------------------------------------------------------------------
+
 
 class TestGetTierRouterFactory:
     def setup_method(self):
@@ -78,6 +83,7 @@ class TestGetTierRouterFactory:
 # ModelRouter.select_provider() tier delegation
 # ---------------------------------------------------------------------------
 
+
 class TestModelRouterTierDelegation:
     @pytest.mark.asyncio
     async def test_select_provider_delegates_to_tier_router_when_tier_given(self):
@@ -87,12 +93,16 @@ class TestModelRouterTierDelegation:
         mock_provider = _make_provider("anthropic")
 
         # Build a TierRouter that returns mock_provider for TIER_1
-        policy = RoutingPolicy("test", {ModelTier.TIER_1: ["anthropic:claude-opus-4-8"]})
+        policy = RoutingPolicy(
+            "test", {ModelTier.TIER_1: ["anthropic:claude-opus-4-8"]}
+        )
         cb = CircuitBreaker()
         tier_router = TierRouter(MagicMock(), policy, cb)
         tier_router.register_provider(mock_provider)
 
-        with patch("deile.core.models.router.get_tier_router", return_value=tier_router):
+        with patch(
+            "deile.core.models.router.get_tier_router", return_value=tier_router
+        ):
             selected = await router.select_provider(tier=ModelTier.TIER_1)
 
         assert selected.provider_id == "anthropic"
@@ -120,7 +130,9 @@ class TestModelRouterTierDelegation:
         legacy_provider = _make_provider("gemini")
         router.register_provider(legacy_provider)
 
-        with patch("deile.core.models.router.get_tier_router", side_effect=Exception("broken")):
+        with patch(
+            "deile.core.models.router.get_tier_router", side_effect=Exception("broken")
+        ):
             selected = await router.select_provider(tier=ModelTier.TIER_1)
 
         assert selected.provider_id == "gemini"
@@ -138,7 +150,9 @@ class TestModelRouterTierDelegation:
         tier_router = TierRouter(MagicMock(), policy, cb)
         # openai NOT pre-registered in tier_router
 
-        with patch("deile.core.models.router.get_tier_router", return_value=tier_router):
+        with patch(
+            "deile.core.models.router.get_tier_router", return_value=tier_router
+        ):
             selected = await router.select_provider(tier=ModelTier.TIER_2)
 
         # The router auto-registered openai from its own providers dict

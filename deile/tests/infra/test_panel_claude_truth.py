@@ -10,6 +10,7 @@ Os módulos ``_panel`` / ``_panel_data`` vivem em ``infra/k8s/`` (fora do
 pacote ``deile``); o path é inserido manualmente — mesma convenção dos
 demais testes de infra (ver ``test_claude_worker_lease.py``).
 """
+
 from __future__ import annotations
 
 import sys
@@ -37,8 +38,9 @@ _CLAUDE_CMDLINE = (
 )
 
 
-def _probe_output(*, running_pod: str, this_pod: str, claude_pid: int,
-                  heartbeat_at: float) -> str:
+def _probe_output(
+    *, running_pod: str, this_pod: str, claude_pid: int, heartbeat_at: float
+) -> str:
     """Monta a saída do probe vista por ``this_pod``.
 
     Lease é global (PVC compartilhado), então aparece em todo pod; o CPID só
@@ -59,6 +61,7 @@ def _probe_output(*, running_pod: str, this_pod: str, claude_pid: int,
 # ClaudeWorkerTruthProvider — parsing
 # ---------------------------------------------------------------------------
 
+
 def _make_provider(pods, probe_for):
     prov = pd.ClaudeWorkerTruthProvider(namespace="deile", enabled=True)
     prov._kubectl = "/fake/kubectl"  # noqa: SLF001 (skip resolve)
@@ -72,8 +75,10 @@ def _make_provider(pods, probe_for):
         pod = cmd[cmd.index("exec") + 1]
         return probe_for(pod)
 
-    with patch.object(pd, "_capture_text", fake_text), \
-         patch.object(pd, "_capture_text_lossy", fake_lossy):
+    with (
+        patch.object(pd, "_capture_text", fake_text),
+        patch.object(pd, "_capture_text_lossy", fake_lossy),
+    ):
         return prov._fetch()  # noqa: SLF001
 
 
@@ -83,8 +88,11 @@ def test_provider_marks_running_pod_and_extracts_cmdline():
     res = _make_provider(
         pods,
         lambda pod: _probe_output(
-            running_pod="claude-worker-aaa", this_pod=pod,
-            claude_pid=6903, heartbeat_at=now - 1.0),
+            running_pod="claude-worker-aaa",
+            this_pod=pod,
+            claude_pid=6903,
+            heartbeat_at=now - 1.0,
+        ),
     )
     assert set(res) == set(pods)
     aaa = res["claude-worker-aaa"]
@@ -94,7 +102,7 @@ def test_provider_marks_running_pod_and_extracts_cmdline():
     assert d.claude_pid == 6903
     assert d.summary == "review PR"
     assert d.branch == "fix/netpol-apiserver-egress"
-    assert d.model == "sonnet-4-6"   # slug curto, sem 'claude-'
+    assert d.model == "sonnet-4-6"  # slug curto, sem 'claude-'
     assert d.effort == "xhigh"
     assert d.heartbeat_age_s is not None and d.heartbeat_age_s < 5
     # bbb vê o mesmo lease, mas NÃO roda claude → idle.
@@ -139,11 +147,17 @@ def test_active_dispatch_count():
 
     def fake_lossy(cmd, timeout=5.0):
         pod = cmd[cmd.index("exec") + 1]
-        return _probe_output(running_pod="claude-worker-aaa", this_pod=pod,
-                             claude_pid=6903, heartbeat_at=now)
+        return _probe_output(
+            running_pod="claude-worker-aaa",
+            this_pod=pod,
+            claude_pid=6903,
+            heartbeat_at=now,
+        )
 
-    with patch.object(pd, "_capture_text", fake_text), \
-         patch.object(pd, "_capture_text_lossy", fake_lossy):
+    with (
+        patch.object(pd, "_capture_text", fake_text),
+        patch.object(pd, "_capture_text_lossy", fake_lossy),
+    ):
         prov.get(force=True)
         assert prov.active_dispatch_count() == 1
 
@@ -151,6 +165,7 @@ def test_active_dispatch_count():
 # ---------------------------------------------------------------------------
 # Helpers puros de cmdline
 # ---------------------------------------------------------------------------
+
 
 def test_cw_short_model():
     assert pd._cw_short_model("claude-sonnet-4-6") == "sonnet-4-6"
@@ -170,10 +185,17 @@ def test_cw_summary():
 # Helpers puros de render (_panel)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("n,expect", [
-    ("0", "green"), ("1", "yellow"), ("3", "yellow"),
-    ("4", "bold red"), ("99", "bold red"),
-])
+
+@pytest.mark.parametrize(
+    "n,expect",
+    [
+        ("0", "green"),
+        ("1", "yellow"),
+        ("3", "yellow"),
+        ("4", "bold red"),
+        ("99", "bold red"),
+    ],
+)
 def test_restart_text_color(n, expect):
     t = pnl._restart_text(n)
     assert t.style == expect
@@ -186,9 +208,18 @@ def test_restart_text_non_numeric():
 
 
 def _row(**kw):
-    base = dict(icon="●", name="claude-worker-x", role="claude-worker",
-                status="Running", age="1m", restarts="0",
-                last_activity="—", doing_now="idle", busy=False, stale_s=None)
+    base = dict(
+        icon="●",
+        name="claude-worker-x",
+        role="claude-worker",
+        status="Running",
+        age="1m",
+        restarts="0",
+        last_activity="—",
+        doing_now="idle",
+        busy=False,
+        stale_s=None,
+    )
     base.update(kw)
     return pnl.PodRow(**base)
 
@@ -208,7 +239,8 @@ def test_doing_now_render_idle_is_dim():
 def test_doing_now_render_stale_overrides_to_warning():
     # heartbeat 40s > 15s → ⚠ stale, amarelo, NÃO mostra a ação velha.
     txt, style = pnl._doing_now_render(
-        _row(busy=True, doing_now="review PR", stale_s=40.0))
+        _row(busy=True, doing_now="review PR", stale_s=40.0)
+    )
     assert style == "yellow"
     assert "⚠ stale" in str(txt)
     assert "review PR" not in str(txt)
@@ -216,7 +248,8 @@ def test_doing_now_render_stale_overrides_to_warning():
 
 def test_doing_now_render_fresh_heartbeat_not_stale():
     txt, style = pnl._doing_now_render(
-        _row(busy=True, doing_now="review PR", stale_s=4.0))
+        _row(busy=True, doing_now="review PR", stale_s=4.0)
+    )
     assert style == "bold yellow"
     assert "review PR" in str(txt)
 
@@ -224,6 +257,7 @@ def test_doing_now_render_fresh_heartbeat_not_stale():
 # ---------------------------------------------------------------------------
 # _claude_worker_cell — precedência verdade > pod-down > idle
 # ---------------------------------------------------------------------------
+
 
 class _FakeTruthProv:
     def __init__(self, mapping):
@@ -236,16 +270,28 @@ class _FakeTruthProv:
 class _FakeData:
     def __init__(self, truth_map=None, workers_map=None):
         self.claude_truth = _FakeTruthProv(truth_map) if truth_map is not None else None
-        self.claude_workers = _FakeTruthProv(workers_map) if workers_map is not None else None
+        self.claude_workers = (
+            _FakeTruthProv(workers_map) if workers_map is not None else None
+        )
 
 
 def test_claude_worker_cell_running():
-    disp = pd.ClaudeDispatch(pod="p", claude_pid=1, summary="implement",
-                             branch="auto/issue-9", model="opus-4-8",
-                             effort="max", heartbeat_age_s=2.0)
-    truth = pd.ClaudeWorkerTruth(pod_name="p", probe_ok=True,
-                                 claude_running=True, dispatches=[disp],
-                                 heartbeat_age_s=2.0)
+    disp = pd.ClaudeDispatch(
+        pod="p",
+        claude_pid=1,
+        summary="implement",
+        branch="auto/issue-9",
+        model="opus-4-8",
+        effort="max",
+        heartbeat_age_s=2.0,
+    )
+    truth = pd.ClaudeWorkerTruth(
+        pod_name="p",
+        probe_ok=True,
+        claude_running=True,
+        dispatches=[disp],
+        heartbeat_age_s=2.0,
+    )
     data = _FakeData(truth_map={"p": truth})
     age, last, doing, busy, icon, stale = pnl._claude_worker_cell(data, "p")
     assert busy and icon == "⚡" and last == "agora"
@@ -261,12 +307,15 @@ def test_claude_worker_cell_pod_down():
 
 
 def test_claude_worker_cell_idle_with_last_completed():
-    truth = pd.ClaudeWorkerTruth(pod_name="p", probe_ok=True,
-                                 claude_running=False)
+    truth = pd.ClaudeWorkerTruth(pod_name="p", probe_ok=True, claude_running=False)
     lc = pd.LastCompletedTask(
-        task_id="t", channel_id="c",
+        task_id="t",
+        channel_id="c",
         finished_ts=datetime.now(timezone.utc) - timedelta(minutes=10),
-        outcome="DONE", duration_s=5.0, cost_usd=0.74)
+        outcome="DONE",
+        duration_s=5.0,
+        cost_usd=0.74,
+    )
     ws = pd.WorkerState(pod_name="p", last_completed=lc)
     data = _FakeData(truth_map={"p": truth}, workers_map={"p": ws})
     age, last, doing, busy, icon, stale = pnl._claude_worker_cell(data, "p")
@@ -278,10 +327,18 @@ def test_claude_worker_cell_idle_with_last_completed():
 # PodPickerView ([1]Pods): agrupamento de réplicas + alinhamento do cursor
 # ---------------------------------------------------------------------------
 
+
 def _pod(name, role):
-    return pnl.PodRow(icon="●", name=name, role=role, status="Running",
-                      age="1m", restarts="0", last_activity="—",
-                      doing_now="idle")
+    return pnl.PodRow(
+        icon="●",
+        name=name,
+        role=role,
+        status="Running",
+        age="1m",
+        restarts="0",
+        last_activity="—",
+        doing_now="idle",
+    )
 
 
 def test_picker_groups_claude_worker_contiguous_and_keeps_cursor_mapping():
@@ -296,13 +353,14 @@ def test_picker_groups_claude_worker_contiguous_and_keeps_cursor_mapping():
     ]
     locals_ = [_pod("local-other#1", "local-other")]
     view = pnl.PodPickerView(data=object())  # data não é usado pelos stubs
-    with patch.object(pnl, "_pod_rows", return_value=mixed), \
-         patch.object(pnl, "_local_process_rows", return_value=locals_):
+    with (
+        patch.object(pnl, "_pod_rows", return_value=mixed),
+        patch.object(pnl, "_local_process_rows", return_value=locals_),
+    ):
         rows = view._rows()
     roles = [r.role for r in rows]
     # não-cw primeiro (ordem preservada), cw contíguo, locais por último.
-    assert roles == ["pipeline", "bot", "claude-worker", "claude-worker",
-                     "local-other"]
+    assert roles == ["pipeline", "bot", "claude-worker", "claude-worker", "local-other"]
     # As duas réplicas cw ficam adjacentes.
     cw_idx = [i for i, r in enumerate(rows) if r.role == "claude-worker"]
     assert cw_idx == [2, 3]
@@ -311,6 +369,7 @@ def test_picker_groups_claude_worker_contiguous_and_keeps_cursor_mapping():
 # ---------------------------------------------------------------------------
 # Gap 1: deile-worker truth via marcador de dispatch
 # ---------------------------------------------------------------------------
+
 
 def test_target_from_channel():
     assert pd._target_from_channel("pipeline-issue-443") == "#443"
@@ -331,19 +390,23 @@ def _dw_provider(pods, probe_for):
         pod = cmd[cmd.index("exec") + 1]
         return probe_for(pod)
 
-    with patch.object(pd, "_capture_text", fake_text), \
-         patch.object(pd, "_capture_text_lossy", fake_lossy):
+    with (
+        patch.object(pd, "_capture_text", fake_text),
+        patch.object(pd, "_capture_text_lossy", fake_lossy),
+    ):
         return prov._fetch()
 
 
 def test_deile_worker_truth_busy_from_marker():
     now = int(pd.time.time())
-    marker = ('{"task_id":"t1","channel_id":"pipeline-issue-443",'
-              '"persona":"developer","model":"deepseek:deepseek-chat",'
-              f'"phase":"rodando testes","pid":7,"started_at":1,"updated_at":{now}}}')
+    marker = (
+        '{"task_id":"t1","channel_id":"pipeline-issue-443",'
+        '"persona":"developer","model":"deepseek:deepseek-chat",'
+        f'"phase":"rodando testes","pid":7,"started_at":1,"updated_at":{now}}}'
+    )
 
     def probe(pod):
-        return f'DIR|1\nMARK|1|{marker}\n'
+        return f"DIR|1\nMARK|1|{marker}\n"
 
     res = _dw_provider(["deile-worker-x"], probe)
     t = res["deile-worker-x"]
@@ -355,7 +418,9 @@ def test_deile_worker_truth_busy_from_marker():
 def test_deile_worker_truth_dead_pid_not_busy():
     # MARK com alive=0 (pid não vive neste pod) → não conta como busy.
     def probe(pod):
-        return 'DIR|1\nMARK|0|{"task_id":"t","channel_id":"x","pid":999,"updated_at":1}\n'
+        return (
+            'DIR|1\nMARK|0|{"task_id":"t","channel_id":"x","pid":999,"updated_at":1}\n'
+        )
 
     res = _dw_provider(["deile-worker-x"], probe)
     t = res["deile-worker-x"]
@@ -369,8 +434,7 @@ def test_deile_worker_truth_old_image_no_marker_dir():
 
 
 class _StubWS:
-    def __init__(self, busy=False, body="", last_completed=None,
-                 last_activity_s=None):
+    def __init__(self, busy=False, body="", last_completed=None, last_activity_s=None):
         self.busy = busy
         self.last_substantive_body = body
         self.last_completed = last_completed
@@ -380,16 +444,23 @@ class _StubWS:
 def _dw_data(truth=None):
     class _D:
         deile_worker_truth = _FakeTruthProv(truth) if truth is not None else None
+
     return _D()
 
 
 def test_deile_worker_cell_truth_busy():
-    t = pd.DeileWorkerTruth(pod_name="p", probe_ok=True, has_marker_dir=True,
-                            busy=True, target="#443", phase="editando",
-                            model="deepseek-chat", age_s=3.0)
+    t = pd.DeileWorkerTruth(
+        pod_name="p",
+        probe_ok=True,
+        has_marker_dir=True,
+        busy=True,
+        target="#443",
+        phase="editando",
+        model="deepseek-chat",
+        age_s=3.0,
+    )
     data = _dw_data({"p": t})
-    age, last, doing, busy, icon, stale = pnl._deile_worker_cell(
-        data, "p", _StubWS())
+    age, last, doing, busy, icon, stale = pnl._deile_worker_cell(data, "p", _StubWS())
     assert busy and icon == "⚡" and last == "agora"
     assert doing == "#443 · editando (deepseek-chat)" and stale is None
 
@@ -404,17 +475,18 @@ def test_deile_worker_cell_old_image_falls_back_to_log():
 
 
 def test_deile_worker_cell_idle_truth():
-    t = pd.DeileWorkerTruth(pod_name="p", probe_ok=True, has_marker_dir=True,
-                            busy=False)
+    t = pd.DeileWorkerTruth(
+        pod_name="p", probe_ok=True, has_marker_dir=True, busy=False
+    )
     data = _dw_data({"p": t})
-    age, last, doing, busy, icon, stale = pnl._deile_worker_cell(
-        data, "p", _StubWS())
+    age, last, doing, busy, icon, stale = pnl._deile_worker_cell(data, "p", _StubWS())
     assert not busy and doing == "idle"
 
 
 # ---------------------------------------------------------------------------
 # Gap 2: custo "hoje" — guarda anti-back-to-back + filtro since_mtime
 # ---------------------------------------------------------------------------
+
 
 def test_cost_today_anti_backtoback_guard():
     prov = pd.ClaudeCostTodayProvider(namespace="deile", enabled=True)
@@ -423,15 +495,28 @@ def test_cost_today_anti_backtoback_guard():
 
     def fake_run_parser(sta, pod, since):
         calls["n"] += 1
-        return [{"models": {"claude-sonnet-4-6": {"in": 100, "out": 50,
-                                                   "cc": 0, "cr": 0,
-                                                   "cc_5m": 0, "cc_1h": 0}}}]
+        return [
+            {
+                "models": {
+                    "claude-sonnet-4-6": {
+                        "in": 100,
+                        "out": 50,
+                        "cc": 0,
+                        "cr": 0,
+                        "cc_5m": 0,
+                        "cc_1h": 0,
+                    }
+                }
+            }
+        ]
 
-    with patch.object(prov, "_run_parser", fake_run_parser), \
-         patch.object(pd, "_capture_text", lambda cmd, timeout=5.0: "pod-1"):
-        v1 = prov.get(force=True)        # fetch real (calls=1), Cache guarda v1
-        v2 = prov._cache._refresh()      # tick back-to-back → guarda devolve v1
-    assert calls["n"] == 1               # parse NÃO refez
+    with (
+        patch.object(prov, "_run_parser", fake_run_parser),
+        patch.object(pd, "_capture_text", lambda cmd, timeout=5.0: "pod-1"),
+    ):
+        v1 = prov.get(force=True)  # fetch real (calls=1), Cache guarda v1
+        v2 = prov._cache._refresh()  # tick back-to-back → guarda devolve v1
+    assert calls["n"] == 1  # parse NÃO refez
     assert v1 == v2 and v1 is not None and v1 > 0
 
 

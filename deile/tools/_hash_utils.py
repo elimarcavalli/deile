@@ -4,6 +4,7 @@ Tools must never log raw user content (Discord text, WhatsApp recipients,
 image bytes). They log a stable short hash so two records of the same
 content correlate without leaking the content itself.
 """
+
 from __future__ import annotations
 
 import hashlib

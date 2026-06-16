@@ -68,8 +68,7 @@ def resolve_stage_model(stage: str) -> Optional[str]:
     """
     if stage not in PIPELINE_STAGES:
         raise ValueError(
-            f"unknown pipeline stage: {stage!r} "
-            f"(expected one of {PIPELINE_STAGES})"
+            f"unknown pipeline stage: {stage!r} " f"(expected one of {PIPELINE_STAGES})"
         )
     settings = get_settings()
     raw = getattr(settings, f"pipeline_model_{stage}", None)
@@ -114,8 +113,7 @@ def resolve_stage_cli_model(stage: str) -> Optional[str]:
     """
     if stage not in PIPELINE_STAGES:
         raise ValueError(
-            f"unknown pipeline stage: {stage!r} "
-            f"(expected one of {PIPELINE_STAGES})"
+            f"unknown pipeline stage: {stage!r} " f"(expected one of {PIPELINE_STAGES})"
         )
     # Per-stage env var (string livre — id nativo do CLI).
     raw = os.environ.get(f"DEILE_PIPELINE_MODEL_{stage.upper()}")

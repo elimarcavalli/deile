@@ -7,6 +7,7 @@ without touching priority or project-classification labels.
 Standalone module: importable without loading stages.py or the full
 pipeline graph.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -119,9 +120,7 @@ async def run_terminal_gc(
         )
         current: Tuple[str, ...] = ref.labels if ref is not None else ()
     else:
-        ref = await asyncio.wait_for(
-            forge.get_pr(item_number), timeout=api_timeout_s
-        )
+        ref = await asyncio.wait_for(forge.get_pr(item_number), timeout=api_timeout_s)
         current = ref.labels if ref is not None else ()
 
     if item_type == "issue":

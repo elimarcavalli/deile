@@ -1,4 +1,5 @@
 """AC2 — canonical schema: all 15 functions emit family.subtype  k=v lines."""
+
 from __future__ import annotations
 
 import logging
@@ -11,7 +12,7 @@ import pytest
 import deile.orchestration.pipeline.pipeline_logger as pl
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
-from deile.orchestration.pipeline.stages import _dispatch_mention_group, MentionTrigger
+from deile.orchestration.pipeline.stages import MentionTrigger, _dispatch_mention_group
 
 _PATTERN = re.compile(
     r"^(refinement|decomposition|batch|label|reaper|auth|routing)\.[a-z_]+"
@@ -45,21 +46,27 @@ def test_refinement_critique(caplog):
 
 def test_refinement_critique_quoting(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_refinement_critique(issue=2, round=1, persona="Alice", verdict="VAGO", gaps="disk cheio")
+        pl.log_refinement_critique(
+            issue=2, round=1, persona="Alice", verdict="VAGO", gaps="disk cheio"
+        )
     lines = [r.message for r in caplog.records]
     assert any("gaps='disk cheio'" in l for l in lines), lines
 
 
 def test_refinement_critique_single_quote_in_value(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_refinement_critique(issue=3, round=1, persona="P", verdict="V", gaps="x's y")
+        pl.log_refinement_critique(
+            issue=3, round=1, persona="P", verdict="V", gaps="x's y"
+        )
     lines = [r.message for r in caplog.records]
     assert any("gaps='x s y'" in l for l in lines), lines
 
 
 def test_decomposition_fanout_list_no_spaces(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_decomposition_fanout(intent=100, derivadas=[101, 102, 103], complexity=["S", "M", "L"])
+        pl.log_decomposition_fanout(
+            intent=100, derivadas=[101, 102, 103], complexity=["S", "M", "L"]
+        )
     lines = [r.message for r in caplog.records]
     assert any("derivadas=[101,102,103]" in l for l in lines), lines
     assert any("complexity=[S,M,L]" in l for l in lines), lines
@@ -88,7 +95,12 @@ def test_batch_release(caplog):
 
 def test_label_change(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_label_change(target_kind="issue", target=5, removed=["~workflow:nova"], added=["~workflow:em_pr"])
+        pl.log_label_change(
+            target_kind="issue",
+            target=5,
+            removed=["~workflow:nova"],
+            added=["~workflow:em_pr"],
+        )
     lines = [r.message for r in caplog.records]
     assert any("added=[~workflow:em_pr]" in l for l in lines), lines
 
@@ -109,21 +121,27 @@ def test_reaper_block(caplog):
 
 def test_auth_fail(caplog):
     with caplog.at_level(logging.WARNING, logger="deile.pipeline.events"):
-        pl.log_auth_fail(target="repo/X", attempts=1, threshold=3, reason="WORKER_AUTH_EXPIRED")
+        pl.log_auth_fail(
+            target="repo/X", attempts=1, threshold=3, reason="WORKER_AUTH_EXPIRED"
+        )
     lines = [r.message for r in caplog.records]
     assert any(l.startswith("auth.fail  ") for l in lines), lines
 
 
 def test_auth_backoff(caplog):
     with caplog.at_level(logging.WARNING, logger="deile.pipeline.events"):
-        pl.log_auth_backoff(target="repo/X", attempts=3, until_iso="2026-06-05T12:00:00Z", backoff_s=480)
+        pl.log_auth_backoff(
+            target="repo/X", attempts=3, until_iso="2026-06-05T12:00:00Z", backoff_s=480
+        )
     lines = [r.message for r in caplog.records]
     assert any(l.startswith("auth.backoff  ") for l in lines), lines
 
 
 def test_auth_skip(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_auth_skip(target="repo/X", until_iso="2026-06-05T12:00:00Z", remaining_s=300)
+        pl.log_auth_skip(
+            target="repo/X", until_iso="2026-06-05T12:00:00Z", remaining_s=300
+        )
     lines = [r.message for r in caplog.records]
     assert any(l.startswith("auth.skip  ") for l in lines), lines
 
@@ -160,9 +178,12 @@ def test_routing_dropped(caplog):
 # AC2 — 9 new routing scenarios (completes 12-scenario minimum from #438)
 # ---------------------------------------------------------------------------
 
+
 def test_routing_mention_inject_workflow_nova(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_routing_mention(target_kind="issue", target=10, action="inject_workflow_nova")
+        pl.log_routing_mention(
+            target_kind="issue", target=10, action="inject_workflow_nova"
+        )
     lines = [r.message for r in caplog.records if r.name == "deile.pipeline.events"]
     assert any("action=inject_workflow_nova" in l for l in lines), lines
     assert any("target_kind=issue" in l for l in lines), lines
@@ -170,7 +191,9 @@ def test_routing_mention_inject_workflow_nova(caplog):
 
 def test_routing_mention_already_in_pipeline(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_routing_mention(target_kind="issue", target=11, action="already_in_pipeline")
+        pl.log_routing_mention(
+            target_kind="issue", target=11, action="already_in_pipeline"
+        )
     lines = [r.message for r in caplog.records if r.name == "deile.pipeline.events"]
     assert any("action=already_in_pipeline" in l for l in lines), lines
     assert any("target_kind=issue" in l for l in lines), lines
@@ -178,7 +201,9 @@ def test_routing_mention_already_in_pipeline(caplog):
 
 def test_routing_pr_unified_requested_reviewer(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_routing_pr_unified(target=20, role="requested_reviewer", mode="pr_unified")
+        pl.log_routing_pr_unified(
+            target=20, role="requested_reviewer", mode="pr_unified"
+        )
     lines = [r.message for r in caplog.records if r.name == "deile.pipeline.events"]
     assert any("role=requested_reviewer" in l for l in lines), lines
     assert any("mode=pr_unified" in l for l in lines), lines
@@ -194,14 +219,18 @@ def test_routing_pr_unified_assignee(caplog):
 
 def test_routing_dropped_deferred_active_gate(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_routing_dropped(target_kind="issue", target=30, reason="deferred_active_gate")
+        pl.log_routing_dropped(
+            target_kind="issue", target=30, reason="deferred_active_gate"
+        )
     lines = [r.message for r in caplog.records if r.name == "deile.pipeline.events"]
     assert any("reason=deferred_active_gate" in l for l in lines), lines
 
 
 def test_routing_dropped_issue_human_gated(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        pl.log_routing_dropped(target_kind="issue", target=31, reason="issue_human_gated")
+        pl.log_routing_dropped(
+            target_kind="issue", target=31, reason="issue_human_gated"
+        )
     lines = [r.message for r in caplog.records if r.name == "deile.pipeline.events"]
     assert any("reason=issue_human_gated" in l for l in lines), lines
 
@@ -231,6 +260,7 @@ def test_routing_dropped_attempt_ceiling(caplog):
 # AC3 — 3 edge scenarios via _dispatch_mention_group
 # ---------------------------------------------------------------------------
 
+
 def _make_monitor_for_routing(implementer=None):
     cfg = PipelineConfig(
         repo="owner/name",
@@ -254,29 +284,43 @@ def _make_monitor_for_routing(implementer=None):
     github.remove_labels = AsyncMock()
     github.get_issue = AsyncMock(
         return_value=IssueRef(
-            number=1, title="t",
-            url="https://github.com/o/r/issues/1", labels=(),
+            number=1,
+            title="t",
+            url="https://github.com/o/r/issues/1",
+            labels=(),
         )
     )
     github.get_pr = AsyncMock(return_value=None)
 
     notifier = MagicMock()
     for attr in (
-        "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "implementation_parked", "pr_picked_up",
-        "pr_reviewed", "issue_auto_classified", "error", "pr_auto_classified",
+        "issue_picked_up",
+        "issue_reviewed",
+        "implementation_started",
+        "implementation_finished",
+        "implementation_parked",
+        "pr_picked_up",
+        "pr_reviewed",
+        "issue_auto_classified",
+        "error",
+        "pr_auto_classified",
         "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
 
     from deile.orchestration.pipeline.implementer import WorkOutcome
+
     impl = implementer if implementer is not None else MagicMock()
     if isinstance(impl, MagicMock) and implementer is None:
         impl.mention = AsyncMock(return_value=WorkOutcome(ok=True, text="done"))
 
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=MagicMock(),
-        claude=MagicMock(), notifier=notifier, implementer=impl,
+        cfg,
+        github=github,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
+        notifier=notifier,
+        implementer=impl,
     )
     return monitor, github
 
@@ -306,7 +350,9 @@ async def test_routing_ac3_workflow_waiting_lift_zero_lines(caplog):
         await _dispatch_mention_group(
             monitor, f"issue:{issue_num}", [trigger], "deile-one", 0.0
         )
-    routing_lines = [r.message for r in caplog.records if r.message.startswith("routing.")]
+    routing_lines = [
+        r.message for r in caplog.records if r.message.startswith("routing.")
+    ]
     assert routing_lines == [], f"Expected zero routing.* lines, got: {routing_lines}"
 
 
@@ -326,14 +372,18 @@ async def test_routing_ac3_forge_failure_mention_emitted_no_dropped(caplog):
         await _dispatch_mention_group(
             monitor, f"issue:{issue_num}", [trigger], "deile-one", 0.0
         )
-    routing_lines = [r.message for r in caplog.records if r.message.startswith("routing.")]
+    routing_lines = [
+        r.message for r in caplog.records if r.message.startswith("routing.")
+    ]
     mention_lines = [l for l in routing_lines if l.startswith("routing.mention")]
     dropped_lines = [l for l in routing_lines if l.startswith("routing.dropped")]
     assert len(mention_lines) == 1, f"Expected 1 routing.mention, got: {mention_lines}"
-    assert f"target_kind=issue" in mention_lines[0], mention_lines[0]
+    assert "target_kind=issue" in mention_lines[0], mention_lines[0]
     assert f"target={issue_num}" in mention_lines[0], mention_lines[0]
     assert "action=inject_workflow_nova" in mention_lines[0], mention_lines[0]
-    assert dropped_lines == [], f"Expected zero routing.dropped lines, got: {dropped_lines}"
+    assert (
+        dropped_lines == []
+    ), f"Expected zero routing.dropped lines, got: {dropped_lines}"
 
 
 @pytest.mark.asyncio
@@ -355,10 +405,16 @@ async def test_routing_ac3_dispatch_error_pr_unified_emitted_no_dropped(caplog):
         await _dispatch_mention_group(
             monitor, f"pr:{pr_num}", [trigger], "deile-one", 0.0
         )
-    routing_lines = [r.message for r in caplog.records if r.message.startswith("routing.")]
+    routing_lines = [
+        r.message for r in caplog.records if r.message.startswith("routing.")
+    ]
     pr_unified_lines = [l for l in routing_lines if l.startswith("routing.pr_unified")]
     dropped_lines = [l for l in routing_lines if l.startswith("routing.dropped")]
-    assert len(pr_unified_lines) == 1, f"Expected 1 routing.pr_unified, got: {pr_unified_lines}"
+    assert (
+        len(pr_unified_lines) == 1
+    ), f"Expected 1 routing.pr_unified, got: {pr_unified_lines}"
     assert f"target={pr_num}" in pr_unified_lines[0], pr_unified_lines[0]
     assert "role=requested_reviewer" in pr_unified_lines[0], pr_unified_lines[0]
-    assert dropped_lines == [], f"Expected zero routing.dropped lines, got: {dropped_lines}"
+    assert (
+        dropped_lines == []
+    ), f"Expected zero routing.dropped lines, got: {dropped_lines}"

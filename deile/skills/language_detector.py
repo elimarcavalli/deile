@@ -80,7 +80,9 @@ class LanguageDetector:
         merged_ext: Dict[str, str] = dict(_DEFAULT_EXTENSION_MAP)
         if extension_map:
             for k, v in extension_map.items():
-                merged_ext[k.lower() if k.startswith(".") else f".{k.lower()}"] = v.lower()
+                merged_ext[k.lower() if k.startswith(".") else f".{k.lower()}"] = (
+                    v.lower()
+                )
         self._extension_map = merged_ext
 
         merged_base: Dict[str, str] = dict(_DEFAULT_BASENAME_MAP)

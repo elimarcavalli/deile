@@ -12,6 +12,7 @@ Espelha os testes do ``_claude_install`` para o fluxo genérico
 Sem rede / sem cluster: o subprocess do kubectl e o ``login_cmd`` são mockados.
 O pacote vive em ``infra/k8s/`` — path inserido manualmente (convenção infra).
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,14 +52,18 @@ def codex_adapter():
 class TestResolveHostCredPath:
     def test_expands_tilde_to_home(self, login_mod, codex_adapter):
         path = login_mod.resolve_host_cred_path(
-            "codex", codex_adapter, env={"HOME": "/opr"}, home=Path("/opr"),
+            "codex",
+            codex_adapter,
+            env={"HOME": "/opr"},
+            home=Path("/opr"),
         )
         assert path == Path("/opr/.codex/auth.json")
 
     def test_codex_home_env_var_overrides(self, login_mod, codex_adapter):
         # CODEX_HOME setado no host → a credencial fica sob ele (basename).
         path = login_mod.resolve_host_cred_path(
-            "codex", codex_adapter,
+            "codex",
+            codex_adapter,
             env={"HOME": "/opr", "CODEX_HOME": "/custom/codex"},
         )
         assert path == Path("/custom/codex/auth.json")
@@ -76,12 +81,16 @@ class TestResolveHostCredPath:
 class TestBuildCredSecretPayload:
     def test_key_is_basename_of_cred_path(self, login_mod):
         payload = login_mod.build_cred_secret_payload(
-            '{"tokens": {}}', cred_path=Path("/h/.codex/auth.json"),
+            '{"tokens": {}}',
+            cred_path=Path("/h/.codex/auth.json"),
         )
         assert payload == {"auth.json": '{"tokens": {}}'}
 
     def test_read_host_credential_does_not_log_secret(
-        self, login_mod, tmp_path, caplog,
+        self,
+        login_mod,
+        tmp_path,
+        caplog,
     ):
         secret = '{"tokens": {"access_token": "SUPER-SECRET-VALUE"}}'
         cred = tmp_path / "auth.json"
@@ -107,7 +116,9 @@ class TestBootstrapGuards:
         assert res.error
 
     def test_worker_without_oauthspec_rejected_points_to_install(
-        self, login_mod, monkeypatch,
+        self,
+        login_mod,
+        monkeypatch,
     ):
         # Um worker SEM OAuthSpec (não oauth-capable) deve ser recusado, com erro
         # apontando o cli-worker-install (auth por chave de API).
@@ -125,7 +136,11 @@ class TestBootstrapGuards:
         assert "cli-worker-install" in (res.error or "")
 
     def test_oauth_capable_env_default_codex_accepted_and_oauth_mode(
-        self, login_mod, codex_adapter, monkeypatch, tmp_path,
+        self,
+        login_mod,
+        codex_adapter,
+        monkeypatch,
+        tmp_path,
     ):
         # codex é env-default MAS oauth-capable (tem OAuthSpec) → cli-worker-login
         # ACEITA, captura a credencial e renderiza em modo OAuth (kubectl mockado).
@@ -144,12 +159,11 @@ class TestBootstrapGuards:
         # Stub de todas as etapas de cluster do install reusado.
         import _cli_worker_install as inst
 
-        monkeypatch.setattr(login_mod, "_kubectl_apply_cred_secret",
-                            lambda *a, **k: True)
-        monkeypatch.setattr(login_mod, "_kubectl_set_auth_mode",
-                            lambda *a, **k: True)
-        monkeypatch.setattr(inst, "_kubectl_apply_keys_secret",
-                            lambda *a, **k: True)
+        monkeypatch.setattr(
+            login_mod, "_kubectl_apply_cred_secret", lambda *a, **k: True
+        )
+        monkeypatch.setattr(login_mod, "_kubectl_set_auth_mode", lambda *a, **k: True)
+        monkeypatch.setattr(inst, "_kubectl_apply_keys_secret", lambda *a, **k: True)
         monkeypatch.setattr(inst, "_kubectl_sync_bearer", lambda *a, **k: True)
         monkeypatch.setattr(inst, "_kubectl_apply_manifest", fake_apply_manifest)
         monkeypatch.setattr(inst, "_kubectl_scale", lambda *a, **k: True)
@@ -162,7 +176,11 @@ class TestBootstrapGuards:
         assert oauth_mode_seen == [True]
 
     def test_no_credential_non_interactive_fails_fast(
-        self, login_mod, codex_adapter, monkeypatch, tmp_path,
+        self,
+        login_mod,
+        codex_adapter,
+        monkeypatch,
+        tmp_path,
     ):
         # Força o adapter resolvido a ter auth_mode oauth_file (opt-in do codex),
         # sem credencial no host e interactive=False → fail-fast com erro claro.
@@ -174,7 +192,9 @@ class TestBootstrapGuards:
         monkeypatch.delenv("CODEX_HOME", raising=False)
 
         res = login_mod.bootstrap_cli_worker_oauth(
-            "codex", interactive=False, home=tmp_path,
+            "codex",
+            interactive=False,
+            home=tmp_path,
         )
         assert not res.ok
         assert "interactive=False" in (res.error or "")

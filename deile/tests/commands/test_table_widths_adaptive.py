@@ -15,6 +15,7 @@ Exceções permitidas (verificadas via boundary ``\\b``):
 - ``bar_width=None``: Rich Progress, já dinâmico.
 - ``width=None``: explícito "sem largura".
 """
+
 from __future__ import annotations
 
 import io
@@ -89,7 +90,9 @@ def test_help_command_table_adapts_to_console_width(console_width: int) -> None:
     table.add_row("/help", "Show all commands available in the registry", "Direct")
     table.add_row("/status", "Show the status of every DEILE component", "Direct")
 
-    console = Console(file=io.StringIO(), width=console_width, force_terminal=True, color_system=None)
+    console = Console(
+        file=io.StringIO(), width=console_width, force_terminal=True, color_system=None
+    )
     console.print(table)
     output = console.file.getvalue()
 
@@ -97,9 +100,9 @@ def test_help_command_table_adapts_to_console_width(console_width: int) -> None:
     # rows) podem ser menores se o conteúdo for menor — só nos importa que
     # nada estoure ``console_width``.
     for line in output.splitlines():
-        assert len(line) <= console_width, (
-            f"Linha estourou console_width={console_width} (len={len(line)}): {line!r}"
-        )
+        assert (
+            len(line) <= console_width
+        ), f"Linha estourou console_width={console_width} (len={len(line)}): {line!r}"
 
 
 @pytest.mark.unit
@@ -155,7 +158,9 @@ def test_no_text_derived_width_pattern_in_ui_or_commands() -> None:
             stripped = line.lstrip()
             if stripped.startswith("#") or stripped.startswith('"'):
                 continue
-            if BAD_MAX_LEN.search(line) and ("width" in line.lower() or "inner_w" in line):
+            if BAD_MAX_LEN.search(line) and (
+                "width" in line.lower() or "inner_w" in line
+            ):
                 offenders.append(f"{path.relative_to(ROOT)}:{lineno}: {stripped}")
             elif BAD_BOX_MULT.search(line):
                 offenders.append(f"{path.relative_to(ROOT)}:{lineno}: {stripped}")
@@ -250,9 +255,9 @@ class TestLiveStreamWidthAdaptation:
 
         output = buf.getvalue()
         for line in output.splitlines():
-            assert len(line) <= console_width, (
-                f"Linha estourou console_width={console_width} (len={len(line)}): {line!r}"
-            )
+            assert (
+                len(line) <= console_width
+            ), f"Linha estourou console_width={console_width} (len={len(line)}): {line!r}"
 
     @pytest.mark.parametrize("width", [40, 80, 120, 200])
     async def test_multiple_widths_all_return_same_lines(self, width: int):

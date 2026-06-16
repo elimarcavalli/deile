@@ -24,8 +24,10 @@ import pytest
 
 from deile.config.settings import get_settings, reset_settings
 from deile.core.exceptions import ConfigurationError
-from deile.orchestration.pipeline.constants import (resolve_forge_repo,
-                                                    resolve_pipeline_repo)
+from deile.orchestration.pipeline.constants import (
+    resolve_forge_repo,
+    resolve_pipeline_repo,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +56,7 @@ def _inject_repo(value: str) -> None:
 # AC-3 — config ausente falha alto (não cai no default silencioso)
 # ---------------------------------------------------------------------------
 
+
 class TestAC3FailLoudOnMissingConfig:
     def test_resolve_forge_repo_raises_when_unconfigured(self):
         with pytest.raises(ConfigurationError) as exc:
@@ -76,6 +79,7 @@ class TestAC3FailLoudOnMissingConfig:
         /pipeline start) builds its config here; with no repo it must abort
         at startup, not mid-tick."""
         from deile.orchestration.pipeline import monitor as monitor_mod
+
         monkeypatch.setattr(
             "deile.tools._pipeline_paths.resolve_base_path", lambda: Path("/tmp")
         )
@@ -86,11 +90,13 @@ class TestAC3FailLoudOnMissingConfig:
         """Graceful surfaces (panel/CLI) may degrade with a clear WARNING
         instead of aborting — but never silently."""
         import logging
+
         with caplog.at_level(logging.WARNING):
             result = resolve_forge_repo(require=False, fallback="display/only")
         assert result == "display/only"
-        assert any("No forge repository configured" in r.message
-                   for r in caplog.records)
+        assert any(
+            "No forge repository configured" in r.message for r in caplog.records
+        )
 
     def test_non_required_without_fallback_returns_empty(self):
         assert resolve_forge_repo(require=False) == ""
@@ -99,6 +105,7 @@ class TestAC3FailLoudOnMissingConfig:
 # ---------------------------------------------------------------------------
 # AC-4 — sem vazamento do default no fluxo real (repo injetado é consumido)
 # ---------------------------------------------------------------------------
+
 
 class TestAC4NoDefaultLeak:
     def test_injected_forge_repo_is_resolved(self):
@@ -146,10 +153,14 @@ class TestAC4NoDefaultLeak:
         # only uses module-level resolve_forge_repo() (no self.<attr>), so an
         # uninitialised instance is enough to exercise the call-site.
         implementer = impl_mod.WorkerImplementer.__new__(impl_mod.WorkerImplementer)
-        await implementer._collect_review_delta(pr_number=7, prev_completed_at=1_700_000_000)
+        await implementer._collect_review_delta(
+            pr_number=7, prev_completed_at=1_700_000_000
+        )
 
         flat = [" ".join(str(a) for a in args) for args in calls]
-        assert any("repos/acme/neutral-project/issues/7/comments" in c for c in flat), flat
+        assert any(
+            "repos/acme/neutral-project/issues/7/comments" in c for c in flat
+        ), flat
         assert not any("elimarcavalli/deile" in c for c in flat)
 
 
@@ -157,10 +168,12 @@ class TestAC4NoDefaultLeak:
 # AC-6 — fiação tick→despacho (build_default_pipeline_config → monitor → forge)
 # ---------------------------------------------------------------------------
 
+
 class TestAC6WiringToDispatch:
     def test_build_default_pipeline_config_carries_injected_repo(self, monkeypatch):
         _inject_repo("acme/neutral-project")
         from deile.orchestration.pipeline import monitor as monitor_mod
+
         monkeypatch.setattr(
             "deile.tools._pipeline_paths.resolve_base_path", lambda: Path("/tmp")
         )
@@ -173,6 +186,7 @@ class TestAC6WiringToDispatch:
         is the injected value, never the hardcoded default."""
         _inject_repo("acme/neutral-project")
         from deile.orchestration.pipeline import monitor as monitor_mod
+
         monkeypatch.setattr(
             "deile.tools._pipeline_paths.resolve_base_path", lambda: Path("/tmp")
         )

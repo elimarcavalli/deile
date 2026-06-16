@@ -29,7 +29,10 @@ async def main() -> None:
     parse_result = ParseResult(status=ParseStatus.SUCCESS, file_references=[])
     session = SimpleNamespace(
         conversation_history=[
-            {"role": "user", "content": "Pergunta rápida sobre TypeScript: Record vs Map?"}
+            {
+                "role": "user",
+                "content": "Pergunta rápida sobre TypeScript: Record vs Map?",
+            }
         ],
         context_data={},
     )

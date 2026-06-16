@@ -12,8 +12,13 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandResult, DirectCommand
-from ._shared import (export_timestamp, get_agent, get_session, get_session_id,
-                      split_args)
+from ._shared import (
+    export_timestamp,
+    get_agent,
+    get_session,
+    get_session_id,
+    split_args,
+)
 
 
 def _indisponivel(motivo: str = "") -> Dict[str, Any]:
@@ -29,6 +34,7 @@ class ContextCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="context",
             description="Exibe o contexto LLM completo: instruções, memória, histórico, tools e uso de tokens.",
@@ -185,7 +191,9 @@ class ContextCommand(DirectCommand):
                 provider_names = list(providers.keys())
                 model_data = {
                     "providers": provider_names,
-                    "strategy": getattr(mr, "strategy", _indisponivel("strategy não disponível")),
+                    "strategy": getattr(
+                        mr, "strategy", _indisponivel("strategy não disponível")
+                    ),
                 }
             else:
                 model_data = _indisponivel("model_router não disponível")
@@ -228,7 +236,9 @@ class ContextCommand(DirectCommand):
             else:
                 # context_manager.get_stats() exposes context window limit, not instruction length
                 instructions_data = {
-                    "max_context_tokens": raw_stats.get("max_context_tokens", "indisponível"),
+                    "max_context_tokens": raw_stats.get(
+                        "max_context_tokens", "indisponível"
+                    ),
                     "context_builds": raw_stats.get("context_builds", 0),
                     "token_count_method": "not_available",
                 }
@@ -262,7 +272,9 @@ class ContextCommand(DirectCommand):
                 lines.append("")
 
                 persona = context_data.get("persona", {})
-                lines.append(f"## Persona\n- **Nome:** {persona.get('name', 'indisponível')}")
+                lines.append(
+                    f"## Persona\n- **Nome:** {persona.get('name', 'indisponível')}"
+                )
                 lines.append("")
 
                 model = context_data.get("model", {})
@@ -305,7 +317,9 @@ class ContextCommand(DirectCommand):
         session = data.get("session", {})
 
         providers = model.get("providers", ["indisponível"])
-        model_str = ", ".join(providers) if isinstance(providers, list) else str(providers)
+        model_str = (
+            ", ".join(providers) if isinstance(providers, list) else str(providers)
+        )
 
         lines = [
             "📊 **Visão Geral do Contexto**",
@@ -319,12 +333,14 @@ class ContextCommand(DirectCommand):
 
         if show_tokens:
             instr = data.get("system_instructions", {})
-            lines.extend([
-                "",
-                "🎯 **Tokens (estimativa)**:",
-                f"   • Instruções: {instr.get('tokens', 'indisponível')}",
-                f"   • Método: {instr.get('token_count_method', 'indisponível')}",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "🎯 **Tokens (estimativa)**:",
+                    f"   • Instruções: {instr.get('tokens', 'indisponível')}",
+                    f"   • Método: {instr.get('token_count_method', 'indisponível')}",
+                ]
+            )
 
         return Panel(
             Text("\n".join(lines), style="white"),
@@ -333,13 +349,17 @@ class ContextCommand(DirectCommand):
             padding=(1, 2),
         )
 
-    def _create_detailed_display(self, data: Dict[str, Any], show_tokens: bool) -> Columns:
+    def _create_detailed_display(
+        self, data: Dict[str, Any], show_tokens: bool
+    ) -> Columns:
         panels = []
 
         model = data.get("model", {})
         instr = data.get("system_instructions", {})
         providers = model.get("providers", ["indisponível"])
-        model_str = ", ".join(providers) if isinstance(providers, list) else str(providers)
+        model_str = (
+            ", ".join(providers) if isinstance(providers, list) else str(providers)
+        )
 
         model_content = [
             f"**Provedores**: {model_str}",
@@ -349,8 +369,12 @@ class ContextCommand(DirectCommand):
             f"  Tamanho: {instr.get('length', instr.get('max_context_tokens', 'indisponível'))} chars",
         ]
         if show_tokens:
-            model_content.append(f"  Tokens: {instr.get('tokens', instr.get('token_count_method', 'indisponível'))}")
-        panels.append(Panel("\n".join(model_content), title="🤖 Modelo", border_style="green"))
+            model_content.append(
+                f"  Tokens: {instr.get('tokens', instr.get('token_count_method', 'indisponível'))}"
+            )
+        panels.append(
+            Panel("\n".join(model_content), title="🤖 Modelo", border_style="green")
+        )
 
         memory = data.get("memory", {})
         if memory.get("status") == "indisponível":
@@ -362,7 +386,9 @@ class ContextCommand(DirectCommand):
             for layer, stats in components.items():
                 entries = stats.get("total_entries", stats.get("count", "?"))
                 mem_content.append(f"  {layer}: {entries} entradas")
-        panels.append(Panel("\n".join(mem_content), title="🧠 Memória", border_style="yellow"))
+        panels.append(
+            Panel("\n".join(mem_content), title="🧠 Memória", border_style="yellow")
+        )
 
         tools = data.get("tools", {})
         cats = tools.get("categories", [])
@@ -371,7 +397,9 @@ class ContextCommand(DirectCommand):
             f"**Habilitadas**: {tools.get('enabled', 'indisponível')}",
             f"**Categorias**: {', '.join(cats) if cats else 'indisponível'}",
         ]
-        panels.append(Panel("\n".join(tools_content), title="🔧 Tools", border_style="cyan"))
+        panels.append(
+            Panel("\n".join(tools_content), title="🔧 Tools", border_style="cyan")
+        )
 
         conv = data.get("conversation_history", {})
         persona = data.get("persona", {})
@@ -384,7 +412,9 @@ class ContextCommand(DirectCommand):
             f"**Mensagens**: {conv.get('messages', 'indisponível')}",
             f"**Última msg**: {conv.get('newest_message', 'indisponível')}",
         ]
-        panels.append(Panel("\n".join(session_content), title="📋 Sessão", border_style="magenta"))
+        panels.append(
+            Panel("\n".join(session_content), title="📋 Sessão", border_style="magenta")
+        )
 
         return Columns(panels, equal=True, expand=True)
 

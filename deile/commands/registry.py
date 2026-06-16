@@ -33,7 +33,7 @@ class CommandRegistry:
         # Estatísticas
         self._registration_count = 0
         self._execution_count = 0
-    
+
     def register_command(self, command: SlashCommand) -> None:
         """Registra comando no registry"""
         if not isinstance(command, SlashCommand):
@@ -56,14 +56,16 @@ class CommandRegistry:
 
         self._registration_count += 1
         logger.debug("Registered command: /%s", command_name)
-    
+
     def unregister_command(self, name: str) -> bool:
         """Remove a command and its aliases from the registry. Returns True if removed."""
         if name not in self._commands:
             return False
         cmd = self._commands.pop(name)
         # Remove from aliases
-        dead_aliases = [alias for alias, target in self._aliases.items() if target == name]
+        dead_aliases = [
+            alias for alias, target in self._aliases.items() if target == name
+        ]
         for alias in dead_aliases:
             del self._aliases[alias]
         # Remove from categories
@@ -101,67 +103,71 @@ class CommandRegistry:
     def has_command(self, command_name: str) -> bool:
         """True se *command_name* resolve para um comando (nome ou alias, qualquer casing)."""
         return self.get_command(command_name) is not None
-    
+
     def get_enabled_commands(self) -> List[SlashCommand]:
         """Retorna apenas comandos habilitados"""
         return [cmd for cmd in self._commands.values() if cmd.enabled]
-    
+
     def get_commands_by_category(self, category: str) -> List[SlashCommand]:
         """Retorna comandos por categoria"""
         return self._categories.get(category, [])
-    
+
     def get_all_commands(self) -> List[SlashCommand]:
         """Retorna todos os comandos registrados"""
         return list(self._commands.values())
-    
+
     def get_command_suggestions(self, partial: str) -> List[Dict[str, str]]:
         """Retorna sugestões de comandos para autocompletar"""
         suggestions = []
         partial_lower = partial.lower()
-        
+
         # Busca em nomes de comando
         for cmd in self.get_enabled_commands():
             if cmd.name.lower().startswith(partial_lower):
-                suggestions.append({
-                    "name": cmd.name,
-                    "display": f"/{cmd.name}",
-                    "description": cmd.description,
-                    "type": "command"
-                })
-        
+                suggestions.append(
+                    {
+                        "name": cmd.name,
+                        "display": f"/{cmd.name}",
+                        "description": cmd.description,
+                        "type": "command",
+                    }
+                )
+
         # Busca em aliases
         for alias, real_name in self._aliases.items():
             if alias.lower().startswith(partial_lower):
                 cmd = self._commands[real_name]
                 if cmd.enabled:
-                    suggestions.append({
-                        "name": alias,
-                        "display": f"/{alias}",
-                        "description": f"{cmd.description} (alias)",
-                        "type": "alias"
-                    })
-        
+                    suggestions.append(
+                        {
+                            "name": alias,
+                            "display": f"/{alias}",
+                            "description": f"{cmd.description} (alias)",
+                            "type": "alias",
+                        }
+                    )
+
         return suggestions
-    
+
     async def execute_command(
-        self, 
-        command_name: str, 
-        context: CommandContext
+        self, command_name: str, context: CommandContext
     ) -> CommandResult:
         """Executa comando pelo nome"""
         command = self.get_command(command_name)
-        
+
         if not command:
             return CommandResult.error_result(
                 f"Command '/{command_name}' not found",
-                metadata={"available_commands": [cmd.name for cmd in self.get_enabled_commands()]}
+                metadata={
+                    "available_commands": [
+                        cmd.name for cmd in self.get_enabled_commands()
+                    ]
+                },
             )
-        
+
         if not command.enabled:
-            return CommandResult.error_result(
-                f"Command '/{command_name}' is disabled"
-            )
-        
+            return CommandResult.error_result(f"Command '/{command_name}' is disabled")
+
         try:
             if not await command.can_execute(context):
                 return CommandResult.error_result(
@@ -175,6 +181,7 @@ class CommandRegistry:
                 )
 
             import time
+
             start_time = time.time()
             result = await command.execute(context)
             execution_time = time.time() - start_time
@@ -184,26 +191,28 @@ class CommandRegistry:
 
             if result.execution_time is None:
                 result.execution_time = execution_time
-            result.metadata.update({
-                "command_name": command_name,
-                "execution_count": command.execution_count,
-            })
+            result.metadata.update(
+                {
+                    "command_name": command_name,
+                    "execution_count": command.execution_count,
+                }
+            )
 
             return result
 
         except Exception as e:
             logger.error("Error executing command /%s: %s", command_name, e)
             return CommandResult.error_result(f"Error executing command: {e}", error=e)
-    
+
     def load_commands_from_config(self) -> int:
         """Carrega comandos da configuração YAML"""
         if not self.config_manager:
             return 0
-        
+
         try:
             config = self.config_manager.get_config()
             loaded_count = 0
-            
+
             for cmd_name, cmd_config in config.commands.items():
                 if not cmd_config.enabled:
                     continue
@@ -218,14 +227,14 @@ class CommandRegistry:
                 if command:
                     self.register_command(command)
                     loaded_count += 1
-            
+
             logger.info("Loaded %d commands from configuration", loaded_count)
             return loaded_count
 
         except Exception as e:
             logger.error("Error loading commands from config: %s", e)
             return 0
-    
+
     def auto_discover_builtin_commands(self) -> int:
         """Descobre comandos builtin automaticamente pelo filesystem.
 
@@ -251,23 +260,23 @@ class CommandRegistry:
         except Exception as exc:
             logger.error("Auto-discovery failed: %s", exc)
             return 0
-    
+
     def _discover_in_module(self, module_name: str) -> int:
         """Descobre comandos em módulo específico"""
         try:
             module = importlib.import_module(module_name)
         except ImportError:
             return 0
-        
+
         discovered = 0
-        
+
         for name in dir(module):
             obj = getattr(module, name)
             if (
-                inspect.isclass(obj) and
-                issubclass(obj, SlashCommand) and
-                obj != SlashCommand and
-                not inspect.isabstract(obj)
+                inspect.isclass(obj)
+                and issubclass(obj, SlashCommand)
+                and obj != SlashCommand
+                and not inspect.isabstract(obj)
             ):
                 try:
                     # Instancia comando
@@ -277,26 +286,26 @@ class CommandRegistry:
                         discovered += 1
                 except Exception as e:
                     logger.warning("Failed to instantiate command %s: %s", name, e)
-        
+
         return discovered
-    
+
     def _create_llm_command(self, config: CommandConfig) -> Optional[SlashCommand]:
         """Cria comando LLM baseado na configuração"""
         from .base import LLMCommand
-        
+
         class ConfigLLMCommand(LLMCommand):
             def __init__(self, cmd_config):
                 super().__init__(cmd_config)
-            
+
             async def execute(self, context: CommandContext) -> CommandResult:
                 prompt = self.get_prompt_for_llm(context.args)
                 return CommandResult.success_result(
                     content=prompt,
                     content_type="llm_prompt",
                     command_name=self.name,
-                    original_args=context.args
+                    original_args=context.args,
                 )
-        
+
         return ConfigLLMCommand(config)
 
     def get_stats(self) -> Dict[str, Any]:
@@ -310,22 +319,22 @@ class CommandRegistry:
             "total_executions": self._execution_count,
             "category_breakdown": {
                 cat: len(cmds) for cat, cmds in self._categories.items()
-            }
+            },
         }
-    
+
     def clear(self) -> None:
         """Limpa todos os comandos registrados"""
         self._commands.clear()
         self._aliases.clear()
         self._categories.clear()
         logger.info("Cleared all commands from registry")
-    
+
     def __len__(self) -> int:
         return len(self._commands)
-    
+
     def __contains__(self, command_name: str) -> bool:
         return self.has_command(command_name)
-    
+
     def __iter__(self):
         return iter(self._commands.values())
 

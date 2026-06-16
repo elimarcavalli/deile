@@ -45,6 +45,7 @@ def _load_jsonl_cost():
     """
     try:
         import jsonl_cost  # noqa: PLC0415
+
         return jsonl_cost
     except ImportError:
         repo_root = Path(__file__).resolve().parents[3]
@@ -53,12 +54,15 @@ def _load_jsonl_cost():
             sys.path.insert(0, str(infra_k8s))
         try:
             import jsonl_cost  # noqa: PLC0415
+
             return jsonl_cost
         except Exception as exc:  # noqa: BLE001 — degrada sem derrubar o dispatch
             logger.debug("jsonl_cost indisponível (%s) — custo da frota fica 0.0", exc)
             return None
     except Exception as exc:  # noqa: BLE001
-        logger.warning("falha ao carregar jsonl_cost (%s) — custo da frota fica 0.0", exc)
+        logger.warning(
+            "falha ao carregar jsonl_cost (%s) — custo da frota fica 0.0", exc
+        )
         return None
 
 
@@ -193,6 +197,7 @@ def _persist_usage(
 
         if repo is None:
             from deile.storage.usage_repository import get_usage_repository
+
             repo = get_usage_repository()
         from deile.storage.usage_repository import UsageRecord
 
@@ -218,34 +223,49 @@ def _persist_usage(
             if jsonl_cost is not None:
                 # Fonte ÚNICA de preço; cache-write soma ao input (chave ``cc``),
                 # cache-read ao preço de read (chave ``cr``) no fleet_cost_of_model.
-                cost = float(jsonl_cost.fleet_cost_of_model(
-                    {"in": prompt, "out": completion, "cc": cache_write, "cr": cached},
-                    model,
-                ))
-            repo.record(UsageRecord(
-                provider_id=worker,
-                model_id=model,
-                tier=tier,
-                session_id=session_id,
-                prompt_tokens=prompt,
-                completion_tokens=completion,
-                cached_tokens=cached,
-                total_tokens=total,
-                cost_usd=cost,
-                success=success,
-                timestamp=ts,
-            ))
+                cost = float(
+                    jsonl_cost.fleet_cost_of_model(
+                        {
+                            "in": prompt,
+                            "out": completion,
+                            "cc": cache_write,
+                            "cr": cached,
+                        },
+                        model,
+                    )
+                )
+            repo.record(
+                UsageRecord(
+                    provider_id=worker,
+                    model_id=model,
+                    tier=tier,
+                    session_id=session_id,
+                    prompt_tokens=prompt,
+                    completion_tokens=completion,
+                    cached_tokens=cached,
+                    total_tokens=total,
+                    cost_usd=cost,
+                    success=success,
+                    timestamp=ts,
+                )
+            )
             written += 1
 
         if written:
             logger.info(
                 "custo da frota persistido: worker=%s stage=%s session=%s registros=%d",
-                worker, tier, session_id, written,
+                worker,
+                tier,
+                session_id,
+                written,
             )
         return written
     except Exception as exc:  # noqa: BLE001 — escrita de custo NUNCA derruba o tick
         logger.warning(
             "falha ao persistir custo da frota (worker=%s stage=%s session=%s): %s",
-            worker, stage, session_id, exc,
+            worker,
+            stage,
+            session_id,
+            exc,
         )
         return 0

@@ -13,8 +13,7 @@ from typing import List
 
 from ..skills.registry import get_skill_registry
 from ..skills.router import _trigger_hint
-from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
-                   ToolSchema)
+from .base import SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +58,14 @@ class ListSkillsTool(Tool):
             if hint:
                 line += f" _(auto-active when {hint[len('auto-active when '):]})_"
             lines.append(line)
-            catalog.append({
-                "name": skill.name,
-                "description": skill.description,
-                "source": skill.source,
-                "trigger_hint": hint,
-            })
+            catalog.append(
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "source": skill.source,
+                    "trigger_hint": hint,
+                }
+            )
 
         return ToolResult.success_result(
             data={"skills": catalog},
@@ -141,7 +142,8 @@ class InvokeSkillTool(Tool):
 
         logger.debug(
             "skill_tools: invoke_skill('%s') served (source=%s)",
-            clean_name, skill.source,
+            clean_name,
+            skill.source,
         )
         return ToolResult.success_result(
             data={

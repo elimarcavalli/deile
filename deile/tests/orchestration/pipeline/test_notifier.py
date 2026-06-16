@@ -14,8 +14,10 @@ def _stub_settings(user_id: str = ""):
     (which may legitimately set ``pipeline.notify_user_id`` since the env-var
     deprecation in issue #111 — env-only stubs are no longer sufficient).
     """
+
     def _factory():
         return SimpleNamespace(pipeline_notify_user_id=user_id)
+
     return _factory
 
 
@@ -27,7 +29,8 @@ class TestNotifierEnabled:
         # test reads the operator's real settings and false-passes/fails
         # depending on their config.
         monkeypatch.setattr(
-            "deile.config.settings.get_settings", _stub_settings(""),
+            "deile.config.settings.get_settings",
+            _stub_settings(""),
         )
         n = DiscordNotifier()
         assert not n.enabled
@@ -43,7 +46,8 @@ class TestNotifierEnabled:
         # directly so the test doesn't depend on import order.
         monkeypatch.setenv("DEILE_PIPELINE_NOTIFY_USER_ID", "42")
         monkeypatch.setattr(
-            "deile.config.settings.get_settings", _stub_settings("42"),
+            "deile.config.settings.get_settings",
+            _stub_settings("42"),
         )
         n = DiscordNotifier()
         assert n.user_id == "42"

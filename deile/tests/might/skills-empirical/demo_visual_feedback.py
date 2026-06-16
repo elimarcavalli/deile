@@ -30,8 +30,13 @@ log_buffer = io.StringIO()
 log_handler = logging.StreamHandler(log_buffer)
 log_handler.setLevel(logging.INFO)
 log_handler.setFormatter(logging.Formatter("%(name)s %(levelname)s: %(message)s"))
-for name in ("deile.core.agent", "deile.skills.bootstrap", "deile.skills.config",
-             "deile.commands.skill_loader", "deile.core.context_manager"):
+for name in (
+    "deile.core.agent",
+    "deile.skills.bootstrap",
+    "deile.skills.config",
+    "deile.commands.skill_loader",
+    "deile.core.context_manager",
+):
     lg = logging.getLogger(name)
     lg.setLevel(logging.INFO)
     lg.addHandler(log_handler)
@@ -71,7 +76,9 @@ async def main():
             print(f"  {line}")
 
     banner("PER-TURN — STAGE events the spinner shows")
-    print("Prompt: 'Estou revisando @deile/__version__.py' (file ref triggers `python` skill via *.py glob)")
+    print(
+        "Prompt: 'Estou revisando @deile/__version__.py' (file ref triggers `python` skill via *.py glob)"
+    )
     print()
 
     session = agent.create_session(

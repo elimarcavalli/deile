@@ -20,12 +20,14 @@ import _panel_data as pd  # noqa: E402
 
 # ===== discover_deile_namespaces ============================================
 
+
 def _mock_run(responses: dict):
     """Fábrica de mock para subprocess.run.
 
     ``responses`` mapeia tuplas de argv para ``(returncode, stdout)`` ou
     para uma exceção.
     """
+
     def _run(cmd, **kw):
         for args_pattern, result in responses.items():
             if all(p in cmd for p in args_pattern):
@@ -41,6 +43,7 @@ def _mock_run(responses: dict):
         m.returncode = 1
         m.stdout = ""
         return m
+
     return _run
 
 
@@ -51,67 +54,81 @@ class TestDiscoverDeileNamespaces:
 
     def test_returns_labeled_namespaces(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
-        run = _mock_run({
-            ("get", "ns", "-l"): (0, "deile deile-gl"),
-            ("get", "pods", "--all-namespaces"): (0, ""),
-        })
+        run = _mock_run(
+            {
+                ("get", "ns", "-l"): (0, "deile deile-gl"),
+                ("get", "pods", "--all-namespaces"): (0, ""),
+            }
+        )
         with patch("subprocess.run", side_effect=run):
             result = pd.discover_deile_namespaces()
         assert result == ["deile", "deile-gl"]
 
     def test_returns_pod_based_namespaces_when_no_label(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
-        run = _mock_run({
-            ("get", "ns", "-l"): (0, ""),
-            ("get", "pods", "--all-namespaces"): (0, "deile-github deile-gitlab"),
-        })
+        run = _mock_run(
+            {
+                ("get", "ns", "-l"): (0, ""),
+                ("get", "pods", "--all-namespaces"): (0, "deile-github deile-gitlab"),
+            }
+        )
         with patch("subprocess.run", side_effect=run):
             result = pd.discover_deile_namespaces()
         assert result == ["deile-github", "deile-gitlab"]
 
     def test_merges_label_and_pod_sources(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
-        run = _mock_run({
-            ("get", "ns", "-l"): (0, "deile-a"),
-            ("get", "pods", "--all-namespaces"): (0, "deile-b"),
-        })
+        run = _mock_run(
+            {
+                ("get", "ns", "-l"): (0, "deile-a"),
+                ("get", "pods", "--all-namespaces"): (0, "deile-b"),
+            }
+        )
         with patch("subprocess.run", side_effect=run):
             result = pd.discover_deile_namespaces()
         assert sorted(result) == ["deile-a", "deile-b"]
 
     def test_deduplicates_namespaces(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
-        run = _mock_run({
-            ("get", "ns", "-l"): (0, "deile"),
-            ("get", "pods", "--all-namespaces"): (0, "deile"),
-        })
+        run = _mock_run(
+            {
+                ("get", "ns", "-l"): (0, "deile"),
+                ("get", "pods", "--all-namespaces"): (0, "deile"),
+            }
+        )
         with patch("subprocess.run", side_effect=run):
             result = pd.discover_deile_namespaces()
         assert result == ["deile"]
 
     def test_handles_kubectl_timeout_gracefully(self, monkeypatch):
         import subprocess
+
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
-        run = _mock_run({
-            ("get", "ns"): subprocess.TimeoutExpired(cmd=[], timeout=5),
-            ("get", "pods"): subprocess.TimeoutExpired(cmd=[], timeout=5),
-        })
+        run = _mock_run(
+            {
+                ("get", "ns"): subprocess.TimeoutExpired(cmd=[], timeout=5),
+                ("get", "pods"): subprocess.TimeoutExpired(cmd=[], timeout=5),
+            }
+        )
         with patch("subprocess.run", side_effect=run):
             result = pd.discover_deile_namespaces()
         assert result == []
 
     def test_returns_sorted(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
-        run = _mock_run({
-            ("get", "ns", "-l"): (0, "deile-z deile-a deile-m"),
-            ("get", "pods", "--all-namespaces"): (0, ""),
-        })
+        run = _mock_run(
+            {
+                ("get", "ns", "-l"): (0, "deile-z deile-a deile-m"),
+                ("get", "pods", "--all-namespaces"): (0, ""),
+            }
+        )
         with patch("subprocess.run", side_effect=run):
             result = pd.discover_deile_namespaces()
         assert result == sorted(result)
 
 
 # ===== _read_forge_kind =====================================================
+
 
 class TestReadForgeKind:
     def test_returns_empty_when_kubectl_absent(self, monkeypatch):
@@ -120,19 +137,23 @@ class TestReadForgeKind:
 
     def test_returns_github_from_env(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
-        env_payload = json.dumps([
-            {"name": "DEILE_FORGE_KIND", "value": "github"},
-        ])
+        env_payload = json.dumps(
+            [
+                {"name": "DEILE_FORGE_KIND", "value": "github"},
+            ]
+        )
         run = _mock_run({("get", "deploy", "deile-pipeline"): (0, env_payload)})
         with patch("subprocess.run", side_effect=run):
             assert pd._read_forge_kind("deile") == "github"
 
     def test_returns_gitlab_from_env(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
-        env_payload = json.dumps([
-            {"name": "OTHER_VAR", "value": "x"},
-            {"name": "DEILE_FORGE_KIND", "value": "GitLab"},
-        ])
+        env_payload = json.dumps(
+            [
+                {"name": "OTHER_VAR", "value": "x"},
+                {"name": "DEILE_FORGE_KIND", "value": "GitLab"},
+            ]
+        )
         run = _mock_run({("get", "deploy", "deile-pipeline"): (0, env_payload)})
         with patch("subprocess.run", side_effect=run):
             assert pd._read_forge_kind("deile") == "gitlab"
@@ -158,6 +179,7 @@ class TestReadForgeKind:
 
     def test_returns_empty_on_timeout(self, monkeypatch):
         import subprocess
+
         monkeypatch.setattr(pd, "kubectl_bin", lambda: "/usr/bin/kubectl")
 
         def _raise(*a, **kw):
@@ -168,6 +190,7 @@ class TestReadForgeKind:
 
 
 # ===== RuntimeContext com namespace dinâmico ================================
+
 
 class TestRuntimeContextNamespace:
     def test_default_namespace_reads_from_NS(self, monkeypatch):

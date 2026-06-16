@@ -74,7 +74,9 @@ class TestStorePerformance:
         def add_entries():
             try:
                 for _ in range(10):
-                    db.add(CronEntry(id=make_id(), prompt="concurrent", cron="*/1 * * * *"))
+                    db.add(
+                        CronEntry(id=make_id(), prompt="concurrent", cron="*/1 * * * *")
+                    )
             except Exception as exc:  # noqa: BLE001
                 errors.append(exc)
 

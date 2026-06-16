@@ -27,13 +27,16 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from deile.storage.log_rotation import (HourlyDailyDirRotatingHandler,
-                                        current_log_path,
-                                        list_archived_log_files)
+from deile.storage.log_rotation import (
+    HourlyDailyDirRotatingHandler,
+    current_log_path,
+    list_archived_log_files,
+)
 
 # ---------------------------------------------------------------------------
 # namer
 # ---------------------------------------------------------------------------
+
 
 class TestNamer:
     def test_translates_default_name_to_daily_dir_layout(self, tmp_path):
@@ -57,8 +60,7 @@ class TestNamer:
             # Prefixo OK mas suffix bagunçado:
             assert h.namer(str(base) + ".notadate") == str(base) + ".notadate"
             # Hora não-numérica:
-            assert (h.namer(str(base) + ".2026-05-25_XX")
-                    == str(base) + ".2026-05-25_XX")
+            assert h.namer(str(base) + ".2026-05-25_XX") == str(base) + ".2026-05-25_XX"
         finally:
             h.close()
 
@@ -66,6 +68,7 @@ class TestNamer:
 # ---------------------------------------------------------------------------
 # rotator
 # ---------------------------------------------------------------------------
+
 
 class TestRotator:
     def test_creates_subdir_and_moves_source(self, tmp_path):
@@ -107,8 +110,10 @@ class TestRotator:
         base.write_text("conteúdo importante\n")
         h = HourlyDailyDirRotatingHandler(filename=str(base))
         try:
+
             def _raise(*_a, **_kw):
                 raise OSError("disk full")
+
             monkeypatch.setattr(os, "replace", _raise)
             h.rotator(str(base), str(tmp_path / "2026-05-25" / "14.log"))
             # Sobreviveu:
@@ -121,6 +126,7 @@ class TestRotator:
 # ---------------------------------------------------------------------------
 # GC
 # ---------------------------------------------------------------------------
+
 
 class TestGC:
     def _seed_daily_dir(self, root: Path, date_str: str) -> Path:
@@ -192,6 +198,7 @@ class TestGC:
 # inventário
 # ---------------------------------------------------------------------------
 
+
 class TestInventory:
     def test_lists_only_hourly_files_in_chrono_order(self, tmp_path):
         # Mistura: subpastas válidas + arquivos soltos + subpasta inválida
@@ -223,6 +230,7 @@ class TestInventory:
 # ---------------------------------------------------------------------------
 # end-to-end com logger real (forçando um rollover)
 # ---------------------------------------------------------------------------
+
 
 class TestEndToEnd:
     def test_force_rollover_archives_current_and_keeps_writing(self, tmp_path):
@@ -261,6 +269,7 @@ class TestEndToEnd:
 # pytest guard em logs._ensure_initialized
 # ---------------------------------------------------------------------------
 
+
 class TestPytestGuard:
     def test_pytest_run_installs_null_handler_not_filehandler(self):
         """Regressão: durante pytest, get_logger NÃO deve criar
@@ -279,11 +288,12 @@ class TestPytestGuard:
             assert lg.handlers, "get_logger deve instalar pelo menos 1 handler"
             assert any(isinstance(h, logging.NullHandler) for h in lg.handlers)
             # NÃO deve haver FileHandler nem subclass (incl. nosso rotator).
-            from deile.storage.log_rotation import \
-                HourlyDailyDirRotatingHandler
-            assert not any(isinstance(h, (logging.FileHandler,
-                                          HourlyDailyDirRotatingHandler))
-                           for h in lg.handlers)
+            from deile.storage.log_rotation import HourlyDailyDirRotatingHandler
+
+            assert not any(
+                isinstance(h, (logging.FileHandler, HourlyDailyDirRotatingHandler))
+                for h in lg.handlers
+            )
         finally:
             # Restaura estado pra não afetar outros testes.
             deile_logger.handlers.clear()

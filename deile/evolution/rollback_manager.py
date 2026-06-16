@@ -35,14 +35,14 @@ class RollbackManager:
             "description": description,
             "created_at": time.time(),
             "backup_files": [],  # Lista de arquivos com backup
-            "changes_applied": []  # Lista de mudanças aplicadas
+            "changes_applied": [],  # Lista de mudanças aplicadas
         }
 
         self._rollback_points[rollback_id] = rollback_data
 
         # Salva metadata
         rollback_file = self.rollbacks_dir / f"{rollback_id}.json"
-        with open(rollback_file, 'w', encoding='utf-8') as f:
+        with open(rollback_file, "w", encoding="utf-8") as f:
             json.dump(rollback_data, f, ensure_ascii=False, indent=2)
 
         logger.info(f"Ponto de rollback criado: {rollback_id} - {description}")
@@ -51,7 +51,10 @@ class RollbackManager:
     async def rollback_to_point(self, rollback_id: str) -> Dict[str, Any]:
         """Executa rollback para um ponto específico"""
         if rollback_id not in self._rollback_points:
-            return {"success": False, "error": f"Rollback point {rollback_id} não encontrado"}
+            return {
+                "success": False,
+                "error": f"Rollback point {rollback_id} não encontrado",
+            }
 
         try:
             # Simula rollback

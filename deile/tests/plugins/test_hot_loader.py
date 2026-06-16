@@ -50,9 +50,7 @@ async def test_on_modified_schedules_reload_from_worker_thread(tmp_path) -> None
     loop = asyncio.get_running_loop()
     handler = PluginFileHandler(pm, loop)
 
-    event = SimpleNamespace(
-        is_directory=False, src_path=str(changed_file)
-    )
+    event = SimpleNamespace(is_directory=False, src_path=str(changed_file))
 
     # Fire the handler from a real worker thread (mirrors watchdog behaviour).
     worker_done = threading.Event()
@@ -63,9 +61,7 @@ async def test_on_modified_schedules_reload_from_worker_thread(tmp_path) -> None
 
     threading.Thread(target=fire).start()
     # Wait for the worker to publish the schedule call.
-    assert await asyncio.get_running_loop().run_in_executor(
-        None, worker_done.wait, 2.0
-    )
+    assert await asyncio.get_running_loop().run_in_executor(None, worker_done.wait, 2.0)
 
     assert await pm.wait_for_reload(timeout=2.0)
     assert pm.reload_calls == ["my_plugin"]

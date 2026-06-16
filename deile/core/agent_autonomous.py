@@ -54,7 +54,9 @@ class AgentAutonomousMixin:
                 return None
 
             # Filter for autonomous-eligible intents
-            autonomous_intents = [intent for intent in intents if intent.autonomous_eligible]
+            autonomous_intents = [
+                intent for intent in intents if intent.autonomous_eligible
+            ]
 
             if not autonomous_intents:
                 return None
@@ -88,7 +90,9 @@ class AgentAutonomousMixin:
                 # Fallback to regular proactive execution
                 tool_name = self._map_proactive_action_to_tool(intent.action)
                 if tool_name:
-                    return await self._execute_proactive_tool(tool_name, intent.target, session)
+                    return await self._execute_proactive_tool(
+                        tool_name, intent.target, session
+                    )
 
         except Exception as e:
             logger.error(f"Error executing autonomous intent {intent.action}: {e}")
@@ -96,7 +100,9 @@ class AgentAutonomousMixin:
             # Try alternative resolution if available
             if intent.chained_actions:
                 for fallback_intent in intent.chained_actions:
-                    result = await self._execute_autonomous_intent(fallback_intent, session)
+                    result = await self._execute_autonomous_intent(
+                        fallback_intent, session
+                    )
                     if result:
                         return result
 
@@ -132,10 +138,13 @@ class AgentAutonomousMixin:
         try:
             # Get file resolver instance
             from .file_resolver import get_file_resolver
+
             file_resolver = get_file_resolver(Path.cwd())
 
             # Get alternative suggestions
-            suggestions = file_resolver.suggest_alternatives(intent.target, max_suggestions=5)
+            suggestions = file_resolver.suggest_alternatives(
+                intent.target, max_suggestions=5
+            )
 
             if not suggestions:
                 return f"❌ No files matching '{intent.target}' found in current directory."
@@ -144,8 +153,12 @@ class AgentAutonomousMixin:
             suggestion_text = f"🔍 Couldn't find exact match for '{intent.target}'. Here are some alternatives:\n\n"
 
             for i, match in enumerate(suggestions, 1):
-                confidence = f"({match.confidence:.1%})" if match.confidence < 1.0 else ""
-                suggestion_text += f"{i}. **{match.path.name}** {confidence}\n   └─ {match.reason}\n\n"
+                confidence = (
+                    f"({match.confidence:.1%})" if match.confidence < 1.0 else ""
+                )
+                suggestion_text += (
+                    f"{i}. **{match.path.name}** {confidence}\n   └─ {match.reason}\n\n"
+                )
 
             suggestion_text += "💡 *Tip: Try being more specific, or ask me to read one of these files directly.*"
 
@@ -168,13 +181,16 @@ class AgentAutonomousMixin:
 
             # Get file resolver and try to find the best match
             from .file_resolver import get_file_resolver
+
             file_resolver = get_file_resolver(Path.cwd())
 
             best_match = file_resolver.get_best_match(intent.target, min_confidence=0.7)
 
             if best_match:
                 # Found a good match, read it
-                read_result = await self._execute_proactive_tool("read_file", str(best_match.path), session)
+                read_result = await self._execute_proactive_tool(
+                    "read_file", str(best_match.path), session
+                )
 
                 if read_result:
                     # Combine list + read results with resolution context
@@ -183,8 +199,14 @@ class AgentAutonomousMixin:
 
             else:
                 # No good match, provide alternatives
-                alternatives = await self._autonomous_suggest_alternatives(intent, session)
-                return list_result + "\n\n" + (alternatives or "❌ No matching files found.")
+                alternatives = await self._autonomous_suggest_alternatives(
+                    intent, session
+                )
+                return (
+                    list_result
+                    + "\n\n"
+                    + (alternatives or "❌ No matching files found.")
+                )
 
         except Exception as e:
             logger.error(f"Error in chain operation: {e}")

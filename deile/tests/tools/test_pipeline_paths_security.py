@@ -12,6 +12,7 @@ world-writable — any local process can create ``/tmp/evil/`` to bypass
 containment. Tests that previously relied on ``tmp_path`` (which lives
 in ``/tmp``) now use ``repo_tmp_path`` from ``conftest.py`` instead.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -42,6 +43,7 @@ def _ctx_factory():
 
     return _make
 
+
 # ---------------------------------------------------------------------------
 # adversarial: paths that must be rejected
 # ---------------------------------------------------------------------------
@@ -69,6 +71,7 @@ def test_resolve_base_path_rejects_outside_override():
 def test_assert_safe_root_rejects_tmp():
     """/tmp is world-writable and must NOT be accepted as a safe root."""
     import tempfile
+
     tmp_dir = Path(tempfile.gettempdir()).resolve()
     with pytest.raises(PathContainmentError):
         _assert_safe_root(tmp_dir / "any_subdir")
@@ -110,7 +113,9 @@ def test_assert_safe_root_distinguishes_prefix_from_containment(repo_tmp_path):
 
 
 @pytest.mark.security
-async def test_image_path_outside_safe_roots_returns_bad_input(_vision_tool, _ctx_factory):
+async def test_image_path_outside_safe_roots_returns_bad_input(
+    _vision_tool, _ctx_factory
+):
     """vision_tool must return VISION_BAD_INPUT for paths outside safe roots.
 
     /etc/passwd is outside both Path.home() and the git repo root, so

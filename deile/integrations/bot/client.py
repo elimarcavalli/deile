@@ -26,8 +26,13 @@ try:  # pragma: no cover - import-time branch
     from deilebot_client import BotControlClient  # type: ignore
     from deilebot_client import BotControlSettings
     from deilebot_client.errors import (  # type: ignore  # noqa: F401
-        BotClientAuthError, BotClientError, BotClientNotReady,
-        BotClientRateLimited, BotClientTimeoutError, BotClientUpstreamError)
+        BotClientAuthError,
+        BotClientError,
+        BotClientNotReady,
+        BotClientRateLimited,
+        BotClientTimeoutError,
+        BotClientUpstreamError,
+    )
 
     BOT_CLIENT_AVAILABLE = True
 except ImportError:
@@ -155,7 +160,11 @@ class BotClientFacade:
                 client = self._ensure_client()
                 method = getattr(client, client_method_name)
                 return await method(**kwargs)
-            except (BotClientTimeoutError, BotClientRateLimited, BotClientUpstreamError) as exc:
+            except (
+                BotClientTimeoutError,
+                BotClientRateLimited,
+                BotClientUpstreamError,
+            ) as exc:
                 last_exc = exc
 
                 # BotClientUpstreamError with non-transient status → no retry
@@ -229,7 +238,9 @@ class BotClientFacade:
         return await self._retry_messaging("whatsapp_send_template", **kwargs)
 
 
-def get_bot_client(settings: Optional[BotIntegrationSettings] = None) -> BotClientFacade:
+def get_bot_client(
+    settings: Optional[BotIntegrationSettings] = None,
+) -> BotClientFacade:
     """Process-wide singleton. Pass settings only to override (tests)."""
     if BotClientFacade._instance is None or settings is not None:
         BotClientFacade._instance = BotClientFacade(settings or get_bot_settings())

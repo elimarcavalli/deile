@@ -17,8 +17,12 @@ package is not installed; in that case the messaging tools auto-discover
 into a no-op set, with no warning at import time.
 """
 
-from .client import (BOT_CLIENT_AVAILABLE, BotClientFacade, get_bot_client,
-                     reset_bot_client)
+from .client import (
+    BOT_CLIENT_AVAILABLE,
+    BotClientFacade,
+    get_bot_client,
+    reset_bot_client,
+)
 from .config import BotIntegrationSettings, get_bot_settings
 
 __all__ = [

@@ -45,7 +45,11 @@ class _CapturingProvider:
         self.captured_messages = messages
         self.captured_tools = tools
         self.captured_kwargs = {"system_instruction": system_instruction, **kwargs}
-        return "OK", [], ModelUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        return (
+            "OK",
+            [],
+            ModelUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        )
 
     async def _record_usage(self, **kwargs: Any) -> None:
         # No-op; verifies attribute exists on the provider
@@ -70,8 +74,11 @@ def _build_minimal_agent_with_mock_provider(provider: _CapturingProvider):
     agent.context_manager = cm
 
     # IntentAnalyzer — minimal stub returning a result classify_tier can consume
-    from deile.core.intent_analyzer import (IntentAnalysisResult,
-                                            IntentCategory, IntentType)
+    from deile.core.intent_analyzer import (
+        IntentAnalysisResult,
+        IntentCategory,
+        IntentType,
+    )
 
     intent = MagicMock()
     intent.analyze = AsyncMock(
@@ -120,7 +127,9 @@ async def test_dict_messages_are_converted_to_modelmessage_objects():
     assert len(provider.captured_messages) >= 1
     # Every captured message MUST be a ModelMessage instance (not a dict)
     for m in provider.captured_messages:
-        assert isinstance(m, ModelMessage), f"Got {type(m).__name__}, expected ModelMessage"
+        assert isinstance(
+            m, ModelMessage
+        ), f"Got {type(m).__name__}, expected ModelMessage"
 
 
 @pytest.mark.asyncio
@@ -176,7 +185,12 @@ async def test_tier_is_classified_and_passed_to_select_provider():
     assert "tier" in call_args.kwargs
     assert call_args.kwargs["tier"] is not None
     # The session should have the tier recorded
-    assert session.context_data.get("_current_tier") in {"tier_1", "tier_2", "tier_3", "tier_4"}
+    assert session.context_data.get("_current_tier") in {
+        "tier_1",
+        "tier_2",
+        "tier_3",
+        "tier_4",
+    }
 
 
 @pytest.mark.asyncio
@@ -267,9 +281,9 @@ async def test_forced_model_unregistered_raises_instead_of_silent_swap():
             session=session,
         )
     assert getattr(exc_info.value, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED"
-    assert not flagship.captured_messages, (
-        "Flagship was silently called despite forced_model selecting an unregistered model"
-    )
+    assert (
+        not flagship.captured_messages
+    ), "Flagship was silently called despite forced_model selecting an unregistered model"
 
 
 @pytest.mark.asyncio
@@ -306,7 +320,9 @@ async def test_forced_model_id_picks_exact_instance_not_flagship():
     assert content == "OK"
     # Haiku must have been the one called — flagship must NOT have been called
     assert haiku.captured_messages, "the haiku instance was NOT used"
-    assert not flagship.captured_messages, "the flagship was used despite forced_model selecting haiku"
+    assert (
+        not flagship.captured_messages
+    ), "the flagship was used despite forced_model selecting haiku"
 
 
 @pytest.mark.asyncio
@@ -325,6 +341,7 @@ async def test_budget_exceeded_propagates_to_caller():
                 provider_id="anthropic",
                 limit_type="per_session",
             )
+
     agent._budget_guard_singleton = _BlockingGuard()
 
     from deile.core.agent import AgentSession
@@ -353,10 +370,13 @@ async def test_cascade_retry_succeeds_after_first_provider_fails():
     class _FailingProvider:
         provider_id = "anthropic"
         model_name = "claude-haiku-4-5"
+
         async def chat_with_tools(self, **kwargs):
             raise RuntimeError("simulated 401")
+
         async def _record_usage(self, **kwargs):
             return None
+
     failing = _FailingProvider()
 
     # Provider 2: always succeeds
@@ -392,7 +412,9 @@ async def test_cascade_retry_succeeds_after_first_provider_fails():
         context_data={},
     )
 
-    with patch("deile.core.models.tier_router.get_tier_router", return_value=fake_tier_router):
+    with patch(
+        "deile.core.models.tier_router.get_tier_router", return_value=fake_tier_router
+    ):
         content, _ = await agent._process_iterative_function_calling(
             user_input="trigger cascade",
             parse_result=None,
@@ -401,7 +423,9 @@ async def test_cascade_retry_succeeds_after_first_provider_fails():
 
     # Provider 2 must have served the request
     assert content == "OK"
-    assert succeeding.captured_messages, "second provider was never called — cascade retry failed"
+    assert (
+        succeeding.captured_messages
+    ), "second provider was never called — cascade retry failed"
 
 
 @pytest.mark.asyncio
@@ -420,7 +444,9 @@ async def test_process_input_returns_structured_budget_exceeded_metadata():
     agent._success_count = 0
     agent._error_count = 0
     agent._start_time = 0.0
-    agent.proactive_analyzer = None  # process_input checks `if not self.proactive_analyzer`
+    agent.proactive_analyzer = (
+        None  # process_input checks `if not self.proactive_analyzer`
+    )
     agent.intent_analyzer = MagicMock()
     agent.intent_analyzer.analyze = AsyncMock()
 
@@ -443,7 +469,10 @@ async def test_process_input_returns_structured_budget_exceeded_metadata():
 
     # Inject a _process_iterative_function_calling that raises BudgetExceeded
     async def _raise_budget(*args, **kwargs):
-        raise BudgetExceeded("month exceeded", provider_id="openai", limit_type="monthly")
+        raise BudgetExceeded(
+            "month exceeded", provider_id="openai", limit_type="monthly"
+        )
+
     agent._process_iterative_function_calling = _raise_budget
 
     response = await agent.process_input("anything", session_id="budget-cli-test")
@@ -494,6 +523,7 @@ async def test_process_input_returns_structured_forced_model_metadata():
             "Forced model 'anthropic:nonexistent' is not registered. Available: ['claude-opus-4-8']. Use /model use auto to clear.",
             error_code="FORCED_MODEL_NOT_REGISTERED",
         )
+
     agent._process_iterative_function_calling = _raise_forced
 
     response = await agent.process_input("anything", session_id="forced-cli-test")

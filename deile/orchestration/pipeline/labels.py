@@ -220,14 +220,16 @@ WORKFLOW_LABELS = (
 #: has an active worker dispatch whose brief re-reads the issue comments
 #: (critique/refine/implement/resume — see ``briefs.py``), so a new comment is
 #: picked up on the next dispatch without spawning a parallel one-shot.
-GATE_REDISPATCHES_COMMENT = frozenset((
-    WORKFLOW_NEW,
-    WORKFLOW_REVIEWING,
-    WORKFLOW_REFINING,
-    WORKFLOW_ARCHITECTURE,
-    WORKFLOW_REVIEWED,
-    WORKFLOW_IMPLEMENTING,
-))
+GATE_REDISPATCHES_COMMENT = frozenset(
+    (
+        WORKFLOW_NEW,
+        WORKFLOW_REVIEWING,
+        WORKFLOW_REFINING,
+        WORKFLOW_ARCHITECTURE,
+        WORKFLOW_REVIEWED,
+        WORKFLOW_IMPLEMENTING,
+    )
+)
 
 #: Terminal pipeline states for an issue: NO stage selects an issue carrying one
 #: of these (they are explicitly excluded in implement/resume/reconcile), so its
@@ -236,11 +238,13 @@ GATE_REDISPATCHES_COMMENT = frozenset((
 #: will never run — the issue #442 limbo bug. ``WORKFLOW_WAITING`` is handled
 #: separately (the comment lifts the pause), so it is in neither set; together
 #: with these two sets it partitions all of ``WORKFLOW_LABELS``.
-GATE_TERMINAL_NO_REDISPATCH = frozenset((
-    WORKFLOW_PR,
-    WORKFLOW_DECOMPOSED,
-    WORKFLOW_BLOCKED,
-))
+GATE_TERMINAL_NO_REDISPATCH = frozenset(
+    (
+        WORKFLOW_PR,
+        WORKFLOW_DECOMPOSED,
+        WORKFLOW_BLOCKED,
+    )
+)
 
 #: The two refine states are the same logical step, chosen by issue type:
 #: intent → em_refinamento (analyst); code types → em_arquitetura (architect/
@@ -257,6 +261,7 @@ def refine_workflow_state(issue_type: Optional[str]) -> str:
     """
     return WORKFLOW_REFINING if issue_type == TYPE_INTENT else WORKFLOW_ARCHITECTURE
 
+
 REVIEW_LABELS = (REVIEW_PENDING, REVIEW_IN_PROGRESS, REVIEW_CONCLUDED)
 
 MENTION_LABELS = (MENTION_DONE,)
@@ -268,19 +273,19 @@ REFINE_LABELS = (REFINAR,)
 # Label color palette. Each name encodes the semantic role on the timeline so
 # changing the palette is a 1-line edit (vs. a hex-grep across the dict) and
 # the meaning is visible in the LABEL_COLORS dict below.
-_COLOR_GREEN_PROGRESS = "0e8a16"   # active forward progress (new / pending / concluded)
-_COLOR_YELLOW_LOCK = "fbca04"      # transient lock state (reviewing / implementing)
+_COLOR_GREEN_PROGRESS = "0e8a16"  # active forward progress (new / pending / concluded)
+_COLOR_YELLOW_LOCK = "fbca04"  # transient lock state (reviewing / implementing)
 _COLOR_LAVENDER_REFINE = "d4c5f9"  # refinement bucket (intent refining + ad-hoc)
-_COLOR_ORANGE_WAITING = "d93f0b"   # paused, waiting on a human decision
+_COLOR_ORANGE_WAITING = "d93f0b"  # paused, waiting on a human decision
 _COLOR_PURPLE_REVIEWED = "5319e7"  # scope clear, ready to dispatch
-_COLOR_BLUE_PR = "0052cc"          # PR opened (terminal pipeline state pre-merge)
+_COLOR_BLUE_PR = "0052cc"  # PR opened (terminal pipeline state pre-merge)
 _COLOR_BLUE_DECOMPOSED = "1d76db"  # intent decomposed (epic open)
-_COLOR_RED_BLOCKED = "b60205"      # hard block, excluded from auto-resume
+_COLOR_RED_BLOCKED = "b60205"  # hard block, excluded from auto-resume
 _COLOR_LIGHT_BLUE_DONE = "c5def5"  # mention already processed (sticky marker)
-_COLOR_RED_HOT = "b60205"            # priority 0 — critical / maximum urgency
-_COLOR_ORANGE_HIGH = "d93f0b"        # priority 1 — high
-_COLOR_YELLOW_MEDIUM = "fbca04"      # priority 2 — medium
-_COLOR_GREEN_LOW = "0e8a16"          # priority 3 — low
+_COLOR_RED_HOT = "b60205"  # priority 0 — critical / maximum urgency
+_COLOR_ORANGE_HIGH = "d93f0b"  # priority 1 — high
+_COLOR_YELLOW_MEDIUM = "fbca04"  # priority 2 — medium
+_COLOR_GREEN_LOW = "0e8a16"  # priority 3 — low
 
 LABEL_COLORS = {
     WORKFLOW_NEW: _COLOR_GREEN_PROGRESS,
@@ -341,7 +346,7 @@ def make_batch_label(batch_id: str) -> str:
 def batch_id_from_label(label: str) -> str:
     if not is_batch_label(label):
         raise ValueError(f"not a batch label: {label!r}")
-    return label[len(BATCH_LABEL_PREFIX):]
+    return label[len(BATCH_LABEL_PREFIX) :]
 
 
 # --- Attempt label (issue #309 fase 3.5 — reaper) -------------------------

@@ -21,6 +21,7 @@ Added for issue #499 (Settings singleton + DEILE.md loader cache leaks):
     deile/tests/test_deile_md_loader.py::test_load_all_no_layers
     deile/tests/test_deile_md_loader.py::test_merged_prompt_disabled_via_settings_returns_empty
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -55,8 +56,10 @@ def test_ordering_smoke_reversed(pytester):
     reversed_tests = [str(_REPO_ROOT / t) for t in reversed(_TARGET_TESTS)]
     result = pytester.runpytest(
         *reversed_tests,
-        "-p", "no:randomly",
-        "-p", "no:cov",
+        "-p",
+        "no:randomly",
+        "-p",
+        "no:cov",
         f"--rootdir={_REPO_ROOT}",
         "-q",
         "--timeout=120",
@@ -71,7 +74,8 @@ def test_ordering_smoke_random_seed_42(pytester):
     result = pytester.runpytest(
         *target_tests,
         "--randomly-seed=42",
-        "-p", "no:cov",
+        "-p",
+        "no:cov",
         f"--rootdir={_REPO_ROOT}",
         "-q",
         "--timeout=120",

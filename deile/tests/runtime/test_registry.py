@@ -14,13 +14,17 @@ import threading
 
 import pytest
 
-from deile.runtime.registry import (DEFAULT_REGISTRY_FILENAME,
-                                    REGISTRY_SCHEMA_VERSION, Registry,
-                                    RegistryEntry)
+from deile.runtime.registry import (
+    DEFAULT_REGISTRY_FILENAME,
+    REGISTRY_SCHEMA_VERSION,
+    Registry,
+    RegistryEntry,
+)
 
 
-def _entry(instance_id: str, *, pid: int = None, role: str = "cli",
-           state_file: str = "") -> RegistryEntry:
+def _entry(
+    instance_id: str, *, pid: int = None, role: str = "cli", state_file: str = ""
+) -> RegistryEntry:
     """Helper conciso para fabricar entries de teste."""
     return RegistryEntry(
         instance_id=instance_id,
@@ -117,8 +121,7 @@ def test_list_gc_removes_when_state_file_missing(short_runtime_dir):
     """state_file ausente → proxy de "morreu sem cleanup" → GC."""
     fake_state = short_runtime_dir / "ghost.json"
     reg = Registry(registry_path=short_runtime_dir / "registry.json")
-    reg.register(_entry("ghost", pid=os.getpid(),
-                        state_file=str(fake_state)))
+    reg.register(_entry("ghost", pid=os.getpid(), state_file=str(fake_state)))
     assert not fake_state.exists()
     entries = reg.list(gc=True)
     assert entries == []
@@ -128,8 +131,7 @@ def test_list_keeps_entry_with_existing_state_file(short_runtime_dir):
     state_file = short_runtime_dir / "live.json"
     state_file.write_text("{}", encoding="utf-8")
     reg = Registry(registry_path=short_runtime_dir / "registry.json")
-    reg.register(_entry("live", pid=os.getpid(),
-                        state_file=str(state_file)))
+    reg.register(_entry("live", pid=os.getpid(), state_file=str(state_file)))
     entries = reg.list(gc=True)
     assert len(entries) == 1
     assert entries[0].instance_id == "live"
@@ -172,11 +174,17 @@ def test_list_skips_malformed_entries(short_runtime_dir):
     payload = {
         "schema_version": REGISTRY_SCHEMA_VERSION,
         "instances": [
-            {"instance_id": "good", "pid": os.getpid(), "role": "cli",
-             "started_at": "", "endpoint": "", "state_file": ""},
-            {"instance_id": "", "pid": 1},        # id vazio — skip
-            {"pid": 0},                            # sem id, pid inválido
-            "not a dict",                          # tipo errado
+            {
+                "instance_id": "good",
+                "pid": os.getpid(),
+                "role": "cli",
+                "started_at": "",
+                "endpoint": "",
+                "state_file": "",
+            },
+            {"instance_id": "", "pid": 1},  # id vazio — skip
+            {"pid": 0},  # sem id, pid inválido
+            "not a dict",  # tipo errado
             {"instance_id": "bad-pid", "pid": "nope"},  # pid não-int
         ],
     }

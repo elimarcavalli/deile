@@ -6,6 +6,7 @@ Cobre:
 - EndpointProbeProvider: mapeamento de pods para services
 - PodWatchView: renderização das linhas RESOURCES e ENDPOINT
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -22,11 +23,14 @@ import pytest
 # test_claude_worker_server.py).
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def panel_data_mod():
     repo_root = Path(__file__).resolve().parents[3]
     mod_path = repo_root / "infra" / "k8s" / "_panel_data.py"
-    spec = importlib.util.spec_from_file_location("_panel_data_under_test", str(mod_path))
+    spec = importlib.util.spec_from_file_location(
+        "_panel_data_under_test", str(mod_path)
+    )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     sys.modules["_panel_data_under_test"] = mod
@@ -67,9 +71,15 @@ def panel_mod(panel_data_mod):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _pod_item(name="deile-worker-abc", app="deile-worker",
-              phase="Running", node="node1",
-              container_statuses=None, containers=None):
+
+def _pod_item(
+    name="deile-worker-abc",
+    app="deile-worker",
+    phase="Running",
+    node="node1",
+    container_statuses=None,
+    containers=None,
+):
     cs = container_statuses or [{"ready": True, "restartCount": 0}]
     c = containers or [{}]
     return {
@@ -105,6 +115,7 @@ def _kubectl_top_output(*rows):
 # PodMetricsProvider
 # ---------------------------------------------------------------------------
 
+
 def test_pod_metrics_provider_parses_kubectl_top_output(panel_data_mod):
     pmp = panel_data_mod.PodMetricsProvider(enabled=True)
     pmp._kubectl = "/usr/bin/kubectl"
@@ -120,15 +131,17 @@ def test_pod_metrics_provider_parses_kubectl_top_output(panel_data_mod):
     assert "deile-worker-abc" in result
     cpu_mc, mem_b = result["deile-worker-abc"]
     assert cpu_mc == 230
-    assert mem_b == 412 * 1024 ** 2
+    assert mem_b == 412 * 1024**2
 
     assert "deile-pipeline-xyz" in result
     cpu_mc2, mem_b2 = result["deile-pipeline-xyz"]
     assert cpu_mc2 == 50
-    assert mem_b2 == 128 * 1024 ** 2
+    assert mem_b2 == 128 * 1024**2
 
 
-def test_pod_metrics_provider_degrades_gracefully_when_metrics_server_absent(panel_data_mod):
+def test_pod_metrics_provider_degrades_gracefully_when_metrics_server_absent(
+    panel_data_mod,
+):
     """Quando `kubectl top` falha (exit≠0 → _capture_text devolve None),
     a exceção é capturada pelo Cache e o provider retorna {}."""
     pmp = panel_data_mod.PodMetricsProvider(enabled=True)
@@ -139,13 +152,14 @@ def test_pod_metrics_provider_degrades_gracefully_when_metrics_server_absent(pan
             pmp._fetch()
 
     # Via cache (fallback): não lança
-    result = pmp.get()   # cold-start: chama _fetch → captura → retorna {}
+    result = pmp.get()  # cold-start: chama _fetch → captura → retorna {}
     assert result == {}
 
 
 # ---------------------------------------------------------------------------
 # PodsProvider — OOM history
 # ---------------------------------------------------------------------------
+
 
 def test_pods_provider_extracts_oom_killed_from_last_state(panel_data_mod):
     oom_cs = [
@@ -167,8 +181,9 @@ def test_pods_provider_extracts_oom_killed_from_last_state(panel_data_mod):
     provider = panel_data_mod.PodsProvider(enabled=True)
     provider._kubectl = "/usr/bin/kubectl"
 
-    with patch.object(panel_data_mod, "_capture_json",
-                      return_value=json.loads(pods_json)):
+    with patch.object(
+        panel_data_mod, "_capture_json", return_value=json.loads(pods_json)
+    ):
         pods = provider._fetch()
 
     assert len(pods) == 1
@@ -183,8 +198,7 @@ def test_pods_provider_no_oom_when_clean(panel_data_mod):
     provider = panel_data_mod.PodsProvider(enabled=True)
     provider._kubectl = "/usr/bin/kubectl"
 
-    with patch.object(panel_data_mod, "_capture_json",
-                      return_value={"items": [item]}):
+    with patch.object(panel_data_mod, "_capture_json", return_value={"items": [item]}):
         pods = provider._fetch()
 
     assert pods[0].oom_killed_count == 0
@@ -194,6 +208,7 @@ def test_pods_provider_no_oom_when_clean(panel_data_mod):
 # ---------------------------------------------------------------------------
 # PodsProvider — resource limits
 # ---------------------------------------------------------------------------
+
 
 def test_pods_provider_extracts_resource_limits(panel_data_mod):
     containers = [
@@ -208,13 +223,12 @@ def test_pods_provider_extracts_resource_limits(panel_data_mod):
     provider = panel_data_mod.PodsProvider(enabled=True)
     provider._kubectl = "/usr/bin/kubectl"
 
-    with patch.object(panel_data_mod, "_capture_json",
-                      return_value={"items": [item]}):
+    with patch.object(panel_data_mod, "_capture_json", return_value={"items": [item]}):
         pods = provider._fetch()
 
     pod = pods[0]
     assert pod.cpu_limit_millicores == 2000
-    assert pod.mem_limit_bytes == 6 * 1024 ** 3
+    assert pod.mem_limit_bytes == 6 * 1024**3
 
 
 def test_pods_provider_no_limits_when_unset(panel_data_mod):
@@ -222,8 +236,7 @@ def test_pods_provider_no_limits_when_unset(panel_data_mod):
     provider = panel_data_mod.PodsProvider(enabled=True)
     provider._kubectl = "/usr/bin/kubectl"
 
-    with patch.object(panel_data_mod, "_capture_json",
-                      return_value={"items": [item]}):
+    with patch.object(panel_data_mod, "_capture_json", return_value={"items": [item]}):
         pods = provider._fetch()
 
     pod = pods[0]
@@ -234,6 +247,7 @@ def test_pods_provider_no_limits_when_unset(panel_data_mod):
 # ---------------------------------------------------------------------------
 # EndpointProbeProvider
 # ---------------------------------------------------------------------------
+
 
 def test_endpoint_probe_provider_maps_pods_to_services(panel_data_mod):
     ep_item = {
@@ -271,8 +285,9 @@ def test_endpoint_probe_provider_empty_when_no_subsets(panel_data_mod):
     provider = panel_data_mod.EndpointProbeProvider(enabled=True)
     provider._kubectl = "/usr/bin/kubectl"
 
-    with patch.object(panel_data_mod, "_capture_json",
-                      return_value={"items": [ep_item]}):
+    with patch.object(
+        panel_data_mod, "_capture_json", return_value={"items": [ep_item]}
+    ):
         result = provider._fetch()
 
     assert result.ready.get("deile-worker", set()) == set()
@@ -282,10 +297,18 @@ def test_endpoint_probe_provider_empty_when_no_subsets(panel_data_mod):
 # PodWatchView — RESOURCES line rendering
 # ---------------------------------------------------------------------------
 
-def _make_pod(panel_data_mod, name="deile-worker-abc", role="worker",
-              cpu_mc=230, mem_b=412*1024**2,
-              cpu_lim=2000, mem_lim=6*1024**3,
-              oom_count=0, last_oom_at=None):
+
+def _make_pod(
+    panel_data_mod,
+    name="deile-worker-abc",
+    role="worker",
+    cpu_mc=230,
+    mem_b=412 * 1024**2,
+    cpu_lim=2000,
+    mem_lim=6 * 1024**3,
+    oom_count=0,
+    last_oom_at=None,
+):
     pod = panel_data_mod.PodInfo(
         name=name,
         role=role,
@@ -311,9 +334,11 @@ def _make_panel_data_mock(panel_data_mod, pod, metrics_map=None, endpoints_map=N
     mock_data.pods.get.return_value = [pod]
     mock_data.workers.get.return_value = {}
 
-    metrics = metrics_map if metrics_map is not None else {
-        pod.name: (pod.cpu_millicores, pod.mem_bytes)
-    }
+    metrics = (
+        metrics_map
+        if metrics_map is not None
+        else {pod.name: (pod.cpu_millicores, pod.mem_bytes)}
+    )
     mock_data.pod_metrics.get.return_value = metrics
 
     if endpoints_map is not None:
@@ -336,6 +361,7 @@ def test_pod_watch_view_renders_resources_line(panel_mod, panel_data_mod):
 
     renderable = view._header_body()
     from rich.console import Console
+
     console = Console(width=200)
     with console.capture() as cap:
         console.print(renderable)
@@ -358,6 +384,7 @@ def test_pod_watch_view_renders_oom_history_in_red(panel_mod, panel_data_mod):
 
     renderable = view._header_body()
     from rich.console import Console
+
     console = Console(width=200)
     with console.capture() as cap:
         console.print(renderable)
@@ -371,7 +398,8 @@ def test_pod_watch_view_renders_endpoint_not_ready(panel_mod, panel_data_mod):
     pod = _make_pod(panel_data_mod, role="worker")
     # pod NOT in endpoint ready set
     mock_data = _make_panel_data_mock(
-        panel_data_mod, pod,
+        panel_data_mod,
+        pod,
         endpoints_map={"deile-worker": set()},
     )
 
@@ -381,6 +409,7 @@ def test_pod_watch_view_renders_endpoint_not_ready(panel_mod, panel_data_mod):
 
     renderable = view._header_body()
     from rich.console import Console
+
     console = Console(width=200)
     with console.capture() as cap:
         console.print(renderable)
@@ -390,10 +419,13 @@ def test_pod_watch_view_renders_endpoint_not_ready(panel_mod, panel_data_mod):
     assert "NOT in Service" in text
 
 
-def test_pod_watch_view_omits_endpoint_line_when_pod_in_endpoints(panel_mod, panel_data_mod):
+def test_pod_watch_view_omits_endpoint_line_when_pod_in_endpoints(
+    panel_mod, panel_data_mod
+):
     pod = _make_pod(panel_data_mod, role="worker")
     mock_data = _make_panel_data_mock(
-        panel_data_mod, pod,
+        panel_data_mod,
+        pod,
         endpoints_map={"deile-worker": {pod.name}},
     )
 
@@ -403,6 +435,7 @@ def test_pod_watch_view_omits_endpoint_line_when_pod_in_endpoints(panel_mod, pan
 
     renderable = view._header_body()
     from rich.console import Console
+
     console = Console(width=200)
     with console.capture() as cap:
         console.print(renderable)
@@ -421,6 +454,7 @@ def test_pod_watch_view_omits_endpoint_line_for_pipeline(panel_mod, panel_data_m
 
     renderable = view._header_body()
     from rich.console import Console
+
     console = Console(width=200)
     with console.capture() as cap:
         console.print(renderable)
@@ -429,7 +463,9 @@ def test_pod_watch_view_omits_endpoint_line_for_pipeline(panel_mod, panel_data_m
     assert "ENDPOINT" not in text
 
 
-def test_pod_watch_view_shows_dim_metrics_when_kubectl_top_unavailable(panel_mod, panel_data_mod):
+def test_pod_watch_view_shows_dim_metrics_when_kubectl_top_unavailable(
+    panel_mod, panel_data_mod
+):
     """Quando metrics-server ausente (metrics_map vazio), mostra '?' sem crashar."""
     pod = _make_pod(panel_data_mod, cpu_mc=None, mem_b=None)
     # metrics_map empty → no data for this pod
@@ -441,6 +477,7 @@ def test_pod_watch_view_shows_dim_metrics_when_kubectl_top_unavailable(panel_mod
 
     renderable = view._header_body()
     from rich.console import Console
+
     console = Console(width=200)
     with console.capture() as cap:
         console.print(renderable)
@@ -454,6 +491,7 @@ def test_pod_watch_view_shows_dim_metrics_when_kubectl_top_unavailable(panel_mod
 # Helper function unit tests
 # ---------------------------------------------------------------------------
 
+
 def test_parse_cpu(panel_data_mod):
     assert panel_data_mod._parse_cpu("230m") == 230
     assert panel_data_mod._parse_cpu("2") == 2000
@@ -463,8 +501,8 @@ def test_parse_cpu(panel_data_mod):
 
 
 def test_parse_mem(panel_data_mod):
-    assert panel_data_mod._parse_mem("412Mi") == 412 * 1024 ** 2
-    assert panel_data_mod._parse_mem("6Gi") == 6 * 1024 ** 3
+    assert panel_data_mod._parse_mem("412Mi") == 412 * 1024**2
+    assert panel_data_mod._parse_mem("6Gi") == 6 * 1024**3
     assert panel_data_mod._parse_mem("1024Ki") == 1024 * 1024
     assert panel_data_mod._parse_mem("1024") == 1024
     assert panel_data_mod._parse_mem("") is None

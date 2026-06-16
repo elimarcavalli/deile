@@ -21,7 +21,7 @@ __all__ = [
     "EpisodicMemory",
     "SemanticMemory",
     "ProceduralMemory",
-    "MemoryConsolidator"
+    "MemoryConsolidator",
 ]
 
 __version__ = "2.0.0"

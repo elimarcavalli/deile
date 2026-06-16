@@ -178,9 +178,7 @@ class MonitorClient:
         O servidor enfileira a pergunta e responde 202 imediatamente; a
         resposta é colhida depois via :meth:`get_ask_result`.
         """
-        data = await self._request(
-            "POST", _ASK_PATH, json_body={"question": question}
-        )
+        data = await self._request("POST", _ASK_PATH, json_body={"question": question})
         request_id = data.get("request_id")
         if not isinstance(request_id, str) or not request_id:
             raise MonitorClientError(

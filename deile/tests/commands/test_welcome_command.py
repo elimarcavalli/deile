@@ -22,9 +22,12 @@ from rich.console import Console
 
 import deile.__version__ as version_mod
 from deile.commands.base import CommandContext
-from deile.commands.builtin.welcome_command import (_LINKS, WelcomeCommand,
-                                                    _get_active_features,
-                                                    _get_quick_start_verified)
+from deile.commands.builtin.welcome_command import (
+    _LINKS,
+    WelcomeCommand,
+    _get_active_features,
+    _get_quick_start_verified,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -74,18 +77,21 @@ class TestQuickStart:
         if not verified:
             pytest.skip("CommandRegistry não inicializado — skip")
         from deile.commands.registry import get_command_registry
+
         registry = get_command_registry()
         registered = {cmd.name for cmd in registry.get_all_commands()}
         for entry in verified:
-            assert entry["nome"] in registered, (
-                f"Comando '{entry['nome']}' na quick start mas não registrado"
-            )
+            assert (
+                entry["nome"] in registered
+            ), f"Comando '{entry['nome']}' na quick start mas não registrado"
 
     async def test_find_command_not_in_quickstart(self):
         ctx = _ctx()
         verified = _get_quick_start_verified(ctx)
         names = [e["nome"] for e in verified]
-        assert "find" not in names, "/find não é comando oficial e não deve estar na quick start"
+        assert (
+            "find" not in names
+        ), "/find não é comando oficial e não deve estar na quick start"
 
     async def test_quickstart_not_empty(self):
         result = await _cmd().execute(_ctx())
@@ -149,12 +155,21 @@ class TestUIPtbr:
     async def test_sections_in_ptbr(self):
         result = await _cmd().execute(_ctx())
         rendered = _render(result.content)
-        assert "Início Rápido" in rendered or "Capacidades" in rendered or "Fluxos" in rendered
+        assert (
+            "Início Rápido" in rendered
+            or "Capacidades" in rendered
+            or "Fluxos" in rendered
+        )
 
     async def test_no_english_section_headers(self):
         result = await _cmd().execute(_ctx())
         rendered = _render(result.content)
-        english_headers = ["Quick Start Guide", "Key Features", "Common Workflows", "Pro Tips"]
+        english_headers = [
+            "Quick Start Guide",
+            "Key Features",
+            "Common Workflows",
+            "Pro Tips",
+        ]
         for header in english_headers:
             assert header not in rendered, f"Header em inglês encontrado: '{header}'"
 
@@ -166,8 +181,16 @@ class TestUIPtbr:
 
 class TestQuickStartColumnOrder:
     _SAMPLE_ENTRIES = [
-        {"nome": "help", "acao": "Listar todos os comandos", "descricao": "Ajuda completa"},
-        {"nome": "status", "acao": "Checar status do sistema", "descricao": "Visão geral do DEILE"},
+        {
+            "nome": "help",
+            "acao": "Listar todos os comandos",
+            "descricao": "Ajuda completa",
+        },
+        {
+            "nome": "status",
+            "acao": "Checar status do sistema",
+            "descricao": "Visão geral do DEILE",
+        },
     ]
 
     async def test_command_column_contains_slash_prefix(self):

@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 
 from deile.config.settings import get_settings, reset_settings
-from deile.cron.constants import (CRON_STOP_TIMEOUT_SECONDS,
-                                  cron_poll_interval_seconds)
+from deile.cron.constants import CRON_STOP_TIMEOUT_SECONDS, cron_poll_interval_seconds
 
 
 class TestCronPollIntervalSeconds:
@@ -24,15 +23,11 @@ class TestCronPollIntervalSeconds:
         settings_file = tmp_path / "settings.json"
         monkeypatch.setenv("DEILE_SETTINGS_FILE", str(settings_file))
 
-        settings_file.write_text(json.dumps({
-            "cron": {"poll_interval": 77}
-        }))
+        settings_file.write_text(json.dumps({"cron": {"poll_interval": 77}}))
         reset_settings()
         assert cron_poll_interval_seconds() == 77
 
-        settings_file.write_text(json.dumps({
-            "cron": {"poll_interval": 577}
-        }))
+        settings_file.write_text(json.dumps({"cron": {"poll_interval": 577}}))
         reset_settings()
         assert cron_poll_interval_seconds() == 577
 

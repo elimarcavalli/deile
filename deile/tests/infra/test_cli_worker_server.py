@@ -41,7 +41,8 @@ def mock_adapter(tmp_path, monkeypatch):
     """
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / "zzz_mock_worker.py"
-    mod_path.write_text(textwrap.dedent('''\
+    mod_path.write_text(
+        textwrap.dedent("""\
         from cli_adapters.base import BaseCliAdapter, WorkResult, ModelInfo
 
 
@@ -70,7 +71,9 @@ def mock_adapter(tmp_path, monkeypatch):
             kind="mock", default_port=8799, auth_env_keys=["MOCK_API_KEY"],
             writable_dirs=["HOME", "MOCK_WRITABLE"],
         )
-    '''), encoding="utf-8")
+    """),
+        encoding="utf-8",
+    )
     cli_adapters.reload_adapters()
 
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "mock")
@@ -135,7 +138,9 @@ async def test_dispatch_missing_brief_returns_400(mock_adapter):
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", json={"stage": "implement"}, headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            json={"stage": "implement"},
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 400
 
@@ -150,8 +155,12 @@ async def test_dispatch_gate_fails_without_push(mock_adapter, monkeypatch):
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
             "/v1/dispatch",
-            json={"brief": "do the thing", "stage": "implement",
-                  "branch": "auto/issue-1", "cli_model": "x"},
+            json={
+                "brief": "do the thing",
+                "stage": "implement",
+                "branch": "auto/issue-1",
+                "cli_model": "x",
+            },
             headers=_AUTH_HEADERS,
         )
         assert resp.status == 200
@@ -179,8 +188,12 @@ async def test_dispatch_success_with_commit_and_push(mock_adapter, monkeypatch):
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
             "/v1/dispatch",
-            json={"brief": "do the thing", "stage": "implement",
-                  "branch": "auto/issue-1", "cli_model": "x"},
+            json={
+                "brief": "do the thing",
+                "stage": "implement",
+                "branch": "auto/issue-1",
+                "cli_model": "x",
+            },
             headers=_AUTH_HEADERS,
         )
         assert resp.status == 200
@@ -214,7 +227,8 @@ def mock_adapter_auth_fail(tmp_path, monkeypatch):
     """Mock adapter cujo ``provision_auth`` reprova — testa o gate (Frente 4)."""
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / "zzz_mock_authfail.py"
-    mod_path.write_text(textwrap.dedent('''\
+    mod_path.write_text(
+        textwrap.dedent("""\
         from cli_adapters.base import BaseCliAdapter, WorkResult, ModelInfo
 
 
@@ -236,7 +250,9 @@ def mock_adapter_auth_fail(tmp_path, monkeypatch):
             kind="mockauthfail", default_port=8798,
             auth_env_keys=["MOCK_API_KEY"], writable_dirs=["HOME"],
         )
-    '''), encoding="utf-8")
+    """),
+        encoding="utf-8",
+    )
     cli_adapters.reload_adapters()
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "mockauthfail")
     monkeypatch.setenv("DEILE_CLI_WORKER_ROOT", str(tmp_path / "work"))
@@ -278,8 +294,12 @@ async def test_dispatch_proceeds_when_provision_auth_ok(mock_adapter, monkeypatc
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
             "/v1/dispatch",
-            json={"brief": "x", "stage": "implement",
-                  "branch": "auto/issue-1", "cli_model": "x"},
+            json={
+                "brief": "x",
+                "stage": "implement",
+                "branch": "auto/issue-1",
+                "cli_model": "x",
+            },
             headers=_AUTH_HEADERS,
         )
         body = await resp.json()
@@ -290,7 +310,8 @@ async def test_progress_404_for_unknown_task(mock_adapter):
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/progress/" + "a" * 16, headers=_AUTH_HEADERS,
+            "/v1/progress/" + "a" * 16,
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 404
 
@@ -299,7 +320,8 @@ async def test_progress_400_for_invalid_task_id(mock_adapter):
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/progress/../etc", headers=_AUTH_HEADERS,
+            "/v1/progress/../etc",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status in (400, 404)  # traversal barrado
 
@@ -313,7 +335,8 @@ async def test_resume_info_400_invalid_task_id(mock_adapter):
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/dispatches/NOThex/resume-info", headers=_AUTH_HEADERS,
+            "/v1/dispatches/NOThex/resume-info",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 400
 
@@ -322,7 +345,8 @@ async def test_resume_info_404_when_no_workspace(mock_adapter):
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            "/v1/dispatches/0123456789abcdef/resume-info", headers=_AUTH_HEADERS,
+            "/v1/dispatches/0123456789abcdef/resume-info",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 404
 
@@ -337,13 +361,20 @@ async def test_resume_info_alive_true_when_lease_fresh(mock_adapter):
     task_id = "0123456789abcdef"
     ws = cws._worker_root() / task_id
     ws.mkdir(parents=True, exist_ok=True)
-    (ws / ".lease.json").write_text(json.dumps({
-        "pid": os.getpid(), "heartbeat_at": time.time(), "pod": "test",
-    }))
+    (ws / ".lease.json").write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "heartbeat_at": time.time(),
+                "pod": "test",
+            }
+        )
+    )
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+            f"/v1/dispatches/{task_id}/resume-info",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 200
         body = await resp.json()
@@ -361,7 +392,8 @@ async def test_resume_info_alive_false_when_no_lease(mock_adapter):
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+            f"/v1/dispatches/{task_id}/resume-info",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 200
         body = await resp.json()
@@ -385,36 +417,42 @@ async def test_resume_info_returns_persisted_verdict_when_done(mock_adapter):
     ws = cws._worker_root() / task_id
     ws.mkdir(parents=True, exist_ok=True)  # workdir existe, sem lease (concluída)
     cws._save_task_result(
-        task_id, WorkResult(ok=True, result_text="VEREDITO: CLARO\nescopo nítido"),
+        task_id,
+        WorkResult(ok=True, result_text="VEREDITO: CLARO\nescopo nítido"),
     )
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get(
-            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+            f"/v1/dispatches/{task_id}/resume-info",
+            headers=_AUTH_HEADERS,
         )
         assert resp.status == 200
         body = await resp.json()
-        assert body["claude_alive"] is False          # lease ausente → não-vivo
-        assert body["last_completed_at"] is not None    # → reconcile lê DONE
+        assert body["claude_alive"] is False  # lease ausente → não-vivo
+        assert body["last_completed_at"] is not None  # → reconcile lê DONE
         assert body["last_is_error"] is False
-        assert "CLARO" in body["last_result_full"]      # → parse_critique_verdict
+        assert "CLARO" in body["last_result_full"]  # → parse_critique_verdict
 
 
 async def test_dispatch_creates_adapter_writable_dirs(
-    mock_adapter, monkeypatch, tmp_path,
+    mock_adapter,
+    monkeypatch,
+    tmp_path,
 ):
     """Regressão #23 (CODEX_HOME): o server cria os ``writable_dirs`` do adapter
     (resolvidos do env_overlay) ANTES de rodar — senão o CLI aborta (ex.: codex
     "CODEX_HOME ... does not exist"). O dir é criado mesmo que o gate de git
     reprove depois."""
     import os
+
     monkeypatch.setenv("MOCK_API_KEY", "secret")
     # Home gravável (no pod é o volume /home/<kind>; no teste, um tmp).
     monkeypatch.setenv("DEILE_CLI_WORKER_HOME", str(tmp_path / "home"))
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "x", "wait_for_result": True},
         )
         assert resp.status == 200  # 200 mesmo em NO_PUSH (contrato do worker)
@@ -443,7 +481,8 @@ def mock_resume_adapter(tmp_path, monkeypatch):
     """
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / "zzz_mock_resume.py"
-    mod_path.write_text(textwrap.dedent('''\
+    mod_path.write_text(
+        textwrap.dedent("""\
         from cli_adapters.base import BaseCliAdapter, WorkResult, ModelInfo
 
 
@@ -482,7 +521,9 @@ def mock_resume_adapter(tmp_path, monkeypatch):
             kind="mockresume", default_port=8797, supports_resume=True,
             auth_env_keys=["MOCK_API_KEY"], writable_dirs=["HOME"],
         )
-    '''), encoding="utf-8")
+    """),
+        encoding="utf-8",
+    )
     cli_adapters.reload_adapters()
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "mockresume")
     monkeypatch.setenv("DEILE_CLI_WORKER_ROOT", str(tmp_path / "work"))
@@ -519,7 +560,8 @@ async def test_fresh_dispatch_persists_session_id(mock_resume_adapter, monkeypat
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "do it", "branch": "auto/issue-1", "cli_model": "m"},
         )
         body = await resp.json()
@@ -528,7 +570,8 @@ async def test_fresh_dispatch_persists_session_id(mock_resume_adapter, monkeypat
         task_id = body["task_id"]
 
         ri = await client.get(
-            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+            f"/v1/dispatches/{task_id}/resume-info",
+            headers=_AUTH_HEADERS,
         )
         ri_body = await ri.json()
         assert ri_body["session_id"] == "ses_mock"
@@ -537,7 +580,8 @@ async def test_fresh_dispatch_persists_session_id(mock_resume_adapter, monkeypat
 
 
 async def test_provider_error_is_not_clean_completion(
-    mock_resume_adapter, monkeypatch,
+    mock_resume_adapter,
+    monkeypatch,
 ):
     """402 mid-task -> ok=False + error_code, NUNCA last_is_error=False (bug #629)."""
     monkeypatch.setattr(cws, "_git_head", _async_return("h"))
@@ -548,13 +592,17 @@ async def test_provider_error_is_not_clean_completion(
 
         def _argv_402(**kw):
             wd = kw["workdir"]
-            return ["sh", "-c",
-                    f"echo 'Error: 402 Payment Required insufficient credit'; "
-                    f"touch {wd}/.ran"]
+            return [
+                "sh",
+                "-c",
+                f"echo 'Error: 402 Payment Required insufficient credit'; "
+                f"touch {wd}/.ran",
+            ]
 
         monkeypatch.setattr(adapter, "build_argv", _argv_402)
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "x", "branch": "auto/issue-1", "cli_model": "m"},
         )
         body = await resp.json()
@@ -563,7 +611,8 @@ async def test_provider_error_is_not_clean_completion(
         assert body["is_error"] is True
 
         ri = await client.get(
-            f"/v1/dispatches/{body['task_id']}/resume-info", headers=_AUTH_HEADERS,
+            f"/v1/dispatches/{body['task_id']}/resume-info",
+            headers=_AUTH_HEADERS,
         )
         ri_body = await ri.json()
         assert ri_body["last_is_error"] is True
@@ -571,16 +620,19 @@ async def test_provider_error_is_not_clean_completion(
 
 
 async def test_resume_reuses_workdir_and_passes_session(
-    mock_resume_adapter, monkeypatch,
+    mock_resume_adapter,
+    monkeypatch,
 ):
     """Re-dispatch com resume REUSA o workdir e passa --session no argv."""
     import json
+
     _commit_pushed_git(monkeypatch)
     root = mock_resume_adapter
     app = cws.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         r1 = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
             json={"brief": "passo 1", "branch": "auto/issue-1", "cli_model": "m"},
         )
         b1 = await r1.json()
@@ -590,9 +642,15 @@ async def test_resume_reuses_workdir_and_passes_session(
         (workdir / ".witness").write_text("eu-sobrevivi")
 
         r2 = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
-            json={"brief": "continue", "branch": "auto/issue-1", "cli_model": "m",
-                  "resume_session_id": "ses_mock", "prev_task_id": task_id},
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "continue",
+                "branch": "auto/issue-1",
+                "cli_model": "m",
+                "resume_session_id": "ses_mock",
+                "prev_task_id": task_id,
+            },
         )
         b2 = await r2.json()
         assert b2["task_id"] == task_id
@@ -602,13 +660,16 @@ async def test_resume_reuses_workdir_and_passes_session(
         assert argv_meta["resume_flag"] == ["--session", "ses_mock"]
 
         ri = await client.get(
-            f"/v1/dispatches/{task_id}/resume-info", headers=_AUTH_HEADERS,
+            f"/v1/dispatches/{task_id}/resume-info",
+            headers=_AUTH_HEADERS,
         )
         assert (await ri.json())["attempt"] == 2
 
 
 async def test_resume_with_missing_workdir_degrades_to_fresh(
-    mock_resume_adapter, monkeypatch, caplog,
+    mock_resume_adapter,
+    monkeypatch,
+    caplog,
 ):
     """prev_task_id cujo workdir sumiu -> degrada para fresh (novo task_id)
     + emite warning observável do re-gasto (FIX D)."""
@@ -617,20 +678,23 @@ async def test_resume_with_missing_workdir_degrades_to_fresh(
     with caplog.at_level("WARNING", logger="deile.cli_worker"):
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
-                "/v1/dispatch", headers=_AUTH_HEADERS,
-                json={"brief": "x", "branch": "auto/issue-1", "cli_model": "m",
-                      "resume_session_id": "ses_mock",
-                      "prev_task_id": "0000000000000000"},
+                "/v1/dispatch",
+                headers=_AUTH_HEADERS,
+                json={
+                    "brief": "x",
+                    "branch": "auto/issue-1",
+                    "cli_model": "m",
+                    "resume_session_id": "ses_mock",
+                    "prev_task_id": "0000000000000000",
+                },
             )
             body = await resp.json()
             assert body["task_id"] != "0000000000000000"
             assert body["ok"] is True
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert any(
-        "degradando para FRESH" in m and "0000000000000000" in m
-        for m in warnings
+        "degradando para FRESH" in m and "0000000000000000" in m for m in warnings
     ), f"warning de degrade resume→fresh ausente: {warnings}"
-
 
 
 # --------------------------------------------------------------------------- #
@@ -645,7 +709,8 @@ def test_save_task_result_persists_cli_model(mock_adapter):
 
     task_id = "deadbeefdeadbeef"
     cws._save_task_result(
-        task_id, WorkResult(ok=True, result_text="done"),
+        task_id,
+        WorkResult(ok=True, result_text="done"),
         cli_model="openrouter/deepseek/deepseek-v4-pro",
     )
     meta = cws._load_task_result(task_id)
@@ -680,17 +745,33 @@ def test_harvest_appends_cost_then_prunes_old_log(mock_adapter, monkeypatch):
     """O harvester colhe os tokens do .progress para o ledger ANTES de podar o log
     velho — espelha o claude-worker (#445)."""
     import json as _json
+
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
     root = cws._worker_root()
-    log = _write_progress_log(root, "aabbccdd00112233", [
-        _json.dumps({"type": "step_finish", "modelID": "deepseek/deepseek-v4-pro",
-                     "part": {"tokens": {"input": 1500, "output": 300,
-                                         "cache": {"read": 1000, "write": 50}},
-                              "cost": 0.012}}),
-    ])
+    log = _write_progress_log(
+        root,
+        "aabbccdd00112233",
+        [
+            _json.dumps(
+                {
+                    "type": "step_finish",
+                    "modelID": "deepseek/deepseek-v4-pro",
+                    "part": {
+                        "tokens": {
+                            "input": 1500,
+                            "output": 300,
+                            "cache": {"read": 1000, "write": 50},
+                        },
+                        "cost": 0.012,
+                    },
+                }
+            ),
+        ],
+    )
     # Loga como antigo (além da retenção e do grace).
     old = __import__("time").time() - 60 * 86400
     import os as _os
+
     _os.utime(log, (old, old))
 
     res = cws.harvest_progress_to_ledger(root, "opencode")
@@ -713,20 +794,39 @@ def test_harvest_dedup_by_task_id_idempotent(mock_adapter, monkeypatch):
     import json as _json
     import os as _os
     import time as _time
+
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
     root = cws._worker_root()
-    log = _write_progress_log(root, "1122334455667788", [
-        _json.dumps({"type": "step_finish", "modelID": "qwen3-coder-plus",
-                     "part": {"tokens": {"input": 100, "output": 20}, "cost": 0.0}}),
-    ])
+    log = _write_progress_log(
+        root,
+        "1122334455667788",
+        [
+            _json.dumps(
+                {
+                    "type": "step_finish",
+                    "modelID": "qwen3-coder-plus",
+                    "part": {"tokens": {"input": 100, "output": 20}, "cost": 0.0},
+                }
+            ),
+        ],
+    )
     old = _time.time() - 60 * 86400
     _os.utime(log, (old, old))
     cws.harvest_progress_to_ledger(root, "opencode")
     # Recria o log (mesmo task_id) e roda de novo — não deve re-anexar.
-    log2 = _write_progress_log(root, "1122334455667788", [
-        _json.dumps({"type": "step_finish", "modelID": "qwen3-coder-plus",
-                     "part": {"tokens": {"input": 100, "output": 20}, "cost": 0.0}}),
-    ])
+    log2 = _write_progress_log(
+        root,
+        "1122334455667788",
+        [
+            _json.dumps(
+                {
+                    "type": "step_finish",
+                    "modelID": "qwen3-coder-plus",
+                    "part": {"tokens": {"input": 100, "output": 20}, "cost": 0.0},
+                }
+            ),
+        ],
+    )
     _os.utime(log2, (old, old))
     res2 = cws.harvest_progress_to_ledger(root, "opencode")
     assert res2["sessions_harvested"] == 0  # já no ledger
@@ -738,12 +838,22 @@ def test_harvest_dedup_by_task_id_idempotent(mock_adapter, monkeypatch):
 def test_harvest_preserves_recent_log_within_grace(mock_adapter, monkeypatch):
     """Log recém-modificado (dentro do grace TOCTOU) NÃO é colhido nem podado."""
     import json as _json
+
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
     root = cws._worker_root()
-    log = _write_progress_log(root, "99aabbccddeeff00", [
-        _json.dumps({"type": "step_finish", "modelID": "x/y",
-                     "part": {"tokens": {"input": 10, "output": 5}, "cost": 0.0}}),
-    ])
+    log = _write_progress_log(
+        root,
+        "99aabbccddeeff00",
+        [
+            _json.dumps(
+                {
+                    "type": "step_finish",
+                    "modelID": "x/y",
+                    "part": {"tokens": {"input": 10, "output": 5}, "cost": 0.0},
+                }
+            ),
+        ],
+    )
     res = cws.harvest_progress_to_ledger(root, "opencode")  # mtime = agora
     assert res["sessions_harvested"] == 0 and res["logs_removed"] == 0
     assert log.exists()  # preservado (resume agendado pode precisar)
@@ -755,18 +865,28 @@ def test_harvest_uses_meta_model_for_unknown(mock_adapter, monkeypatch):
     import json as _json
     import os as _os
     import time as _time
+
     from cli_adapters.base import WorkResult
+
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "goose")
     root = cws._worker_root()
     task_id = "f0f0f0f0f0f0f0f0"
     # goose só emite total_tokens, sem modelo no metadata.
-    log = _write_progress_log(root, task_id, _json.dumps({
-        "messages": [], "metadata": {"total_tokens": 4000, "status": "completed"}}))
+    log = _write_progress_log(
+        root,
+        task_id,
+        _json.dumps(
+            {"messages": [], "metadata": {"total_tokens": 4000, "status": "completed"}}
+        ),
+    )
     old = _time.time() - 60 * 86400
     _os.utime(log, (old, old))
     # Meta com o cli_model (gravado no dispatch).
-    cws._save_task_result(task_id, WorkResult(ok=True, result_text="ok"),
-                          cli_model="deepseek/deepseek-v4-flash")
+    cws._save_task_result(
+        task_id,
+        WorkResult(ok=True, result_text="ok"),
+        cli_model="deepseek/deepseek-v4-flash",
+    )
     cws.harvest_progress_to_ledger(root, "goose")
     ledger = cws._cost_ledger_path()
     rec = _json.loads(ledger.read_text().splitlines()[0])
@@ -780,13 +900,23 @@ def test_harvest_failsafe_aborts_without_parser(mock_adapter, monkeypatch):
     import json as _json
     import os as _os
     import time as _time
+
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
     monkeypatch.setattr(cws, "_fpp", None)
     root = cws._worker_root()
-    log = _write_progress_log(root, "cafecafecafecafe", [
-        _json.dumps({"type": "step_finish", "modelID": "x/y",
-                     "part": {"tokens": {"input": 10, "output": 5}, "cost": 0.0}}),
-    ])
+    log = _write_progress_log(
+        root,
+        "cafecafecafecafe",
+        [
+            _json.dumps(
+                {
+                    "type": "step_finish",
+                    "modelID": "x/y",
+                    "part": {"tokens": {"input": 10, "output": 5}, "cost": 0.0},
+                }
+            ),
+        ],
+    )
     old = _time.time() - 60 * 86400
     _os.utime(log, (old, old))
     res = cws.harvest_progress_to_ledger(root, "opencode")
@@ -811,30 +941,54 @@ def test_build_usage_block_opencode_shape(mock_adapter, monkeypatch):
     """``build_usage_block`` extrai tokens-por-modelo do shape nativo via o parser
     ÚNICO (fleet_progress_parse) e normaliza p/ cache_read/cache_write (#638)."""
     import json as _json
-    stdout = "\n".join([
-        _json.dumps({"type": "step_start", "modelID": "deepseek/deepseek-v4-pro"}),
-        _json.dumps({"type": "step_finish", "part": {
-            "cost": 0.012,
-            "tokens": {"input": 1500, "output": 300,
-                       "cache": {"read": 21415, "write": 100}}}}),
-    ])
+
+    stdout = "\n".join(
+        [
+            _json.dumps({"type": "step_start", "modelID": "deepseek/deepseek-v4-pro"}),
+            _json.dumps(
+                {
+                    "type": "step_finish",
+                    "part": {
+                        "cost": 0.012,
+                        "tokens": {
+                            "input": 1500,
+                            "output": 300,
+                            "cache": {"read": 21415, "write": 100},
+                        },
+                    },
+                }
+            ),
+        ]
+    )
     tbm, model = cws.build_usage_block(
-        kind="opencode", stdout=stdout, task_id="t1",
+        kind="opencode",
+        stdout=stdout,
+        task_id="t1",
         cli_model="deepseek/deepseek-v4-pro",
     )
     assert model == "deepseek/deepseek-v4-pro"
-    assert tbm == {"deepseek/deepseek-v4-pro": {
-        "in": 1500, "out": 300, "cache_read": 21415, "cache_write": 100}}
+    assert tbm == {
+        "deepseek/deepseek-v4-pro": {
+            "in": 1500,
+            "out": 300,
+            "cache_read": 21415,
+            "cache_write": 100,
+        }
+    }
 
 
 def test_build_usage_block_remaps_unknown_to_cli_model(mock_adapter):
     """goose só emite total_tokens (sem modelo) → ``unknown`` é remapeado para o
     ``cli_model`` do payload (anti model=unknown)."""
     import json as _json
-    stdout = _json.dumps({"messages": [],
-                          "metadata": {"total_tokens": 8000, "status": "completed"}})
+
+    stdout = _json.dumps(
+        {"messages": [], "metadata": {"total_tokens": 8000, "status": "completed"}}
+    )
     tbm, model = cws.build_usage_block(
-        kind="goose", stdout=stdout, task_id="t2",
+        kind="goose",
+        stdout=stdout,
+        task_id="t2",
         cli_model="deepseek/deepseek-v4-flash",
     )
     assert "unknown" not in tbm
@@ -845,7 +999,10 @@ def test_build_usage_block_remaps_unknown_to_cli_model(mock_adapter):
 def test_build_usage_block_noop_for_non_progress_kind(mock_adapter):
     """Kinds sem parser de .progress (claude/deile/mock) → bloco vazio + cli_model."""
     tbm, model = cws.build_usage_block(
-        kind="claude", stdout="irrelevante", task_id="t3", cli_model="claude:sonnet",
+        kind="claude",
+        stdout="irrelevante",
+        task_id="t3",
+        cli_model="claude:sonnet",
     )
     assert tbm == {} and model == "claude:sonnet"
 
@@ -853,6 +1010,7 @@ def test_build_usage_block_noop_for_non_progress_kind(mock_adapter):
 async def test_dispatch_usage_block_present(mock_resume_adapter, monkeypatch):
     """A resposta do /v1/dispatch + resume-info carregam o bloco ``usage`` (#638)."""
     import json as _json
+
     _commit_pushed_git(monkeypatch)
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
     cli_adapters.reload_adapters()
@@ -862,19 +1020,36 @@ async def test_dispatch_usage_block_present(mock_resume_adapter, monkeypatch):
 
         def _argv(**kw):
             wd = kw["workdir"]
-            modeline = _json.dumps({"type": "step_start",
-                                    "modelID": "openrouter/deepseek/deepseek-v4-pro"})
-            event = _json.dumps({"type": "step_finish", "part": {
-                "tokens": {"input": 1200, "output": 250,
-                           "cache": {"read": 0, "write": 0}}}})
-            return ["sh", "-c",
-                    f"printf '%s\\n%s\\n' '{modeline}' '{event}'; touch {wd}/.ran"]
+            modeline = _json.dumps(
+                {"type": "step_start", "modelID": "openrouter/deepseek/deepseek-v4-pro"}
+            )
+            event = _json.dumps(
+                {
+                    "type": "step_finish",
+                    "part": {
+                        "tokens": {
+                            "input": 1200,
+                            "output": 250,
+                            "cache": {"read": 0, "write": 0},
+                        }
+                    },
+                }
+            )
+            return [
+                "sh",
+                "-c",
+                f"printf '%s\\n%s\\n' '{modeline}' '{event}'; touch {wd}/.ran",
+            ]
 
         monkeypatch.setattr(adapter, "build_argv", _argv)
         resp = await client.post(
-            "/v1/dispatch", headers=_AUTH_HEADERS,
-            json={"brief": "x", "branch": "auto/issue-1",
-                  "cli_model": "openrouter/deepseek/deepseek-v4-pro"},
+            "/v1/dispatch",
+            headers=_AUTH_HEADERS,
+            json={
+                "brief": "x",
+                "branch": "auto/issue-1",
+                "cli_model": "openrouter/deepseek/deepseek-v4-pro",
+            },
         )
         body = await resp.json()
         usage = body["usage"]
@@ -885,7 +1060,8 @@ async def test_dispatch_usage_block_present(mock_resume_adapter, monkeypatch):
 
         # resume-info também surface o bloco usage (para o read-back fire-and-forget).
         ri = await client.get(
-            f"/v1/dispatches/{body['task_id']}/resume-info", headers=_AUTH_HEADERS,
+            f"/v1/dispatches/{body['task_id']}/resume-info",
+            headers=_AUTH_HEADERS,
         )
         ri_body = await ri.json()
         assert ri_body["usage"]["model"] == "openrouter/deepseek/deepseek-v4-pro"
@@ -899,6 +1075,8 @@ async def test_dispatch_usage_block_present(mock_resume_adapter, monkeypatch):
 
 def _async_return(value):
     """Factory de coroutine que ignora args e retorna *value*."""
+
     async def _coro(*_a, **_kw):
         return value
+
     return _coro

@@ -3,6 +3,7 @@
 Foco: ciclo de polling, terminal-detection, tolerância a 404 transiente,
 agregação de ``files`` no final, e captura de exceção.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -10,8 +11,11 @@ from collections import deque
 import pytest
 
 from deile.infrastructure.deile_worker_client import WorkerDispatchError
-from deile.orchestration.subagents.events import (SubAgentEventKind,
-                                                  SubAgentState, SubAgentTask)
+from deile.orchestration.subagents.events import (
+    SubAgentEventKind,
+    SubAgentState,
+    SubAgentTask,
+)
 from deile.orchestration.subagents.runner import WorkerSubAgentRunner
 
 pytestmark = pytest.mark.unit
@@ -60,11 +64,27 @@ async def test_polls_until_terminal_and_aggregates_files():
     client = _StubWorkerClient(
         dispatch_return={"task_id": "abc123", "status": "running"},
         progress_snapshots=[
-            {"ok": None, "progress_lines": ["tool_invoked:read_file"], "current_activity": "reading"},
-            {"ok": None, "progress_lines": ["tool_invoked:read_file", "tool_completed:read_file"],
-             "current_activity": "done reading"},
-            {"ok": True, "progress_lines": ["tool_invoked:read_file", "tool_completed:read_file"],
-             "files": ["foo.py", "bar.py"]},
+            {
+                "ok": None,
+                "progress_lines": ["tool_invoked:read_file"],
+                "current_activity": "reading",
+            },
+            {
+                "ok": None,
+                "progress_lines": [
+                    "tool_invoked:read_file",
+                    "tool_completed:read_file",
+                ],
+                "current_activity": "done reading",
+            },
+            {
+                "ok": True,
+                "progress_lines": [
+                    "tool_invoked:read_file",
+                    "tool_completed:read_file",
+                ],
+                "files": ["foo.py", "bar.py"],
+            },
         ],
         result_return={"files": ["foo.py", "bar.py"], "summary": "all good"},
     )
@@ -135,7 +155,9 @@ async def test_dispatch_failure_marks_state_error_without_propagating():
         async def get_result(self, task_id):
             return {}
 
-    runner = WorkerSubAgentRunner(_FailingClient(), session_id="s", poll_interval_s=0.01)
+    runner = WorkerSubAgentRunner(
+        _FailingClient(), session_id="s", poll_interval_s=0.01
+    )
     state = SubAgentState(task=_task(index=4))
 
     captured: list = []

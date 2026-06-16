@@ -26,6 +26,7 @@ import _setup as setup  # noqa: E402
 # NamespacePlan
 # ============================================================================
 
+
 class TestNamespacePlanSecrets:
     def test_minimal_plan_has_required_secret_keys(self):
         plan = setup.NamespacePlan(
@@ -65,15 +66,23 @@ class TestNamespacePlanSecrets:
 
     def test_discord_token_present_only_when_set(self):
         without = setup.NamespacePlan(
-            name="a", forge_kind="github", repo="o/r", dispatch_mode="deile_worker",
+            name="a",
+            forge_kind="github",
+            repo="o/r",
+            dispatch_mode="deile_worker",
             llm_keys={"ANTHROPIC_API_KEY": "sk-ant-x"},
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         with_d = setup.NamespacePlan(
-            name="b", forge_kind="github", repo="o/r", dispatch_mode="deile_worker",
+            name="b",
+            forge_kind="github",
+            repo="o/r",
+            dispatch_mode="deile_worker",
             llm_keys={"ANTHROPIC_API_KEY": "sk-ant-x"},
             discord_token="abc.def.ghi",
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         assert "DEILE_BOT_DISCORD_TOKEN" not in without.secrets_kv()[0]
         assert with_d.secrets_kv()[0]["DEILE_BOT_DISCORD_TOKEN"] == "abc.def.ghi"
@@ -82,10 +91,13 @@ class TestNamespacePlanSecrets:
 class TestRuntimeConfigMap:
     def test_pipeline_settings_carries_overrides(self):
         plan = setup.NamespacePlan(
-            name="deile-gl", forge_kind="gitlab",
-            repo="group/sub/project", dispatch_mode="claude_subprocess",
+            name="deile-gl",
+            forge_kind="gitlab",
+            repo="group/sub/project",
+            dispatch_mode="claude_subprocess",
             llm_keys={"DEEPSEEK_API_KEY": "sk-x"},
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         data = plan.runtime_configmap_data()
         # Estrutura completa — issue #612: `pipeline.repo` é a FONTE ÚNICA do
@@ -115,9 +127,13 @@ class TestRuntimeConfigMap:
     def test_pipeline_settings_omits_forge_when_auto(self):
         """forge.kind=auto não vai pro JSON — deixa o detector decidir."""
         plan = setup.NamespacePlan(
-            name="x", forge_kind="auto", repo="o/r", dispatch_mode="deile_worker",
+            name="x",
+            forge_kind="auto",
+            repo="o/r",
+            dispatch_mode="deile_worker",
             llm_keys={"OPENAI_API_KEY": "sk-x"},
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         parsed = json.loads(plan.runtime_configmap_data()["pipeline-settings.json"])
         assert "forge" not in parsed
@@ -127,22 +143,30 @@ class TestRuntimeConfigMap:
 # Token validation
 # ============================================================================
 
+
 class TestTokenValidation:
-    @pytest.mark.parametrize("env_var,value,expected", [
-        ("ANTHROPIC_API_KEY", "sk-ant-abcdefghijklmnopqrstu", True),
-        ("ANTHROPIC_API_KEY", "sk-other-prefix-xxxxxxxxxxxx", False),
-        ("ANTHROPIC_API_KEY", "", False),
-        ("OPENAI_API_KEY", "sk-abcdefghijklmnopqrstu", True),
-        ("DEEPSEEK_API_KEY", "sk-x", False),  # muito curto
-        ("GITHUB_TOKEN", "ghp_abcdefghijklmnopqrstuv", True),
-        ("GITHUB_TOKEN", "github_pat_11AAAAAAAA_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", True),
-        ("GITHUB_TOKEN", "glpat-mistake", False),  # prefixo errado
-        ("GITLAB_TOKEN", "glpat-abcdefghijklmnop", True),
-        ("GITLAB_TOKEN", "gldt-deploytoken1234567", True),
-        ("GITLAB_TOKEN", "ghp_wrong-forge", False),
-        ("DEILE_BOT_DISCORD_TOKEN", "abc.def-1.ghi_2", True),
-        ("DEILE_BOT_DISCORD_TOKEN", "abc.def", False),  # falta 3o segmento
-    ])
+    @pytest.mark.parametrize(
+        "env_var,value,expected",
+        [
+            ("ANTHROPIC_API_KEY", "sk-ant-abcdefghijklmnopqrstu", True),
+            ("ANTHROPIC_API_KEY", "sk-other-prefix-xxxxxxxxxxxx", False),
+            ("ANTHROPIC_API_KEY", "", False),
+            ("OPENAI_API_KEY", "sk-abcdefghijklmnopqrstu", True),
+            ("DEEPSEEK_API_KEY", "sk-x", False),  # muito curto
+            ("GITHUB_TOKEN", "ghp_abcdefghijklmnopqrstuv", True),
+            (
+                "GITHUB_TOKEN",
+                "github_pat_11AAAAAAAA_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                True,
+            ),
+            ("GITHUB_TOKEN", "glpat-mistake", False),  # prefixo errado
+            ("GITLAB_TOKEN", "glpat-abcdefghijklmnop", True),
+            ("GITLAB_TOKEN", "gldt-deploytoken1234567", True),
+            ("GITLAB_TOKEN", "ghp_wrong-forge", False),
+            ("DEILE_BOT_DISCORD_TOKEN", "abc.def-1.ghi_2", True),
+            ("DEILE_BOT_DISCORD_TOKEN", "abc.def", False),  # falta 3o segmento
+        ],
+    )
     def test_format_check(self, env_var, value, expected):
         assert setup._validate_token_format(env_var, value) is expected
 
@@ -154,6 +178,7 @@ class TestTokenValidation:
 # ============================================================================
 # _ensure_namespace
 # ============================================================================
+
 
 class TestEnsureNamespace:
     def test_creates_when_missing_and_labels(self, monkeypatch):
@@ -174,8 +199,9 @@ class TestEnsureNamespace:
             return m
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
-        assert setup._ensure_namespace("kubectl", "deile-new",
-                                       "app.kubernetes.io/managed-by=deile")
+        assert setup._ensure_namespace(
+            "kubectl", "deile-new", "app.kubernetes.io/managed-by=deile"
+        )
         assert any("create" in c and "namespace" in c for c in calls)
         # Labels PSS restricted + managed-by
         label_call = next(c for c in calls if "label" in c)
@@ -194,8 +220,9 @@ class TestEnsureNamespace:
             return m
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
-        assert setup._ensure_namespace("kubectl", "deile",
-                                       "app.kubernetes.io/managed-by=deile")
+        assert setup._ensure_namespace(
+            "kubectl", "deile", "app.kubernetes.io/managed-by=deile"
+        )
         commands = [" ".join(c) for c in calls]
         assert not any("create namespace" in c for c in commands)
         assert any("label" in c for c in commands)
@@ -209,13 +236,18 @@ class TestEnsureNamespace:
             return m
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
-        assert setup._ensure_namespace("kubectl", "deile-x",
-                                       "app.kubernetes.io/managed-by=deile") is False
+        assert (
+            setup._ensure_namespace(
+                "kubectl", "deile-x", "app.kubernetes.io/managed-by=deile"
+            )
+            is False
+        )
 
 
 # ============================================================================
 # _apply_runtime_configmap
 # ============================================================================
+
 
 class TestApplyRuntimeConfigmap:
     def test_renders_then_applies_with_label(self, monkeypatch):
@@ -232,10 +264,13 @@ class TestApplyRuntimeConfigmap:
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
         plan = setup.NamespacePlan(
-            name="deile-x", forge_kind="github", repo="o/r",
+            name="deile-x",
+            forge_kind="github",
+            repo="o/r",
             dispatch_mode="deile_worker",
             llm_keys={"ANTHROPIC_API_KEY": "sk-ant-x"},
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         assert setup._apply_runtime_configmap("kubectl", "deile-x", plan) is True
         # 3 chamadas: render (create cm --dry-run), apply -f -, label
@@ -266,10 +301,13 @@ class TestApplyRuntimeConfigmap:
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
         plan = setup.NamespacePlan(
-            name="deile-y", forge_kind="gitlab", repo="g/p",
+            name="deile-y",
+            forge_kind="gitlab",
+            repo="g/p",
             dispatch_mode="deile_worker",
             llm_keys={"OPENAI_API_KEY": "sk-x"},
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         assert setup._apply_runtime_configmap("kubectl", "deile-y", plan) is True
         captured = capsys.readouterr()
@@ -285,10 +323,13 @@ class TestApplyRuntimeConfigmap:
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
         plan = setup.NamespacePlan(
-            name="x", forge_kind="github", repo="o/r",
+            name="x",
+            forge_kind="github",
+            repo="o/r",
             dispatch_mode="deile_worker",
             llm_keys={"ANTHROPIC_API_KEY": "sk-x"},
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         assert setup._apply_runtime_configmap("kubectl", "x", plan) is False
 
@@ -297,9 +338,11 @@ class TestApplyRuntimeConfigmap:
 # _wait_for_pods_ready + _deployments_to_wait_for
 # ============================================================================
 
+
 class TestWaitForPodsReady:
     def test_skips_deployment_when_not_present(self, monkeypatch):
         """Deployment ausente é pulado — não conta como falha."""
+
         def fake_run(cmd, **kw):
             m = MagicMock()
             # `get deployment` → exists=1 (ausente)
@@ -308,12 +351,14 @@ class TestWaitForPodsReady:
             return m
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
-        assert setup._wait_for_pods_ready(
-            "kubectl", "deile", ("nope-dep",), timeout_s=1
-        ) is True
+        assert (
+            setup._wait_for_pods_ready("kubectl", "deile", ("nope-dep",), timeout_s=1)
+            is True
+        )
 
     def test_rollout_failure_is_non_fatal_but_returns_false(self, monkeypatch):
         """`rollout status` falhando despeja logs e retorna False (não levanta)."""
+
         def fake_run(cmd, **kw):
             m = MagicMock()
             m.stdout = m.stderr = ""
@@ -326,18 +371,25 @@ class TestWaitForPodsReady:
             return m
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
-        assert setup._wait_for_pods_ready(
-            "kubectl", "deile", ("deile-worker",), timeout_s=1
-        ) is False
+        assert (
+            setup._wait_for_pods_ready(
+                "kubectl", "deile", ("deile-worker",), timeout_s=1
+            )
+            is False
+        )
 
 
 class TestDeploymentsToWaitFor:
     def test_bot_disabled_omits_deilebot(self):
         plan = setup.NamespacePlan(
-            name="x", forge_kind="github", repo="o/r",
-            dispatch_mode="deile_worker", bot_enabled=False,
+            name="x",
+            forge_kind="github",
+            repo="o/r",
+            dispatch_mode="deile_worker",
+            bot_enabled=False,
             llm_keys={"OPENAI_API_KEY": "sk-x"},
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         base = ("deilebot", "deile-worker", "deile-shell", "deile-pipeline")
         result = setup._deployments_to_wait_for(plan, base)
@@ -346,10 +398,15 @@ class TestDeploymentsToWaitFor:
 
     def test_bot_enabled_keeps_deilebot(self):
         plan = setup.NamespacePlan(
-            name="x", forge_kind="github", repo="o/r",
-            dispatch_mode="deile_worker", bot_enabled=True,
+            name="x",
+            forge_kind="github",
+            repo="o/r",
+            dispatch_mode="deile_worker",
+            bot_enabled=True,
             llm_keys={"OPENAI_API_KEY": "sk-x"},
-            discord_token="a.b.c", bot_bearer="b", worker_bearer="w",
+            discord_token="a.b.c",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         base = ("deilebot", "deile-worker")
         assert setup._deployments_to_wait_for(plan, base) == base
@@ -359,8 +416,11 @@ class TestDeploymentsToWaitFor:
 # _apply_namespace — bot opt-out + sequência de manifests
 # ============================================================================
 
+
 class TestApplyNamespace:
-    def test_bot_opt_out_skips_bot_manifests_and_bot_secret(self, monkeypatch, tmp_path):
+    def test_bot_opt_out_skips_bot_manifests_and_bot_secret(
+        self, monkeypatch, tmp_path
+    ):
         """Sem bot habilitado, manifests do bot e `bot-secrets` são pulados."""
         applied_manifests = []
         applied_secrets = []
@@ -377,22 +437,27 @@ class TestApplyNamespace:
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
         monkeypatch.setattr(setup, "_ensure_namespace", lambda *_a, **_kw: True)
-        monkeypatch.setattr(
-            setup, "_apply_runtime_configmap", lambda *_a, **_kw: True
-        )
+        monkeypatch.setattr(setup, "_apply_runtime_configmap", lambda *_a, **_kw: True)
 
         def fake_apply_secret(kubectl, name, kv, ns=""):
             applied_secrets.append(name)
             return True
 
         plan = setup.NamespacePlan(
-            name="deile-no-bot", forge_kind="github", repo="o/r",
-            dispatch_mode="deile_worker", bot_enabled=False,
+            name="deile-no-bot",
+            forge_kind="github",
+            repo="o/r",
+            dispatch_mode="deile_worker",
+            bot_enabled=False,
             llm_keys={"ANTHROPIC_API_KEY": "sk-ant-x"},
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         ok = setup._apply_namespace(
-            "kubectl", plan, fake_apply_secret, tmp_path,
+            "kubectl",
+            plan,
+            fake_apply_secret,
+            tmp_path,
             "app.kubernetes.io/managed-by=deile",
         )
         assert ok is True
@@ -428,22 +493,28 @@ class TestApplyNamespace:
 
         monkeypatch.setattr(setup.subprocess, "run", fake_run)
         monkeypatch.setattr(setup, "_ensure_namespace", lambda *_a, **_kw: True)
-        monkeypatch.setattr(
-            setup, "_apply_runtime_configmap", lambda *_a, **_kw: True
-        )
+        monkeypatch.setattr(setup, "_apply_runtime_configmap", lambda *_a, **_kw: True)
 
         def fake_apply_secret(kubectl, name, kv, ns=""):
             applied_secrets.append(name)
             return True
 
         plan = setup.NamespacePlan(
-            name="deile-full", forge_kind="github", repo="o/r",
-            dispatch_mode="deile_worker", bot_enabled=True,
+            name="deile-full",
+            forge_kind="github",
+            repo="o/r",
+            dispatch_mode="deile_worker",
+            bot_enabled=True,
             llm_keys={"ANTHROPIC_API_KEY": "sk-ant-x"},
-            discord_token="a.b.c", bot_bearer="b", worker_bearer="w",
+            discord_token="a.b.c",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         ok = setup._apply_namespace(
-            "kubectl", plan, fake_apply_secret, tmp_path,
+            "kubectl",
+            plan,
+            fake_apply_secret,
+            tmp_path,
             "app.kubernetes.io/managed-by=deile",
         )
         assert ok is True
@@ -454,6 +525,7 @@ class TestApplyNamespace:
 # ============================================================================
 # run_setup — early reject + dry-run + partial-state guidance
 # ============================================================================
+
 
 class TestRunSetupYesRejection:
     def test_yes_at_top_returns_2_without_calling_anything(self, capsys, tmp_path):
@@ -488,10 +560,14 @@ class TestRunSetupDryRun:
     def test_dry_run_short_circuits_after_plan(self, monkeypatch, tmp_path):
         """--dry-run imprime o plano e sai sem aplicar."""
         plan_stub = setup.NamespacePlan(
-            name="deile-dry", forge_kind="github", repo="o/r",
-            dispatch_mode="deile_worker", bot_enabled=False,
+            name="deile-dry",
+            forge_kind="github",
+            repo="o/r",
+            dispatch_mode="deile_worker",
+            bot_enabled=False,
             llm_keys={"ANTHROPIC_API_KEY": "sk-ant-test"},
-            bot_bearer="b", worker_bearer="w",
+            bot_bearer="b",
+            worker_bearer="w",
         )
         monkeypatch.setattr(
             setup, "_collect_namespace_plans", lambda *_a, **_kw: [plan_stub]
@@ -530,6 +606,7 @@ class TestRunSetupDryRun:
 # _validate — usa filtro de deployments por bot
 # ============================================================================
 
+
 class TestValidate:
     def test_validate_skips_deilebot_when_bot_disabled(self, monkeypatch):
         """`_validate` chama `_wait_for_pods_ready` com `deilebot` removido
@@ -542,20 +619,31 @@ class TestValidate:
 
         monkeypatch.setattr(setup, "_wait_for_pods_ready", fake_wait)
         # Mock subprocess.run para o get pods,deployments,services final
-        monkeypatch.setattr(setup.subprocess, "run", lambda *a, **kw: MagicMock(returncode=0))
+        monkeypatch.setattr(
+            setup.subprocess, "run", lambda *a, **kw: MagicMock(returncode=0)
+        )
 
         plans = [
             setup.NamespacePlan(
-                name="ns-bot", forge_kind="github", repo="o/r",
-                dispatch_mode="deile_worker", bot_enabled=True,
-                llm_keys={"ANTHROPIC_API_KEY": "sk-x"}, discord_token="a.b.c",
-                bot_bearer="b", worker_bearer="w",
+                name="ns-bot",
+                forge_kind="github",
+                repo="o/r",
+                dispatch_mode="deile_worker",
+                bot_enabled=True,
+                llm_keys={"ANTHROPIC_API_KEY": "sk-x"},
+                discord_token="a.b.c",
+                bot_bearer="b",
+                worker_bearer="w",
             ),
             setup.NamespacePlan(
-                name="ns-no-bot", forge_kind="github", repo="o/r",
-                dispatch_mode="deile_worker", bot_enabled=False,
+                name="ns-no-bot",
+                forge_kind="github",
+                repo="o/r",
+                dispatch_mode="deile_worker",
+                bot_enabled=False,
                 llm_keys={"ANTHROPIC_API_KEY": "sk-x"},
-                bot_bearer="b", worker_bearer="w",
+                bot_bearer="b",
+                worker_bearer="w",
             ),
         ]
         base_deps = ("deilebot", "deile-worker", "deile-pipeline")
@@ -568,11 +656,15 @@ class TestValidate:
 # NamespacePlan repr — não vaza secrets
 # ============================================================================
 
+
 class TestPlanRepr:
     def test_repr_omits_sensitive_fields(self):
         plan = setup.NamespacePlan(
-            name="x", forge_kind="github", repo="o/r",
-            dispatch_mode="deile_worker", bot_enabled=True,
+            name="x",
+            forge_kind="github",
+            repo="o/r",
+            dispatch_mode="deile_worker",
+            bot_enabled=True,
             llm_keys={"ANTHROPIC_API_KEY": "sk-ant-SUPER-SECRET-VALUE-XYZ"},
             github_token="ghp_SHOULD-NOT-LEAK-ABC",
             gitlab_token="glpat-SHOULD-NOT-LEAK-DEF",
@@ -597,6 +689,7 @@ class TestPlanRepr:
 # ============================================================================
 # Wiring no deploy.py (smoke)
 # ============================================================================
+
 
 class TestDeployWiring:
     def test_setup_verb_registered(self):

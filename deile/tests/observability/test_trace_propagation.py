@@ -12,7 +12,6 @@ ACs verificados:
 from __future__ import annotations
 
 from typing import Any, Dict
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -22,6 +21,7 @@ pytestmark = pytest.mark.unit
 def otel_sdk_available() -> bool:
     try:
         import opentelemetry.sdk.trace  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -44,9 +44,9 @@ def test_pipeline_dispatch_request_span_opened(in_memory_exporter):
 
     finished = in_memory_exporter.get_finished_spans()
     names = [s.name for s in finished]
-    assert "pipeline.dispatch_request" in names, (
-        f"span pipeline.dispatch_request não encontrado; spans: {names}"
-    )
+    assert (
+        "pipeline.dispatch_request" in names
+    ), f"span pipeline.dispatch_request não encontrado; spans: {names}"
 
 
 def test_propagate_inject_writes_traceparent_when_span_active(in_memory_exporter):
@@ -58,9 +58,9 @@ def test_propagate_inject_writes_traceparent_when_span_active(in_memory_exporter
     with tracer.start_as_current_span("pipeline.dispatch_request"):
         propagate.inject(headers)
 
-    assert "traceparent" in headers, (
-        f"traceparent não foi injetado nos headers; headers={headers}"
-    )
+    assert (
+        "traceparent" in headers
+    ), f"traceparent não foi injetado nos headers; headers={headers}"
     tp = headers["traceparent"]
     # W3C traceparent: 00-<trace-id>-<span-id>-<flags>
     parts = tp.split("-")
@@ -85,13 +85,15 @@ def test_propagate_inject_no_op_without_span(in_memory_exporter):
 
 def test_deile_dispatch_is_child_of_pipeline_span(in_memory_exporter):
     """AC4: pipeline.dispatch_request → deile.dispatch com mesmo trace_id e parent correto."""
-    from opentelemetry import context, propagate, trace
+    from opentelemetry import propagate, trace
 
     # 1. Simula o pipeline abrindo o span pai
     pipeline_tracer = trace.get_tracer("deile.pipeline")
     worker_tracer = trace.get_tracer("deile.worker")
 
-    with pipeline_tracer.start_as_current_span("pipeline.dispatch_request") as pipeline_span:
+    with pipeline_tracer.start_as_current_span(
+        "pipeline.dispatch_request"
+    ) as pipeline_span:
         # 2. Injeta traceparent nos headers HTTP
         headers: Dict[str, str] = {}
         propagate.inject(headers)
@@ -179,6 +181,6 @@ def test_worker_client_injects_traceparent_in_headers(in_memory_exporter):
         propagate.inject(headers)
         captured_headers.update(headers)
 
-    assert "traceparent" in captured_headers, (
-        f"traceparent deveria estar nos headers HTTP; headers={captured_headers}"
-    )
+    assert (
+        "traceparent" in captured_headers
+    ), f"traceparent deveria estar nos headers HTTP; headers={captured_headers}"

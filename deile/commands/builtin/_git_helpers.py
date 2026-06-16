@@ -25,7 +25,9 @@ from ...core.exceptions import CommandError
 _DEFAULT_TIMEOUT_SECONDS = 30
 
 
-def git_ls_files(cwd: str | Path | None = None, *, timeout: int = _DEFAULT_TIMEOUT_SECONDS) -> list[str]:
+def git_ls_files(
+    cwd: str | Path | None = None, *, timeout: int = _DEFAULT_TIMEOUT_SECONDS
+) -> list[str]:
     """Lista paths versionados via ``git ls-files``.
 
     Retorna a lista de paths relativos não vazios. Levanta
@@ -48,7 +50,9 @@ def git_ls_files(cwd: str | Path | None = None, *, timeout: int = _DEFAULT_TIMEO
     except FileNotFoundError as exc:
         raise CommandError(f"git não encontrado: {exc}") from exc
     except subprocess.CalledProcessError as exc:
-        raise CommandError(f"git ls-files falhou: {(exc.stderr or '').strip()}") from exc
+        raise CommandError(
+            f"git ls-files falhou: {(exc.stderr or '').strip()}"
+        ) from exc
 
     return [line for line in result.stdout.splitlines() if line.strip()]
 

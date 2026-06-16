@@ -26,6 +26,7 @@ class HelpCommand(DirectCommand):
 
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="help",
             description="Lista comandos disponíveis e exemplos de uso",
@@ -37,6 +38,7 @@ class HelpCommand(DirectCommand):
     async def execute(self, context: CommandContext) -> CommandResult:
         try:
             from ..registry import get_command_registry
+
             registry = get_command_registry(context.config_manager)
             args = (context.args or "").strip()
 
@@ -55,7 +57,9 @@ class HelpCommand(DirectCommand):
                     or []
                 )
                 if aliases:
-                    help_content += "\n\n**Aliases:** " + ", ".join(f"/{a}" for a in aliases)
+                    help_content += "\n\n**Aliases:** " + ", ".join(
+                        f"/{a}" for a in aliases
+                    )
                 panel = Panel(
                     help_content,
                     title=f"[bold cyan]Help: /{command.name}[/bold cyan]",
@@ -73,13 +77,18 @@ class HelpCommand(DirectCommand):
 
             footer = Text()
             footer.append("\n💡 ", style="yellow")
-            footer.append("Use '/help <comando>' para ajuda específica e aliases\n", style="dim")
+            footer.append(
+                "Use '/help <comando>' para ajuda específica e aliases\n", style="dim"
+            )
             footer.append("📝 ", style="blue")
             footer.append("Digite '@' para autocompletar arquivos\n", style="dim")
             footer.append("🔧 ", style="green")
             footer.append("Digite '/' para ver comandos disponíveis\n", style="dim")
             footer.append("🏷️ ", style="magenta")
-            footer.append("Apenas nomes principais mostrados (aliases via /help <cmd>)", style="dim")
+            footer.append(
+                "Apenas nomes principais mostrados (aliases via /help <cmd>)",
+                style="dim",
+            )
 
             help_panel = Panel(
                 Group(table, footer),

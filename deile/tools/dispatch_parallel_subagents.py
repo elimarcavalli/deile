@@ -41,16 +41,18 @@ from collections import OrderedDict
 from typing import Dict, List
 
 from deile.config.settings import get_settings
-from deile.orchestration.subagents import (HISTORY_MARKER_KEY,
-                                           SubAgentOrchestrator, SubAgentTask,
-                                           resolve_runner)
+from deile.orchestration.subagents import (
+    HISTORY_MARKER_KEY,
+    SubAgentOrchestrator,
+    SubAgentTask,
+    resolve_runner,
+)
 from deile.orchestration.subagents._loop_lock import LoopBoundLock
 from deile.orchestration.subagents.events import SubAgentState
 from deile.orchestration.subagents.orchestrator import _get_budget_s
 
 from ._dispatch_cooldown import is_in_cooldown, prune_expired, record_dispatch
-from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
-                   ToolSchema)
+from .base import SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult, ToolSchema
 
 # Recursion guard (issue #257 "decomposição recursiva — fora de escopo").
 # ContextVar herda no ``asyncio.create_task``, então sub-DEILEs spawnados via
@@ -78,7 +80,9 @@ def _nesting_depth_inc():
 
 
 # Personas que o runner aceita (espelha WorkerPersona em deile_worker_client).
-_ALLOWED_PERSONAS = frozenset({"developer", "architect", "debugger", "reviewer", "analyst"})
+_ALLOWED_PERSONAS = frozenset(
+    {"developer", "architect", "debugger", "reviewer", "analyst"}
+)
 
 # Limites defensivos do schema.
 _MIN_SUBTASKS = 2
@@ -239,8 +243,10 @@ class DispatchParallelSubagentsTool(Tool):
                 now = time.monotonic()
                 self._prune_expired(now)
                 if is_in_cooldown(
-                    self._LAST_DISPATCH, session_id,
-                    self._DISPATCH_COOLDOWN_S, now,
+                    self._LAST_DISPATCH,
+                    session_id,
+                    self._DISPATCH_COOLDOWN_S,
+                    now,
                 ):
                     last = self._LAST_DISPATCH[session_id]
                     remaining = self._DISPATCH_COOLDOWN_S - (now - last)
@@ -279,14 +285,17 @@ class DispatchParallelSubagentsTool(Tool):
             host_console = context.session_data.get("_console")
             renderer_factory = None
             if host_console is not None:
+
                 def _make_renderer(states, broadcast, real_stdout=None):
                     from deile.ui.subagent_panel import SubAgentPanelRenderer
+
                     return SubAgentPanelRenderer(
                         host_console,
                         states,
                         broadcast,
                         real_stdout=real_stdout,
                     )
+
                 renderer_factory = _make_renderer
 
             orchestrator = SubAgentOrchestrator(
@@ -351,12 +360,14 @@ class DispatchParallelSubagentsTool(Tool):
             finally:
                 terminal_details = dict(audit_details)
                 if result is not None:
-                    terminal_details.update({
-                        "ok_count": result.ok_count,
-                        "error_count": result.error_count,
-                        "elapsed_s": round(result.elapsed_s, 3),
-                        "cancelled": result.cancelled,
-                    })
+                    terminal_details.update(
+                        {
+                            "ok_count": result.ok_count,
+                            "error_count": result.error_count,
+                            "elapsed_s": round(result.elapsed_s, 3),
+                            "cancelled": result.cancelled,
+                        }
+                    )
                     # Discrimina budget_exceeded (subagent_budget_exceeded
                     # vira o ``error`` dos states cancelados pelo budget).
                     if any(
@@ -424,9 +435,12 @@ class DispatchParallelSubagentsTool(Tool):
         ``'plan_manager'``) distinto de ``tool_name``.
         """
         try:
-            from deile.security.audit_logger import (AuditEventType,
-                                                     SeverityLevel,
-                                                     get_audit_logger)
+            from deile.security.audit_logger import (
+                AuditEventType,
+                SeverityLevel,
+                get_audit_logger,
+            )
+
             severity = (
                 SeverityLevel.WARNING
                 if result in ("failure", "budget_exceeded")
@@ -598,9 +612,7 @@ def _build_tasks_from_payload(raw: object):
                 "use a substantial sub-task or run sequentially"
             )
         if len(prompt) > _PROMPT_MAX_LEN:
-            return [], (
-                f"subtasks[{i-1}].prompt exceeds {_PROMPT_MAX_LEN} chars"
-            )
+            return [], (f"subtasks[{i-1}].prompt exceeds {_PROMPT_MAX_LEN} chars")
         # Personas/models opcionais — quando presentes, validar.
         if persona is not None:
             persona = str(persona).strip().lower()
@@ -623,13 +635,15 @@ def _build_tasks_from_payload(raw: object):
             )
         seen_desc.add(desc_key)
 
-        tasks.append(SubAgentTask(
-            index=i,
-            description=description,
-            prompt=prompt,
-            persona=persona,
-            model=model,
-        ))
+        tasks.append(
+            SubAgentTask(
+                index=i,
+                description=description,
+                prompt=prompt,
+                persona=persona,
+                model=model,
+            )
+        )
     return tasks, None
 
 
@@ -665,6 +679,7 @@ def _safe_truncate_markdown(text: str, max_chars: int = 400) -> str:
         # ellipsis-aware cut (keeps the single-source-of-truth for the
         # ellipsis char/width).
         from deile.common.text_utils import truncate
+
         truncated = truncate(text, max_chars)
     else:
         truncated = text[:cut].rstrip()

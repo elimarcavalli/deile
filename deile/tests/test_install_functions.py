@@ -27,6 +27,7 @@ from deile.core.exceptions import DEILEInstallError
 # _user_scripts_dir
 # ===================================================================
 
+
 @pytest.mark.unit
 class TestUserScriptsDir:
     """_user_scripts_dir() — delegates to sysconfig.
@@ -47,6 +48,7 @@ class TestUserScriptsDir:
 # ===================================================================
 # _wrapper_target_dir
 # ===================================================================
+
 
 @pytest.mark.unit
 class TestWrapperTargetDir:
@@ -74,6 +76,7 @@ class TestWrapperTargetDir:
 # ===================================================================
 # _ensure_scripts_dir_on_path
 # ===================================================================
+
 
 @pytest.mark.unit
 class TestEnsureScriptsDirOnPath:
@@ -120,8 +123,9 @@ class TestEnsureScriptsDirOnPath:
     @patch("deile.cli_install.Path.resolve", return_value=Path("/home/user/.zshrc"))
     @patch("deile.cli_install.Path.exists", return_value=True)
     @patch("deile.cli_install.Path.read_text")
-    def test_zsh_already_configured(self, mock_read, mock_exists, mock_resolve,
-                                     mock_home, mock_environ):
+    def test_zsh_already_configured(
+        self, mock_read, mock_exists, mock_resolve, mock_home, mock_environ
+    ):
         """Zsh with scripts_dir already in .zshrc -> (False, rc, '')."""
         from deile.cli_install import _ensure_scripts_dir_on_path
 
@@ -147,8 +151,16 @@ class TestEnsureScriptsDirOnPath:
     @patch("deile.cli_install.os.replace")
     @patch("deile.cli_install.Path.mkdir")
     def test_zsh_commented_line_is_not_configured(
-        self, mock_mkdir, mock_replace, mock_close, mock_write,
-        mock_mkstemp, mock_read, mock_exists, mock_resolve, mock_home,
+        self,
+        mock_mkdir,
+        mock_replace,
+        mock_close,
+        mock_write,
+        mock_mkstemp,
+        mock_read,
+        mock_exists,
+        mock_resolve,
+        mock_home,
         mock_environ,
     ):
         """Commented-out PATH line is not treated as configured."""
@@ -179,8 +191,16 @@ class TestEnsureScriptsDirOnPath:
     @patch("deile.cli_install.os.replace")
     @patch("deile.cli_install.Path.mkdir")
     def test_bash_linux_edits_bashrc(
-        self, mock_mkdir, mock_replace, mock_close, mock_write,
-        mock_mkstemp, mock_read, mock_exists, mock_resolve, mock_home,
+        self,
+        mock_mkdir,
+        mock_replace,
+        mock_close,
+        mock_write,
+        mock_mkstemp,
+        mock_read,
+        mock_exists,
+        mock_resolve,
+        mock_home,
         mock_environ,
     ):
         """Bash on Linux -> edits .bashrc with export line (atomic write)."""
@@ -208,7 +228,9 @@ class TestEnsureScriptsDirOnPath:
     @patch("deile.cli_install.sys.platform", "darwin")
     @patch("deile.cli_install.os.environ.get", return_value="/bin/bash")
     @patch("deile.cli_install.Path.home")
-    @patch("deile.cli_install.Path.resolve", return_value=Path("/home/user/.bash_profile"))
+    @patch(
+        "deile.cli_install.Path.resolve", return_value=Path("/home/user/.bash_profile")
+    )
     @patch("deile.cli_install.Path.exists", return_value=False)
     @patch("deile.cli_install.Path.read_text")
     @patch("deile.cli_install.tempfile.mkstemp")
@@ -217,8 +239,16 @@ class TestEnsureScriptsDirOnPath:
     @patch("deile.cli_install.os.replace")
     @patch("deile.cli_install.Path.mkdir")
     def test_bash_macos_edits_bash_profile(
-        self, mock_mkdir, mock_replace, mock_close, mock_write,
-        mock_mkstemp, mock_read, mock_exists, mock_resolve, mock_home,
+        self,
+        mock_mkdir,
+        mock_replace,
+        mock_close,
+        mock_write,
+        mock_mkstemp,
+        mock_read,
+        mock_exists,
+        mock_resolve,
+        mock_home,
         mock_environ,
     ):
         """Bash on macOS -> edits .bash_profile with export line."""
@@ -237,7 +267,10 @@ class TestEnsureScriptsDirOnPath:
     @patch("deile.cli_install.os.name", "posix")
     @patch("deile.cli_install.os.environ.get", return_value="/usr/bin/fish")
     @patch("deile.cli_install.Path.home")
-    @patch("deile.cli_install.Path.resolve", return_value=Path("/home/user/.config/fish/config.fish"))
+    @patch(
+        "deile.cli_install.Path.resolve",
+        return_value=Path("/home/user/.config/fish/config.fish"),
+    )
     @patch("deile.cli_install.Path.exists", return_value=False)
     @patch("deile.cli_install.Path.read_text")
     @patch("deile.cli_install.tempfile.mkstemp")
@@ -246,8 +279,16 @@ class TestEnsureScriptsDirOnPath:
     @patch("deile.cli_install.os.replace")
     @patch("deile.cli_install.Path.mkdir")
     def test_fish_edits_config_fish(
-        self, mock_mkdir, mock_replace, mock_close, mock_write,
-        mock_mkstemp, mock_read, mock_exists, mock_resolve, mock_home,
+        self,
+        mock_mkdir,
+        mock_replace,
+        mock_close,
+        mock_write,
+        mock_mkstemp,
+        mock_read,
+        mock_exists,
+        mock_resolve,
+        mock_home,
         mock_environ,
     ):
         """Fish shell -> edits config.fish with set -gx PATH."""
@@ -271,8 +312,9 @@ class TestEnsureScriptsDirOnPath:
     @patch("deile.cli_install.Path.resolve", return_value=Path("/home/user/.zshrc"))
     @patch("deile.cli_install.Path.exists", return_value=True)
     @patch("deile.cli_install.Path.read_text", side_effect=OSError("Permission denied"))
-    def test_read_error_returns_hint(self, mock_read, mock_exists, mock_resolve,
-                                      mock_home, mock_environ):
+    def test_read_error_returns_hint(
+        self, mock_read, mock_exists, mock_resolve, mock_home, mock_environ
+    ):
         """OSError on read -> (False, rc, hint)."""
         from deile.cli_install import _ensure_scripts_dir_on_path
 
@@ -292,10 +334,19 @@ class TestEnsureScriptsDirOnPath:
     @patch("deile.cli_install.Path.exists", return_value=False)
     @patch("deile.cli_install.Path.read_text")
     @patch("deile.cli_install.Path.mkdir")
-    @patch("deile.cli_install.tempfile.mkstemp", side_effect=OSError("Read-only filesystem"))
+    @patch(
+        "deile.cli_install.tempfile.mkstemp",
+        side_effect=OSError("Read-only filesystem"),
+    )
     def test_write_error_raises_deile_install_error(
-        self, mock_mkstemp, mock_mkdir, mock_read, mock_exists,
-        mock_resolve, mock_home, mock_environ,
+        self,
+        mock_mkstemp,
+        mock_mkdir,
+        mock_read,
+        mock_exists,
+        mock_resolve,
+        mock_home,
+        mock_environ,
     ):
         """OSError on tempfile creation -> DEILEInstallError."""
         from deile.cli_install import _ensure_scripts_dir_on_path
@@ -321,7 +372,10 @@ class TestEnsureScriptsDirOnPath:
         #   1. home = Path.home().resolve()   → /home/user (canonical home)
         #   2. rc   = (home / ".zshrc").resolve() → /etc/.zshrc (symlink outside home)
         # side_effect gives a different value per call so the security check triggers.
-        with patch("deile.cli_install.Path.resolve", side_effect=[Path("/home/user"), Path("/etc/.zshrc")]):
+        with patch(
+            "deile.cli_install.Path.resolve",
+            side_effect=[Path("/home/user"), Path("/etc/.zshrc")],
+        ):
             with pytest.raises(DEILEInstallError, match="outside of home"):
                 _ensure_scripts_dir_on_path(self.SCRIPTS_DIR)
 
@@ -329,6 +383,7 @@ class TestEnsureScriptsDirOnPath:
 # ===================================================================
 # _prompt_install_mode
 # ===================================================================
+
 
 @pytest.mark.unit
 class TestPromptInstallMode:
@@ -395,6 +450,7 @@ class TestPromptInstallMode:
 # _link_global_command
 # ===================================================================
 
+
 @pytest.mark.unit
 class TestLinkGlobalCommand:
     """_link_global_command() — symlink (POSIX) or .cmd shim (Windows)."""
@@ -409,8 +465,9 @@ class TestLinkGlobalCommand:
     @patch("deile.cli_install.Path.is_symlink", return_value=False)
     @patch("deile.cli_install.Path.exists", return_value=False)
     @patch("deile.cli_install.Path.symlink_to")
-    def test_posix_creates_symlink(self, mock_symlink, mock_exists,
-                                    mock_is_symlink, mock_mkdir):
+    def test_posix_creates_symlink(
+        self, mock_symlink, mock_exists, mock_is_symlink, mock_mkdir
+    ):
         """POSIX: creates symlink at target_dir/deile -> source_script."""
         from deile.cli_install import _link_global_command
 
@@ -429,8 +486,15 @@ class TestLinkGlobalCommand:
     @patch("deile.cli_install.Path.unlink")
     @patch("deile.cli_install.Path.symlink_to")
     @patch("builtins.input", return_value="y")
-    def test_posix_force_overwrite(self, mock_input, mock_symlink, mock_unlink,
-                                    mock_exists, mock_is_symlink, mock_mkdir):
+    def test_posix_force_overwrite(
+        self,
+        mock_input,
+        mock_symlink,
+        mock_unlink,
+        mock_exists,
+        mock_is_symlink,
+        mock_mkdir,
+    ):
         """POSIX: existing symlink removed and recreated when user agrees."""
         from deile.cli_install import _link_global_command
 
@@ -446,8 +510,9 @@ class TestLinkGlobalCommand:
     @patch("deile.cli_install.Path.is_symlink", return_value=True)
     @patch("deile.cli_install.Path.exists", return_value=True)
     @patch("builtins.input", return_value="n")
-    def test_posix_refuses_overwrite(self, mock_input, mock_exists,
-                                      mock_is_symlink, mock_mkdir):
+    def test_posix_refuses_overwrite(
+        self, mock_input, mock_exists, mock_is_symlink, mock_mkdir
+    ):
         """POSIX: user says no -> DEILEInstallError."""
         from deile.cli_install import _link_global_command
 
@@ -461,8 +526,9 @@ class TestLinkGlobalCommand:
     @patch("deile.cli_install.Path.is_symlink", return_value=False)
     @patch("deile.cli_install.Path.exists", return_value=False)
     @patch("deile.cli_install.Path.write_text")
-    def test_windows_creates_cmd_shim(self, mock_write, mock_exists,
-                                       mock_is_symlink, mock_mkdir):
+    def test_windows_creates_cmd_shim(
+        self, mock_write, mock_exists, mock_is_symlink, mock_mkdir
+    ):
         """Windows: creates deile.cmd with @echo off."""
         from deile.cli_install import _link_global_command
 
@@ -478,6 +544,7 @@ class TestLinkGlobalCommand:
 # ===================================================================
 # _create_venv_with_deile  (mocked venv + asyncio subprocess)
 # ===================================================================
+
 
 @pytest.mark.unit
 class TestCreateVenvWithDeile:
@@ -495,8 +562,9 @@ class TestCreateVenvWithDeile:
     @patch("deile.cli_install.Path.exists")
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
-    def test_creates_venv_and_installs(self, mock_subproc, mock_mkdir,
-                                        mock_exists, mock_resolve):
+    def test_creates_venv_and_installs(
+        self, mock_subproc, mock_mkdir, mock_exists, mock_resolve
+    ):
         """Full pipeline: create venv -> upgrade pip -> install reqs -> editable."""
         from deile.cli_install import _create_venv_with_deile
 
@@ -524,7 +592,9 @@ class TestCreateVenvWithDeile:
         with patch("deile.cli_install._venv.EnvBuilder") as mock_env_builder:
             mock_env_builder.return_value = MagicMock()
             with patch("deile.cli_install.asyncio.to_thread") as mock_to_thread:
-                result = asyncio.run(_create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test"))
+                result = asyncio.run(
+                    _create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test")
+                )
 
         mock_to_thread.assert_called_once()
         assert mock_subproc.call_count >= 3
@@ -560,7 +630,9 @@ class TestCreateVenvWithDeile:
 
         with patch("deile.cli_install._venv.EnvBuilder"):
             with patch("deile.cli_install.asyncio.to_thread") as mock_to_thread:
-                asyncio.run(_create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test"))
+                asyncio.run(
+                    _create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test")
+                )
 
         mock_to_thread.assert_not_called()
         pip_calls = [c[0] for c in mock_subproc.call_args_list]
@@ -571,6 +643,7 @@ class TestCreateVenvWithDeile:
 # _run_self_install  (integration-style with all helpers mocked)
 # ===================================================================
 
+
 @pytest.mark.unit
 class TestRunSelfInstall:
     """_run_self_install() — end-to-end with all helpers mocked."""
@@ -579,12 +652,21 @@ class TestRunSelfInstall:
     @patch("deile.cli_install._create_venv_with_deile")
     @patch("deile.cli_install._wrapper_target_dir")
     @patch("deile.cli_install._link_global_command")
-    @patch("deile.cli_install._ensure_scripts_dir_on_path", return_value=(True, Path("/home/user/.zshrc"), ""))
+    @patch(
+        "deile.cli_install._ensure_scripts_dir_on_path",
+        return_value=(True, Path("/home/user/.zshrc"), ""),
+    )
     @patch("deile.cli_install.subprocess.run")
     @patch("builtins.print")
     def test_global_mode_full_flow(
-        self, mock_print, mock_subprocess, mock_ensure_path,
-        mock_link, mock_wrapper_dir, mock_create_venv, mock_prompt,
+        self,
+        mock_print,
+        mock_subprocess,
+        mock_ensure_path,
+        mock_link,
+        mock_wrapper_dir,
+        mock_create_venv,
+        mock_prompt,
     ):
         """Global mode w/ mode=None (interactive prompt) -> all helpers called."""
         from deile.cli_install import _run_self_install
@@ -610,8 +692,10 @@ class TestRunSelfInstall:
 
         assert _run_self_install(mode=None) == 1
 
-    @patch("deile.cli_install._create_venv_with_deile",
-           side_effect=DEILEInstallError("venv creation failed", step="create_venv"))
+    @patch(
+        "deile.cli_install._create_venv_with_deile",
+        side_effect=DEILEInstallError("venv creation failed", step="create_venv"),
+    )
     @patch("builtins.print")
     def test_venv_error_returns_1(self, mock_print, mock_create_venv):
         """DEILEInstallError from _create_venv_with_deile -> returns 1."""
@@ -621,11 +705,17 @@ class TestRunSelfInstall:
 
     @patch("deile.cli_install._create_venv_with_deile")
     @patch("deile.cli_install._wrapper_target_dir")
-    @patch("deile.cli_install._link_global_command",
-           side_effect=DEILEInstallError("refusing to overwrite", step="link_command"))
+    @patch(
+        "deile.cli_install._link_global_command",
+        side_effect=DEILEInstallError("refusing to overwrite", step="link_command"),
+    )
     @patch("builtins.print")
     def test_link_error_returns_1(
-        self, mock_print, mock_link, mock_wrapper_dir, mock_create_venv,
+        self,
+        mock_print,
+        mock_link,
+        mock_wrapper_dir,
+        mock_create_venv,
     ):
         """DEILEInstallError from _link_global_command -> returns 1."""
         from deile.cli_install import _run_self_install
@@ -638,13 +728,20 @@ class TestRunSelfInstall:
     @patch("deile.cli_install._create_venv_with_deile")
     @patch("deile.cli_install._wrapper_target_dir")
     @patch("deile.cli_install._link_global_command")
-    @patch("deile.cli_install._ensure_scripts_dir_on_path",
-           return_value=(True, Path("/home/user/.zshrc"), ""))
+    @patch(
+        "deile.cli_install._ensure_scripts_dir_on_path",
+        return_value=(True, Path("/home/user/.zshrc"), ""),
+    )
     @patch("deile.cli_install.subprocess.run")
     @patch("builtins.print")
     def test_local_mode(
-        self, mock_print, mock_subprocess, mock_ensure_path,
-        mock_link, mock_wrapper_dir, mock_create_venv,
+        self,
+        mock_print,
+        mock_subprocess,
+        mock_ensure_path,
+        mock_link,
+        mock_wrapper_dir,
+        mock_create_venv,
     ):
         """Local mode with mode='local' -> .venv in repo root."""
         from deile.cli_install import _run_self_install
@@ -672,6 +769,7 @@ class TestRunSelfInstall:
 # Additional _link_global_command edge cases (MINOR 13)
 # ===================================================================
 
+
 @pytest.mark.unit
 class TestLinkGlobalCommandEdgeCases:
     """Edge cases for _link_global_command that were missing coverage."""
@@ -685,9 +783,12 @@ class TestLinkGlobalCommandEdgeCases:
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.Path.is_symlink", return_value=False)
     @patch("deile.cli_install.Path.exists", return_value=False)
-    @patch("deile.cli_install.Path.symlink_to", side_effect=OSError("permission denied"))
-    def test_posix_symlink_oserror_raises(self, mock_symlink, mock_exists,
-                                           mock_is_symlink, mock_mkdir):
+    @patch(
+        "deile.cli_install.Path.symlink_to", side_effect=OSError("permission denied")
+    )
+    def test_posix_symlink_oserror_raises(
+        self, mock_symlink, mock_exists, mock_is_symlink, mock_mkdir
+    ):
         """POSIX: OSError from symlink_to -> DEILEInstallError."""
         from deile.cli_install import _link_global_command
 
@@ -702,8 +803,9 @@ class TestLinkGlobalCommandEdgeCases:
     @patch("deile.cli_install.Path.exists", return_value=True)
     @patch("deile.cli_install.Path.unlink", side_effect=OSError("read-only filesystem"))
     @patch("builtins.input", return_value="y")
-    def test_posix_unlink_oserror_raises(self, mock_input, mock_unlink,
-                                          mock_exists, mock_is_symlink, mock_mkdir):
+    def test_posix_unlink_oserror_raises(
+        self, mock_input, mock_unlink, mock_exists, mock_is_symlink, mock_mkdir
+    ):
         """POSIX: OSError from unlink -> DEILEInstallError."""
         from deile.cli_install import _link_global_command
 
@@ -719,9 +821,15 @@ class TestLinkGlobalCommandEdgeCases:
     @patch("deile.cli_install.Path.unlink")
     @patch("deile.cli_install.Path.symlink_to")
     @patch("builtins.input")
-    def test_posix_force_true_skips_prompt(self, mock_input, mock_symlink,
-                                            mock_unlink, mock_exists,
-                                            mock_is_symlink, mock_mkdir):
+    def test_posix_force_true_skips_prompt(
+        self,
+        mock_input,
+        mock_symlink,
+        mock_unlink,
+        mock_exists,
+        mock_is_symlink,
+        mock_mkdir,
+    ):
         """POSIX: force=True replaces existing shim without prompting."""
         from deile.cli_install import _link_global_command
 
@@ -738,6 +846,7 @@ class TestLinkGlobalCommandEdgeCases:
 # Additional _create_venv_with_deile edge cases (MINOR 12 + 16)
 # ===================================================================
 
+
 @pytest.mark.unit
 class TestCreateVenvEdgeCases:
     """Missing edge cases for _create_venv_with_deile."""
@@ -750,8 +859,9 @@ class TestCreateVenvEdgeCases:
     @patch("deile.cli_install.Path.exists")
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
-    def test_pip_upgrade_failure_raises(self, mock_subproc, mock_mkdir,
-                                         mock_exists, mock_resolve):
+    def test_pip_upgrade_failure_raises(
+        self, mock_subproc, mock_mkdir, mock_exists, mock_resolve
+    ):
         """If pip upgrade fails (rc != 0), DEILEInstallError is raised."""
         from deile.cli_install import _create_venv_with_deile
 
@@ -767,15 +877,18 @@ class TestCreateVenvEdgeCases:
         with patch("deile.cli_install._venv.EnvBuilder"):
             with patch("deile.cli_install.asyncio.to_thread"):
                 with pytest.raises(DEILEInstallError, match="pip upgrade_pip failed"):
-                    asyncio.run(_create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test"))
+                    asyncio.run(
+                        _create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test")
+                    )
 
     @patch("deile.cli_install.os.name", "posix")
     @patch("deile.cli_install.Path.resolve")
     @patch("deile.cli_install.Path.exists")
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
-    def test_missing_console_script_raises(self, mock_subproc, mock_mkdir,
-                                            mock_exists, mock_resolve):
+    def test_missing_console_script_raises(
+        self, mock_subproc, mock_mkdir, mock_exists, mock_resolve
+    ):
         """If console script missing after install, DEILEInstallError raised."""
         from deile.cli_install import _create_venv_with_deile
 
@@ -790,16 +903,21 @@ class TestCreateVenvEdgeCases:
 
         with patch("deile.cli_install._venv.EnvBuilder"):
             with patch("deile.cli_install.asyncio.to_thread"):
-                with pytest.raises(DEILEInstallError, match="console script not created"):
-                    asyncio.run(_create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test"))
+                with pytest.raises(
+                    DEILEInstallError, match="console script not created"
+                ):
+                    asyncio.run(
+                        _create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test")
+                    )
 
     @patch("deile.cli_install.os.name", "posix")
     @patch("deile.cli_install.Path.resolve")
     @patch("deile.cli_install.Path.exists")
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
-    def test_editable_install_failure_raises(self, mock_subproc, mock_mkdir,
-                                              mock_exists, mock_resolve):
+    def test_editable_install_failure_raises(
+        self, mock_subproc, mock_mkdir, mock_exists, mock_resolve
+    ):
         """If editable install (--no-deps -e) fails, DEILEInstallError raised."""
         from deile.cli_install import _create_venv_with_deile
 
@@ -821,16 +939,21 @@ class TestCreateVenvEdgeCases:
 
         with patch("deile.cli_install._venv.EnvBuilder"):
             with patch("deile.cli_install.asyncio.to_thread"):
-                with pytest.raises(DEILEInstallError, match="pip install_editable failed"):
-                    asyncio.run(_create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test"))
+                with pytest.raises(
+                    DEILEInstallError, match="pip install_editable failed"
+                ):
+                    asyncio.run(
+                        _create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test")
+                    )
 
     @patch("deile.cli_install.os.name", "posix")
     @patch("deile.cli_install.Path.resolve")
     @patch("deile.cli_install.Path.exists")
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
-    def test_requirements_absent_skips_dep_install(self, mock_subproc, mock_mkdir,
-                                                    mock_exists, mock_resolve):
+    def test_requirements_absent_skips_dep_install(
+        self, mock_subproc, mock_mkdir, mock_exists, mock_resolve
+    ):
         """If requirements.txt is absent, dep install is skipped (no assert on warning)."""
         from deile.cli_install import _create_venv_with_deile
 
@@ -845,7 +968,9 @@ class TestCreateVenvEdgeCases:
 
         with patch("deile.cli_install._venv.EnvBuilder"):
             with patch("deile.cli_install.asyncio.to_thread"):
-                result = asyncio.run(_create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test"))
+                result = asyncio.run(
+                    _create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test")
+                )
 
         # Only 2 pip calls: upgrade pip + editable (no -r requirements)
         assert mock_subproc.call_count == 2
@@ -858,6 +983,7 @@ class TestCreateVenvEdgeCases:
 # Additional _create_venv_with_deile assertion fix (MINOR 14)
 # ===================================================================
 
+
 @pytest.mark.unit
 class TestReuseVenvAssertionStrength:
     """Verify that test_reuses_existing_venv checks .create() not called (MINOR 14)."""
@@ -869,7 +995,9 @@ class TestReuseVenvAssertionStrength:
     @patch("deile.cli_install.Path.resolve")
     @patch("deile.cli_install.Path.exists", return_value=True)
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
-    def test_reuses_venv_create_not_called(self, mock_subproc, mock_exists, mock_resolve):
+    def test_reuses_venv_create_not_called(
+        self, mock_subproc, mock_exists, mock_resolve
+    ):
         """When venv python already exists, EnvBuilder.create must NOT be called."""
         from deile.cli_install import _create_venv_with_deile
 
@@ -882,7 +1010,9 @@ class TestReuseVenvAssertionStrength:
 
         with patch("deile.cli_install._venv.EnvBuilder") as mock_env_builder:
             with patch("deile.cli_install.asyncio.to_thread") as mock_to_thread:
-                asyncio.run(_create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test"))
+                asyncio.run(
+                    _create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test")
+                )
 
         # The critical assertion: .create() must not be called (not just EnvBuilder())
         mock_env_builder.return_value.create.assert_not_called()
@@ -892,6 +1022,7 @@ class TestReuseVenvAssertionStrength:
 # ===================================================================
 # Additional _ensure_scripts_dir_on_path: rc file content preservation (MINOR 16)
 # ===================================================================
+
 
 @pytest.mark.unit
 class TestEnsureScriptsDirRcContentPreservation:
@@ -911,8 +1042,16 @@ class TestEnsureScriptsDirRcContentPreservation:
     @patch("deile.cli_install.os.replace")
     @patch("deile.cli_install.Path.mkdir")
     def test_pre_existing_content_preserved(
-        self, mock_mkdir, mock_replace, mock_close, mock_write,
-        mock_mkstemp, mock_read, mock_exists, mock_resolve, mock_home,
+        self,
+        mock_mkdir,
+        mock_replace,
+        mock_close,
+        mock_write,
+        mock_mkstemp,
+        mock_read,
+        mock_exists,
+        mock_resolve,
+        mock_home,
         mock_environ,
     ):
         """Pre-existing .zshrc content is included in the written output."""
@@ -943,8 +1082,9 @@ class TestEnsureScriptsDirRcContentPreservation:
     @patch("deile.cli_install.Path.resolve", return_value=Path("/home/user/.zshrc"))
     @patch("deile.cli_install.Path.exists", return_value=False)
     @patch("deile.cli_install.Path.read_text")
-    def test_path_with_double_quote_returns_hint(self, mock_read, mock_exists,
-                                                   mock_resolve, mock_home, mock_environ):
+    def test_path_with_double_quote_returns_hint(
+        self, mock_read, mock_exists, mock_resolve, mock_home, mock_environ
+    ):
         """scripts_dir with double-quote -> returns manual hint instead of writing."""
         from deile.cli_install import _ensure_scripts_dir_on_path
 
@@ -961,6 +1101,7 @@ class TestEnsureScriptsDirRcContentPreservation:
 # ===================================================================
 # NIT 20: --install-mode without --install validation order
 # ===================================================================
+
 
 @pytest.mark.unit
 class TestInstallModeValidationOrder:
@@ -1038,7 +1179,11 @@ class TestCreateVenvWithDeileWindows:
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
     def test_windows_venv_python_is_scripts_python_exe(
-        self, mock_subproc, mock_mkdir, mock_exists, mock_resolve,
+        self,
+        mock_subproc,
+        mock_mkdir,
+        mock_exists,
+        mock_resolve,
         mock_home,
     ):
         """venv_py path on Windows is `<venv>/Scripts/python.exe`, not `bin/python`."""
@@ -1073,9 +1218,9 @@ class TestCreateVenvWithDeileWindows:
         # interpreter (positional arg 0 of `create_subprocess_exec`).
         expected_python = str(self.VENV_DIR / "Scripts/python.exe")
         for call in mock_subproc.call_args_list:
-            assert call[0][0] == expected_python, (
-                f"expected venv python {expected_python!r}, got {call[0][0]!r}"
-            )
+            assert (
+                call[0][0] == expected_python
+            ), f"expected venv python {expected_python!r}, got {call[0][0]!r}"
 
     @patch("deile.cli_install.os.name", "nt")
     @patch("deile.cli_install.Path.home")
@@ -1084,7 +1229,11 @@ class TestCreateVenvWithDeileWindows:
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
     def test_windows_missing_deile_exe_raises(
-        self, mock_subproc, mock_mkdir, mock_exists, mock_resolve,
+        self,
+        mock_subproc,
+        mock_mkdir,
+        mock_exists,
+        mock_resolve,
         mock_home,
     ):
         """If `Scripts/deile.exe` is absent after install on Windows, raises."""
@@ -1102,7 +1251,9 @@ class TestCreateVenvWithDeileWindows:
 
         with patch("deile.cli_install._venv.EnvBuilder"):
             with patch("deile.cli_install.asyncio.to_thread"):
-                with pytest.raises(DEILEInstallError, match="console script not created"):
+                with pytest.raises(
+                    DEILEInstallError, match="console script not created"
+                ):
                     asyncio.run(
                         _create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test")
                     )
@@ -1127,7 +1278,9 @@ class TestUserScriptsDirWindowsFallback:
 
         # Simulate old Python by removing `get_preferred_scheme` from sysconfig.
         del mock_sysconfig.get_preferred_scheme
-        mock_sysconfig.get_path.return_value = "C:/Users/test/AppData/Roaming/Python/Python310/Scripts"
+        mock_sysconfig.get_path.return_value = (
+            "C:/Users/test/AppData/Roaming/Python/Python310/Scripts"
+        )
 
         with patch("deile.cli_install.Path", PosixPath):
             result = _user_scripts_dir()
@@ -1163,13 +1316,21 @@ class TestRunSelfInstallAsyncWindowsSkipsWhich:
     @patch("deile.cli_install._create_venv_with_deile")
     @patch("deile.cli_install._wrapper_target_dir")
     @patch("deile.cli_install._link_global_command")
-    @patch("deile.cli_install._ensure_scripts_dir_on_path",
-           return_value=(False, None, "PowerShell hint"))
+    @patch(
+        "deile.cli_install._ensure_scripts_dir_on_path",
+        return_value=(False, None, "PowerShell hint"),
+    )
     @patch("deile.cli_install.asyncio.to_thread")
     @patch("builtins.print")
     def test_which_subprocess_not_called_on_windows(
-        self, mock_print, mock_to_thread, mock_ensure_path,
-        mock_link, mock_wrapper_dir, mock_create_venv, mock_prompt,
+        self,
+        mock_print,
+        mock_to_thread,
+        mock_ensure_path,
+        mock_link,
+        mock_wrapper_dir,
+        mock_create_venv,
+        mock_prompt,
         mock_home,
     ):
         from deile.cli_install import _run_self_install_async
@@ -1208,13 +1369,20 @@ class TestRunSelfInstallAsyncWindowsSkipsWhich:
     @patch("deile.cli_install._create_venv_with_deile")
     @patch("deile.cli_install._wrapper_target_dir")
     @patch("deile.cli_install._link_global_command")
-    @patch("deile.cli_install._ensure_scripts_dir_on_path",
-           return_value=(False, None, ""))
+    @patch(
+        "deile.cli_install._ensure_scripts_dir_on_path", return_value=(False, None, "")
+    )
     @patch("deile.cli_install.asyncio.to_thread")
     @patch("builtins.print")
     def test_which_subprocess_called_on_posix_for_contrast(
-        self, mock_print, mock_to_thread, mock_ensure_path,
-        mock_link, mock_wrapper_dir, mock_create_venv, mock_prompt,
+        self,
+        mock_print,
+        mock_to_thread,
+        mock_ensure_path,
+        mock_link,
+        mock_wrapper_dir,
+        mock_create_venv,
+        mock_prompt,
     ):
         """Negative control: same scenario on POSIX MUST run `which deile`."""
         from deile.cli_install import _run_self_install_async

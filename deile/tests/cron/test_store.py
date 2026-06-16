@@ -27,14 +27,14 @@ class TestCronEntryConstruction:
         assert e.next_fire_at == _utc("2030-01-01T00:00:00")
 
     def test_naive_run_at_promoted_to_utc(self):
-        e = CronEntry(id="x", prompt="ping",
-                      run_at=datetime(2030, 1, 1, 0, 0))
+        e = CronEntry(id="x", prompt="ping", run_at=datetime(2030, 1, 1, 0, 0))
         assert e.run_at.tzinfo is not None
 
     def test_rejects_both_cron_and_run_at(self):
         with pytest.raises(CronStoreError):
-            CronEntry(id="x", prompt="p", cron="* * * * *",
-                      run_at=_utc("2030-01-01T00:00:00"))
+            CronEntry(
+                id="x", prompt="p", cron="* * * * *", run_at=_utc("2030-01-01T00:00:00")
+            )
 
     def test_rejects_neither(self):
         with pytest.raises(CronStoreError):
@@ -57,8 +57,12 @@ class TestAdvance:
         assert e.next_fire_at is None
 
     def test_recurring_advances(self):
-        e = CronEntry(id="x", prompt="p", cron="*/5 * * * *",
-                      last_fired_at=_utc("2026-05-06T00:00:00"))
+        e = CronEntry(
+            id="x",
+            prompt="p",
+            cron="*/5 * * * *",
+            last_fired_at=_utc("2026-05-06T00:00:00"),
+        )
         first = e.next_fire_at
         e.advance(after=_utc("2026-05-06T00:10:00"))
         assert e.next_fire_at > first
@@ -112,18 +116,33 @@ class TestCronStore:
     def test_list_due(self, tmp_path):
         store = CronStore(tmp_path / "cron.db")
         # one-shot in the past → due
-        store.add(CronEntry(id="o1", prompt="p",
-                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+        store.add(
+            CronEntry(
+                id="o1",
+                prompt="p",
+                run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
         # one-shot in the future → not due
-        store.add(CronEntry(id="o2", prompt="p",
-                            run_at=datetime.now(timezone.utc) + timedelta(hours=1)))
+        store.add(
+            CronEntry(
+                id="o2",
+                prompt="p",
+                run_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
         due = store.list_due()
         assert [e.id for e in due] == ["o1"]
 
     def test_mark_fired_oneshot_disables(self, tmp_path):
         store = CronStore(tmp_path / "cron.db")
-        store.add(CronEntry(id="o1", prompt="p",
-                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+        store.add(
+            CronEntry(
+                id="o1",
+                prompt="p",
+                run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
         store.mark_fired("o1", result="ok")
         loaded = store.get("o1")
         assert not loaded.enabled

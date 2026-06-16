@@ -15,18 +15,25 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
-from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
-                                                        MentionTrigger)
-from deile.orchestration.pipeline.implementer import (ClaudeImplementer,
-                                                      WorkerImplementer,
-                                                      WorkOutcome,
-                                                      build_implementer)
+from deile.orchestration.pipeline.github_client import (
+    CommentRef,
+    IssueRef,
+    MentionTrigger,
+)
+from deile.orchestration.pipeline.implementer import (
+    ClaudeImplementer,
+    WorkerImplementer,
+    WorkOutcome,
+    build_implementer,
+)
 
 
 def _make_monitor(*, claude_stdout="", claude_rc=0, worktree_raises=False):
     monitor = MagicMock()
     monitor.config = SimpleNamespace(
-        repo="owner/name", main_branch="main", base_repo_path=Path("/tmp/fake"),
+        repo="owner/name",
+        main_branch="main",
+        base_repo_path=Path("/tmp/fake"),
         mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
@@ -40,8 +47,11 @@ def _make_monitor(*, claude_stdout="", claude_rc=0, worktree_raises=False):
         )
     monitor.claude.run = AsyncMock(
         return_value=ClaudeRunResult(
-            returncode=claude_rc, stdout=claude_stdout, stderr="err" if claude_rc else "",
-            duration_seconds=0.1, cmd=("claude", "-p", "x"),
+            returncode=claude_rc,
+            stdout=claude_stdout,
+            stderr="err" if claude_rc else "",
+            duration_seconds=0.1,
+            cmd=("claude", "-p", "x"),
         )
     )
     return monitor
@@ -53,7 +63,9 @@ def _issue(number=242, title="t", body="b"):
 
 def _pr(number=7, title="t", head_ref="auto/issue-242"):
     return SimpleNamespace(
-        number=number, title=title, head_ref=head_ref,
+        number=number,
+        title=title,
+        head_ref=head_ref,
         url=f"https://github.com/owner/name/pull/{number}",
     )
 
@@ -61,7 +73,8 @@ def _pr(number=7, title="t", head_ref="auto/issue-242"):
 def _comment():
     return SimpleNamespace(
         html_url="https://github.com/owner/name/issues/1#c1",
-        body="@deile-one ol\u221a\u00b0", author="someone",
+        body="@deile-one ol\u221a\u00b0",
+        author="someone",
     )
 
 
@@ -91,6 +104,7 @@ def _mention_trigger_assignee_issue(number: int = 100) -> MentionTrigger:
 
 # ----- factory ------------------------------------------------------------
 
+
 class TestFactory:
     """A partir da fase 2 da issue #309, ``build_implementer`` SEMPRE retorna
     :class:`WorkerImplementer` — a decisão de endpoint (``deile-worker`` vs
@@ -112,7 +126,9 @@ class TestFactory:
         impl = build_implementer(mode, worker_client=MagicMock())
         assert isinstance(impl, WorkerImplementer)
 
-    @pytest.mark.parametrize("mode", ["deile_worker", "worker", "deile", "deile-worker"])
+    @pytest.mark.parametrize(
+        "mode", ["deile_worker", "worker", "deile", "deile-worker"]
+    )
     def test_worker_aliases(self, mode):
         impl = build_implementer(mode, worker_client=MagicMock())
         assert isinstance(impl, WorkerImplementer)
@@ -138,13 +154,16 @@ class TestFactory:
     def test_get_local_claude_implementer_returns_claude(self):
         """Factory exclusiva para uso local fora do cluster (CLI). Continua
         construindo :class:`ClaudeImplementer` (subprocess ``claude -p``)."""
-        from deile.orchestration.pipeline.implementer import \
-            get_local_claude_implementer
+        from deile.orchestration.pipeline.implementer import (
+            get_local_claude_implementer,
+        )
+
         impl = get_local_claude_implementer()
         assert isinstance(impl, ClaudeImplementer)
 
 
 # ----- ClaudeImplementer --------------------------------------------------
+
 
 class TestClaudeImplementer:
     async def test_implement_uses_worktree_and_claude(self):
@@ -168,7 +187,9 @@ class TestClaudeImplementer:
         assert out.ok is False
 
     async def test_review_uses_worktree_and_claude(self):
-        monitor = _make_monitor(claude_stdout="merged https://github.com/owner/name/pull/9")
+        monitor = _make_monitor(
+            claude_stdout="merged https://github.com/owner/name/pull/9"
+        )
         out = await ClaudeImplementer().review(monitor, _pr())
         assert out.ok is True
         assert "merged" in out.text.lower()
@@ -177,7 +198,8 @@ class TestClaudeImplementer:
         monitor = _make_monitor(claude_stdout="done")
         trigger = _mention_trigger_comment()
         out = await ClaudeImplementer().mention(
-            monitor, trigger,
+            monitor,
+            trigger,
             trigger_types=["comment"],
             all_triggers=[trigger],
         )
@@ -187,6 +209,7 @@ class TestClaudeImplementer:
 
 
 # ----- WorkerImplementer --------------------------------------------------
+
 
 class _FakeClient:
     """Captures the dispatch payload and returns a canned response."""
@@ -210,7 +233,9 @@ class TestWorkerImplementer:
         # The worker returns 202 + task_id; the response has no summary.
         client = _FakeClient({"task_id": "abc123", "status": "running"})
         impl = WorkerImplementer(client=client)
-        out = await impl.implement(_make_monitor(), _issue(number=242, title="soma", body="impl"))
+        out = await impl.implement(
+            _make_monitor(), _issue(number=242, title="soma", body="impl")
+        )
         assert out.ok is True
         assert out.task_id == "abc123"
         # Fire-and-forget: no summary text in response.
@@ -228,18 +253,22 @@ class TestWorkerImplementer:
     async def test_implement_worker_failure_returns_not_ok(self):
         # Issue #373: fire-and-forget dispatch — transport errors still
         # propagate (the _post_dispatch call itself can fail).
-        from deile.infrastructure.deile_worker_client import \
-            WorkerDispatchError
+        from deile.infrastructure.deile_worker_client import WorkerDispatchError
+
         client = _FakeClient(WorkerDispatchError("nope", error_code="WORKER_TIMEOUT"))
-        out = await WorkerImplementer(client=client).implement(_make_monitor(), _issue())
+        out = await WorkerImplementer(client=client).implement(
+            _make_monitor(), _issue()
+        )
         assert out.ok is False
         assert "WORKER_TIMEOUT" in out.error
 
     async def test_dispatch_error_is_caught(self):
-        from deile.infrastructure.deile_worker_client import \
-            WorkerDispatchError
+        from deile.infrastructure.deile_worker_client import WorkerDispatchError
+
         client = _FakeClient(WorkerDispatchError("nope", error_code="WORKER_TIMEOUT"))
-        out = await WorkerImplementer(client=client).implement(_make_monitor(), _issue())
+        out = await WorkerImplementer(client=client).implement(
+            _make_monitor(), _issue()
+        )
         assert out.ok is False
         assert "WORKER_TIMEOUT" in out.error
 
@@ -248,7 +277,9 @@ class TestWorkerImplementer:
         # o implement. O worker retorna 202 + task_id imediatamente; o pipeline
         # reconcilia via ground truth no próximo tick (com resume=True bloqueante).
         client = _FakeClient({"task_id": "rev-abc", "status": "running"})
-        out = await WorkerImplementer(client=client).review(_make_monitor(), _pr(number=7))
+        out = await WorkerImplementer(client=client).review(
+            _make_monitor(), _pr(number=7)
+        )
         assert out.ok is True
         assert out.task_id == "rev-abc"
         # Fire-and-forget: sem summary no response imediato.
@@ -267,7 +298,9 @@ class TestWorkerImplementer:
         assert "estado real" in brief.lower() or "ESTADO REAL" in brief
 
     async def test_review_resume_uses_reviewer_persona(self):
-        client = _FakeClient({"ok": True, "summary": "https://github.com/owner/name/pull/7 MERGED"})
+        client = _FakeClient(
+            {"ok": True, "summary": "https://github.com/owner/name/pull/7 MERGED"}
+        )
         out = await WorkerImplementer(client=client).review(
             _make_monitor(), _pr(number=7), resume=True
         )
@@ -278,7 +311,8 @@ class TestWorkerImplementer:
         client = _FakeClient({"ok": True, "summary": "respondido"})
         trigger = _mention_trigger_comment()
         out = await WorkerImplementer(client=client).mention(
-            _make_monitor(), trigger,
+            _make_monitor(),
+            trigger,
             trigger_types=["comment"],
             all_triggers=[trigger],
         )
@@ -326,7 +360,9 @@ class TestTickWatchdog:
             0.05,
         )
         monkeypatch.setattr(
-            impl_mod.WorkerImplementer, "_TICK_WATCHDOG_BUFFER_S", 0.05,
+            impl_mod.WorkerImplementer,
+            "_TICK_WATCHDOG_BUFFER_S",
+            0.05,
         )
 
         client = _HangingClient()
@@ -335,7 +371,8 @@ class TestTickWatchdog:
         # review(resume=True) despacha com wait=True (caminho bloqueante).
         # review(resume=False) agora é nowait — não trava o tick por design.
         out = await asyncio.wait_for(
-            impl.review(_make_monitor(), _pr(number=7), resume=True), timeout=5.0,
+            impl.review(_make_monitor(), _pr(number=7), resume=True),
+            timeout=5.0,
         )
 
         assert client.started.is_set()
@@ -354,7 +391,9 @@ class TestTickWatchdog:
             3600.0,
         )
         monkeypatch.setattr(
-            impl_mod.WorkerImplementer, "_TICK_WATCHDOG_BUFFER_S", 0.0,
+            impl_mod.WorkerImplementer,
+            "_TICK_WATCHDOG_BUFFER_S",
+            0.0,
         )
 
         client = _HangingClient()
@@ -377,10 +416,12 @@ class TestWorkOutcome:
 # Testes de nowait para critique / refine / review (issue #373 extensão)
 # ---------------------------------------------------------------------------
 
+
 def _make_monitor_with_forge():
     """Mesmo que _make_monitor(), mas com forge.config real (necessário para critique/refine)."""
     monitor = _make_monitor()
     from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+
     monitor.forge = SimpleNamespace(
         config=ForgeConfig(
             kind=ForgeKind.GITHUB,
@@ -393,7 +434,9 @@ def _make_monitor_with_forge():
 
 
 def _issue_with_labels(number=10, labels=("intent",)):
-    return SimpleNamespace(number=number, title="Issue teste", body="corpo da issue", labels=labels)
+    return SimpleNamespace(
+        number=number, title="Issue teste", body="corpo da issue", labels=labels
+    )
 
 
 class TestCritiqueRefineNowait:
@@ -402,7 +445,9 @@ class TestCritiqueRefineNowait:
     async def test_critique_is_nowait_and_returns_task_id(self):
         client = _FakeClient({"task_id": "crit-t1", "status": "running"})
         impl = WorkerImplementer(client=client)
-        out = await impl.critique(_make_monitor_with_forge(), _issue_with_labels(number=10))
+        out = await impl.critique(
+            _make_monitor_with_forge(), _issue_with_labels(number=10)
+        )
         # Fire-and-forget: retorna task_id sem bloquear.
         assert out.ok is True
         assert out.task_id == "crit-t1"
@@ -419,9 +464,12 @@ class TestCritiqueRefineNowait:
     async def test_critique_gravar_ledger_com_task_id(self):
         """critique() com nowait=True deve gravar task_id no DispatchLedger."""
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         client = _FakeClient({"task_id": "crit-t3", "status": "running"})
         impl = WorkerImplementer(client=client)
-        out = await impl.critique(_make_monitor_with_forge(), _issue_with_labels(number=42))
+        out = await impl.critique(
+            _make_monitor_with_forge(), _issue_with_labels(number=42)
+        )
         assert out.task_id == "crit-t3"
         # Ledger deve ter a entry para a issue.
         record = impl._ledger.get(DispatchLedger.key_for_issue(42))
@@ -431,7 +479,9 @@ class TestCritiqueRefineNowait:
     async def test_refine_is_nowait_and_returns_task_id(self):
         client = _FakeClient({"task_id": "ref-t1", "status": "running"})
         impl = WorkerImplementer(client=client)
-        out = await impl.refine(_make_monitor_with_forge(), _issue_with_labels(number=11))
+        out = await impl.refine(
+            _make_monitor_with_forge(), _issue_with_labels(number=11)
+        )
         assert out.ok is True
         assert out.task_id == "ref-t1"
         assert out.text == ""
@@ -446,9 +496,12 @@ class TestCritiqueRefineNowait:
     async def test_refine_grava_ledger_com_task_id(self):
         """refine() com nowait=True deve gravar task_id no DispatchLedger."""
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         client = _FakeClient({"task_id": "ref-t3", "status": "running"})
         impl = WorkerImplementer(client=client)
-        out = await impl.refine(_make_monitor_with_forge(), _issue_with_labels(number=55))
+        out = await impl.refine(
+            _make_monitor_with_forge(), _issue_with_labels(number=55)
+        )
         assert out.task_id == "ref-t3"
         record = impl._ledger.get(DispatchLedger.key_for_issue(55))
         assert record is not None
@@ -460,7 +513,10 @@ class TestCritiqueRefineNowait:
         separadas — a crítica julga CLARO/VAGO; o refine reescreve."""
         client = _FakeClient({"task_id": "crit-t4", "status": "running"})
         impl = WorkerImplementer(client=client)
-        await impl.critique(_make_monitor_with_forge(), _issue_with_labels(number=10, labels=("intent",)))
+        await impl.critique(
+            _make_monitor_with_forge(),
+            _issue_with_labels(number=10, labels=("intent",)),
+        )
         assert client.last_payload["stage"] == "classify"
         # 'intent' → persona 'analyst'
         assert client.last_payload["persona"] == "analyst"
@@ -469,7 +525,10 @@ class TestCritiqueRefineNowait:
         """refine() deve continuar usando stage='refine' e persona da issue."""
         client = _FakeClient({"task_id": "ref-t4", "status": "running"})
         impl = WorkerImplementer(client=client)
-        await impl.refine(_make_monitor_with_forge(), _issue_with_labels(number=10, labels=("feature",)))
+        await impl.refine(
+            _make_monitor_with_forge(),
+            _issue_with_labels(number=10, labels=("feature",)),
+        )
         assert client.last_payload["stage"] == "refine"
         # 'feature' → persona 'architect'
         assert client.last_payload["persona"] == "architect"
@@ -486,7 +545,9 @@ class TestCritiqueRefineNowait:
 
     async def test_review_resume_permanece_bloqueante(self):
         """review(resume=True) deve continuar bloqueante (wait=True)."""
-        client = _FakeClient({"ok": True, "summary": "https://github.com/owner/name/pull/5 MERGED"})
+        client = _FakeClient(
+            {"ok": True, "summary": "https://github.com/owner/name/pull/5 MERGED"}
+        )
         impl = WorkerImplementer(client=client)
         out = await impl.review(_make_monitor(), _pr(number=5), resume=True)
         assert out.ok is True
@@ -495,6 +556,7 @@ class TestCritiqueRefineNowait:
     async def test_review_fresh_grava_ledger(self):
         """review fresh deve gravar task_id no DispatchLedger (caminho nowait)."""
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         client = _FakeClient({"task_id": "rev-t2", "status": "running"})
         impl = WorkerImplementer(client=client)
         out = await impl.review(_make_monitor(), _pr(number=77))
@@ -516,6 +578,7 @@ class TestCritiqueRefineNowait:
 # ---------------------------------------------------------------------------
 # Fix #8 (issue #521) — WorkerImplementer.address_review
 # ---------------------------------------------------------------------------
+
 
 class TestAddressReviewDispatch:
     """address_review() deve despachar fire-and-forget com stage=implement e

@@ -9,6 +9,7 @@ Pre-requisitos:
 NAO roda em CI (operator-driven, custa tokens da assinatura Claude).
 Run manual: python3 deile/tests/might/test_claude_dispatch_real.py
 """
+
 import asyncio
 import json
 import subprocess
@@ -31,14 +32,20 @@ SHELL_POD = "deploy/deile-shell"  # ajuste se label diferente
 def _exec_via_shell(*cmd_args, timeout: int = 30) -> tuple[int, str, str]:
     """Roda `kubectl exec -n deile <SHELL_POD> -- <cmd_args>` e retorna (rc, stdout, stderr)."""
     full = ["kubectl", "exec", "-n", "deile", SHELL_POD, "--", *cmd_args]
-    proc = subprocess.run(full, capture_output=True, text=True, check=False, timeout=timeout)
+    proc = subprocess.run(
+        full, capture_output=True, text=True, check=False, timeout=timeout
+    )
     return proc.returncode, proc.stdout, proc.stderr
 
 
 async def test_health():
     """GET /v1/health via kubectl exec deile-shell + curl."""
     rc, stdout, stderr = _exec_via_shell(
-        "curl", "-sf", "-m", "10", "http://claude-worker:8767/v1/health",
+        "curl",
+        "-sf",
+        "-m",
+        "10",
+        "http://claude-worker:8767/v1/health",
     )
 
     if rc != 0:
@@ -61,21 +68,30 @@ async def test_dispatch_smoke():
     - 'hello world' aparece no stdout
     - duration_seconds > 0
     """
-    payload = json.dumps({
-        "brief": (
-            "Sua unica tarefa: execute `echo 'hello world from claude-worker'` "
-            "via Bash tool. Depois imprima 'STATUS: SUCCESS' como ultima linha."
-        ),
-        "channel_id": "smoke-test-309",
-        "preferred_model": "anthropic:claude-haiku-4-5",
-        "stage": "implement",
-    })
+    payload = json.dumps(
+        {
+            "brief": (
+                "Sua unica tarefa: execute `echo 'hello world from claude-worker'` "
+                "via Bash tool. Depois imprima 'STATUS: SUCCESS' como ultima linha."
+            ),
+            "channel_id": "smoke-test-309",
+            "preferred_model": "anthropic:claude-haiku-4-5",
+            "stage": "implement",
+        }
+    )
 
     # Aceitar timeout maior - claude pode levar 30-60s para haiku simples
     rc, stdout, stderr = _exec_via_shell(
-        "curl", "-sf", "-m", "180",
-        "-X", "POST", "-H", "Content-Type: application/json",
-        "-d", payload,
+        "curl",
+        "-sf",
+        "-m",
+        "180",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "-d",
+        payload,
         "http://claude-worker:8767/v1/dispatch",
         timeout=200,
     )
@@ -88,8 +104,9 @@ async def test_dispatch_smoke():
 
     data = json.loads(stdout)
     assert data["ok"] is True, f"dispatch returned not-ok: {data}"
-    assert "hello world" in data["stdout"].lower(), \
-        f"expected 'hello world' in stdout; got: {data['stdout'][:500]!r}"
+    assert (
+        "hello world" in data["stdout"].lower()
+    ), f"expected 'hello world' in stdout; got: {data['stdout'][:500]!r}"
     assert data["duration_seconds"] > 0, f"duration_seconds={data['duration_seconds']}"
     print(
         f"OK /v1/dispatch "
@@ -104,9 +121,20 @@ def test_setup_check() -> bool:
 
     # claude-worker pod existe e esta Ready?
     proc = subprocess.run(
-        ["kubectl", "get", "deploy", "claude-worker", "-n", "deile",
-         "-o", "jsonpath={.status.readyReplicas}"],
-        capture_output=True, text=True, check=False, timeout=10,
+        [
+            "kubectl",
+            "get",
+            "deploy",
+            "claude-worker",
+            "-n",
+            "deile",
+            "-o",
+            "jsonpath={.status.readyReplicas}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
     )
 
     if proc.returncode != 0:
@@ -120,7 +148,10 @@ def test_setup_check() -> bool:
     # deile-shell existe?
     proc2 = subprocess.run(
         ["kubectl", "get", "deploy", "deile-shell", "-n", "deile"],
-        capture_output=True, text=True, check=False, timeout=10,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
     )
     if proc2.returncode != 0:
         print("FAIL deile-shell deployment ausente - needed for curl from cluster")
@@ -134,7 +165,9 @@ async def main():
     print("=== claude-worker smoke E2E (#309 fase 2) ===")
 
     if not test_setup_check():
-        print("\nPre-flight failed. Rode `deploy.py k8s up` + `deploy.py k8s claude-login`.")
+        print(
+            "\nPre-flight failed. Rode `deploy.py k8s up` + `deploy.py k8s claude-login`."
+        )
         sys.exit(1)
 
     print("\n=== Tests ===")

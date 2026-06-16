@@ -14,8 +14,12 @@ import logging
 
 import pytest
 
-from deile.config.settings import (Settings, _apply_env_overrides,
-                                   _apply_nested_dict, reset_settings)
+from deile.config.settings import (
+    Settings,
+    _apply_env_overrides,
+    _apply_nested_dict,
+    reset_settings,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -38,14 +42,16 @@ class TestDefaults:
 class TestApplyOverridesStrict:
     def test_all_four_keys(self):
         s = Settings()
-        s.apply_overrides({
-            "pipeline": {
-                "resume_enabled": False,
-                "resume_interval": 45,
-                "resume_max_attempts": 5,
-                "resume_budget": 3600,
+        s.apply_overrides(
+            {
+                "pipeline": {
+                    "resume_enabled": False,
+                    "resume_interval": 45,
+                    "resume_max_attempts": 5,
+                    "resume_budget": 3600,
+                }
             }
-        })
+        )
         assert s.pipeline_resume_enabled is False
         assert s.pipeline_resume_interval == 45
         assert s.pipeline_resume_max_attempts == 5
@@ -66,14 +72,17 @@ class TestApplyOverridesStrict:
 class TestLayeredNestedDict:
     def test_nested_dict_applies(self):
         s = Settings()
-        _apply_nested_dict(s, {
-            "pipeline": {
-                "resume_enabled": False,
-                "resume_interval": 30,
-                "resume_max_attempts": 7,
-                "resume_budget": 1800,
-            }
-        })
+        _apply_nested_dict(
+            s,
+            {
+                "pipeline": {
+                    "resume_enabled": False,
+                    "resume_interval": 30,
+                    "resume_max_attempts": 7,
+                    "resume_budget": 1800,
+                }
+            },
+        )
         assert s.pipeline_resume_enabled is False
         assert s.pipeline_resume_interval == 30
         assert s.pipeline_resume_max_attempts == 7

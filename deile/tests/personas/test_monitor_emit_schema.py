@@ -15,6 +15,7 @@ These tests pin the STABLE schema against whichever surface actually produces
 each family, plus the regression that V1 no longer shells out to the impossible
 interactive ``claude auth login``.
 """
+
 from __future__ import annotations
 
 import re
@@ -22,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-_ROOT = Path(__file__).parent.parent.parent          # deile/
+_ROOT = Path(__file__).parent.parent.parent  # deile/
 _REPO = _ROOT.parent
 _INFRA = _REPO / "infra" / "k8s"
 
@@ -46,18 +47,31 @@ def phase_a() -> str:
 
 # ── The canonical vocabulary table must document every family (shared contract) ──
 
+
 class TestSchemaVocabularyTable:
     def test_schema_heading_present(self, persona):
         assert "Emissão estruturada no stdout" in persona
 
-    @pytest.mark.parametrize("family", [
-        "monitor.tick", "monitor.action", "monitor.notify", "monitor.command",
-        "monitor.vigia.skip", "monitor.vigia.fix", "monitor.v8.scan",
-        "monitor.v8.create", "monitor.v8.skip", "monitor.flood_cap",
-        "monitor.audit_pvc_fail",
-    ])
+    @pytest.mark.parametrize(
+        "family",
+        [
+            "monitor.tick",
+            "monitor.action",
+            "monitor.notify",
+            "monitor.command",
+            "monitor.vigia.skip",
+            "monitor.vigia.fix",
+            "monitor.v8.scan",
+            "monitor.v8.create",
+            "monitor.v8.skip",
+            "monitor.flood_cap",
+            "monitor.audit_pvc_fail",
+        ],
+    )
     def test_family_documented(self, persona, family):
-        assert family in persona, f"family {family} missing from monitor.md schema table"
+        assert (
+            family in persona
+        ), f"family {family} missing from monitor.md schema table"
 
     def test_additive_only_note(self, persona):
         assert "additive-only" in persona
@@ -74,11 +88,18 @@ class TestSchemaVocabularyTable:
 
 # ── Phase B (persona) emits the follow-up families via _emit ────────────────
 
+
 class TestPhaseBEmits:
-    @pytest.mark.parametrize("family", [
-        "monitor.v8.create", "monitor.v8.skip", "monitor.v8.scan",
-        "monitor.flood_cap", "monitor.notify",
-    ])
+    @pytest.mark.parametrize(
+        "family",
+        [
+            "monitor.v8.create",
+            "monitor.v8.skip",
+            "monitor.v8.scan",
+            "monitor.flood_cap",
+            "monitor.notify",
+        ],
+    )
     def test_phase_b_emit_point(self, persona, family):
         assert f'_emit "{family}' in persona, f"persona must emit {family} via _emit"
 
@@ -104,8 +125,14 @@ class TestPhaseBEmits:
         assert "PVC_FAIL_EMITTED" in body and "monitor.audit_pvc_fail" in body
 
     def test_v8_skip_reason_enum_documented(self, persona):
-        for reason in ("bot_author", "code_block", "already_tracked",
-                       "fingerprint_seen", "daily_cap", "per_tick_cap"):
+        for reason in (
+            "bot_author",
+            "code_block",
+            "already_tracked",
+            "fingerprint_seen",
+            "daily_cap",
+            "per_tick_cap",
+        ):
             assert reason in persona
 
     def test_flood_cap_fu_kind(self, persona):
@@ -113,6 +140,7 @@ class TestPhaseBEmits:
 
 
 # ── Phase A (Python) emits the operational families in canonical format ─────
+
 
 class TestPhaseAEmits:
     def test_tick_emit(self, phase_a):
@@ -135,7 +163,9 @@ class TestPhaseAEmits:
         assert not re.search(r'monitor\.command [^"\n]*\bcmd=', phase_a)
 
     def test_command_unknown_branch(self, phase_a):
-        assert re.search(r"monitor\.command [^\"\n]*kind=unknown[^\"\n]*ok=false", phase_a)
+        assert re.search(
+            r"monitor\.command [^\"\n]*kind=unknown[^\"\n]*ok=false", phase_a
+        )
 
     def test_notify_has_ok_field(self, phase_a):
         # The emit f-string is wrapped across source lines; allow it (DOTALL).
@@ -147,7 +177,8 @@ class TestPhaseAEmits:
     def test_audit_pvc_fail_canonical(self, phase_a):
         assert re.search(
             r"monitor\.audit_pvc_fail reason='write failed' .{0,80}errno=.{0,40}tick=#",
-            phase_a, re.DOTALL,
+            phase_a,
+            re.DOTALL,
         )
 
     def test_k8s_unreachable_skip(self, phase_a):
@@ -155,6 +186,7 @@ class TestPhaseAEmits:
 
 
 # ── Regression: the interactive OAuth login is GONE ─────────────────────────
+
 
 class TestNoInteractiveOAuth:
     def test_persona_has_no_claude_auth_login(self, persona):
@@ -176,18 +208,26 @@ class TestNoInteractiveOAuth:
 
 # ── Prompt-injection guard for Phase B (untrusted forge snippets) ───────────
 
+
 class TestUntrustedInputGuard:
     def test_persona_documents_untrusted_input(self, persona):
         low = persona.lower()
-        assert "não-confiável" in low or "nao-confiavel" in low or "injection" in low, (
-            "persona must warn that fu_candidate snippets are untrusted forge text"
-        )
+        assert (
+            "não-confiável" in low or "nao-confiavel" in low or "injection" in low
+        ), "persona must warn that fu_candidate snippets are untrusted forge text"
 
     def test_persona_forbids_acting_on_snippet_instructions(self, persona):
         low = persona.lower()
-        assert "dado a ser classificado" in low or "dado nao-confiavel" in low or "dado não-confiável" in low
+        assert (
+            "dado a ser classificado" in low
+            or "dado nao-confiavel" in low
+            or "dado não-confiável" in low
+        )
 
     def test_persona_records_fingerprint_on_terminal_skip(self, persona):
         # FP / already-tracked skips must record the fingerprint so Phase A does
         # not re-escalate the same comment to the LLM every tick.
-        assert "grave o fingerprint" in persona.lower() or "idempotência" in persona.lower()
+        assert (
+            "grave o fingerprint" in persona.lower()
+            or "idempotência" in persona.lower()
+        )

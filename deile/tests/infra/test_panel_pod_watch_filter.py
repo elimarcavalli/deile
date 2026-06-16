@@ -21,7 +21,6 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 _REPO = Path(__file__).resolve().parents[3]
@@ -31,10 +30,10 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import _panel as panel  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_view() -> panel.PodWatchView:
     view = panel.PodWatchView()
@@ -57,6 +56,7 @@ def _make_app() -> MagicMock:
 # ---------------------------------------------------------------------------
 # AC1 — filtro literal case-insensitive
 # ---------------------------------------------------------------------------
+
 
 class TestLiteralFilter:
     def test_filter_literal_case_insensitive(self):
@@ -89,6 +89,7 @@ class TestLiteralFilter:
 # AC8 — filtro vazio = saída idêntica
 # ---------------------------------------------------------------------------
 
+
 class TestEmptyFilter:
     def test_empty_filter_no_change(self):
         lines = ["alpha", "beta", "gamma"]
@@ -108,6 +109,7 @@ class TestEmptyFilter:
 # AC3 — filtro antes do truncamento [-30:]
 # ---------------------------------------------------------------------------
 
+
 class TestFilterBeforeTruncation:
     def test_filter_applied_before_truncation(self):
         # 40 lines: first 35 contain "target", last 5 do not.
@@ -124,14 +126,15 @@ class TestFilterBeforeTruncation:
 
         p = view._log_panel()
         rendered = str(p.renderable)
-        assert "target" in rendered, (
-            "filter must be applied to full 200-line buffer before [-30:] truncation"
-        )
+        assert (
+            "target" in rendered
+        ), "filter must be applied to full 200-line buffer before [-30:] truncation"
 
 
 # ---------------------------------------------------------------------------
 # AC9 — grep_hidden separado do health hidden
 # ---------------------------------------------------------------------------
+
 
 class TestSeparateCounters:
     def test_grep_hidden_count_separate_from_health(self):
@@ -153,8 +156,11 @@ class TestSeparateCounters:
 
         with patch("_panel._HEALTH_LINE_RE") as mock_re:
             mock_re.search.side_effect = lambda ln: (
-                True if "health" in ln.lower() or "healthz" in ln.lower()
-                or "ready" in ln.lower() else False
+                True
+                if "health" in ln.lower()
+                or "healthz" in ln.lower()
+                or "ready" in ln.lower()
+                else False
             )
             p = view._log_panel()
 
@@ -170,6 +176,7 @@ class TestSeparateCounters:
 # ---------------------------------------------------------------------------
 # AC4 — [/] abre prompt, teclas viram buffer
 # ---------------------------------------------------------------------------
+
 
 class TestPromptOpen:
     def test_slash_opens_prompt(self):
@@ -194,6 +201,7 @@ class TestPromptOpen:
 # AC11 — hotkeys f/c/h ficam mortas enquanto o prompt está aberto
 # ---------------------------------------------------------------------------
 
+
 class TestHotkeysDeadWhilePromptOpen:
     def test_f_goes_to_buffer_not_follow_toggle(self):
         view = _make_view()
@@ -201,7 +209,9 @@ class TestHotkeysDeadWhilePromptOpen:
         view._prompt_open = True
         initial_following = view.following
         view.handle_key("f", app)
-        assert view.following == initial_following, "follow must NOT toggle while prompt is open"
+        assert (
+            view.following == initial_following
+        ), "follow must NOT toggle while prompt is open"
         assert "f" in view._filter_buffer
 
     def test_c_goes_to_buffer_not_clear(self):
@@ -220,13 +230,16 @@ class TestHotkeysDeadWhilePromptOpen:
         view._prompt_open = True
         initial_hide = view.hide_health
         view.handle_key("h", app)
-        assert view.hide_health == initial_hide, "hide_health must NOT toggle while prompt is open"
+        assert (
+            view.hide_health == initial_hide
+        ), "hide_health must NOT toggle while prompt is open"
         assert "h" in view._filter_buffer
 
 
 # ---------------------------------------------------------------------------
 # AC12 — ESC dentro do prompt fecha sem aplicar filtro
 # ---------------------------------------------------------------------------
+
 
 class TestEscInPrompt:
     def test_esc_closes_prompt_without_applying_filter(self):
@@ -245,6 +258,7 @@ class TestEscInPrompt:
 # ---------------------------------------------------------------------------
 # AC5 — ESC em 3 níveis via intercepts_key
 # ---------------------------------------------------------------------------
+
 
 class TestEscThreeLevels:
     def test_level1_esc_closes_prompt(self):
@@ -276,6 +290,7 @@ class TestEscThreeLevels:
 # ---------------------------------------------------------------------------
 # AC7 — regex inválido cai para literal + toast
 # ---------------------------------------------------------------------------
+
 
 class TestInvalidRegex:
     def test_invalid_regex_is_no_op(self):
@@ -311,6 +326,7 @@ class TestInvalidRegex:
 # AC2 — limite de 200 chars
 # ---------------------------------------------------------------------------
 
+
 class TestMaxLength:
     def test_filter_text_capped_at_200_chars(self):
         view = _make_view()
@@ -324,6 +340,7 @@ class TestMaxLength:
 # ---------------------------------------------------------------------------
 # AC10 — regex compilado 1× (não por render)
 # ---------------------------------------------------------------------------
+
 
 class TestCompileOnce:
     def test_regex_not_recompiled_on_render(self):
@@ -344,6 +361,7 @@ class TestCompileOnce:
 # ---------------------------------------------------------------------------
 # AC6 — LiveSessionView filtra chat["turns"]
 # ---------------------------------------------------------------------------
+
 
 class TestLiveSessionViewFilter:
     def test_filter_turns_before_render(self):
@@ -376,6 +394,7 @@ class TestLiveSessionViewFilter:
             def render(self, data):
                 received["data"] = data
                 from rich.text import Text
+
                 return Text("ok")
 
         with (

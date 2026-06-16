@@ -21,9 +21,12 @@ import pytest
 pytest.importorskip("deilebot_client")
 
 from deilebot_client.errors import BotClientAuthError  # noqa: E402
-from deilebot_client.errors import (BotClientNotReady, BotClientRateLimited,
-                                    BotClientTimeoutError,
-                                    BotClientUpstreamError)
+from deilebot_client.errors import (
+    BotClientNotReady,
+    BotClientRateLimited,
+    BotClientTimeoutError,
+    BotClientUpstreamError,
+)
 
 from deile.integrations.bot.client import BotClientFacade  # noqa: E402
 from deile.integrations.bot.config import BotIntegrationSettings  # noqa: E402
@@ -34,8 +37,13 @@ from deile.integrations.bot.config import BotIntegrationSettings  # noqa: E402
 class CountingFake:
     """Fake underlying client that raises/returns on schedule via counters."""
 
-    def __init__(self, fail_count: int = 1, exc_type=BotClientTimeoutError,
-                 exc_kwargs=None, success_result=None):
+    def __init__(
+        self,
+        fail_count: int = 1,
+        exc_type=BotClientTimeoutError,
+        exc_kwargs=None,
+        success_result=None,
+    ):
         self.calls = 0
         self.fail_count = fail_count
         self.exc_type = exc_type
@@ -149,11 +157,14 @@ def make_facade(retry_attempts: int = 3, timeout_s: float = 10.0) -> BotClientFa
 # ── test: retry succeeds on 2nd attempt ──────────────────────────────────────
 
 
-@pytest.mark.parametrize("exc_type", [
-    BotClientTimeoutError,
-    BotClientRateLimited,
-    BotClientUpstreamError,
-])
+@pytest.mark.parametrize(
+    "exc_type",
+    [
+        BotClientTimeoutError,
+        BotClientRateLimited,
+        BotClientUpstreamError,
+    ],
+)
 async def test_retry_succeeds_on_second_attempt(exc_type):
     """Simulate one transient failure, then success."""
     fake = CountingFake(fail_count=1, exc_type=exc_type)
@@ -165,11 +176,14 @@ async def test_retry_succeeds_on_second_attempt(exc_type):
     assert result == fake.success_result
 
 
-@pytest.mark.parametrize("exc_type", [
-    BotClientTimeoutError,
-    BotClientRateLimited,
-    BotClientUpstreamError,
-])
+@pytest.mark.parametrize(
+    "exc_type",
+    [
+        BotClientTimeoutError,
+        BotClientRateLimited,
+        BotClientUpstreamError,
+    ],
+)
 async def test_retry_succeeds_on_last_attempt(exc_type):
     """Simulate N-1 failures, success on the Nth (last) attempt."""
     fake = CountingFake(fail_count=2, exc_type=exc_type)
@@ -184,11 +198,14 @@ async def test_retry_succeeds_on_last_attempt(exc_type):
 # ── test: exhausted retries ──────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("exc_type", [
-    BotClientTimeoutError,
-    BotClientRateLimited,
-    BotClientUpstreamError,
-])
+@pytest.mark.parametrize(
+    "exc_type",
+    [
+        BotClientTimeoutError,
+        BotClientRateLimited,
+        BotClientUpstreamError,
+    ],
+)
 async def test_retry_exhausted_raises_last_error(exc_type):
     """All attempts fail → last exception is propagated."""
     fake = AlwaysRaiseFake(exc_type=exc_type)
@@ -205,8 +222,7 @@ async def test_retry_exhausted_raises_last_error(exc_type):
 
 async def test_no_retry_on_auth_error():
     """BotClientAuthError fails immediately (1 call, no retry)."""
-    fake = AlwaysRaiseFake(exc_type=BotClientAuthError,
-                           exc_kwargs={"status_code": 401})
+    fake = AlwaysRaiseFake(exc_type=BotClientAuthError, exc_kwargs={"status_code": 401})
     facade = make_facade(retry_attempts=3)
     facade.set_underlying(fake)
 
@@ -326,10 +342,10 @@ async def test_jitter_adds_randomness():
 
     # All delays should be within jitter bounds (base * [0.8, 1.2])
     for i, delay in enumerate(sleep_calls):
-        base = 2 ** i
-        assert base * 0.8 <= delay <= base * 1.2, (
-            f"delay[{i}]={delay} out of range [{base * 0.8}, {base * 1.2}]"
-        )
+        base = 2**i
+        assert (
+            base * 0.8 <= delay <= base * 1.2
+        ), f"delay[{i}]={delay} out of range [{base * 0.8}, {base * 1.2}]"
 
     # At least some delays should differ (jitter is random)
     unique_delays = len(set(round(d, 2) for d in sleep_calls))
@@ -422,8 +438,7 @@ async def test_no_retry_logs_for_non_transient():
     """
     import deile.integrations.bot.client as client_mod
 
-    fake = AlwaysRaiseFake(exc_type=BotClientAuthError,
-                           exc_kwargs={"status_code": 401})
+    fake = AlwaysRaiseFake(exc_type=BotClientAuthError, exc_kwargs={"status_code": 401})
     facade = make_facade(retry_attempts=3)
     facade.set_underlying(fake)
 
@@ -469,16 +484,19 @@ async def test_time_budget_respected():
 # ── test: all messaging methods go through retry ─────────────────────────────
 
 
-@pytest.mark.parametrize("method_name,kwargs", [
-    ("channel_post", {"channel_id": "1", "text": "hi"}),
-    ("dm_send", {"user_id": "1", "text": "hi"}),
-    ("reaction_add", {"channel_id": "1", "message_id": "2", "emoji": "👍"}),
-    ("thread_start", {"channel_id": "1", "name": "test"}),
-    ("message_pin", {"channel_id": "1", "message_id": "2"}),
-    ("message_edit", {"channel_id": "1", "message_id": "2", "text": "edit"}),
-    ("role_mention", {"channel_id": "1", "role_id": "9", "text": "ping"}),
-    ("whatsapp_send_template", {"to": "1", "template_name": "t", "language": "en"}),
-])
+@pytest.mark.parametrize(
+    "method_name,kwargs",
+    [
+        ("channel_post", {"channel_id": "1", "text": "hi"}),
+        ("dm_send", {"user_id": "1", "text": "hi"}),
+        ("reaction_add", {"channel_id": "1", "message_id": "2", "emoji": "👍"}),
+        ("thread_start", {"channel_id": "1", "name": "test"}),
+        ("message_pin", {"channel_id": "1", "message_id": "2"}),
+        ("message_edit", {"channel_id": "1", "message_id": "2", "text": "edit"}),
+        ("role_mention", {"channel_id": "1", "role_id": "9", "text": "ping"}),
+        ("whatsapp_send_template", {"to": "1", "template_name": "t", "language": "en"}),
+    ],
+)
 async def test_all_messaging_methods_use_retry(method_name, kwargs):
     """Every messaging method retries on transient errors."""
     fake = CountingFake(fail_count=1, exc_type=BotClientTimeoutError)

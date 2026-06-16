@@ -25,11 +25,11 @@ logger = logging.getLogger(__name__)
 #: check does not fire on normal runs — operators set caps above these.
 _FALLBACK_TOKENS: dict[str, tuple[int, int]] = {
     # (prompt_tokens, completion_tokens)
-    "classify":   (2_000,  500),
-    "refine":     (5_000,  2_000),
-    "implement":  (30_000, 15_000),
-    "pr_review":  (20_000, 5_000),
-    "follow_ups": (5_000,  2_000),
+    "classify": (2_000, 500),
+    "refine": (5_000, 2_000),
+    "implement": (30_000, 15_000),
+    "pr_review": (20_000, 5_000),
+    "follow_ups": (5_000, 2_000),
 }
 
 # Default fallback for unknown stages (should not happen in practice).
@@ -62,17 +62,21 @@ class PricingProvider:
         try:
             # The YAML lives in the ``deile.config`` package directory.
             import deile.config as _cfg_pkg  # noqa: PLC0415
+
             pkg_path = getattr(_cfg_pkg, "__path__", [None])[0]
             if pkg_path is None:
                 return {}
             from pathlib import Path as _Path  # noqa: PLC0415
+
             yaml_file = _Path(pkg_path) / "model_providers.yaml"
             if not yaml_file.is_file():
                 return {}
             with open(yaml_file) as fh:
                 return yaml.safe_load(fh) or {}
         except Exception as exc:  # noqa: BLE001
-            logger.debug("PricingProvider: could not load model_providers.yaml: %s", exc)
+            logger.debug(
+                "PricingProvider: could not load model_providers.yaml: %s", exc
+            )
             return {}
 
     def _ensure_loaded(self) -> None:
@@ -197,7 +201,10 @@ class StageCostEstimator:
         logger.debug(
             "StageCostEstimator: stage=%s model=%s "
             "prompt=%s completion=%s → est=$%s",
-            stage, model_slug, prompt_tokens, completion_tokens,
+            stage,
+            model_slug,
+            prompt_tokens,
+            completion_tokens,
             cost,
         )
         return cost
@@ -222,7 +229,9 @@ class StageCostEstimator:
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "StageCostEstimator: error fetching history for %s/%s: %s",
-                stage, model_slug, exc,
+                stage,
+                model_slug,
+                exc,
             )
             records = []
 
@@ -231,13 +240,14 @@ class StageCostEstimator:
             logger.debug(
                 "StageCostEstimator: insufficient history for %s/%s "
                 "(%d records) — using fallback %s",
-                stage, model_slug, len(records), fallback,
+                stage,
+                model_slug,
+                len(records),
+                fallback,
             )
             return fallback
 
         total_prompt = sum(getattr(r, "prompt_tokens", 0) for r in records)
-        total_completion = sum(
-            getattr(r, "completion_tokens", 0) for r in records
-        )
+        total_completion = sum(getattr(r, "completion_tokens", 0) for r in records)
         n = len(records)
         return int(total_prompt / n), int(total_completion / n)

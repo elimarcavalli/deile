@@ -1,4 +1,5 @@
 """AC1 — vocabulary completeness: exactly 15 log_* functions."""
+
 from __future__ import annotations
 
 import ast
@@ -11,23 +12,25 @@ _MODULE = (
     / "pipeline_logger.py"
 )
 
-_EXPECTED = sorted([
-    "log_auth_backoff",
-    "log_auth_fail",
-    "log_auth_recover",
-    "log_auth_skip",
-    "log_batch_claim",
-    "log_batch_release",
-    "log_decomposition_fanout",
-    "log_label_change",
-    "log_reaper_block",
-    "log_reaper_unblock",
-    "log_refinement_critique",
-    "log_refinement_refine",
-    "log_routing_dropped",
-    "log_routing_mention",
-    "log_routing_pr_unified",
-])
+_EXPECTED = sorted(
+    [
+        "log_auth_backoff",
+        "log_auth_fail",
+        "log_auth_recover",
+        "log_auth_skip",
+        "log_batch_claim",
+        "log_batch_release",
+        "log_decomposition_fanout",
+        "log_label_change",
+        "log_reaper_block",
+        "log_reaper_unblock",
+        "log_refinement_critique",
+        "log_refinement_refine",
+        "log_routing_dropped",
+        "log_routing_mention",
+        "log_routing_pr_unified",
+    ]
+)
 
 
 def test_exactly_15_log_functions():

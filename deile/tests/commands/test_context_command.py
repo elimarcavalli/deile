@@ -15,6 +15,7 @@ from deile.commands.builtin.context_command import ContextCommand
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_context(
     args: str = "",
     session_id: str = "test-session",
@@ -52,16 +53,20 @@ def _make_agent(
     agent.persona_manager.get_active_persona.return_value = persona
 
     default_mem = {"total_memory_mb": 12.5, "components": {}}
-    agent.memory_manager.get_memory_usage = AsyncMock(return_value=memory_usage or default_mem)
+    agent.memory_manager.get_memory_usage = AsyncMock(
+        return_value=memory_usage or default_mem
+    )
 
     agent.model_router.providers = {"openai": MagicMock()}
     agent.model_router.strategy = MagicMock()
-    agent.context_manager.get_stats = AsyncMock(return_value={
-        "context_builds": 3,
-        "max_context_tokens": 200000,
-        "chat_session_mode": True,
-        "simplified": True,
-    })
+    agent.context_manager.get_stats = AsyncMock(
+        return_value={
+            "context_builds": 3,
+            "max_context_tokens": 200000,
+            "chat_session_mode": True,
+            "simplified": True,
+        }
+    )
 
     return agent
 
@@ -69,6 +74,7 @@ def _make_agent(
 def _render_rich(obj) -> str:
     """Render a Rich renderable to plain text."""
     from rich.console import Console
+
     buf = StringIO()
     console = Console(file=buf, highlight=False, markup=False, width=200)
     console.print(obj)
@@ -93,7 +99,10 @@ async def test_summary_shows_real_persona_name():
 
 @pytest.mark.unit
 async def test_summary_shows_real_message_count():
-    history = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+    history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
     agent = _make_agent()
     ctx = _make_context(args="", history=history, agent=agent)
     cmd = ContextCommand()
@@ -138,8 +147,12 @@ async def test_no_hardcoded_numbers_in_summary():
     result = await cmd.execute(ctx)
     data_str = result.content
     hardcoded = [
-        "2500", "8500", "16225", "session_20250906_184500",
-        "gemini-2.5-pro", "Developer Assistant",
+        "2500",
+        "8500",
+        "16225",
+        "session_20250906_184500",
+        "gemini-2.5-pro",
+        "Developer Assistant",
     ]
     for val in hardcoded:
         assert val not in data_str, f"Valor hardcoded encontrado: {val}"
@@ -151,7 +164,9 @@ async def test_subsystem_unavailable_shows_indisponivel():
     agent.tool_registry.list_all.side_effect = RuntimeError("not initialized")
     agent.tool_registry.list_enabled.side_effect = RuntimeError("not initialized")
     agent.persona_manager.get_active_persona.side_effect = RuntimeError("pm down")
-    agent.memory_manager.get_memory_usage = AsyncMock(side_effect=RuntimeError("mm down"))
+    agent.memory_manager.get_memory_usage = AsyncMock(
+        side_effect=RuntimeError("mm down")
+    )
     agent.model_router.providers = {}
     agent.context_manager.get_stats = AsyncMock(side_effect=RuntimeError("cm down"))
 
@@ -177,7 +192,10 @@ async def test_no_agent_gracefully_returns_indisponivel():
     result2 = await cmd.execute(ctx2)
     assert result2.success
     data = json.loads(result2.content)
-    assert data["tools"].get("status") == "indisponível" or data["tools"].get("total") is None
+    assert (
+        data["tools"].get("status") == "indisponível"
+        or data["tools"].get("total") is None
+    )
 
 
 @pytest.mark.unit

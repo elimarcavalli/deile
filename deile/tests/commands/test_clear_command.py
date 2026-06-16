@@ -15,8 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
-                                       SWITCH_SESSION_KEY)
+from deile.commands._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 from deile.commands.base import CommandContext
 from deile.commands.builtin._session_store import SessionHistoryStore
 from deile.commands.builtin.clear_command import ClearCommand

@@ -27,6 +27,7 @@ import setup_environment  # noqa: E402
 
 # ===== _cli_ui ===============================================================
 
+
 def test_paint_with_color_wraps_ansi():
     _cli_ui.set_color(True)
     try:
@@ -51,6 +52,7 @@ def test_set_color_toggles_state():
 
 
 # ===== deploy.py — parse_args ================================================
+
 
 def test_parse_args_empty_has_no_positionals():
     # Sem argumentos → o dispatch abre o menu; parse_args não decide "command".
@@ -92,8 +94,19 @@ def test_parse_args_help_and_no_color_flags():
 
 
 def test_command_tables_cover_expected_actions():
-    assert {"up", "down", "start", "stop", "restart", "status",
-            "logs", "build", "test", "clone", "list"} <= set(deploy._K8S)
+    assert {
+        "up",
+        "down",
+        "start",
+        "stop",
+        "restart",
+        "status",
+        "logs",
+        "build",
+        "test",
+        "clone",
+        "list",
+    } <= set(deploy._K8S)
     assert {"start", "stop", "restart", "status", "logs"} <= set(deploy._LOCAL)
 
 
@@ -149,6 +162,7 @@ def test_legacy_command_classification():
 
 # ===== deploy.py — .env e deploy-state =======================================
 
+
 def test_read_env_parses_pairs(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text(
@@ -189,10 +203,16 @@ def test_deploy_target_rejects_garbage(tmp_path, monkeypatch):
 
 # ===== _service.py — LocalService ============================================
 
+
 def test_local_service_bot_cmd(tmp_path):
     svc = _service.LocalService(tmp_path, python="/opt/py/python3")
     assert svc.bot_cmd == [
-        "/opt/py/python3", "-m", "deilebot", "run", "--provider", "discord",
+        "/opt/py/python3",
+        "-m",
+        "deilebot",
+        "run",
+        "--provider",
+        "discord",
     ]
 
 
@@ -226,6 +246,7 @@ def test_local_service_pid_helpers(tmp_path):
 
 # ===== setup_environment.py ==================================================
 
+
 def test_osinfo_detects_current_platform():
     info = setup_environment.OSInfo()
     assert info.system in ("Linux", "Darwin", "Windows")
@@ -239,6 +260,7 @@ def test_module_available():
 
 
 # ===== worker_server.py — workdir por canal ==================================
+
 
 def test_channel_workdir_sanitization():
     pytest.importorskip("aiohttp")
@@ -257,8 +279,11 @@ def test_channel_workdir_sanitization():
 
 # ===== deploy.py — _image_build_cmd (seleção de runtime) =====================
 
+
 def test_image_build_cmd_prefers_nerdctl(monkeypatch):
-    monkeypatch.setattr(deploy, "_resolve", lambda t: "/usr/bin/nerdctl" if t == "nerdctl" else None)
+    monkeypatch.setattr(
+        deploy, "_resolve", lambda t: "/usr/bin/nerdctl" if t == "nerdctl" else None
+    )
     monkeypatch.setattr(deploy, "which", lambda t: None)
     cmd = deploy._image_build_cmd()
     assert cmd is not None
@@ -292,6 +317,7 @@ def test_image_build_cmd_no_runtime(monkeypatch):
 
 # ===== setup_environment.py — _wants_container ===============================
 
+
 def _ns(**kw) -> argparse.Namespace:
     base = {"mode": None, "yes": False}
     base.update(kw)
@@ -321,6 +347,7 @@ def test_wants_container_interactive_prompt(monkeypatch):
 
 # ===== _service.py — LocalService.backend (seleção de backend) ===============
 
+
 def test_backend_macos_is_launchd(tmp_path, monkeypatch):
     monkeypatch.setattr(_service.sys, "platform", "darwin")
     assert _service.LocalService(tmp_path).backend == "launchd"
@@ -328,13 +355,17 @@ def test_backend_macos_is_launchd(tmp_path, monkeypatch):
 
 def test_backend_linux_with_systemd(tmp_path, monkeypatch):
     monkeypatch.setattr(_service.sys, "platform", "linux")
-    monkeypatch.setattr(_service.LocalService, "_systemd_user_ok", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        _service.LocalService, "_systemd_user_ok", staticmethod(lambda: True)
+    )
     assert _service.LocalService(tmp_path).backend == "systemd"
 
 
 def test_backend_linux_without_systemd_is_pidfile(tmp_path, monkeypatch):
     monkeypatch.setattr(_service.sys, "platform", "linux")
-    monkeypatch.setattr(_service.LocalService, "_systemd_user_ok", staticmethod(lambda: False))
+    monkeypatch.setattr(
+        _service.LocalService, "_systemd_user_ok", staticmethod(lambda: False)
+    )
     assert _service.LocalService(tmp_path).backend == "pidfile"
 
 
@@ -345,6 +376,7 @@ def test_backend_other_platform_is_pidfile(tmp_path, monkeypatch):
 
 
 # ===== worker_server.py — envelope do prompt (one-shot + histórico) ==========
+
 
 def test_build_prompt_without_history():
     pytest.importorskip("aiohttp")

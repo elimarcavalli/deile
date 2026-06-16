@@ -23,7 +23,9 @@ async def test_react_round_trip(emoji, fake_client, fake_permission, fake_audit)
     assert fake_client.calls[0]["emoji"] == emoji
 
 
-async def test_emoji_hashed_in_audit_not_plaintext(fake_client, fake_permission, fake_audit):
+async def test_emoji_hashed_in_audit_not_plaintext(
+    fake_client, fake_permission, fake_audit
+):
     """Custom emojis (`<:name:id>`) can encode opaque project metadata.
     Audit must hash them (consistent with text_hash) — never log raw."""
     tool = DiscordReactTool()
@@ -50,7 +52,9 @@ async def test_facade_error_mapped(fake_permission, fake_audit):
 
     from .conftest import FakeBotClient
 
-    fc = FakeBotClient(raise_on={"reaction_add": BotClientUpstreamError("boom", code="UPSTREAM_ERROR")})
+    fc = FakeBotClient(
+        raise_on={"reaction_add": BotClientUpstreamError("boom", code="UPSTREAM_ERROR")}
+    )
     tool = DiscordReactTool()
     result = await tool.execute(
         make_context(

@@ -9,6 +9,7 @@ Covers:
 6. Deployment 55-deile-monitor uses a shell-loop tick driver and exposes
    ``DEILE_MONITOR_TICK_INTERVAL_S`` (no naked interactive CLI).
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -26,7 +27,8 @@ def wrapper_mod():
     repo_root = Path(__file__).resolve().parents[3]
     wrapper_path = repo_root / "infra" / "k8s" / "wrapper.py"
     spec = importlib.util.spec_from_file_location(
-        "wrapper_under_test_monitor", str(wrapper_path),
+        "wrapper_under_test_monitor",
+        str(wrapper_path),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -38,6 +40,7 @@ def wrapper_mod():
 # ---------------------------------------------------------------------------
 # Routing
 # ---------------------------------------------------------------------------
+
 
 def test_main_routes_monitor_role(wrapper_mod, tmp_path, monkeypatch):
     """main() with ``monitor`` calls _run_monitor and returns its exit code."""
@@ -66,6 +69,7 @@ def test_main_unknown_role_mentions_monitor(wrapper_mod, capsys):
 # _run_monitor: auth guards
 # ---------------------------------------------------------------------------
 
+
 def test_run_monitor_exits_78_no_llm_key(wrapper_mod, tmp_path, monkeypatch, capsys):
     """Returns 78 when no LLM API key is present."""
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -87,7 +91,9 @@ def test_run_monitor_exits_78_no_llm_key(wrapper_mod, tmp_path, monkeypatch, cap
     assert "no *_API_KEY" in capsys.readouterr().err
 
 
-def test_run_monitor_exits_78_no_forge_token(wrapper_mod, tmp_path, monkeypatch, capsys):
+def test_run_monitor_exits_78_no_forge_token(
+    wrapper_mod, tmp_path, monkeypatch, capsys
+):
     """Returns 78 when LLM key is present but no forge token."""
     monkeypatch.setenv("HOME", str(tmp_path))
     # Remove any inherited forge tokens
@@ -143,7 +149,9 @@ def test_run_monitor_starts_with_monitor_persona(wrapper_mod, tmp_path, monkeypa
     monkeypatch.setattr(wrapper_mod, "_has_llm_key", lambda loaded: True)
     monkeypatch.setattr(wrapper_mod, "_setup_forge_credentials", fake_setup_forge)
     monkeypatch.setattr(wrapper_mod, "_patch_deile_bootstrap", fake_patch_bootstrap)
-    monkeypatch.setattr(wrapper_mod, "_install_monitor_negative_whitelist", fake_install_whitelist)
+    monkeypatch.setattr(
+        wrapper_mod, "_install_monitor_negative_whitelist", fake_install_whitelist
+    )
 
     # Patch the deile.cli import. Use monkeypatch.setitem so the ORIGINAL
     # deile.cli module object is restored at teardown — a bare
@@ -168,6 +176,7 @@ def test_run_monitor_starts_with_monitor_persona(wrapper_mod, tmp_path, monkeypa
 # _install_monitor_negative_whitelist
 # ---------------------------------------------------------------------------
 
+
 def test_install_monitor_whitelist_drops_only_dispatch(wrapper_mod):
     """Only dispatch_deile_task is dropped from the monitor's DROP set.
 
@@ -177,6 +186,7 @@ def test_install_monitor_whitelist_drops_only_dispatch(wrapper_mod):
     that bash/file tools are NOT in it.
     """
     import inspect
+
     src = inspect.getsource(wrapper_mod._install_monitor_negative_whitelist)
     # The DROP set must contain dispatch_deile_task
     assert "dispatch_deile_task" in src
@@ -187,6 +197,7 @@ def test_install_monitor_whitelist_drops_only_dispatch(wrapper_mod):
     # Verify by extracting the DROP set from the function
     # (it's defined as a literal set in the function body)
     import ast
+
     tree = ast.parse(src)
     drop_values = set()
     for node in ast.walk(tree):
@@ -197,23 +208,28 @@ def test_install_monitor_whitelist_drops_only_dispatch(wrapper_mod):
                         # ast.Constant é a API moderna (Python 3.8+); .value substitui o .s
                         # de ast.Str (deprecated em 3.12 e removido em 3.14).
                         drop_values = {
-                            elt.value for elt in node.value.elts
+                            elt.value
+                            for elt in node.value.elts
                             if isinstance(elt, ast.Constant)
                         }
-    assert drop_values == {"dispatch_deile_task"}, (
-        f"monitor DROP set should be exactly {{dispatch_deile_task}}, got {drop_values}"
-    )
+    assert drop_values == {
+        "dispatch_deile_task"
+    }, f"monitor DROP set should be exactly {{dispatch_deile_task}}, got {drop_values}"
 
 
 # ---------------------------------------------------------------------------
 # Deployment manifest: tick driver
 # ---------------------------------------------------------------------------
 
+
 def _load_monitor_deployment():
     """Parse 55-deile-monitor-deployment.yaml into a list of documents."""
     import yaml
+
     repo_root = Path(__file__).resolve().parents[3]
-    path = repo_root / "infra" / "k8s" / "manifests" / "55-deile-monitor-deployment.yaml"
+    path = (
+        repo_root / "infra" / "k8s" / "manifests" / "55-deile-monitor-deployment.yaml"
+    )
     docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
     return [d for d in docs if d]
 
@@ -242,9 +258,10 @@ def test_monitor_deployment_runs_command_server_tick_driver():
         "monitor container must run monitor_command_server.py via `args` "
         f"(tini-wrapped); got args={args!r}"
     )
-    assert command in (None, []), (
-        f"`command:` must be absent so the tini ENTRYPOINT is not overridden; got command={command!r}"
-    )
+    assert command in (
+        None,
+        [],
+    ), f"`command:` must be absent so the tini ENTRYPOINT is not overridden; got command={command!r}"
 
     # Tick interval must still be configurable at runtime via env (not baked in).
     env_names = {e["name"] for e in container.get("env", []) if "name" in e}

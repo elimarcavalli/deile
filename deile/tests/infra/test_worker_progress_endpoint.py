@@ -12,6 +12,7 @@ Cobertura mínima:
   * Shape correto após terminal (ok=True, elapsed_s congelado, files).
   * Chave interna ``_mono_start`` é stripada do ``/v1/result/{task_id}``.
 """
+
 from __future__ import annotations
 
 import sys
@@ -47,9 +48,7 @@ def _clean_tasks():
 async def client(_clean_tasks):
     """Sobe o app aiohttp num servidor de teste sem TCP real."""
     app = worker_server.build_app(_TOKEN)
-    async with aiohttp_test_utils.TestClient(
-        aiohttp_test_utils.TestServer(app)
-    ) as cli:
+    async with aiohttp_test_utils.TestClient(aiohttp_test_utils.TestServer(app)) as cli:
         yield cli
 
 

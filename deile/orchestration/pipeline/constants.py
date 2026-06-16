@@ -6,6 +6,7 @@ supported as a deprecated fallback — set the JSON key instead.
 Internal sizing limits are pure Python constants and are not intended to be
 changed without a code review.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,6 +28,7 @@ def claude_timeout_seconds() -> int:
     """
     return get_settings().pipeline_claude_timeout
 
+
 # ── PipelineMonitor ───────────────────────────────────────────────────────
 #: Default polling cadence for :class:`PipelineMonitor`.
 def pipeline_poll_interval_seconds() -> int:
@@ -37,6 +39,8 @@ def pipeline_poll_interval_seconds() -> int:
     existe para evitar. Chame-a a cada uso.
     """
     return get_settings().pipeline_poll_interval
+
+
 #: Seconds ``stop()`` waits for the loop task before cancelling it.
 PIPELINE_STOP_TIMEOUT_SECONDS: int = 5
 
@@ -101,6 +105,7 @@ def resolve_pipeline_repo(*, require: bool = True, fallback: str = "") -> str:
     :func:`resolve_forge_repo`.
     """
     return resolve_forge_repo(require=require, fallback=fallback)
+
 
 # ── Prompt / message truncation ───────────────────────────────────────────
 #: Max chars of issue body EMBEDDED in a worker brief. Kept well under the 8000

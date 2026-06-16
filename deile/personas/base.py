@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 # CORE ENUMS - Autonomous Agent Capabilities
 # ============================================================
 
+
 class AgentCapability(Enum):
     """Core capabilities for autonomous AI agents"""
+
     # Code & Development
     CODE_GENERATION = "code_generation"
     CODE_REVIEW = "code_review"
@@ -94,44 +96,49 @@ class AgentCapability(Enum):
 
 class CommunicationStyle(Enum):
     """Communication styles for agent interactions"""
+
     ULTRA_TECHNICAL = "ultra_technical"  # Maximum technical depth
-    TECHNICAL = "technical"              # Technical but accessible
-    BALANCED = "balanced"                # Mix of technical and plain
-    EDUCATIONAL = "educational"          # Teaching-focused
-    COLLABORATIVE = "collaborative"      # Team-oriented
-    MENTOR = "mentor"                    # Guiding and supportive
-    CONCISE = "concise"                  # Minimal, to-the-point
-    DETAILED = "detailed"                # Comprehensive explanations
-    ADAPTIVE = "adaptive"                # Adjusts based on context
+    TECHNICAL = "technical"  # Technical but accessible
+    BALANCED = "balanced"  # Mix of technical and plain
+    EDUCATIONAL = "educational"  # Teaching-focused
+    COLLABORATIVE = "collaborative"  # Team-oriented
+    MENTOR = "mentor"  # Guiding and supportive
+    CONCISE = "concise"  # Minimal, to-the-point
+    DETAILED = "detailed"  # Comprehensive explanations
+    ADAPTIVE = "adaptive"  # Adjusts based on context
 
 
 class ToolExecutionStrategy(Enum):
     """Strategies for tool execution by the agent"""
-    SEQUENTIAL = "sequential"        # Execute tools one by one
-    PARALLEL = "parallel"            # Execute independent tools in parallel
-    ADAPTIVE = "adaptive"            # Choose based on dependencies
-    BATCH = "batch"                  # Group similar operations
-    PIPELINE = "pipeline"            # Chain tools in a pipeline
-    ORCHESTRATED = "orchestrated"    # Complex multi-tool orchestration
+
+    SEQUENTIAL = "sequential"  # Execute tools one by one
+    PARALLEL = "parallel"  # Execute independent tools in parallel
+    ADAPTIVE = "adaptive"  # Choose based on dependencies
+    BATCH = "batch"  # Group similar operations
+    PIPELINE = "pipeline"  # Chain tools in a pipeline
+    ORCHESTRATED = "orchestrated"  # Complex multi-tool orchestration
 
 
 class ResponseMode(Enum):
     """How the agent should structure responses"""
-    DIRECT = "direct"                # Direct answer only
-    EXPLANATORY = "explanatory"      # Answer with explanation
-    STEP_BY_STEP = "step_by_step"    # Detailed steps
-    ANALYTICAL = "analytical"        # Deep analysis
-    CREATIVE = "creative"            # Creative solutions
-    EXPLORATORY = "exploratory"      # Explore multiple options
+
+    DIRECT = "direct"  # Direct answer only
+    EXPLANATORY = "explanatory"  # Answer with explanation
+    STEP_BY_STEP = "step_by_step"  # Detailed steps
+    ANALYTICAL = "analytical"  # Deep analysis
+    CREATIVE = "creative"  # Creative solutions
+    EXPLORATORY = "exploratory"  # Explore multiple options
 
 
 # ============================================================
 # PROMPT ENGINEERING COMPONENTS
 # ============================================================
 
+
 @dataclass
 class PromptComponent:
     """Building block for dynamic prompt construction"""
+
     name: str
     content: str
     priority: int = 5  # 1-10, higher = more important
@@ -149,13 +156,16 @@ class PromptComponent:
         try:
             return self.content.format(**context)
         except KeyError as e:
-            logger.warning(f"Missing context variable in prompt component {self.name}: {e}")
+            logger.warning(
+                f"Missing context variable in prompt component {self.name}: {e}"
+            )
             return self.content
 
 
 @dataclass
 class ToolOrchestrationPlan:
     """Plan for orchestrating multiple tool executions"""
+
     task_id: str
     tools_required: List[str]
     execution_strategy: ToolExecutionStrategy
@@ -202,6 +212,7 @@ class ToolOrchestrationPlan:
 # ENHANCED CONFIGURATION MODEL
 # ============================================================
 
+
 class PersonaConfig(BaseModel):
     """Enhanced configuration for autonomous AI agent personas"""
 
@@ -217,15 +228,17 @@ class PersonaConfig(BaseModel):
     expertise_level: int = Field(default=7, ge=1, le=10)
 
     # LLM Configuration
-    llm_preferences: Dict[str, Any] = Field(default_factory=lambda: {
-        "primary_model": "gemini-1.5-pro",
-        "fallback_models": ["gemini-1.5-flash", "claude-3"],
-        "temperature": 0.1,
-        "max_tokens": 8192,
-        "top_p": 0.95,
-        "frequency_penalty": 0.0,
-        "presence_penalty": 0.0
-    })
+    llm_preferences: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "primary_model": "gemini-1.5-pro",
+            "fallback_models": ["gemini-1.5-flash", "claude-3"],
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "top_p": 0.95,
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0,
+        }
+    )
 
     # Communication Settings
     communication_style: CommunicationStyle = Field(default=CommunicationStyle.BALANCED)
@@ -235,7 +248,9 @@ class PersonaConfig(BaseModel):
     use_analogies: bool = Field(default=False)
 
     # Tool Orchestration
-    tool_execution_strategy: ToolExecutionStrategy = Field(default=ToolExecutionStrategy.ADAPTIVE)
+    tool_execution_strategy: ToolExecutionStrategy = Field(
+        default=ToolExecutionStrategy.ADAPTIVE
+    )
     max_parallel_tools: int = Field(default=5, ge=1, le=20)
     tool_timeout_seconds: int = Field(default=60, ge=10, le=600)
     auto_retry_failed_tools: bool = Field(default=True)
@@ -278,7 +293,7 @@ class PersonaConfig(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     last_modified: datetime = Field(default_factory=datetime.now)
 
-    @field_validator('capabilities')
+    @field_validator("capabilities")
     @classmethod
     def validate_capabilities(cls, v):
         """Ensure capabilities are valid and non-empty"""
@@ -286,35 +301,36 @@ class PersonaConfig(BaseModel):
             raise ValueError("Agent must have at least one capability")
         return list(set(v))  # Remove duplicates
 
-    @model_validator(mode='before')
+    @model_validator(mode="before")
     @classmethod
     def validate_config_consistency(cls, values):
         """Validate configuration consistency"""
         # If secure_mode is on, ensure safety features are enabled
-        if values.get('secure_mode'):
-            values['content_filtering'] = True
-            values['pii_detection'] = True
-            values['audit_logging'] = True
+        if values.get("secure_mode"):
+            values["content_filtering"] = True
+            values["pii_detection"] = True
+            values["audit_logging"] = True
 
         # Adjust token limits based on model
-        model = values.get('llm_preferences', {}).get('primary_model')
-        if model and 'gemini' in model.lower():
-            max_context = 1000000 if 'pro' in model.lower() else 128000
-            values['context_window_size'] = min(values.get('context_window_size', 128000), max_context)
+        model = values.get("llm_preferences", {}).get("primary_model")
+        if model and "gemini" in model.lower():
+            max_context = 1000000 if "pro" in model.lower() else 128000
+            values["context_window_size"] = min(
+                values.get("context_window_size", 128000), max_context
+            )
 
         return values
 
     class Config:
         use_enum_values = True
         validate_assignment = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+        json_encoders = {datetime: lambda v: v.isoformat()}
 
 
 # ============================================================
 # ADVANCED METRICS TRACKING
 # ============================================================
+
 
 @dataclass
 class AgentMetrics:
@@ -360,7 +376,11 @@ class AgentMetrics:
     @property
     def success_rate(self) -> float:
         """Calculate overall success rate"""
-        total = self.successful_completions + self.partial_completions + self.failed_attempts
+        total = (
+            self.successful_completions
+            + self.partial_completions
+            + self.failed_attempts
+        )
         if total == 0:
             return 0.0
         return (self.successful_completions / total) * 100
@@ -372,20 +392,22 @@ class AgentMetrics:
             return 0.0
         return (self.successful_tool_calls / self.total_tool_calls) * 100
 
-    def record_interaction(self,
-                          success_level: str,  # 'full', 'partial', 'failed'
-                          response_time: float,
-                          tokens_used: int,
-                          tools_called: List[str],
-                          user_satisfaction: Optional[float] = None,
-                          complexity: Optional[float] = None):
+    def record_interaction(
+        self,
+        success_level: str,  # 'full', 'partial', 'failed'
+        response_time: float,
+        tokens_used: int,
+        tools_called: List[str],
+        user_satisfaction: Optional[float] = None,
+        complexity: Optional[float] = None,
+    ):
         """Record a complete interaction with the agent"""
         self.total_interactions += 1
 
         # Update completion counters
-        if success_level == 'full':
+        if success_level == "full":
             self.successful_completions += 1
-        elif success_level == 'partial':
+        elif success_level == "partial":
             self.partial_completions += 1
         else:
             self.failed_attempts += 1
@@ -395,22 +417,25 @@ class AgentMetrics:
             self.tools_usage_count[tool] = self.tools_usage_count.get(tool, 0) + 1
 
         # Update performance metrics
-        self._update_average('average_response_time', response_time)
-        self._update_average('average_tokens_used', tokens_used)
+        self._update_average("average_response_time", response_time)
+        self._update_average("average_tokens_used", tokens_used)
         self.total_tokens_consumed += tokens_used
 
         # Update quality metrics
         if user_satisfaction is not None:
-            self._update_average('user_satisfaction_score', user_satisfaction)
+            self._update_average("user_satisfaction_score", user_satisfaction)
         if complexity is not None:
-            self._update_average('task_complexity_handled', complexity)
+            self._update_average("task_complexity_handled", complexity)
 
         # Update timestamps
         self.last_interaction = datetime.now()
 
         # Update hourly tracking
         current_hour = datetime.now().hour
-        if len(self.hourly_interactions) == 0 or self.hourly_interactions[-1][0] != current_hour:
+        if (
+            len(self.hourly_interactions) == 0
+            or self.hourly_interactions[-1][0] != current_hour
+        ):
             self.hourly_interactions.append([current_hour, 1])
         else:
             self.hourly_interactions[-1][1] += 1
@@ -432,15 +457,26 @@ class AgentMetrics:
             "avg_response_time": f"{self.average_response_time:.3f}s",
             "avg_tokens": f"{self.average_tokens_used:.0f}",
             "total_tokens": self.total_tokens_consumed,
-            "satisfaction": f"{self.user_satisfaction_score:.2f}/10" if self.user_satisfaction_score > 0 else "N/A",
-            "complexity_handled": f"{self.task_complexity_handled:.2f}/10" if self.task_complexity_handled > 0 else "N/A",
-            "most_used_tools": sorted(self.tools_usage_count.items(), key=lambda x: x[1], reverse=True)[:5]
+            "satisfaction": (
+                f"{self.user_satisfaction_score:.2f}/10"
+                if self.user_satisfaction_score > 0
+                else "N/A"
+            ),
+            "complexity_handled": (
+                f"{self.task_complexity_handled:.2f}/10"
+                if self.task_complexity_handled > 0
+                else "N/A"
+            ),
+            "most_used_tools": sorted(
+                self.tools_usage_count.items(), key=lambda x: x[1], reverse=True
+            )[:5],
         }
 
 
 # ============================================================
 # CONTEXT MANAGEMENT
 # ============================================================
+
 
 @dataclass
 class AgentContext:
@@ -476,13 +512,15 @@ class AgentContext:
     token_budget: Optional[int] = None
     quality_requirements: Dict[str, Any] = field(default_factory=dict)
 
-    def add_conversation_turn(self, role: str, content: str, metadata: Dict[str, Any] = None):
+    def add_conversation_turn(
+        self, role: str, content: str, metadata: Dict[str, Any] = None
+    ):
         """Add a conversation turn to history"""
         turn = {
             "role": role,
             "content": content,
             "timestamp": datetime.now().isoformat(),
-            "metadata": metadata or {}
+            "metadata": metadata or {},
         }
         self.conversation_history.append(turn)
 
@@ -493,7 +531,7 @@ class AgentContext:
 
         for turn in reversed(self.conversation_history):
             # Rough token estimation (4 chars per token)
-            turn_tokens = len(turn['content']) // 4
+            turn_tokens = len(turn["content"]) // 4
             if token_count + turn_tokens > max_tokens:
                 break
             relevant.insert(0, turn)
@@ -512,7 +550,7 @@ class AgentContext:
         self.tool_results_cache[cache_key] = {
             "result": result,
             "timestamp": time.time(),
-            "ttl": ttl_seconds
+            "ttl": ttl_seconds,
         }
 
     def get_cached_tool_result(self, tool_call: str) -> Optional[Any]:
@@ -520,8 +558,8 @@ class AgentContext:
         cache_key = hashlib.md5(tool_call.encode(), usedforsecurity=False).hexdigest()
         if cache_key in self.tool_results_cache:
             cached = self.tool_results_cache[cache_key]
-            if time.time() - cached['timestamp'] < cached['ttl']:
-                return cached['result']
+            if time.time() - cached["timestamp"] < cached["ttl"]:
+                return cached["result"]
             else:
                 del self.tool_results_cache[cache_key]
         return None
@@ -530,6 +568,7 @@ class AgentContext:
 # ============================================================
 # BASE PERSONA CLASSES
 # ============================================================
+
 
 class BasePersona(ABC):
     """Base abstract class for all personas in DEILE system"""
@@ -634,9 +673,9 @@ Capabilities: {[cap.value for cap in self.config.capabilities]}
         pass
 
     @abstractmethod
-    async def process_user_input(self,
-                                user_input: str,
-                                context: AgentContext) -> Dict[str, Any]:
+    async def process_user_input(
+        self, user_input: str, context: AgentContext
+    ) -> Dict[str, Any]:
         """
         Process user input and return structured response.
         Must be implemented by concrete personas.
@@ -644,9 +683,7 @@ Capabilities: {[cap.value for cap in self.config.capabilities]}
         pass
 
     @abstractmethod
-    async def select_tools(self,
-                          task: str,
-                          context: AgentContext) -> List[str]:
+    async def select_tools(self, task: str, context: AgentContext) -> List[str]:
         """
         Select appropriate tools for the task.
         Must be implemented by concrete personas.
@@ -655,10 +692,9 @@ Capabilities: {[cap.value for cap in self.config.capabilities]}
 
     # ========== PROMPT ENGINEERING ==========
 
-    async def build_dynamic_prompt(self,
-                                  base_instruction: str,
-                                  context: AgentContext,
-                                  task: str) -> str:
+    async def build_dynamic_prompt(
+        self, base_instruction: str, context: AgentContext, task: str
+    ) -> str:
         """Build dynamic prompt with all components"""
         components = []
 
@@ -668,9 +704,7 @@ Capabilities: {[cap.value for cap in self.config.capabilities]}
         # Add dynamic components based on priority
         if self.config.prompt_components:
             sorted_components = sorted(
-                self.config.prompt_components,
-                key=lambda x: x.priority,
-                reverse=True
+                self.config.prompt_components, key=lambda x: x.priority, reverse=True
             )
 
             for component in sorted_components:
@@ -731,20 +765,23 @@ After completing the task:
 
         # Add task stack context
         if context.task_stack:
-            prompt_parts.append(f"Current task stack: {' -> '.join(context.task_stack[-3:])}")
+            prompt_parts.append(
+                f"Current task stack: {' -> '.join(context.task_stack[-3:])}"
+            )
 
         # Add available tools
         if context.available_tools:
-            prompt_parts.append(f"Available tools: {', '.join(context.available_tools[:10])}")
+            prompt_parts.append(
+                f"Available tools: {', '.join(context.available_tools[:10])}"
+            )
 
         return "\n".join(prompt_parts) if prompt_parts else ""
 
     # ========== TOOL ORCHESTRATION ==========
 
-    async def create_tool_orchestration_plan(self,
-                                            task: str,
-                                            required_tools: List[str],
-                                            context: AgentContext) -> ToolOrchestrationPlan:
+    async def create_tool_orchestration_plan(
+        self, task: str, required_tools: List[str], context: AgentContext
+    ) -> ToolOrchestrationPlan:
         """Create an orchestration plan for tool execution"""
         # Analyze tool dependencies
         dependencies = self._analyze_tool_dependencies(required_tools)
@@ -762,9 +799,9 @@ After completing the task:
             retry_policy={
                 "max_retries": self.config.max_tool_retries,
                 "backoff_factor": 2.0,
-                "retry_on": ["timeout", "rate_limit", "temporary_failure"]
+                "retry_on": ["timeout", "rate_limit", "temporary_failure"],
             },
-            context_requirements=self._identify_context_requirements(required_tools)
+            context_requirements=self._identify_context_requirements(required_tools),
         )
 
         self._tool_plans[plan.task_id] = plan
@@ -788,9 +825,9 @@ After completing the task:
 
         return dependencies
 
-    def _determine_execution_strategy(self,
-                                     tools: List[str],
-                                     dependencies: Dict[str, List[str]]) -> ToolExecutionStrategy:
+    def _determine_execution_strategy(
+        self, tools: List[str], dependencies: Dict[str, List[str]]
+    ) -> ToolExecutionStrategy:
         """Determine optimal execution strategy"""
         if not dependencies:
             # No dependencies, can run in parallel
@@ -806,7 +843,9 @@ After completing the task:
         else:
             return ToolExecutionStrategy.ADAPTIVE
 
-    def _is_pipeline_pattern(self, tools: List[str], dependencies: Dict[str, List[str]]) -> bool:
+    def _is_pipeline_pattern(
+        self, tools: List[str], dependencies: Dict[str, List[str]]
+    ) -> bool:
         """Check if tools form a pipeline pattern"""
         # Simple check: each tool depends on at most one other
         for deps in dependencies.values():
@@ -835,7 +874,9 @@ After completing the task:
 
     def _get_cache_key(self, task: str, context_hash: str) -> str:
         """Generate cache key for response"""
-        return hashlib.md5(f"{task}:{context_hash}".encode(), usedforsecurity=False).hexdigest()
+        return hashlib.md5(
+            f"{task}:{context_hash}".encode(), usedforsecurity=False
+        ).hexdigest()
 
     def _should_use_cache(self, cache_key: str) -> bool:
         """Check if cached response should be used"""
@@ -862,7 +903,8 @@ After completing the task:
         """Remove expired cache entries"""
         current_time = time.time()
         expired_keys = [
-            key for key, (_, timestamp) in self._response_cache.items()
+            key
+            for key, (_, timestamp) in self._response_cache.items()
             if current_time - timestamp > self.config.cache_ttl_seconds
         ]
 
@@ -876,15 +918,15 @@ After completing the task:
         if not self.config.learn_from_feedback:
             return
 
-        feedback_type = feedback.get('type', 'general')
+        feedback_type = feedback.get("type", "general")
 
-        if feedback_type == 'style':
+        if feedback_type == "style":
             # Adapt communication style
             self._adapt_communication_style(feedback)
-        elif feedback_type == 'performance':
+        elif feedback_type == "performance":
             # Adapt performance parameters
             self._adapt_performance_params(feedback)
-        elif feedback_type == 'tool_preference':
+        elif feedback_type == "tool_preference":
             # Update tool preferences
             self._update_tool_preferences(feedback)
 
@@ -893,27 +935,29 @@ After completing the task:
 
     def _adapt_communication_style(self, feedback: Dict[str, Any]):
         """Adapt communication style based on feedback"""
-        if 'verbosity' in feedback:
-            self.config.verbosity_level = max(1, min(10, feedback['verbosity']))
+        if "verbosity" in feedback:
+            self.config.verbosity_level = max(1, min(10, feedback["verbosity"]))
 
-        if 'style' in feedback and feedback['style'] in CommunicationStyle.__members__:
-            self.config.communication_style = CommunicationStyle[feedback['style']]
+        if "style" in feedback and feedback["style"] in CommunicationStyle.__members__:
+            self.config.communication_style = CommunicationStyle[feedback["style"]]
 
     def _adapt_performance_params(self, feedback: Dict[str, Any]):
         """Adapt performance parameters"""
-        if 'speed_vs_quality' in feedback:
+        if "speed_vs_quality" in feedback:
             # Adjust temperature and timeout based on preference
-            preference = feedback['speed_vs_quality']  # -1 (speed) to 1 (quality)
-            self.config.llm_preferences['temperature'] = 0.1 + (preference * 0.4)
+            preference = feedback["speed_vs_quality"]  # -1 (speed) to 1 (quality)
+            self.config.llm_preferences["temperature"] = 0.1 + (preference * 0.4)
             self.config.tool_timeout_seconds = 30 + int(preference * 30)
 
     def _update_tool_preferences(self, feedback: Dict[str, Any]):
         """Update tool usage preferences"""
-        if 'preferred_tools' in feedback and self.context:
-            self.context.user_preferences['preferred_tools'] = feedback['preferred_tools']
+        if "preferred_tools" in feedback and self.context:
+            self.context.user_preferences["preferred_tools"] = feedback[
+                "preferred_tools"
+            ]
 
-        if 'avoided_tools' in feedback and self.context:
-            self.context.user_preferences['avoided_tools'] = feedback['avoided_tools']
+        if "avoided_tools" in feedback and self.context:
+            self.context.user_preferences["avoided_tools"] = feedback["avoided_tools"]
 
     # ========== MONITORING & DIAGNOSTICS ==========
 
@@ -925,25 +969,33 @@ After completing the task:
                 "id": self.persona_id,
                 "active": self.is_active,
                 "uptime": self.uptime,
-                "version": self.config.version
+                "version": self.config.version,
             },
             "configuration": {
-                "model": self.config.llm_preferences['primary_model'],
+                "model": self.config.llm_preferences["primary_model"],
                 "capabilities": len(self.config.capabilities),
                 "communication_style": self.config.communication_style,
-                "execution_strategy": self.config.tool_execution_strategy
+                "execution_strategy": self.config.tool_execution_strategy,
             },
             "metrics": self.metrics.get_performance_summary(),
             "cache": {
                 "response_cache_size": len(self._response_cache),
                 "prompt_cache_size": len(self._prompt_cache),
-                "tool_plans_cached": len(self._tool_plans)
+                "tool_plans_cached": len(self._tool_plans),
             },
-            "context": {
-                "has_context": self.context is not None,
-                "conversation_length": len(self.context.conversation_history) if self.context else 0,
-                "task_stack_depth": len(self.context.task_stack) if self.context else 0
-            } if self.context else {}
+            "context": (
+                {
+                    "has_context": self.context is not None,
+                    "conversation_length": (
+                        len(self.context.conversation_history) if self.context else 0
+                    ),
+                    "task_stack_depth": (
+                        len(self.context.task_stack) if self.context else 0
+                    ),
+                }
+                if self.context
+                else {}
+            ),
         }
 
     def __repr__(self) -> str:

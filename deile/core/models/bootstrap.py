@@ -28,6 +28,7 @@ _PROVIDER_CLASSES = {
 def _import_provider_class(dotted: str):
     module_path, class_name = dotted.rsplit(".", 1)
     import importlib
+
     mod = importlib.import_module(module_path)
     return getattr(mod, class_name)
 
@@ -40,11 +41,10 @@ def _bootstrap_legacy_gemini_only(router) -> List[str]:
     if not os.getenv("GOOGLE_API_KEY"):
         return []
     if router is None:
-        logger.debug(
-            "bootstrap: skipping legacy gemini registration, router is None"
-        )
+        logger.debug("bootstrap: skipping legacy gemini registration, router is None")
         return []
     from deile.core.models.gemini_provider import GeminiProvider
+
     router.register_provider(GeminiProvider(), priority=1)
     return ["gemini"]
 
@@ -77,7 +77,9 @@ def bootstrap_providers(
 
     for provider_id, cfg in providers_cfg.items():
         if not cfg.get("enabled", True):
-            logger.debug("bootstrap: provider %s disabled in YAML, skipping", provider_id)
+            logger.debug(
+                "bootstrap: provider %s disabled in YAML, skipping", provider_id
+            )
             continue
 
         api_key_env = cfg.get("api_key_env", "")
@@ -93,15 +95,21 @@ def bootstrap_providers(
 
         cls_path = _PROVIDER_CLASSES.get(provider_id)
         if cls_path is None:
-            logger.warning("bootstrap: no provider class registered for %s, skipping", provider_id)
+            logger.warning(
+                "bootstrap: no provider class registered for %s, skipping", provider_id
+            )
             continue
 
-        handles = catalog.list_by_provider(provider_id) if hasattr(catalog, "list_by_provider") else [
-            h for h in catalog.list_all() if h.provider_id == provider_id
-        ]
+        handles = (
+            catalog.list_by_provider(provider_id)
+            if hasattr(catalog, "list_by_provider")
+            else [h for h in catalog.list_all() if h.provider_id == provider_id]
+        )
 
         if not handles:
-            logger.warning("bootstrap: no model handles for provider %s in catalog", provider_id)
+            logger.warning(
+                "bootstrap: no model handles for provider %s in catalog", provider_id
+            )
             continue
 
         provider_config = ProviderConfig(
@@ -128,7 +136,10 @@ def bootstrap_providers(
                 inst = cls(handle, provider_config)
             except Exception as exc:
                 logger.error(
-                    "bootstrap: failed to instantiate %s:%s: %s", provider_id, handle.model_id, exc
+                    "bootstrap: failed to instantiate %s:%s: %s",
+                    provider_id,
+                    handle.model_id,
+                    exc,
                 )
                 continue
             instances.append(inst)
@@ -138,19 +149,24 @@ def bootstrap_providers(
                 except Exception as exc:
                     logger.warning(
                         "bootstrap: could not register %s:%s in legacy router: %s",
-                        provider_id, handle.model_id, exc,
+                        provider_id,
+                        handle.model_id,
+                        exc,
                     )
 
         # Register every instance in TierRouter under its full provider:model key
         if router is not None and instances:
             try:
                 from deile.core.models.tier_router import get_tier_router
+
                 tier_router = get_tier_router(yaml_path=path)
                 for inst in instances:
                     tier_router.register_provider(inst)
             except Exception as exc:
                 logger.debug(
-                    "bootstrap: TierRouter registration skipped for %s: %s", provider_id, exc
+                    "bootstrap: TierRouter registration skipped for %s: %s",
+                    provider_id,
+                    exc,
                 )
 
         if not instances:
@@ -159,7 +175,8 @@ def bootstrap_providers(
         registered.append(provider_id)
         logger.info(
             "bootstrap: registered provider %s (%d model instance(s))",
-            provider_id, len(instances),
+            provider_id,
+            len(instances),
         )
 
     return registered

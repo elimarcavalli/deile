@@ -22,9 +22,7 @@ import pytest
 # Path setup — infra/k8s not on sys.path by default in pytest context.
 # ---------------------------------------------------------------------------
 
-_INFRA_K8S = os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "infra", "k8s"
-)
+_INFRA_K8S = os.path.join(os.path.dirname(__file__), "..", "..", "..", "infra", "k8s")
 if _INFRA_K8S not in sys.path:
     sys.path.insert(0, _INFRA_K8S)
 
@@ -85,8 +83,9 @@ def test_stage_dispatch_entry_new_fields():
 
     # Check if real _panel_data is loaded or our stub
     if hasattr(_pd, "StageDispatchEntry"):
-        entry = _pd.StageDispatchEntry("implement", "deile-worker", None, "default",
-                                       timeout_s=600, max_retries=2)
+        entry = _pd.StageDispatchEntry(
+            "implement", "deile-worker", None, "default", timeout_s=600, max_retries=2
+        )
         assert entry.timeout_s == 600
         assert entry.max_retries == 2
         # Defaults to None
@@ -217,6 +216,7 @@ def test_numeric_prompt_enter_empty_sets_none(monkeypatch):
     mock_set = MagicMock(return_value=(True, "unset ok"))
     with patch.dict(sys.modules, {"_panel": sys.modules.get("_panel")}):
         import _panel_data as _pd
+
         _pd.set_stage_timeout = mock_set
     view._handle_numeric_prompt_key("\r")
     assert view.mode is None
@@ -228,9 +228,12 @@ def test_numeric_prompt_enter_with_value_calls_helper(monkeypatch):
     view.mode = ("timeout", "implement", ["600"])
     view.data = MagicMock()
     view.data.context.namespace = "deile"
-    mock_set = MagicMock(return_value=(True, "DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT=600 (rollout)"))
+    mock_set = MagicMock(
+        return_value=(True, "DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT=600 (rollout)")
+    )
     with patch.dict(sys.modules, {"_panel": sys.modules.get("_panel")}):
         import _panel_data as _pd
+
         orig = _pd.set_stage_timeout
         _pd.set_stage_timeout = mock_set
     view._handle_numeric_prompt_key("\n")
@@ -246,11 +249,14 @@ def test_numeric_prompt_retries_zero_calls_with_allow_zero_false(monkeypatch):
     view.data = MagicMock()
     view.data.context.namespace = "deile"
     import _panel as panel_mod
+
     captured = {}
+
     def fake_set(stage, value, *, allow_zero=False, namespace="deile"):
         captured["allow_zero"] = allow_zero
         captured["value"] = value
         return False, "max_retries=0 = fail-fast..."
+
     orig = panel_mod.pd_set_stage_retries
     panel_mod.pd_set_stage_retries = fake_set
     try:
@@ -269,11 +275,14 @@ def test_numeric_prompt_retries_zero_bang_forces(monkeypatch):
     view.data = MagicMock()
     view.data.context.namespace = "deile"
     import _panel as panel_mod
+
     captured = {}
+
     def fake_set(stage, value, *, allow_zero=False, namespace="deile"):
         captured["allow_zero"] = allow_zero
         captured["value"] = value
         return True, "DEILE_PIPELINE_RETRIES_IMPLEMENT=0 (...)"
+
     orig = panel_mod.pd_set_stage_retries
     panel_mod.pd_set_stage_retries = fake_set
     try:
@@ -417,6 +426,7 @@ def test_reset_with_real_data_col3():
 
 def test_matrix_has_no_worker_scaling_row():
     from rich.console import Console
+
     view = _make_view()
     console = Console(width=120)
     with console.capture() as cap:

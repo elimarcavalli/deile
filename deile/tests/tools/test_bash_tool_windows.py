@@ -39,6 +39,7 @@ def _make_tool() -> Any:
     """
     with patch("deile.tools.bash_tool.platform.system", return_value="Windows"):
         from deile.tools.bash_tool import BashExecuteTool
+
         return BashExecuteTool()
 
 
@@ -62,7 +63,9 @@ class TestBashExecuteSubprocessWindows:
         assert tool.platform == "Windows"
 
         fake_result = MagicMock(stdout="hello\n", stderr="", returncode=0)
-        with patch("deile.tools.bash_tool.subprocess.run", return_value=fake_result) as mock_run:
+        with patch(
+            "deile.tools.bash_tool.subprocess.run", return_value=fake_result
+        ) as mock_run:
             stdout, stderr, exit_code, pty_used = tool._execute_with_subprocess(
                 command="echo hello",
                 working_dir=tmp_path,
@@ -88,10 +91,13 @@ class TestBashExecuteSubprocessWindows:
         """
         with patch("deile.tools.bash_tool.platform.system", return_value="Linux"):
             from deile.tools.bash_tool import BashExecuteTool
+
             tool = BashExecuteTool()
 
         fake_result = MagicMock(stdout="", stderr="", returncode=0)
-        with patch("deile.tools.bash_tool.subprocess.run", return_value=fake_result) as mock_run:
+        with patch(
+            "deile.tools.bash_tool.subprocess.run", return_value=fake_result
+        ) as mock_run:
             tool._execute_with_subprocess(
                 command="echo hi",
                 working_dir=tmp_path,
@@ -141,15 +147,17 @@ class TestPrepareEnvironmentWindows:
     def test_windows_paths_prepended(self, tmp_path: Path) -> None:
         tool = _make_tool()
 
-        with patch.dict("os.environ", {"PATH": "/existing/path"}, clear=True), \
-             patch("deile.tools.bash_tool.os.path.exists", return_value=True):
+        with (
+            patch.dict("os.environ", {"PATH": "/existing/path"}, clear=True),
+            patch("deile.tools.bash_tool.os.path.exists", return_value=True),
+        ):
             env = tool._prepare_environment(base_env=None, working_dir=tmp_path)
 
         # Every Windows path must appear in the resulting PATH string.
         for win_path in self.WINDOWS_PATHS:
-            assert win_path in env["PATH"], (
-                f"expected {win_path!r} in PATH but got {env['PATH']!r}"
-            )
+            assert (
+                win_path in env["PATH"]
+            ), f"expected {win_path!r} in PATH but got {env['PATH']!r}"
 
         # PWD always set to the working directory.
         assert env["PWD"] == str(tmp_path)
@@ -159,10 +167,13 @@ class TestPrepareEnvironmentWindows:
         up POSIX paths by accident."""
         with patch("deile.tools.bash_tool.platform.system", return_value="Linux"):
             from deile.tools.bash_tool import BashExecuteTool
+
             tool = BashExecuteTool()
 
-        with patch.dict("os.environ", {"PATH": "/x"}, clear=True), \
-             patch("deile.tools.bash_tool.os.path.exists", return_value=True):
+        with (
+            patch.dict("os.environ", {"PATH": "/x"}, clear=True),
+            patch("deile.tools.bash_tool.os.path.exists", return_value=True),
+        ):
             env = tool._prepare_environment(base_env=None, working_dir=tmp_path)
 
         # POSIX paths must be present; Windows paths must be absent.
@@ -187,14 +198,16 @@ class TestExecuteSyncSkipsPtyOnWindows:
 
         # Force ``_should_use_pty`` to return True so the only thing keeping
         # us off the PTY path is the Windows check.
-        with patch.object(tool, "_should_use_pty", return_value=True), \
-             patch.object(tool, "_execute_with_pty_unix") as mock_pty, \
-             patch.object(
+        with (
+            patch.object(tool, "_should_use_pty", return_value=True),
+            patch.object(tool, "_execute_with_pty_unix") as mock_pty,
+            patch.object(
                 tool,
                 "_execute_with_subprocess",
                 return_value=("ok", "", 0, False),
-             ) as mock_subprocess, \
-             patch("deile.tools.bash_tool.get_settings") as mock_settings:
+            ) as mock_subprocess,
+            patch("deile.tools.bash_tool.get_settings") as mock_settings,
+        ):
             mock_settings.return_value.sandbox_code_execution = False
 
             ctx = _make_ctx("echo hi", tmp_path, use_pty=True)
@@ -211,14 +224,16 @@ class TestExecuteSyncSkipsPtyOnWindows:
         """Already-covered POSIX invariant — verify it also holds on Windows."""
         tool = _make_tool()
 
-        with patch.object(tool, "_should_use_pty", return_value=True), \
-             patch.object(tool, "_execute_with_pty_unix") as mock_pty, \
-             patch.object(
+        with (
+            patch.object(tool, "_should_use_pty", return_value=True),
+            patch.object(tool, "_execute_with_pty_unix") as mock_pty,
+            patch.object(
                 tool,
                 "_execute_with_subprocess",
                 return_value=("ok", "", 0, False),
-             ) as mock_subprocess, \
-             patch("deile.tools.bash_tool.get_settings") as mock_settings:
+            ) as mock_subprocess,
+            patch("deile.tools.bash_tool.get_settings") as mock_settings,
+        ):
             mock_settings.return_value.sandbox_code_execution = False
 
             ctx = _make_ctx("echo hi", tmp_path, use_pty=True, sandbox=True)

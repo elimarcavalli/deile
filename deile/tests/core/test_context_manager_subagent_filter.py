@@ -10,12 +10,15 @@ assistants seguidas; OpenAI percepção corrompida do próprio histórico).
 cada entrada e pula as display-only ao construir ``messages`` enviadas ao
 provider. ``replay_history`` continua renderizando essas entradas.
 """
+
 from __future__ import annotations
 
 import pytest
 
-from deile.orchestration.subagents.constants import (HISTORY_MARKER_KEY,
-                                                     is_display_only_entry)
+from deile.orchestration.subagents.constants import (
+    HISTORY_MARKER_KEY,
+    is_display_only_entry,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -84,7 +87,9 @@ async def test_build_context_filters_display_only_assistant_entries():
 
     messages = ctx["messages"]
     # Marker NÃO deve aparecer no contexto enviado ao provider.
-    assert all("panel summary markdown" not in str(m.get("content", "")) for m in messages)
+    assert all(
+        "panel summary markdown" not in str(m.get("content", "")) for m in messages
+    )
     # As outras entradas estão lá.
     contents = [m["content"] for m in messages]
     assert "build me X" in contents

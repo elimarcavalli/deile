@@ -132,7 +132,7 @@ class SessionStore:
     async def purge_older_than(self, days: int) -> int:
         async with self._lock:
             db = self._require()
-            cutoff = (datetime.now(timezone.utc).timestamp() - days * 86400)
+            cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
             cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat()
             cur = await db.execute(
                 "DELETE FROM persisted_session WHERE last_used_at < ?",
@@ -169,7 +169,9 @@ class SessionStore:
     async def count_sessions_before(self, cutoff_date: datetime) -> int:
         """Count sessions with last_used_at before cutoff_date (without deleting)."""
         db = self._require()
-        cutoff_iso = cutoff_date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        cutoff_iso = cutoff_date.astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
         cur = await db.execute(
             "SELECT COUNT(*) FROM persisted_session WHERE last_used_at < ?",
             (cutoff_iso,),
@@ -182,7 +184,9 @@ class SessionStore:
         """Delete sessions with last_used_at before cutoff_date. Returns count deleted."""
         async with self._lock:
             db = self._require()
-            cutoff_iso = cutoff_date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            cutoff_iso = cutoff_date.astimezone(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ"
+            )
             cur = await db.execute(
                 "DELETE FROM persisted_session WHERE last_used_at < ?",
                 (cutoff_iso,),

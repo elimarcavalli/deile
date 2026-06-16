@@ -43,7 +43,8 @@ def cws():
     if str(_INFRA_K8S) not in sys.path:
         sys.path.insert(0, str(_INFRA_K8S))
     spec = importlib.util.spec_from_file_location(
-        "cws_ledger_test", str(_INFRA_K8S / "claude_worker_server.py"),
+        "cws_ledger_test",
+        str(_INFRA_K8S / "claude_worker_server.py"),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -56,26 +57,42 @@ TASK_A = "aaaaaaaaaaaa0001"
 TASK_B = "bbbbbbbbbbbb0002"
 
 
-def _assistant_line(model="claude-opus-4-5-20260101", mid="m1", rid="r1",
-                    in_tok=100, out_tok=50):
-    return json.dumps({
-        "type": "assistant",
-        "requestId": rid,
-        "timestamp": "2026-06-01T10:00:00.000Z",
-        "message": {"id": mid, "role": "assistant", "model": model,
-                    "usage": {"input_tokens": in_tok, "output_tokens": out_tok}},
-    })
+def _assistant_line(
+    model="claude-opus-4-5-20260101", mid="m1", rid="r1", in_tok=100, out_tok=50
+):
+    return json.dumps(
+        {
+            "type": "assistant",
+            "requestId": rid,
+            "timestamp": "2026-06-01T10:00:00.000Z",
+            "message": {
+                "id": mid,
+                "role": "assistant",
+                "model": model,
+                "usage": {"input_tokens": in_tok, "output_tokens": out_tok},
+            },
+        }
+    )
 
 
-def _make_project(projects_dir: Path, task_id: str, session_id: str,
-                  *, mtime_age_s: float, in_tok=100, out_tok=50) -> Path:
+def _make_project(
+    projects_dir: Path,
+    task_id: str,
+    session_id: str,
+    *,
+    mtime_age_s: float,
+    in_tok=100,
+    out_tok=50,
+) -> Path:
     pdir = projects_dir / f"-home-claude-work-{task_id}"
     pdir.mkdir(parents=True)
     jsonl = pdir / f"{session_id}.jsonl"
-    jsonl.write_text(_assistant_line(in_tok=in_tok, out_tok=out_tok) + "\n",
-                     encoding="utf-8")
+    jsonl.write_text(
+        _assistant_line(in_tok=in_tok, out_tok=out_tok) + "\n", encoding="utf-8"
+    )
     old = time.time() - mtime_age_s
     import os
+
     os.utime(jsonl, (old, old))
     os.utime(pdir, (old, old))
     return pdir
@@ -106,14 +123,18 @@ def test_harvest_and_prune_orphan_preserves_active(cws, env):
     (env["work"] / TASK_B).mkdir()  # workdir de B existe
 
     result = cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=0, now=time.time(),
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=0,
+        now=time.time(),
     )
 
     assert result["sessions_harvested"] == 1
     assert result["jsonl_dirs_removed"] == 1
-    assert not pdir_a.exists()       # órfão podado
-    assert pdir_b.exists()           # ativo preservado
+    assert not pdir_a.exists()  # órfão podado
+    assert pdir_b.exists()  # ativo preservado
 
     led = _read_ledger(env["ledger"])
     assert len(led) == 1
@@ -128,13 +149,17 @@ def test_grace_period_protects_recent_orphan(cws, env):
     pdir = _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=60)  # 1min
 
     result = cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=0, now=time.time(),
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=0,
+        now=time.time(),
     )
 
     assert result["sessions_harvested"] == 0
     assert result["jsonl_dirs_removed"] == 0
-    assert pdir.exists()                       # protegido pelo grace
+    assert pdir.exists()  # protegido pelo grace
     assert _read_ledger(env["ledger"]) == []
 
 
@@ -146,13 +171,17 @@ def test_retention_days_protects_orphan_within_window(cws, env):
     pdir = _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=five_days)
 
     result = cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=30, now=time.time(),
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=30,
+        now=time.time(),
     )
 
     assert result["sessions_harvested"] == 0
     assert result["jsonl_dirs_removed"] == 0
-    assert pdir.exists()                       # protegido pela retenção 30d
+    assert pdir.exists()  # protegido pela retenção 30d
     assert _read_ledger(env["ledger"]) == []
 
 
@@ -162,8 +191,12 @@ def test_retention_days_prunes_orphan_past_window(cws, env):
     pdir = _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=forty_days)
 
     result = cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=30, now=time.time(),
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=30,
+        now=time.time(),
     )
 
     assert result["sessions_harvested"] == 1
@@ -175,14 +208,22 @@ def test_retention_days_prunes_orphan_past_window(cws, env):
 def test_idempotent_no_duplicate(cws, env):
     _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=7200)
     cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=0, now=time.time(),
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=0,
+        now=time.time(),
     )
     # recria a mesma sessão (simula reaparição) e roda de novo
     _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=7200)
     cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=0, now=time.time(),
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=0,
+        now=time.time(),
     )
     led = _read_ledger(env["ledger"])
     assert len(led) == 1  # session_id sess-a aparece uma única vez
@@ -191,14 +232,19 @@ def test_idempotent_no_duplicate(cws, env):
 def test_dry_run_reports_without_side_effects(cws, env):
     pdir = _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=7200)
     result = cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=0, now=time.time(), dry_run=True,
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=0,
+        now=time.time(),
+        dry_run=True,
     )
-    assert result["orphan_jsonl_dirs"]          # candidato reportado
+    assert result["orphan_jsonl_dirs"]  # candidato reportado
     assert result["jsonl_dirs_removed"] == 0
     assert result["sessions_harvested"] == 0
-    assert pdir.exists()                        # nada deletado
-    assert not env["ledger"].exists()           # nada escrito
+    assert pdir.exists()  # nada deletado
+    assert not env["ledger"].exists()  # nada escrito
 
 
 def test_cleanup_scan_includes_orphan_jsonl(cws, env, monkeypatch):
@@ -207,8 +253,10 @@ def test_cleanup_scan_includes_orphan_jsonl(cws, env, monkeypatch):
     monkeypatch.setattr(cws, "_JSONL_RETENTION_DAYS", 0)
     _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=7200)
     scan = cws._cleanup_scan(env["work"])
-    assert str(env["projects"] / f"-home-claude-work-{TASK_A}") in \
-        scan["orphan_jsonl_dirs"]
+    assert (
+        str(env["projects"] / f"-home-claude-work-{TASK_A}")
+        in scan["orphan_jsonl_dirs"]
+    )
     assert scan["total_candidate_bytes"] > 0
 
 
@@ -223,12 +271,16 @@ def test_no_prune_when_aggregator_unavailable(cws, env, monkeypatch):
     pdir = _make_project(env["projects"], TASK_A, "sess-a", mtime_age_s=7200)
     monkeypatch.setattr(cws, "_summarize_jsonl", None)
     result = cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=0, now=time.time(),
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=0,
+        now=time.time(),
     )
     assert result["jsonl_dirs_removed"] == 0
     assert result["sessions_harvested"] == 0
-    assert pdir.exists()                      # dir órfão PRESERVADO
+    assert pdir.exists()  # dir órfão PRESERVADO
     assert not env["ledger"].exists()
     assert any("fail-safe" in e for e in result["errors"])
 
@@ -242,11 +294,15 @@ def test_no_prune_when_aggregation_raises(cws, env, monkeypatch):
 
     monkeypatch.setattr(cws, "_summarize_jsonl", _boom)
     result = cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=0, now=time.time(),
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=0,
+        now=time.time(),
     )
     assert result["jsonl_dirs_removed"] == 0
-    assert pdir.exists()                      # preservado: havia custo não colhido
+    assert pdir.exists()  # preservado: havia custo não colhido
     assert any("summarize" in e for e in result["errors"])
 
 
@@ -257,36 +313,70 @@ def test_harvested_record_preserves_full_detail(cws, env, monkeypatch):
     pdir = env["projects"] / f"-home-claude-work-{TASK_A}"
     pdir.mkdir(parents=True)
     jsonl = pdir / "sess-rich.jsonl"
-    jsonl.write_text("\n".join(json.dumps(r) for r in [
-        {"type": "user", "timestamp": "2026-04-01T09:00:00.000Z",
-         "cwd": "/home/claude/work/x/repo", "gitBranch": "auto/issue-9",
-         "version": "2.1.158", "permissionMode": "bypassPermissions",
-         "entrypoint": "cli", "aiTitle": "Corrige X", "prNumber": 42,
-         "prUrl": "https://github.com/o/r/pull/42", "prRepository": "o/r",
-         "message": {"role": "user", "content": "implementa a issue 9"}},
-        {"type": "assistant", "requestId": "r1",
-         "timestamp": "2026-04-01T09:01:00.000Z",
-         "message": {"id": "m1", "role": "assistant",
-                     "model": "claude-opus-4-5-20260101", "stop_reason": "tool_use",
-                     "content": [{"type": "tool_use", "name": "Read"}],
-                     "usage": {"input_tokens": 100, "output_tokens": 50}}},
-    ]) + "\n", encoding="utf-8")
+    jsonl.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                {
+                    "type": "user",
+                    "timestamp": "2026-04-01T09:00:00.000Z",
+                    "cwd": "/home/claude/work/x/repo",
+                    "gitBranch": "auto/issue-9",
+                    "version": "2.1.158",
+                    "permissionMode": "bypassPermissions",
+                    "entrypoint": "cli",
+                    "aiTitle": "Corrige X",
+                    "prNumber": 42,
+                    "prUrl": "https://github.com/o/r/pull/42",
+                    "prRepository": "o/r",
+                    "message": {"role": "user", "content": "implementa a issue 9"},
+                },
+                {
+                    "type": "assistant",
+                    "requestId": "r1",
+                    "timestamp": "2026-04-01T09:01:00.000Z",
+                    "message": {
+                        "id": "m1",
+                        "role": "assistant",
+                        "model": "claude-opus-4-5-20260101",
+                        "stop_reason": "tool_use",
+                        "content": [{"type": "tool_use", "name": "Read"}],
+                        "usage": {"input_tokens": 100, "output_tokens": 50},
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     import os
+
     old = time.time() - 40 * 86400
     os.utime(jsonl, (old, old))
     os.utime(pdir, (old, old))
     # session.json (ground truth do pipeline) — meta lida pelo harvester.
     meta_dir = env["home"] / ".claude" / "tasks" / TASK_A
     meta_dir.mkdir(parents=True)
-    (meta_dir / "session.json").write_text(json.dumps({
-        "model": "anthropic:claude-opus-4-5", "reasoning_effort": "xhigh",
-        "ultracode": True, "stage": "implement",
-    }), encoding="utf-8")
+    (meta_dir / "session.json").write_text(
+        json.dumps(
+            {
+                "model": "anthropic:claude-opus-4-5",
+                "reasoning_effort": "xhigh",
+                "ultracode": True,
+                "stage": "implement",
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HOME", str(env["home"]))
 
     result = cws._harvest_and_prune_orphan_jsonl(
-        env["work"], projects_dir=env["projects"], ledger_path=env["ledger"],
-        grace_s=3600, retention_days=30, now=time.time(),
+        env["work"],
+        projects_dir=env["projects"],
+        ledger_path=env["ledger"],
+        grace_s=3600,
+        retention_days=30,
+        now=time.time(),
     )
     assert result["sessions_harvested"] == 1
     rec = _read_ledger(env["ledger"])[0]

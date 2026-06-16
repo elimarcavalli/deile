@@ -16,7 +16,10 @@ from deile.orchestration.pipeline.briefs import _render_worker_pr_unified_brief
 
 def _render() -> str:
     return _render_worker_pr_unified_brief(
-        "owner/repo", "main", 7, gh_login="deile-one",
+        "owner/repo",
+        "main",
+        7,
+        gh_login="deile-one",
     )
 
 

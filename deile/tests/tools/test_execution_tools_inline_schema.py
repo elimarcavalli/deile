@@ -12,6 +12,7 @@ must NOT change:
 * parameters, required fields, security level, category and both
   descriptions match what the legacy JSON loader produced.
 """
+
 from __future__ import annotations
 
 import pytest

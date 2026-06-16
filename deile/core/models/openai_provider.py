@@ -9,24 +9,33 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import openai
 
-from deile.core.loop_guard import (check_tool_call, make_guard,
-                                   record_tool_outcome)
-from deile.core.models.base import (DEFAULT_MAX_OUTPUT_TOKENS,
-                                    DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage,
-                                    ModelProvider, ModelResponse, ModelSize,
-                                    ModelType, ModelUsage)
+from deile.core.loop_guard import check_tool_call, make_guard, record_tool_outcome
+from deile.core.models.base import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MAX_TOOL_ITERATIONS,
+    ModelMessage,
+    ModelProvider,
+    ModelResponse,
+    ModelSize,
+    ModelType,
+    ModelUsage,
+)
 from deile.core.models.catalog import ModelHandle
 from deile.core.models.error_mapping import make_envelope_builder
 from deile.core.models.errors import ProviderInvocationError
 from deile.core.models.provider_config import ProviderConfig
-from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                             StreamEventType,
-                                             UnifiedStreamEvent)
-from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
-                                              OUTCOME_NOT_FOUND,
-                                              build_tool_result_payload,
-                                              payload_to_text,
-                                              resolve_and_execute_tool)
+from deile.core.models.stream_events import (
+    ModelUsageSnapshot,
+    StreamEventType,
+    UnifiedStreamEvent,
+)
+from deile.core.models.tool_execution import (
+    OUTCOME_EXCEPTION,
+    OUTCOME_NOT_FOUND,
+    build_tool_result_payload,
+    payload_to_text,
+    resolve_and_execute_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,16 +175,22 @@ class OpenAIProvider(ModelProvider):
                 response = await self._client.chat.completions.create(
                     model=self.model_name,
                     messages=oai_msgs,
-                    max_completion_tokens=kwargs.pop("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
+                    max_completion_tokens=kwargs.pop(
+                        "max_tokens", DEFAULT_MAX_OUTPUT_TOKENS
+                    ),
                     **kwargs,
                 )
             except openai.APIError as exc:
                 self._set_llm_span_error(_span, exc)
-                raise ProviderInvocationError(_make_envelope(exc, self.provider_id, self.model_name)) from exc
+                raise ProviderInvocationError(
+                    _make_envelope(exc, self.provider_id, self.model_name)
+                ) from exc
 
             text = response.choices[0].message.content or ""
             prompt_tokens = response.usage.prompt_tokens if response.usage else 0
-            completion_tokens = response.usage.completion_tokens if response.usage else 0
+            completion_tokens = (
+                response.usage.completion_tokens if response.usage else 0
+            )
             cached = self._extract_cached_tokens(response)
             usage = ModelUsage(
                 prompt_tokens=prompt_tokens,
@@ -187,7 +202,9 @@ class OpenAIProvider(ModelProvider):
             self._stamp_reported_cost(usage, response)
             usage.cost_estimate = self.estimate_cost(usage)
             self._update_stats(usage)
-            self._set_llm_span_usage(_span, usage, latency_ms=int((time.time() - start) * 1000))
+            self._set_llm_span_usage(
+                _span, usage, latency_ms=int((time.time() - start) * 1000)
+            )
             return ModelResponse(
                 content=text,
                 model_name=self.model_name,
@@ -210,7 +227,9 @@ class OpenAIProvider(ModelProvider):
     ) -> Tuple[str, List[Any], ModelUsage]:
         start = time.time()
         system_instruction = self._compose_system_instruction(system_instruction)
-        oai_msgs: List[Dict[str, Any]] = self._to_openai_messages(messages, system_instruction)
+        oai_msgs: List[Dict[str, Any]] = self._to_openai_messages(
+            messages, system_instruction
+        )
         oai_tools = [t.to_openai_function() for t in tools] if tools else []
 
         total_prompt = total_completion = total_cached = 0
@@ -228,7 +247,9 @@ class OpenAIProvider(ModelProvider):
             create_kwargs: Dict[str, Any] = {
                 "model": self.model_name,
                 "messages": oai_msgs,
-                "max_completion_tokens": kwargs.get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
+                "max_completion_tokens": kwargs.get(
+                    "max_tokens", DEFAULT_MAX_OUTPUT_TOKENS
+                ),
             }
             if oai_tools:
                 create_kwargs["tools"] = oai_tools
@@ -240,7 +261,9 @@ class OpenAIProvider(ModelProvider):
             with self._llm_span() as _it_span:
                 _it_start = time.time()
                 try:
-                    response = await self._client.chat.completions.create(**create_kwargs)
+                    response = await self._client.chat.completions.create(
+                        **create_kwargs
+                    )
                 except openai.APIError as exc:
                     self._set_llm_span_error(_it_span, exc)
                     env = _make_envelope(exc, self.provider_id, self.model_name)
@@ -267,7 +290,8 @@ class OpenAIProvider(ModelProvider):
                     self._stamp_reported_cost(_iter_usage, response)
                     _iter_usage.cost_estimate = self.estimate_cost(_iter_usage)
                     self._set_llm_span_usage(
-                        _it_span, _iter_usage,
+                        _it_span,
+                        _iter_usage,
                         latency_ms=int((time.time() - _it_start) * 1000),
                     )
                     total_prompt += _iter_in
@@ -295,7 +319,10 @@ class OpenAIProvider(ModelProvider):
                     {
                         "id": tc.id,
                         "type": "function",
-                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
                     }
                     for tc in msg.tool_calls
                 ],
@@ -321,9 +348,8 @@ class OpenAIProvider(ModelProvider):
                         }
                     )
                     final_text = (
-                        (final_text + "\n\n" if final_text else "")
-                        + brk.message
-                    )
+                        final_text + "\n\n" if final_text else ""
+                    ) + brk.message
                     loop_aborted = True
                     continue
                 tr, payload = await self._execute_tool(tc.function.name, args)
@@ -339,7 +365,10 @@ class OpenAIProvider(ModelProvider):
             if loop_aborted:
                 break
         else:
-            logger.warning("OpenAIProvider: tool loop hit max_iterations=%d", DEFAULT_MAX_TOOL_ITERATIONS)
+            logger.warning(
+                "OpenAIProvider: tool loop hit max_iterations=%d",
+                DEFAULT_MAX_TOOL_ITERATIONS,
+            )
 
         usage = ModelUsage(
             prompt_tokens=total_prompt,
@@ -380,7 +409,9 @@ class OpenAIProvider(ModelProvider):
         create_kwargs: Dict[str, Any] = {
             "model": self.model_name,
             "messages": oai_msgs,
-            "max_completion_tokens": kwargs.get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
+            "max_completion_tokens": kwargs.get(
+                "max_tokens", DEFAULT_MAX_OUTPUT_TOKENS
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -449,7 +480,9 @@ class OpenAIProvider(ModelProvider):
                     for idx, entry in pending_tool_calls.items():
                         try:
                             parsed_args = (
-                                json.loads(entry["args_text"]) if entry["args_text"] else {}
+                                json.loads(entry["args_text"])
+                                if entry["args_text"]
+                                else {}
                             )
                         except json.JSONDecodeError:
                             parsed_args = {"_raw": entry["args_text"]}
@@ -489,7 +522,9 @@ class OpenAIProvider(ModelProvider):
                 )
         except openai.APIError as exc:
             envelope = _make_envelope(exc, self.provider_id, self.model_name)
-            yield UnifiedStreamEvent(type=StreamEventType.ERROR, error_envelope=envelope)
+            yield UnifiedStreamEvent(
+                type=StreamEventType.ERROR, error_envelope=envelope
+            )
 
     # ------------------------------------------------------------------
     # Tool-loop adapters
@@ -642,7 +677,9 @@ class OpenAIProvider(ModelProvider):
         # Payload carries data (e.g. read_file body) AND message (e.g.
         # write_file's POST_WRITE_VALIDATION_REQUIRED hint).
         payload = build_tool_result_payload(
-            result, outcome, name,
+            result,
+            outcome,
+            name,
             include_message=True,
             include_data_on_error=True,
         )

@@ -7,6 +7,7 @@ Foca em:
   * Fallback claro quando ``_agent`` não está em session_data.
   * Caminho feliz: chama o orquestrador e devolve resumo consolidado.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +17,9 @@ import pytest
 from deile.orchestration.subagents.events import SubAgentState, SubAgentTask
 from deile.tools.base import ToolContext
 from deile.tools.dispatch_parallel_subagents import (
-    DispatchParallelSubagentsTool, _build_tasks_from_payload)
+    DispatchParallelSubagentsTool,
+    _build_tasks_from_payload,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -28,7 +31,7 @@ def _valid_subtask(i: int = 1, persona=None, model=None) -> dict:
     return {
         "description": f"refator módulo #{i}",
         "prompt": "Refator detalhado do módulo X para guard clauses, "
-                  "extraindo validações para o topo das funções.",
+        "extraindo validações para o topo das funções.",
         **({"persona": persona} if persona else {}),
         **({"model": model} if model else {}),
     }
@@ -138,8 +141,8 @@ async def test_tool_cooldown_kicks_in_on_second_immediate_call(monkeypatch):
             pass
 
         async def run(self, tasks):
-            from deile.orchestration.subagents.orchestrator import \
-                SubAgentResult
+            from deile.orchestration.subagents.orchestrator import SubAgentResult
+
             return SubAgentResult(states=[], elapsed_s=0.0, ok_count=0, error_count=0)
 
     monkeypatch.setattr(
@@ -172,8 +175,8 @@ async def test_tool_validation_failure_does_not_consume_cooldown(monkeypatch):
             pass
 
         async def run(self, tasks):
-            from deile.orchestration.subagents.orchestrator import \
-                SubAgentResult
+            from deile.orchestration.subagents.orchestrator import SubAgentResult
+
             return SubAgentResult(states=[], elapsed_s=0.0, ok_count=0, error_count=0)
 
     monkeypatch.setattr(
@@ -221,8 +224,9 @@ async def test_tool_happy_path_calls_orchestrator(monkeypatch):
     captured_tasks = {}
 
     class _StubOrchestrator:
-        def __init__(self, runner, *, max_parallel, renderer_factory=None,
-                     capture_output=True):
+        def __init__(
+            self, runner, *, max_parallel, renderer_factory=None, capture_output=True
+        ):
             captured_tasks["max_parallel"] = max_parallel
             captured_tasks["capture_output"] = capture_output
             self._runner = runner
@@ -230,8 +234,8 @@ async def test_tool_happy_path_calls_orchestrator(monkeypatch):
         async def run(self, tasks):
             captured_tasks["tasks"] = tasks
             # Simula resultado.
-            from deile.orchestration.subagents.orchestrator import \
-                SubAgentResult
+            from deile.orchestration.subagents.orchestrator import SubAgentResult
+
             states = []
             for t in tasks:
                 st = SubAgentState(task=t)
@@ -242,8 +246,10 @@ async def test_tool_happy_path_calls_orchestrator(monkeypatch):
                 st.add_file(f"file_{t.index}.py")
                 states.append(st)
             return SubAgentResult(
-                states=states, elapsed_s=0.5,
-                ok_count=len(states), error_count=0,
+                states=states,
+                elapsed_s=0.5,
+                ok_count=len(states),
+                error_count=0,
             )
 
     # Patcheia onde a tool importou.
@@ -288,11 +294,12 @@ async def test_tool_persists_summary_to_session_history(monkeypatch):
     from deile.tools.dispatch_parallel_subagents import HISTORY_MARKER_KEY
 
     class _NoopOrch:
-        def __init__(self, *a, **kw): pass
+        def __init__(self, *a, **kw):
+            pass
 
         async def run(self, tasks):
-            from deile.orchestration.subagents.orchestrator import \
-                SubAgentResult
+            from deile.orchestration.subagents.orchestrator import SubAgentResult
+
             states = []
             for t in tasks:
                 st = SubAgentState(task=t)
@@ -302,8 +309,10 @@ async def test_tool_persists_summary_to_session_history(monkeypatch):
                 st.add_file(f"file_{t.index}.py")
                 states.append(st)
             return SubAgentResult(
-                states=states, elapsed_s=0.5,
-                ok_count=len(states), error_count=0,
+                states=states,
+                elapsed_s=0.5,
+                ok_count=len(states),
+                error_count=0,
             )
 
     monkeypatch.setattr(
@@ -320,7 +329,9 @@ async def test_tool_persists_summary_to_session_history(monkeypatch):
             self.history = []
 
         def add_to_history(self, role, content, metadata=None):
-            self.history.append({"role": role, "content": content, "metadata": metadata or {}})
+            self.history.append(
+                {"role": role, "content": content, "metadata": metadata or {}}
+            )
 
     fake_session = _FakeSession()
     fake_agent = type("FakeAgent", (), {"_sessions": {"hist-test": fake_session}})()
@@ -335,7 +346,8 @@ async def test_tool_persists_summary_to_session_history(monkeypatch):
 
     # Histórico recebeu UMA entrada de panel summary
     panel_entries = [
-        h for h in fake_session.history
+        h
+        for h in fake_session.history
         if h["role"] == "assistant" and h["metadata"].get(HISTORY_MARKER_KEY)
     ]
     assert len(panel_entries) == 1
@@ -353,10 +365,12 @@ async def test_tool_persistence_failure_does_not_break_tool(monkeypatch):
     tool = DispatchParallelSubagentsTool()
 
     class _NoopOrch:
-        def __init__(self, *a, **kw): pass
+        def __init__(self, *a, **kw):
+            pass
+
         async def run(self, tasks):
-            from deile.orchestration.subagents.orchestrator import \
-                SubAgentResult
+            from deile.orchestration.subagents.orchestrator import SubAgentResult
+
             return SubAgentResult(states=[], elapsed_s=0.1, ok_count=0, error_count=0)
 
     monkeypatch.setattr(
@@ -382,6 +396,7 @@ async def test_recursion_guard_blocks_nested_calls(monkeypatch):
     O ContextVar _NESTING_DEPTH bloqueia chamada aninhada.
     """
     from deile.tools.dispatch_parallel_subagents import _NESTING_DEPTH
+
     tool = DispatchParallelSubagentsTool()
     ctx = ToolContext(
         user_input="",
@@ -414,16 +429,22 @@ async def test_tool_cleans_subagent_sessions_after_run(monkeypatch):
             sid = kwargs["session_id"]
             self._sessions[sid] = object()  # simula registro
             self._call_count += 1
+
             async def _gen():
                 return
                 yield  # pragma: no cover
+
             return _gen()
 
     agent = _FakeAgent()
     runner = LocalSubAgentRunner(agent)
-    state = SubAgentState(task=SubAgentTask(
-        index=1, description="x", prompt="p" * 60,
-    ))
+    state = SubAgentState(
+        task=SubAgentTask(
+            index=1,
+            description="x",
+            prompt="p" * 60,
+        )
+    )
     await runner.run_one(state, on_event=lambda _: None)
 
     assert agent._call_count == 1
@@ -444,6 +465,7 @@ async def test_safe_truncate_markdown_handles_unclosed_code_fences():
 async def test_safe_truncate_markdown_prefers_paragraph_break():
     """Truncamento preferencial em \\n\\n na janela [70%..100%] do limite."""
     from deile.tools.dispatch_parallel_subagents import _safe_truncate_markdown
+
     text = "A" * 250 + "\n\n" + "B" * 300
     result = _safe_truncate_markdown(text, max_chars=400)
     # Cortou no \n\n (índice 250), não em 400.
@@ -454,6 +476,7 @@ async def test_safe_truncate_markdown_prefers_paragraph_break():
 async def test_safe_truncate_markdown_short_text_passthrough():
     """Texto curto retorna inalterado (sem ellipsis)."""
     from deile.tools.dispatch_parallel_subagents import _safe_truncate_markdown
+
     short = "tudo certo aqui"
     assert _safe_truncate_markdown(short, max_chars=400) == short
     assert _safe_truncate_markdown("", max_chars=400) == ""
@@ -475,9 +498,10 @@ async def test_tool_schema_is_well_formed():
     assert schema.parameters["properties"]["subtasks"]["minItems"] == 2
     # Iter-2 review: defense-in-depth — additionalProperties:false rejeita
     # campos extras antes do spread para SubAgentTask.__init__.
-    assert schema.parameters["properties"]["subtasks"]["items"][
-        "additionalProperties"
-    ] is False
+    assert (
+        schema.parameters["properties"]["subtasks"]["items"]["additionalProperties"]
+        is False
+    )
 
 
 async def test_session_lock_lru_does_not_evict_the_just_touched_session(monkeypatch):
@@ -560,7 +584,9 @@ async def test_session_lock_lru_eviction_skips_locked_without_break(monkeypatch)
         locks[0].release()
 
 
-async def test_audit_terminal_event_is_cancelled_when_orchestrator_raises_cancellederror(monkeypatch):
+async def test_audit_terminal_event_is_cancelled_when_orchestrator_raises_cancellederror(
+    monkeypatch,
+):
     """MN3 (iter-3): quando ``orchestrator.run()`` propaga CancelledError
     (parent cancel), o evento terminal de auditoria deve ter ``result='cancelled'``
     em vez do default ``'failure'``.
@@ -578,6 +604,7 @@ async def test_audit_terminal_event_is_cancelled_when_orchestrator_raises_cancel
 
     fake_logger = _FakeAuditLogger()
     import deile.security.audit_logger as audit_mod
+
     monkeypatch.setattr(audit_mod, "get_audit_logger", lambda: fake_logger)
 
     async def _cancel_run(self, tasks):
@@ -591,6 +618,7 @@ async def test_audit_terminal_event_is_cancelled_when_orchestrator_raises_cancel
 
     class _StubRunner:
         pass
+
     monkeypatch.setattr(
         "deile.tools.dispatch_parallel_subagents.resolve_runner",
         lambda *a, **kw: _StubRunner(),
@@ -610,17 +638,16 @@ async def test_audit_terminal_event_is_cancelled_when_orchestrator_raises_cancel
     # Mesmo com a exceção, o ``finally`` deve ter emitido o terminal
     # com result='cancelled' (não 'failure').
     tool_events = [
-        e for e in captured
-        if e.get("tool_name") == "dispatch_parallel_subagents"
+        e for e in captured if e.get("tool_name") == "dispatch_parallel_subagents"
     ]
     results = [e.get("result") for e in tool_events]
     assert "accepted" in results, "admission audit ausente"
-    assert "cancelled" in results, (
-        f"MN3 quebrado: esperava terminal 'cancelled', got {results}"
-    )
-    assert "failure" not in results, (
-        "MN3 regressão: terminal não pode ser 'failure' quando o caller cancela"
-    )
+    assert (
+        "cancelled" in results
+    ), f"MN3 quebrado: esperava terminal 'cancelled', got {results}"
+    assert (
+        "failure" not in results
+    ), "MN3 regressão: terminal não pode ser 'failure' quando o caller cancela"
 
 
 async def test_audit_emits_terminal_event(monkeypatch):
@@ -636,6 +663,7 @@ async def test_audit_emits_terminal_event(monkeypatch):
 
     fake_logger = _FakeAuditLogger()
     import deile.security.audit_logger as audit_mod
+
     monkeypatch.setattr(audit_mod, "get_audit_logger", lambda: fake_logger)
 
     # Stub o orchestrator.run pra retornar success rápido.
@@ -660,9 +688,11 @@ async def test_audit_emits_terminal_event(monkeypatch):
         "deile.orchestration.subagents.SubAgentOrchestrator.run",
         _stub_run,
     )
+
     # Stub resolve_runner para evitar criar runners reais.
     class _StubRunner:
         pass
+
     monkeypatch.setattr(
         "deile.tools.dispatch_parallel_subagents.resolve_runner",
         lambda *a, **kw: _StubRunner(),
@@ -679,8 +709,7 @@ async def test_audit_emits_terminal_event(monkeypatch):
 
     # Devem haver pelo menos 2 audit events para a tool: accepted + terminal.
     tool_events = [
-        e for e in captured
-        if e.get("tool_name") == "dispatch_parallel_subagents"
+        e for e in captured if e.get("tool_name") == "dispatch_parallel_subagents"
     ]
     assert len(tool_events) >= 2, f"expected accepted+terminal, got {tool_events}"
     results = [e.get("result") for e in tool_events]

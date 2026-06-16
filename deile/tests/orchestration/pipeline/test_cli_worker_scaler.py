@@ -21,7 +21,10 @@ import pytest
 
 from deile.orchestration.pipeline import cli_worker_scaler as scaler
 from deile.orchestration.pipeline.cli_worker_scaler import (
-    EnsureReplicaOutcome, ScaleResult, ensure_replica)
+    EnsureReplicaOutcome,
+    ScaleResult,
+    ensure_replica,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -104,6 +107,7 @@ class TestImplementerWiringScaleToZero:
 
     async def test_cli_worker_dispatch_scales_before_post(self, monkeypatch):
         from deile.orchestration.pipeline.implementer import WorkerImplementer
+
         monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_IMPLEMENT", "opencode-worker")
         impl = WorkerImplementer()
 
@@ -115,11 +119,15 @@ class TestImplementerWiringScaleToZero:
             ensure_mock,
         )
         with patch.object(
-            impl, "_post_dispatch", new_callable=AsyncMock,
+            impl,
+            "_post_dispatch",
+            new_callable=AsyncMock,
         ) as mock_post:
             mock_post.return_value = {"ok": True, "summary": ""}
             await impl._dispatch(
-                "brief", channel_id="c", stage="implement",
+                "brief",
+                channel_id="c",
+                stage="implement",
                 branch="auto/issue-1",
             )
         ensure_mock.assert_awaited_once()
@@ -128,6 +136,7 @@ class TestImplementerWiringScaleToZero:
 
     async def test_scale_failure_returns_typed_outcome_no_post(self, monkeypatch):
         from deile.orchestration.pipeline.implementer import WorkerImplementer
+
         monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_IMPLEMENT", "opencode-worker")
         impl = WorkerImplementer()
 
@@ -142,10 +151,14 @@ class TestImplementerWiringScaleToZero:
             ensure_mock,
         )
         with patch.object(
-            impl, "_post_dispatch", new_callable=AsyncMock,
+            impl,
+            "_post_dispatch",
+            new_callable=AsyncMock,
         ) as mock_post:
             outcome = await impl._dispatch(
-                "brief", channel_id="c", stage="implement",
+                "brief",
+                channel_id="c",
+                stage="implement",
                 branch="auto/issue-1",
             )
         assert outcome.ok is False
@@ -154,6 +167,7 @@ class TestImplementerWiringScaleToZero:
 
     async def test_core_worker_dispatch_does_not_scale(self, monkeypatch):
         from deile.orchestration.pipeline.implementer import WorkerImplementer
+
         monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_IMPLEMENT", "deile-worker")
         impl = WorkerImplementer()
 
@@ -163,11 +177,15 @@ class TestImplementerWiringScaleToZero:
             ensure_mock,
         )
         with patch.object(
-            impl, "_post_dispatch", new_callable=AsyncMock,
+            impl,
+            "_post_dispatch",
+            new_callable=AsyncMock,
         ) as mock_post:
             mock_post.return_value = {"ok": True, "summary": ""}
             await impl._dispatch(
-                "brief", channel_id="c", stage="implement",
+                "brief",
+                channel_id="c",
+                stage="implement",
                 branch="auto/issue-1",
             )
         # Worker núcleo → ensure_replica NUNCA é chamado.

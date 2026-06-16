@@ -14,9 +14,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
@@ -25,10 +22,10 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import deploy  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # D1 — profile eixo único
 # ---------------------------------------------------------------------------
+
 
 class TestD1ProfileAxis:
     def test_bot_only_in_full(self):
@@ -46,6 +43,7 @@ class TestD1ProfileAxis:
 # D2/D3 — explicit flag tracking
 # ---------------------------------------------------------------------------
 
+
 class TestExplicitFlag:
     def test_cli_profile_flag_is_explicit(self, monkeypatch):
         monkeypatch.delenv("DEILE_K8S_DEPLOY_PROFILE", raising=False)
@@ -54,7 +52,9 @@ class TestExplicitFlag:
 
     def test_env_var_profile_is_explicit(self, monkeypatch):
         monkeypatch.delenv("DEILE_K8S_DEPLOY_PROFILE", raising=False)
-        _, explicit = deploy._k8s_up_resolve_profile([], {"DEILE_K8S_DEPLOY_PROFILE": "full"})
+        _, explicit = deploy._k8s_up_resolve_profile(
+            [], {"DEILE_K8S_DEPLOY_PROFILE": "full"}
+        )
         assert explicit is True
 
     def test_os_environ_profile_is_explicit(self, monkeypatch):
@@ -75,7 +75,9 @@ class TestExplicitFlag:
 
     def test_invalid_env_counts_as_explicit(self, monkeypatch):
         monkeypatch.delenv("DEILE_K8S_DEPLOY_PROFILE", raising=False)
-        p, explicit = deploy._k8s_up_resolve_profile([], {"DEILE_K8S_DEPLOY_PROFILE": "bogus"})
+        p, explicit = deploy._k8s_up_resolve_profile(
+            [], {"DEILE_K8S_DEPLOY_PROFILE": "bogus"}
+        )
         assert p.name == "full"
         assert explicit is True
 
@@ -83,6 +85,7 @@ class TestExplicitFlag:
 # ---------------------------------------------------------------------------
 # D3 — claude-only deployments
 # ---------------------------------------------------------------------------
+
 
 class TestD3ClaudeOnlyDeployments:
     def test_claude_only_deployments(self):
@@ -98,6 +101,7 @@ class TestD3ClaudeOnlyDeployments:
 # ---------------------------------------------------------------------------
 # AC4 — implicit full + no token → fallback to claude-only with warn + exit 0
 # ---------------------------------------------------------------------------
+
 
 def _minimal_k8s_up_mocks(monkeypatch, tmp_path, *, discord_token="", extra_args=None):
     """Patch k8s_up down to just the profile/token gate.
@@ -129,8 +133,12 @@ def _minimal_k8s_up_mocks(monkeypatch, tmp_path, *, discord_token="", extra_args
     # Capture UI output for assertions
     original_warn = deploy.ui.warn
     original_err = deploy.ui.err
-    monkeypatch.setattr(deploy.ui, "warn", lambda msg: warn_calls.append(msg) or original_warn(msg))
-    monkeypatch.setattr(deploy.ui, "err", lambda msg: err_calls.append(msg) or original_err(msg))
+    monkeypatch.setattr(
+        deploy.ui, "warn", lambda msg: warn_calls.append(msg) or original_warn(msg)
+    )
+    monkeypatch.setattr(
+        deploy.ui, "err", lambda msg: err_calls.append(msg) or original_err(msg)
+    )
 
     args = {
         "k8s_namespace": None,
@@ -142,7 +150,9 @@ def _minimal_k8s_up_mocks(monkeypatch, tmp_path, *, discord_token="", extra_args
 
 
 class TestAC4ImplicitFullFallback:
-    def test_implicit_full_no_token_falls_back_to_claude_only(self, monkeypatch, tmp_path):
+    def test_implicit_full_no_token_falls_back_to_claude_only(
+        self, monkeypatch, tmp_path
+    ):
         args, warn_calls, err_calls = _minimal_k8s_up_mocks(
             monkeypatch, tmp_path, discord_token=""
         )
@@ -184,10 +194,13 @@ class TestAC4ImplicitFullFallback:
 # AC6 — explicit full + no token → error preserved
 # ---------------------------------------------------------------------------
 
+
 class TestAC6ExplicitFullError:
     def test_explicit_full_no_token_returns_error(self, monkeypatch, tmp_path):
         args, warn_calls, err_calls = _minimal_k8s_up_mocks(
-            monkeypatch, tmp_path, discord_token="",
+            monkeypatch,
+            tmp_path,
+            discord_token="",
             extra_args=["--profile", "full"],
         )
         monkeypatch.delenv("DEILE_K8S_DEPLOY_PROFILE", raising=False)
@@ -196,8 +209,9 @@ class TestAC6ExplicitFullError:
 
         assert result == 1, "exit≠0 quando full explícito + sem token"
         assert err_calls, "deve emitir mensagem de erro"
-        assert not any("claude-only" in w for w in warn_calls), \
-            "não deve fazer fallback silencioso quando full é explícito"
+        assert not any(
+            "claude-only" in w for w in warn_calls
+        ), "não deve fazer fallback silencioso quando full é explícito"
 
     def test_explicit_full_via_env_no_token_returns_error(self, monkeypatch, tmp_path):
         args, warn_calls, err_calls = _minimal_k8s_up_mocks(

@@ -23,8 +23,7 @@ import threading
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
-from deile.observability.config import (ObservabilityConfig,
-                                        get_observability_config)
+from deile.observability.config import ObservabilityConfig, get_observability_config
 from deile.observability.no_op import NoOpSpan, NoOpTracer
 
 logger = logging.getLogger(__name__)
@@ -45,6 +44,7 @@ def otel_available() -> bool:
     try:
         import opentelemetry  # noqa: F401  pylint: disable=unused-import,import-outside-toplevel
         import opentelemetry.sdk.trace  # noqa: F401  pylint: disable=unused-import,import-outside-toplevel
+
         return True
     except ImportError:
         return False
@@ -97,13 +97,19 @@ class OtlpTracer:
     def _build_provider(self) -> None:
         """Configura o ``TracerProvider`` apontando para o collector OTLP."""
         from opentelemetry.sdk.resources import (  # pylint: disable=import-outside-toplevel
-            SERVICE_NAME, Resource)
-        from opentelemetry.sdk.trace import \
-            TracerProvider  # pylint: disable=import-outside-toplevel
-        from opentelemetry.sdk.trace.export import \
-            BatchSpanProcessor  # pylint: disable=import-outside-toplevel
+            SERVICE_NAME,
+            Resource,
+        )
+        from opentelemetry.sdk.trace import (  # pylint: disable=import-outside-toplevel
+            TracerProvider,
+        )
+        from opentelemetry.sdk.trace.export import (  # pylint: disable=import-outside-toplevel
+            BatchSpanProcessor,
+        )
         from opentelemetry.sdk.trace.sampling import (  # pylint: disable=import-outside-toplevel
-            ParentBased, TraceIdRatioBased)
+            ParentBased,
+            TraceIdRatioBased,
+        )
 
         # Permite que testes injetem um provider já pronto via monkeypatch
         # do atributo de módulo ``_provider``. Quando isso acontece, usamos
@@ -115,9 +121,7 @@ class OtlpTracer:
             return
 
         resource = Resource.create({SERVICE_NAME: self._config.service_name})
-        sampler = ParentBased(
-            root=TraceIdRatioBased(self._config.sample_ratio)
-        )
+        sampler = ParentBased(root=TraceIdRatioBased(self._config.sample_ratio))
         provider = TracerProvider(resource=resource, sampler=sampler)
 
         exporter = self._make_exporter()
@@ -132,8 +136,9 @@ class OtlpTracer:
     def _make_exporter(self) -> Any:
         """Constrói o ``OTLPSpanExporter`` (gRPC). Falha silenciosa → ``None``."""
         try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import \
-                OTLPSpanExporter  # pylint: disable=import-outside-toplevel
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # pylint: disable=import-outside-toplevel
+                OTLPSpanExporter,
+            )
         except ImportError as exc:
             logger.warning(
                 "opentelemetry-exporter-otlp-proto-grpc não disponível "
@@ -264,8 +269,10 @@ def _maybe_attach_instance_attrs(attributes: dict) -> None:
     Best-effort: tracer não pode quebrar se InstanceState não estiver setup.
     """
     try:
-        from deile.runtime.instance_state import \
-            get_instance_state  # pylint: disable=import-outside-toplevel
+        from deile.runtime.instance_state import (  # pylint: disable=import-outside-toplevel
+            get_instance_state,
+        )
+
         state = get_instance_state()
         attributes["deile.instance.id"] = state.instance_id
         attributes["deile.instance.role"] = state.role
@@ -301,14 +308,17 @@ def activate_traceparent_from_env() -> Any:
     if not traceparent:
         return None
     try:
-        from opentelemetry.propagators.textmap import \
-            TraceContextTextMapPropagator  # pylint: disable=import-outside-toplevel
+        from opentelemetry.propagators.textmap import (  # pylint: disable=import-outside-toplevel
+            TraceContextTextMapPropagator,
+        )
+
         carrier = {"traceparent": traceparent}
         tracestate = os.environ.get("TRACESTATE") or os.environ.get("tracestate")
         if tracestate:
             carrier["tracestate"] = tracestate
         ctx = TraceContextTextMapPropagator().extract(carrier=carrier)
         import opentelemetry.context as otel_context  # pylint: disable=import-outside-toplevel
+
         token = otel_context.attach(ctx)
         return token
     except Exception as exc:  # noqa: BLE001

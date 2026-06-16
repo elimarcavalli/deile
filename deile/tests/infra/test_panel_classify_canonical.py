@@ -10,6 +10,7 @@ Covers AC1–AC8 from the issue spec:
   AC7  — latency: _parse(<200 lines>) < 50ms
   AC8  — target derivation per family
 """
+
 from __future__ import annotations
 
 import os
@@ -24,9 +25,13 @@ _INFRA_K8S = Path(__file__).resolve().parents[3] / "infra" / "k8s"
 if str(_INFRA_K8S) not in sys.path:
     sys.path.insert(0, str(_INFRA_K8S))
 
-from _panel_data import (LogLine, PipelineProvider,  # noqa: E402
-                         _classify_pipeline_line, _parse_canonical_kv,
-                         _redact_canonical_detail)
+from _panel_data import PipelineProvider  # noqa: E402
+from _panel_data import (
+    LogLine,
+    _classify_pipeline_line,
+    _parse_canonical_kv,
+    _redact_canonical_detail,
+)
 
 _UTC = timezone.utc
 _TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=_UTC)
@@ -45,38 +50,70 @@ def _cls(body: str):
 # ---------------------------------------------------------------------------
 
 _CANONICAL_FIXTURES = [
-    ("refinement.critique issue=42 persona=architect verdict=VAGO gaps='scope unclear'",
-     "refinement.critique", "#42"),
-    ("refinement.refine issue=42 round=1 persona=analyst body_chars=300 verdict=CLARO",
-     "refinement.refine", "#42"),
-    ("decomposition.fanout intent=10 derivadas=[11,12] complexity=[M,S]",
-     "decomposition.fanout", "#10"),
-    ("batch.claim sha=abc1234ef0 issues=[1,2] reason=shard",
-     "batch.claim", "~batch:abc1234e"),
-    ("batch.release sha=abc1234ef0 reason=done",
-     "batch.release", "~batch:abc1234e"),
-    ("label.change target_kind=issue target=42 removed=[] added=[~workflow:revisada]",
-     "label.change", "#42"),
-    ("label.change target_kind=pr target=99 removed=[] added=[~review:concluida]",
-     "label.change", "PR#99"),
-    ("reaper.unblock target_kind=issue target=7 attempts=1 reason=fresh",
-     "reaper.unblock", "#7"),
-    ("reaper.block target_kind=pr target=7 attempts=3 cap=5 reason=stale",
-     "reaper.block", "PR#7"),
-    ("auth.fail target=worker-abc attempts=3 thr=3 reason=expired",
-     "auth.fail", "worker-abc"),
-    ("auth.backoff target=worker-abc attempts=4 backoff_s=120 until=2026-01-01T12:02:00Z",
-     "auth.backoff", "worker-abc"),
-    ("auth.skip target=worker-abc remaining_s=118",
-     "auth.skip", "worker-abc"),
-    ("auth.recover target=worker-abc reason=renewed",
-     "auth.recover", "worker-abc"),
-    ("routing.mention target_kind=issue target=42 action=inject_workflow_nova",
-     "routing.mention", "#42"),
-    ("routing.pr_unified target=99 role=assignee",
-     "routing.pr_unified", "PR#99"),
-    ("routing.dropped target_kind=issue target=42 reason=self_mention",
-     "routing.dropped", "#42"),
+    (
+        "refinement.critique issue=42 persona=architect verdict=VAGO gaps='scope unclear'",
+        "refinement.critique",
+        "#42",
+    ),
+    (
+        "refinement.refine issue=42 round=1 persona=analyst body_chars=300 verdict=CLARO",
+        "refinement.refine",
+        "#42",
+    ),
+    (
+        "decomposition.fanout intent=10 derivadas=[11,12] complexity=[M,S]",
+        "decomposition.fanout",
+        "#10",
+    ),
+    (
+        "batch.claim sha=abc1234ef0 issues=[1,2] reason=shard",
+        "batch.claim",
+        "~batch:abc1234e",
+    ),
+    ("batch.release sha=abc1234ef0 reason=done", "batch.release", "~batch:abc1234e"),
+    (
+        "label.change target_kind=issue target=42 removed=[] added=[~workflow:revisada]",
+        "label.change",
+        "#42",
+    ),
+    (
+        "label.change target_kind=pr target=99 removed=[] added=[~review:concluida]",
+        "label.change",
+        "PR#99",
+    ),
+    (
+        "reaper.unblock target_kind=issue target=7 attempts=1 reason=fresh",
+        "reaper.unblock",
+        "#7",
+    ),
+    (
+        "reaper.block target_kind=pr target=7 attempts=3 cap=5 reason=stale",
+        "reaper.block",
+        "PR#7",
+    ),
+    (
+        "auth.fail target=worker-abc attempts=3 thr=3 reason=expired",
+        "auth.fail",
+        "worker-abc",
+    ),
+    (
+        "auth.backoff target=worker-abc attempts=4 backoff_s=120 until=2026-01-01T12:02:00Z",
+        "auth.backoff",
+        "worker-abc",
+    ),
+    ("auth.skip target=worker-abc remaining_s=118", "auth.skip", "worker-abc"),
+    ("auth.recover target=worker-abc reason=renewed", "auth.recover", "worker-abc"),
+    (
+        "routing.mention target_kind=issue target=42 action=inject_workflow_nova",
+        "routing.mention",
+        "#42",
+    ),
+    ("routing.pr_unified target=99 role=assignee", "routing.pr_unified", "PR#99"),
+    (
+        "routing.dropped target_kind=issue target=42 reason=self_mention",
+        "routing.dropped",
+        "#42",
+    ),
 ]
 
 
@@ -86,13 +123,21 @@ class TestAC1AllActionsRecognised:
         assert all(ev is not None for ev in events), "Some fixtures returned None"
         actions = {ev.action for ev in events if ev is not None}
         expected = {
-            "refinement.critique", "refinement.refine",
+            "refinement.critique",
+            "refinement.refine",
             "decomposition.fanout",
-            "batch.claim", "batch.release",
+            "batch.claim",
+            "batch.release",
             "label.change",
-            "reaper.unblock", "reaper.block",
-            "auth.fail", "auth.backoff", "auth.skip", "auth.recover",
-            "routing.mention", "routing.pr_unified", "routing.dropped",
+            "reaper.unblock",
+            "reaper.block",
+            "auth.fail",
+            "auth.backoff",
+            "auth.skip",
+            "auth.recover",
+            "routing.mention",
+            "routing.pr_unified",
+            "routing.dropped",
         }
         assert actions == expected
 
@@ -106,6 +151,7 @@ class TestAC1AllActionsRecognised:
 # ---------------------------------------------------------------------------
 # AC2 — unknown family falls through to legacy (no canonical_dropped increment)
 # ---------------------------------------------------------------------------
+
 
 class TestAC2UnknownFamilyFallthrough:
     def test_unknown_family_returns_none(self):
@@ -126,6 +172,7 @@ class TestAC2UnknownFamilyFallthrough:
 # AC3 — extra k=v keys preserved in detail
 # ---------------------------------------------------------------------------
 
+
 class TestAC3AdditivekV:
     def test_extra_key_in_detail(self):
         body = "refinement.critique issue=42 persona=architect verdict=VAGO gaps='foo bar' NOVO_KEY=xyz"
@@ -143,6 +190,7 @@ class TestAC3AdditivekV:
 # ---------------------------------------------------------------------------
 # AC4 — lines >500 chars rejected (line_too_long)
 # ---------------------------------------------------------------------------
+
 
 class TestAC4LineTooLong:
     def _make_provider_parse(self, lines):
@@ -171,6 +219,7 @@ class TestAC4LineTooLong:
 # AC5 — \t / \r control chars rejected (line_has_forbidden_char)
 # ---------------------------------------------------------------------------
 
+
 class TestAC5ForbiddenChars:
     def _make_provider_parse(self, lines):
         ts_prefix = "2026-01-01T12:00:00.000000000Z "
@@ -184,6 +233,7 @@ class TestAC5ForbiddenChars:
         \\r can never reach ll.body via the normal text path.
         """
         from unittest.mock import patch
+
         fakes = [LogLine(ts=_TS, body=b) for b in bodies]
         idx = [-1]
 
@@ -216,14 +266,17 @@ class TestAC5ForbiddenChars:
         tab_state = self._make_provider_parse([tab_body])
         # CR via injected LogLine
         cr_state = self._parse_with_fake_lls([cr_body])
-        total = (tab_state.canonical_dropped["line_has_forbidden_char"]
-                 + cr_state.canonical_dropped["line_has_forbidden_char"])
+        total = (
+            tab_state.canonical_dropped["line_has_forbidden_char"]
+            + cr_state.canonical_dropped["line_has_forbidden_char"]
+        )
         assert total == 2
 
 
 # ---------------------------------------------------------------------------
 # AC6 — secrets redacted from detail
 # ---------------------------------------------------------------------------
+
 
 class TestAC6SecretsRedacted:
     def test_token_redacted(self):
@@ -267,6 +320,7 @@ class TestAC6SecretsRedacted:
 # AC7 — latency: _parse(200 lines) < 50ms
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.skipif(
     os.getenv("DEILE_PERF_TEST") == "0",
     reason="Performance tests disabled via DEILE_PERF_TEST=0",
@@ -303,14 +357,15 @@ class TestAC7Latency:
 # AC8 — target derivation per family
 # ---------------------------------------------------------------------------
 
+
 class TestAC8TargetDerivation:
     @pytest.mark.parametrize("body,_action,expected_target", _CANONICAL_FIXTURES)
     def test_target_matches_spec(self, body, _action, expected_target):
         ev = _cls(body)
         assert ev is not None
-        assert ev.target == expected_target, (
-            f"family={ev.action}: expected target={expected_target!r}, got {ev.target!r}"
-        )
+        assert (
+            ev.target == expected_target
+        ), f"family={ev.action}: expected target={expected_target!r}, got {ev.target!r}"
 
     def test_routing_pr_unified_target(self):
         ev = _cls("routing.pr_unified target=91 role=reviewer")

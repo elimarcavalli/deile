@@ -23,6 +23,7 @@ Precedência de ``resolve_stage_dispatcher`` (alta → baixa):
    warning + fallback.
 5. Built-in default: ``deile-worker``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -40,8 +41,9 @@ logger = logging.getLogger(__name__)
 # :mod:`deile.infrastructure.deile_worker_client` que importam de
 # ``dispatch_resolver``; a tupla é a MESMA instância (não cópia) — testes
 # podem checar identidade.
-from deile.orchestration.pipeline.model_resolver import \
-    PIPELINE_STAGES  # noqa: E402, F401
+from deile.orchestration.pipeline.model_resolver import (  # noqa: E402, F401
+    PIPELINE_STAGES,
+)
 
 # ---------------------------------------------------------------------------
 # Frota escalável — workers derivados do registro de adapters (issue multi-CLI)
@@ -145,7 +147,9 @@ def _cli_dispatcher_ports() -> Dict[str, int]:
         if not isinstance(port, int) or port <= 0:
             logger.warning(
                 "adapter %r sem default_port válido (%r) — dispatcher %r ignorado",
-                kind, port, dispatcher,
+                kind,
+                port,
+                dispatcher,
             )
             continue
         ports[dispatcher] = port
@@ -187,7 +191,10 @@ def _endpoint_for_dispatcher(canonical: str) -> Tuple[str, Optional[str]]:
     var ``DEILE_<KIND>_WORKER_ENDPOINT``.
     """
     if canonical in _BUILTIN_ENDPOINT_DEFAULTS:
-        return _BUILTIN_ENDPOINT_DEFAULTS[canonical], _BUILTIN_ENDPOINT_ENV_VARS[canonical]
+        return (
+            _BUILTIN_ENDPOINT_DEFAULTS[canonical],
+            _BUILTIN_ENDPOINT_ENV_VARS[canonical],
+        )
     ports = _cli_dispatcher_ports()
     port = ports.get(canonical)
     if port is None:
@@ -294,9 +301,7 @@ def resolve_stage_dispatcher(stage: str) -> str:
             queimar budget no engine errado por typo).
     """
     if stage not in PIPELINE_STAGES:
-        raise ValueError(
-            f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
-        )
+        raise ValueError(f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}")
 
     # 1. Env var per-stage (fail-fast: ops config errors must surface loud)
     stage_env = os.environ.get(f"DEILE_PIPELINE_DISPATCH_{stage.upper()}")
@@ -306,6 +311,7 @@ def resolve_stage_dispatcher(stage: str) -> str:
 
     # 2. Settings per-stage (graceful: user config errors fall through with warning)
     from deile.config.settings import get_settings  # lazy: avoids import cycle
+
     settings = get_settings()
     settings_per_stage = getattr(settings, f"pipeline_dispatcher_{stage}", None)
     resolved = _canonicalize_settings(
@@ -372,9 +378,7 @@ def resolve_stage_timeout_s(stage: str) -> int:
         ValueError: env var contains a non-positive integer (fail-fast).
     """
     if stage not in PIPELINE_STAGES:
-        raise ValueError(
-            f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
-        )
+        raise ValueError(f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}")
 
     # 1. Per-stage env var (fail-fast; timeout floor is 1s).
     env_val = _parse_stage_int_env(
@@ -385,6 +389,7 @@ def resolve_stage_timeout_s(stage: str) -> int:
 
     # 2. Per-stage settings (graceful)
     from deile.config.settings import get_settings  # lazy: avoids import cycle
+
     settings = get_settings()
     settings_val = getattr(settings, f"pipeline_timeout_s_{stage}", None)
     if settings_val is not None and settings_val > 0:
@@ -419,9 +424,7 @@ def resolve_stage_max_retries(stage: str) -> int:
         ValueError: env var contains a negative integer (fail-fast).
     """
     if stage not in PIPELINE_STAGES:
-        raise ValueError(
-            f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
-        )
+        raise ValueError(f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}")
 
     # 1. Per-stage env var (fail-fast; 0 retries is valid, so the floor is 0).
     env_val = _parse_stage_int_env(
@@ -432,6 +435,7 @@ def resolve_stage_max_retries(stage: str) -> int:
 
     # 2. Per-stage settings (graceful)
     from deile.config.settings import get_settings  # lazy: avoids import cycle
+
     settings = get_settings()
     settings_val = getattr(settings, f"pipeline_retries_{stage}", None)
     if settings_val is not None:
@@ -470,11 +474,11 @@ def resolve_stage_cost_cap_usd(stage: str) -> Optional[Decimal]:
         ValueError: an env var contains a non-positive or non-parseable value.
     """
     if stage not in PIPELINE_STAGES:
-        raise ValueError(
-            f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
-        )
+        raise ValueError(f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}")
 
-    def _parse_cap(raw: Optional[str], context: str, *, strict: bool) -> Optional[Decimal]:
+    def _parse_cap(
+        raw: Optional[str], context: str, *, strict: bool
+    ) -> Optional[Decimal]:
         if not raw or not raw.strip():
             return None
         stripped = raw.strip()
@@ -500,13 +504,15 @@ def resolve_stage_cost_cap_usd(stage: str) -> Optional[Decimal]:
 
     # 1. Per-stage env var (fail-fast on invalid).
     stage_env = os.environ.get(f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}")
-    cap = _parse_cap(stage_env, f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}", strict=True)
+    cap = _parse_cap(
+        stage_env, f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}", strict=True
+    )
     if cap is not None:
         return cap
 
     # 2. Settings per-stage (graceful).
-    from deile.config.settings import \
-        get_settings  # noqa: PLC0415 — lazy import
+    from deile.config.settings import get_settings  # noqa: PLC0415 — lazy import
+
     settings = get_settings()
     settings_val = getattr(settings, f"pipeline_cost_cap_usd_{stage}", None)
     if settings_val is not None:
@@ -516,7 +522,8 @@ def resolve_stage_cost_cap_usd(stage: str) -> Optional[Decimal]:
         logger.warning(
             "dispatch_resolver: invalid cost cap %r in settings.json "
             "(pipeline.cost_caps_usd.%s) — ignoring",
-            settings_val, stage,
+            settings_val,
+            stage,
         )
 
     # 3. Global env var fallback (fail-fast on invalid).

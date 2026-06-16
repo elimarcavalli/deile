@@ -6,13 +6,20 @@ the registry's public API, returns the count of matched schemas, skips
 malformed files without aborting the batch, and tolerates schemas for
 unregistered tools (logged, not raised).
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
-                              ToolResult, ToolStatus)
+from deile.tools.base import (
+    SecurityLevel,
+    Tool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolStatus,
+)
 from deile.tools.discovery import load_schemas_from_directory
 from deile.tools.registry import ToolRegistry
 
@@ -102,8 +109,7 @@ def test_skips_schema_for_unregistered_tool(tmp_path):
 
     assert count == 0
     assert any(
-        "unregistered tool" in rec.getMessage()
-        and "ghost_tool" in rec.getMessage()
+        "unregistered tool" in rec.getMessage() and "ghost_tool" in rec.getMessage()
         for rec in captured
     )
 
@@ -141,9 +147,7 @@ def test_uses_public_registry_api(monkeypatch, tmp_path):
             "__contains__",
             lambda self, n: n in original,
         )
-        monkeypatch.setattr(
-            ToolRegistry, "get", lambda self, n: original.get(n)
-        )
+        monkeypatch.setattr(ToolRegistry, "get", lambda self, n: original.get(n))
         _write_schema_file(tmp_path, "dummy_one")
         count = load_schemas_from_directory(registry, tmp_path)
         assert count == 1

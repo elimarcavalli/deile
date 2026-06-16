@@ -25,17 +25,19 @@ logger = logging.getLogger(__name__)
 
 class RoutingStrategy(Enum):
     """Estratégias de roteamento de modelos"""
-    ROUND_ROBIN = "round_robin"           # Alternância simples
-    LEAST_BUSY = "least_busy"             # Modelo menos ocupado
-    TASK_OPTIMIZED = "task_optimized"     # Otimizado para o tipo de tarefa
-    COST_OPTIMIZED = "cost_optimized"     # Otimizado para menor custo
-    PERFORMANCE_OPTIMIZED = "performance" # Otimizado para performance
-    LOAD_BALANCED = "load_balanced"       # Balanceamento de carga
+
+    ROUND_ROBIN = "round_robin"  # Alternância simples
+    LEAST_BUSY = "least_busy"  # Modelo menos ocupado
+    TASK_OPTIMIZED = "task_optimized"  # Otimizado para o tipo de tarefa
+    COST_OPTIMIZED = "cost_optimized"  # Otimizado para menor custo
+    PERFORMANCE_OPTIMIZED = "performance"  # Otimizado para performance
+    LOAD_BALANCED = "load_balanced"  # Balanceamento de carga
 
 
 @dataclass
 class RoutingContext:
     """Contexto para decisão de roteamento"""
+
     user_input: str
     estimated_tokens: int = 0
     task_type: Optional[str] = None
@@ -60,6 +62,7 @@ class ModelMetrics:
     scope). ``LEAST_BUSY``/``LOAD_BALANCED`` now use ``total_requests`` as
     a monotonic proxy for "least historically used".
     """
+
     total_requests: int = 0
     active_requests: int = 0  # deprecated — always 0; see class docstring
     avg_response_time: float = 0.0
@@ -92,6 +95,7 @@ class RoutingStrategySelector:
         # two concurrent ``select_provider`` callers to collide on the same
         # provider when an ``await`` was interleaved between the load+write.
         from itertools import count
+
         self._round_robin_counter = count()
         # Mapeamento de tarefas para tipos de modelo
         self.task_model_mapping = {
@@ -167,23 +171,17 @@ class RoutingStrategySelector:
         preferred_size = self.task_model_mapping.get(task_type, ModelSize.MEDIUM)
 
         # Filtra provedores pelo tamanho preferido
-        preferred_providers = [
-            p for p in providers
-            if p.model_size == preferred_size
-        ]
+        preferred_providers = [p for p in providers if p.model_size == preferred_size]
 
         if preferred_providers:
             # Seleciona o com melhor taxa de sucesso entre os preferidos
             return max(
                 preferred_providers,
-                key=lambda p: metrics[_provider_key(p)].success_rate
+                key=lambda p: metrics[_provider_key(p)].success_rate,
             )
 
         # Fallback: melhor provedor geral
-        return max(
-            providers,
-            key=lambda p: metrics[_provider_key(p)].success_rate
-        )
+        return max(providers, key=lambda p: metrics[_provider_key(p)].success_rate)
 
     def _cost_optimized_selection(
         self,
@@ -202,7 +200,7 @@ class RoutingStrategySelector:
             # Custo = cost_per_token * estimated_tokens / success_rate
             # (penaliza provedores com alta taxa de erro)
             if m.success_rate == 0:
-                return float('inf')
+                return float("inf")
 
             cost = (m.cost_per_token * context.estimated_tokens) / m.success_rate
             return cost
@@ -253,13 +251,19 @@ class RoutingStrategySelector:
         input_lower = user_input.lower()
 
         # Análise de padrões simples - pode ser refinada
-        if any(word in input_lower for word in ["analyze", "review", "check", "examine"]):
+        if any(
+            word in input_lower for word in ["analyze", "review", "check", "examine"]
+        ):
             return "code_analysis"
-        elif any(word in input_lower for word in ["create", "generate", "write", "implement"]):
+        elif any(
+            word in input_lower for word in ["create", "generate", "write", "implement"]
+        ):
             return "code_generation"
         elif any(word in input_lower for word in ["summarize", "explain", "what is"]):
             return "file_summary"
-        elif len(user_input) > 500 or any(word in input_lower for word in ["complex", "detailed", "comprehensive"]):
+        elif len(user_input) > 500 or any(
+            word in input_lower for word in ["complex", "detailed", "comprehensive"]
+        ):
             return "complex_reasoning"
         else:
             return "simple_questions"

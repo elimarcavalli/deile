@@ -64,7 +64,7 @@ def _parse_kv(text: str) -> dict[str, str]:
         if colon <= 0:
             continue
         key = segment[:colon].strip()
-        value = segment[colon + 1:].strip()
+        value = segment[colon + 1 :].strip()
         if key:
             result[key] = value
     return result
@@ -163,9 +163,7 @@ class PipelineScheduleCommand(DirectCommand):
             result = await self._tool.execute(tool_ctx)
         except Exception as exc:  # noqa: BLE001
             logger.error("pipeline-schedule tool error: %s", exc, exc_info=True)
-            return CommandResult.error_result(
-                f"{type(exc).__name__}: {exc}", error=exc
-            )
+            return CommandResult.error_result(f"{type(exc).__name__}: {exc}", error=exc)
 
         if not result.is_success:
             return CommandResult.error_result(result.message or "tool returned error")
@@ -180,6 +178,7 @@ class PipelineScheduleCommand(DirectCommand):
 # display helpers
 # ---------------------------------------------------------------------------
 
+
 def _format_result(sub: str, data: Any, message: str | None) -> str:
     if sub == "list":
         if not data:
@@ -191,15 +190,11 @@ def _format_result(sub: str, data: Any, message: str | None) -> str:
             lines.append("\nRecurring:")
             for e in recurring:
                 status = "on" if e.get("enabled", True) else "off"
-                lines.append(
-                    f"  [{status}] {e['id']}  {e['action']}  @  {e['cron']}"
-                )
+                lines.append(f"  [{status}] {e['id']}  {e['action']}  @  {e['cron']}")
         if oneshot:
             lines.append("\nOneshot:")
             for e in oneshot:
-                lines.append(
-                    f"  {e['id']}  {e['action']}  at  {e.get('run_at', '?')}"
-                )
+                lines.append(f"  {e['id']}  {e['action']}  at  {e.get('run_at', '?')}")
         if not recurring and not oneshot:
             lines.append("  (empty)")
         return "\n".join(lines)

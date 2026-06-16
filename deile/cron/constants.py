@@ -5,6 +5,7 @@ project-level ``.deile/settings.json``). DEILE_CRON_* env vars remain
 supported as a deprecated fallback.
 Truncation limits are pure Python constants.
 """
+
 from __future__ import annotations
 
 from deile.config.settings import get_settings
@@ -20,6 +21,8 @@ def cron_poll_interval_seconds() -> int:
     existe para evitar. Chame-a a cada uso.
     """
     return get_settings().cron_poll_interval
+
+
 #: Seconds ``stop()`` waits for the loop task before cancelling it.
 CRON_STOP_TIMEOUT_SECONDS: int = 5
 

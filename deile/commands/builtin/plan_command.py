@@ -10,23 +10,31 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (plan_status_emoji, risk_emoji, split_args,
-                      step_status_emoji, success_panel, truncate,
-                      warning_panel, wrap_command_errors)
+from ._shared import (
+    plan_status_emoji,
+    risk_emoji,
+    split_args,
+    step_status_emoji,
+    success_panel,
+    truncate,
+    warning_panel,
+    wrap_command_errors,
+)
 
 
 class PlanCommand(DirectCommand):
     """Create and manage autonomous execution plans"""
-    
+
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="plan",
             description="Create and manage autonomous execution plans.",
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
-    
+
     @wrap_command_errors("plan")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute plan command"""
@@ -39,13 +47,17 @@ class PlanCommand(DirectCommand):
 
         if command == "create":
             if len(parts) < 2:
-                raise CommandError("create command requires objective: /plan create <objective>")
+                raise CommandError(
+                    "create command requires objective: /plan create <objective>"
+                )
             objective = " ".join(parts[1:])
             return await self._create_plan(objective, context)
 
         if command == "show" or command == "status":
             if len(parts) < 2:
-                raise CommandError("show command requires plan ID: /plan show <plan_id>")
+                raise CommandError(
+                    "show command requires plan ID: /plan show <plan_id>"
+                )
             plan_id = parts[1]
             return await self._show_plan(plan_id)
 
@@ -60,24 +72,28 @@ class PlanCommand(DirectCommand):
 
         if command == "delete":
             if len(parts) < 2:
-                raise CommandError("delete command requires plan ID: /plan delete <plan_id>")
+                raise CommandError(
+                    "delete command requires plan ID: /plan delete <plan_id>"
+                )
             plan_id = parts[1]
             return await self._delete_plan(plan_id)
 
         # Assume it's an objective for creating a plan
         objective = " ".join(parts)
         return await self._create_plan(objective, context)
-    
-    async def _create_plan(self, objective: str, context: CommandContext) -> CommandResult:
+
+    async def _create_plan(
+        self, objective: str, context: CommandContext
+    ) -> CommandResult:
         """Create a new execution plan"""
-        
+
         # Extract context information
         plan_context = {
-            "working_directory": getattr(context, 'working_directory', '.'),
-            "session_id": getattr(context, 'session_id', 'default'),
-            "user_input": objective
+            "working_directory": getattr(context, "working_directory", "."),
+            "session_id": getattr(context, "session_id", "default"),
+            "user_input": objective,
         }
-        
+
         # Show progress while creating
         with Progress(
             SpinnerColumn(),
@@ -85,15 +101,15 @@ class PlanCommand(DirectCommand):
             transient=True,
         ) as progress:
             progress.add_task(description="Montando seu plano...", total=None)
-            
+
             # Create plan
             plan = await self.plan_manager.create_plan(
                 title=f"Plan for: {objective[:50]}{'...' if len(objective) > 50 else ''}",
                 description=objective,
                 objective=objective,
-                context=plan_context
+                context=plan_context,
             )
-        
+
         # Create success panel
         content_lines = [
             "✅ **Plan Created Successfully**",
@@ -107,90 +123,95 @@ class PlanCommand(DirectCommand):
             f"• Use `/run {plan.id}` to execute the plan",
             f"• Use `/plan show {plan.id}` to view plan details",
             "",
-            "**Steps Overview:**"
+            "**Steps Overview:**",
         ]
-        
+
         # Add step summary
         for i, step in enumerate(plan.steps[:5], 1):  # Show first 5 steps
             emoji = risk_emoji(step.risk_level.value)
             approval = " ⚠️" if step.requires_approval else ""
-            
+
             content_lines.append(f"  {i}. {emoji} {step.description}{approval}")
-        
+
         if len(plan.steps) > 5:
             content_lines.append(f"  ... and {len(plan.steps) - 5} more steps")
-        
+
         content = "\n".join(content_lines)
-        
+
         result_panel = Panel(
             Text(content, style="green"),
             title="📋 Plan Created",
             border_style="green",
-            padding=(1, 2)
+            padding=(1, 2),
         )
-        
+
         return CommandResult.success_result(result_panel, "rich")
-    
-    async def _list_plans(self, status_filter: PlanStatus | None = None) -> CommandResult:
+
+    async def _list_plans(
+        self, status_filter: PlanStatus | None = None
+    ) -> CommandResult:
         """List existing plans"""
-        
+
         plans = await self.plan_manager.list_plans(status_filter)
-        
+
         if not plans:
             message = "No plans found"
             if status_filter:
                 message += f" with status '{status_filter.value}'"
-            
+
             return CommandResult.success_result(
-                warning_panel(message, title="📋 Plans"),
-                "rich"
+                warning_panel(message, title="📋 Plans"), "rich"
             )
-        
+
         # Create table
-        table = Table(title=f"📋 Execution Plans ({len(plans)} found)", show_header=True, header_style="bold magenta")
+        table = Table(
+            title=f"📋 Execution Plans ({len(plans)} found)",
+            show_header=True,
+            header_style="bold magenta",
+        )
         table.add_column("ID", style="cyan")
         table.add_column("Title", style="white")
         table.add_column("Status", style="green")
         table.add_column("Steps", justify="right", style="blue")
         table.add_column("Progress", justify="right", style="yellow")
         table.add_column("Created", style="dim")
-        
+
         for plan in plans:
             status_emoji = plan_status_emoji(plan["status"])
             status_text = f"{status_emoji} {plan['status']}"
-            
+
             # Progress calculation
             total = plan["total_steps"]
             completed = plan["completed_steps"]
             progress_pct = (completed / total * 100) if total > 0 else 0
             progress_text = f"{completed}/{total} ({progress_pct:.0f}%)"
-            
+
             # Format date
             created_date = plan["created_at"][:16].replace("T", " ")
-            
+
             table.add_row(
                 plan["id"],
                 truncate(plan["title"], 30),
                 status_text,
                 str(total),
                 progress_text,
-                created_date
+                created_date,
             )
-        
+
         return CommandResult.success_result(table, "rich")
-    
+
     async def _show_plan(self, plan_id: str) -> CommandResult:
         """Show detailed plan information"""
-        
+
         status = await self.plan_manager.get_plan_status(plan_id)
         if not status:
             raise CommandError(f"Plan '{plan_id}' not found")
-        
+
         # Load full plan for step details
         plan = await self.plan_manager.load_plan(plan_id)
         if not plan:
             raise CommandError(f"Could not load plan '{plan_id}'")
-        
+
         # Create detailed display
         content_lines = [
             f"**{status['title']}**",
@@ -199,61 +220,63 @@ class PlanCommand(DirectCommand):
             f"**Status:** {status['status']}",
             f"**Created:** {status['timing']['created_at'][:19]}",
         ]
-        
-        if status['timing']['started_at']:
+
+        if status["timing"]["started_at"]:
             content_lines.append(f"**Started:** {status['timing']['started_at'][:19]}")
-        
-        if status['timing']['completed_at']:
-            content_lines.append(f"**Completed:** {status['timing']['completed_at'][:19]}")
-        
+
+        if status["timing"]["completed_at"]:
+            content_lines.append(
+                f"**Completed:** {status['timing']['completed_at'][:19]}"
+            )
+
         # Progress information
-        progress = status['progress']
-        content_lines.extend([
-            "",
-            f"**Progress:** {progress['completed']}/{progress['total']} steps ({progress['percentage']:.1f}%)",
-            f"**Completed:** {progress['completed']} ✅",
-            f"**Failed:** {progress['failed']} ❌",
-            f"**Skipped:** {progress['skipped']} ⏭️"
-        ])
-        
-        # Timing information
-        if status['timing']['estimated_duration']:
-            est_duration = status['timing']['estimated_duration']
-            content_lines.append(f"**Estimated Duration:** {est_duration:.0f}s")
-        
-        if status['timing']['actual_duration']:
-            actual_duration = status['timing']['actual_duration']
-            content_lines.append(f"**Actual Duration:** {actual_duration:.0f}s")
-        
-        # Current active steps
-        if status['current_steps']:
-            content_lines.extend([
+        progress = status["progress"]
+        content_lines.extend(
+            [
                 "",
-                "**Current Steps:**"
-            ])
-            for step in status['current_steps']:
-                emoji = step_status_emoji(step['status'])
-                approval_text = " (needs approval)" if step['requires_approval'] else ""
-                content_lines.append(f"  • {emoji} {step['description']}{approval_text}")
-        
+                f"**Progress:** {progress['completed']}/{progress['total']} steps ({progress['percentage']:.1f}%)",
+                f"**Completed:** {progress['completed']} ✅",
+                f"**Failed:** {progress['failed']} ❌",
+                f"**Skipped:** {progress['skipped']} ⏭️",
+            ]
+        )
+
+        # Timing information
+        if status["timing"]["estimated_duration"]:
+            est_duration = status["timing"]["estimated_duration"]
+            content_lines.append(f"**Estimated Duration:** {est_duration:.0f}s")
+
+        if status["timing"]["actual_duration"]:
+            actual_duration = status["timing"]["actual_duration"]
+            content_lines.append(f"**Actual Duration:** {actual_duration:.0f}s")
+
+        # Current active steps
+        if status["current_steps"]:
+            content_lines.extend(["", "**Current Steps:**"])
+            for step in status["current_steps"]:
+                emoji = step_status_emoji(step["status"])
+                approval_text = " (needs approval)" if step["requires_approval"] else ""
+                content_lines.append(
+                    f"  • {emoji} {step['description']}{approval_text}"
+                )
+
         # Recent steps (last 5)
-        content_lines.extend([
-            "",
-            "**Recent Steps:**"
-        ])
-        
+        content_lines.extend(["", "**Recent Steps:**"])
+
         recent_steps = plan.steps[-5:] if len(plan.steps) > 5 else plan.steps
         for step in recent_steps:
             emoji = step_status_emoji(step.status.value)
-            risk_indicator = {"high": "🔴", "critical": "🚨"}.get(step.risk_level.value, "")
-            
+            risk_indicator = {"high": "🔴", "critical": "🚨"}.get(
+                step.risk_level.value, ""
+            )
+
             content_lines.append(f"  • {emoji} {step.description} {risk_indicator}")
-            
+
             if step.error_message:
                 content_lines.append(f"    Error: {step.error_message}")
-        
+
         content = "\n".join(content_lines)
-        
+
         # Choose border color based on status
         border_colors = {
             "draft": "yellow",
@@ -261,52 +284,53 @@ class PlanCommand(DirectCommand):
             "running": "cyan",
             "completed": "green",
             "failed": "red",
-            "cancelled": "dim"
+            "cancelled": "dim",
         }
-        
-        border_color = border_colors.get(status['status'], "white")
-        
+
+        border_color = border_colors.get(status["status"], "white")
+
         result_panel = Panel(
             Text(content, style="white"),
             title="📋 Plan Details",
             border_style=border_color,
-            padding=(1, 2)
+            padding=(1, 2),
         )
-        
+
         return CommandResult.success_result(result_panel, "rich")
-    
+
     async def _delete_plan(self, plan_id: str) -> CommandResult:
         """Delete a plan"""
-        
+
         # Check if plan exists
         plan = await self.plan_manager.load_plan(plan_id)
         if not plan:
             raise CommandError(f"Plan '{plan_id}' not found")
-        
+
         # Check if plan is currently running
         if plan.status == PlanStatus.RUNNING:
-            raise CommandError(f"Cannot delete running plan '{plan_id}'. Stop it first with /stop {plan_id}")
-        
+            raise CommandError(
+                f"Cannot delete running plan '{plan_id}'. Stop it first with /stop {plan_id}"
+            )
+
         # Delete plan files
         plan_file = self.plan_manager.plans_dir / f"{plan_id}.json"
         md_file = self.plan_manager.plans_dir / f"{plan_id}.md"
-        
+
         try:
             if plan_file.exists():
                 plan_file.unlink()
             if md_file.exists():
                 md_file.unlink()
-            
+
             success_message = f"✅ Plan '{plan_id}' deleted successfully"
-            
+
             return CommandResult.success_result(
-                success_panel(success_message, title="🗑️ Plan Deleted"),
-                "rich"
+                success_panel(success_message, title="🗑️ Plan Deleted"), "rich"
             )
-            
+
         except Exception as e:
             raise CommandError(f"Failed to delete plan '{plan_id}': {str(e)}")
-    
+
     def get_help(self) -> str:
         """Get command help"""
         return """Create and manage autonomous execution plans

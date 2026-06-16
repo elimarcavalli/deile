@@ -6,6 +6,7 @@ Cobre:
 3. setup_token_claude_worker: função de bootstrap com token de 1 ano.
 4. _kubectl_apply_oauth_token_secret: aplicação do novo formato de Secret.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -48,6 +49,7 @@ def cws_mod():
             dl = MagicMock()
             sys.modules["dispatch_logger"] = dl
         import claude_worker_server as m
+
         importlib.reload(m)
         yield m
     finally:
@@ -60,6 +62,7 @@ def claude_install_mod():
     sys.path.insert(0, str(INFRA_K8S))
     try:
         import _claude_install
+
         importlib.reload(_claude_install)
         yield _claude_install
     finally:
@@ -80,12 +83,17 @@ def test_assert_no_bare_raises_when_bare_present(cws_mod):
 
 def test_assert_no_bare_ok_without_bare(cws_mod):
     """argv sem --bare → sem exceção (caminho normal)."""
-    cws_mod._assert_no_bare_in_argv([
-        "claude", "-p",
-        "--permission-mode", "bypassPermissions",
-        "--output-format", "json",
-        "do something",
-    ])
+    cws_mod._assert_no_bare_in_argv(
+        [
+            "claude",
+            "-p",
+            "--permission-mode",
+            "bypassPermissions",
+            "--output-format",
+            "json",
+            "do something",
+        ]
+    )
 
 
 def test_assert_no_bare_empty_argv(cws_mod):
@@ -107,13 +115,20 @@ def test_canonical_dispatch_argv_has_no_bare(cws_mod):
     a auth por setup-token (issue #603) seria silenciosamente ignorada.
     """
     cmd = [
-        "claude", "-p",
-        "--permission-mode", "bypassPermissions",
-        "--output-format", "json",
-        "-r", "0123456789abcdef",
-        "--model", "claude-opus-4-8",
-        "--effort", "high",
-        "--max-budget-usd", "8",
+        "claude",
+        "-p",
+        "--permission-mode",
+        "bypassPermissions",
+        "--output-format",
+        "json",
+        "-r",
+        "0123456789abcdef",
+        "--model",
+        "claude-opus-4-8",
+        "--effort",
+        "high",
+        "--max-budget-usd",
+        "8",
         "prompt do dispatch",
     ]
     assert "--bare" not in cmd
@@ -163,9 +178,9 @@ def test_main_logs_warning_when_oauth_token_absent(cws_mod, monkeypatch, tmp_pat
         except KeyboardInterrupt:
             pass
 
-    assert any("CLAUDE_CODE_OAUTH_TOKEN" in w for w in warnings_logged), (
-        f"Esperado warning sobre CLAUDE_CODE_OAUTH_TOKEN ausente; logado: {warnings_logged}"
-    )
+    assert any(
+        "CLAUDE_CODE_OAUTH_TOKEN" in w for w in warnings_logged
+    ), f"Esperado warning sobre CLAUDE_CODE_OAUTH_TOKEN ausente; logado: {warnings_logged}"
 
 
 # ---------------------------------------------------------------------------
@@ -194,17 +209,15 @@ def test_apply_oauth_token_secret_calls_kubectl_with_correct_key(claude_install_
     # O dry-run deve usar CLAUDE_CODE_OAUTH_TOKEN, não credentials.json.
     dry_run_cmd = calls[0]
     cmd_str = " ".join(dry_run_cmd)
-    assert "CLAUDE_CODE_OAUTH_TOKEN=sk-fake-token-xyz" in cmd_str, (
-        f"Esperado CLAUDE_CODE_OAUTH_TOKEN no dry-run; cmd: {cmd_str}"
-    )
-    assert "credentials.json" not in cmd_str, (
-        "credentials.json NÃO deve aparecer no novo formato de Secret"
-    )
+    assert (
+        "CLAUDE_CODE_OAUTH_TOKEN=sk-fake-token-xyz" in cmd_str
+    ), f"Esperado CLAUDE_CODE_OAUTH_TOKEN no dry-run; cmd: {cmd_str}"
+    assert (
+        "credentials.json" not in cmd_str
+    ), "credentials.json NÃO deve aparecer no novo formato de Secret"
 
 
-def test_apply_oauth_token_secret_does_not_log_token_value(
-    claude_install_mod, caplog
-):
+def test_apply_oauth_token_secret_does_not_log_token_value(claude_install_mod, caplog):
     """_kubectl_apply_oauth_token_secret NÃO loga o valor do token (princípio 08)."""
     secret_token = "sk-super-secret-never-log-me"
 
@@ -217,16 +230,18 @@ def test_apply_oauth_token_secret_does_not_log_token_value(
 
     import logging
 
-    with caplog.at_level(logging.DEBUG), \
-         patch.object(claude_install_mod.subprocess, "run", side_effect=fake_run):
+    with (
+        caplog.at_level(logging.DEBUG),
+        patch.object(claude_install_mod.subprocess, "run", side_effect=fake_run),
+    ):
         claude_install_mod._kubectl_apply_oauth_token_secret(
             secret_token, namespace="deile"
         )
 
     for record in caplog.records:
-        assert secret_token not in record.getMessage(), (
-            f"Token secreto encontrado nos logs: {record.getMessage()!r}"
-        )
+        assert (
+            secret_token not in record.getMessage()
+        ), f"Token secreto encontrado nos logs: {record.getMessage()!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +249,9 @@ def test_apply_oauth_token_secret_does_not_log_token_value(
 # ---------------------------------------------------------------------------
 
 
-def test_setup_token_fails_without_token_non_interactive(claude_install_mod, monkeypatch):
+def test_setup_token_fails_without_token_non_interactive(
+    claude_install_mod, monkeypatch
+):
     """Sem token e interactive=False → ok=False com mensagem clara."""
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
@@ -258,11 +275,18 @@ def test_setup_token_uses_env_var(claude_install_mod, monkeypatch):
         captured["ns"] = namespace
         return True
 
-    with patch.object(claude_install_mod, "_kubectl_apply_oauth_token_secret",
-                      side_effect=fake_apply_token_secret), \
-         patch.object(claude_install_mod, "_kubectl_sync_bearer_token", return_value=True), \
-         patch.object(claude_install_mod, "_kubectl_apply_manifests", return_value=True), \
-         patch.object(claude_install_mod, "_kubectl_wait_rollout", return_value=True):
+    with (
+        patch.object(
+            claude_install_mod,
+            "_kubectl_apply_oauth_token_secret",
+            side_effect=fake_apply_token_secret,
+        ),
+        patch.object(
+            claude_install_mod, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(claude_install_mod, "_kubectl_apply_manifests", return_value=True),
+        patch.object(claude_install_mod, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_mod.setup_token_claude_worker(
             interactive=False, namespace="deile-test"
         )
@@ -282,11 +306,18 @@ def test_setup_token_explicit_token_takes_precedence(claude_install_mod, monkeyp
         captured["token"] = token
         return True
 
-    with patch.object(claude_install_mod, "_kubectl_apply_oauth_token_secret",
-                      side_effect=fake_apply), \
-         patch.object(claude_install_mod, "_kubectl_sync_bearer_token", return_value=True), \
-         patch.object(claude_install_mod, "_kubectl_apply_manifests", return_value=True), \
-         patch.object(claude_install_mod, "_kubectl_wait_rollout", return_value=True):
+    with (
+        patch.object(
+            claude_install_mod,
+            "_kubectl_apply_oauth_token_secret",
+            side_effect=fake_apply,
+        ),
+        patch.object(
+            claude_install_mod, "_kubectl_sync_bearer_token", return_value=True
+        ),
+        patch.object(claude_install_mod, "_kubectl_apply_manifests", return_value=True),
+        patch.object(claude_install_mod, "_kubectl_wait_rollout", return_value=True),
+    ):
         result = claude_install_mod.setup_token_claude_worker(
             token="explicit-param-token", interactive=False
         )
@@ -301,14 +332,28 @@ def test_setup_token_full_flow_success(claude_install_mod, monkeypatch):
 
     call_order = []
 
-    with patch.object(claude_install_mod, "_kubectl_apply_oauth_token_secret",
-                      side_effect=lambda *a, **kw: call_order.append("secret") or True), \
-         patch.object(claude_install_mod, "_kubectl_sync_bearer_token",
-                      side_effect=lambda **kw: call_order.append("bearer") or True), \
-         patch.object(claude_install_mod, "_kubectl_apply_manifests",
-                      side_effect=lambda **kw: call_order.append("manifests") or True), \
-         patch.object(claude_install_mod, "_kubectl_wait_rollout",
-                      side_effect=lambda **kw: call_order.append("rollout") or True):
+    with (
+        patch.object(
+            claude_install_mod,
+            "_kubectl_apply_oauth_token_secret",
+            side_effect=lambda *a, **kw: call_order.append("secret") or True,
+        ),
+        patch.object(
+            claude_install_mod,
+            "_kubectl_sync_bearer_token",
+            side_effect=lambda **kw: call_order.append("bearer") or True,
+        ),
+        patch.object(
+            claude_install_mod,
+            "_kubectl_apply_manifests",
+            side_effect=lambda **kw: call_order.append("manifests") or True,
+        ),
+        patch.object(
+            claude_install_mod,
+            "_kubectl_wait_rollout",
+            side_effect=lambda **kw: call_order.append("rollout") or True,
+        ),
+    ):
         result = claude_install_mod.setup_token_claude_worker(
             interactive=False, namespace="deile"
         )
@@ -317,9 +362,12 @@ def test_setup_token_full_flow_success(claude_install_mod, monkeypatch):
     assert result.secret_applied is True
     assert result.deployment_applied is True
     assert result.rollout_ready is True
-    assert call_order == ["secret", "bearer", "manifests", "rollout"], (
-        f"Ordem errada de operações: {call_order}"
-    )
+    assert call_order == [
+        "secret",
+        "bearer",
+        "manifests",
+        "rollout",
+    ], f"Ordem errada de operações: {call_order}"
 
 
 def test_setup_token_fails_on_secret_error(claude_install_mod, monkeypatch):
@@ -327,10 +375,16 @@ def test_setup_token_fails_on_secret_error(claude_install_mod, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-token")
     bearer_called = []
 
-    with patch.object(claude_install_mod, "_kubectl_apply_oauth_token_secret",
-                      return_value=False), \
-         patch.object(claude_install_mod, "_kubectl_sync_bearer_token",
-                      side_effect=lambda **kw: bearer_called.append(True) or True):
+    with (
+        patch.object(
+            claude_install_mod, "_kubectl_apply_oauth_token_secret", return_value=False
+        ),
+        patch.object(
+            claude_install_mod,
+            "_kubectl_sync_bearer_token",
+            side_effect=lambda **kw: bearer_called.append(True) or True,
+        ),
+    ):
         result = claude_install_mod.setup_token_claude_worker(interactive=False)
 
     assert result.ok is False

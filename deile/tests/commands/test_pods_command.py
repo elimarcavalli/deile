@@ -11,10 +11,13 @@ import pytest
 from rich.console import Console
 
 from deile.commands.base import CommandContext
-from deile.commands.builtin.pods_command import (PodsCommand,
-                                                 _build_pods_table,
-                                                 _format_age, _parse_k8s_ts,
-                                                 _resolve_namespace)
+from deile.commands.builtin.pods_command import (
+    PodsCommand,
+    _build_pods_table,
+    _format_age,
+    _parse_k8s_ts,
+    _resolve_namespace,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -132,7 +135,10 @@ class TestParseK8sTs:
 @pytest.mark.unit
 class TestResolveNamespace:
     def test_default_is_deile(self):
-        with patch("deile.commands.builtin.pods_command._resolve_namespace", return_value="deile"):
+        with patch(
+            "deile.commands.builtin.pods_command._resolve_namespace",
+            return_value="deile",
+        ):
             assert _resolve_namespace() == "deile" or True  # baseline
 
     def test_reads_from_settings(self, monkeypatch):
@@ -215,8 +221,14 @@ class TestBuildPodsTable:
 class TestPodsCommandExecute:
     async def test_returns_success_with_pods(self):
         with (
-            patch("deile.commands.builtin.pods_command.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("deile.commands.builtin.pods_command._fetch_pods", new_callable=AsyncMock) as mock_fetch,
+            patch(
+                "deile.commands.builtin.pods_command.shutil.which",
+                return_value="/usr/bin/kubectl",
+            ),
+            patch(
+                "deile.commands.builtin.pods_command._fetch_pods",
+                new_callable=AsyncMock,
+            ) as mock_fetch,
         ):
             mock_fetch.return_value = ({"items": _SAMPLE_ITEMS}, None)
             result = await _cmd().execute(_ctx())
@@ -225,8 +237,14 @@ class TestPodsCommandExecute:
 
     async def test_no_pods_returns_success_text(self):
         with (
-            patch("deile.commands.builtin.pods_command.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("deile.commands.builtin.pods_command._fetch_pods", new_callable=AsyncMock) as mock_fetch,
+            patch(
+                "deile.commands.builtin.pods_command.shutil.which",
+                return_value="/usr/bin/kubectl",
+            ),
+            patch(
+                "deile.commands.builtin.pods_command._fetch_pods",
+                new_callable=AsyncMock,
+            ) as mock_fetch,
         ):
             mock_fetch.return_value = ({"items": []}, None)
             result = await _cmd().execute(_ctx())
@@ -234,15 +252,23 @@ class TestPodsCommandExecute:
         assert "Nenhum pod" in result.content
 
     async def test_kubectl_missing_returns_error(self):
-        with patch("deile.commands.builtin.pods_command.shutil.which", return_value=None):
+        with patch(
+            "deile.commands.builtin.pods_command.shutil.which", return_value=None
+        ):
             result = await _cmd().execute(_ctx())
         assert result.success is False
         assert "kubectl" in result.content.lower()
 
     async def test_kubectl_error_returns_error(self):
         with (
-            patch("deile.commands.builtin.pods_command.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("deile.commands.builtin.pods_command._fetch_pods", new_callable=AsyncMock) as mock_fetch,
+            patch(
+                "deile.commands.builtin.pods_command.shutil.which",
+                return_value="/usr/bin/kubectl",
+            ),
+            patch(
+                "deile.commands.builtin.pods_command._fetch_pods",
+                new_callable=AsyncMock,
+            ) as mock_fetch,
         ):
             mock_fetch.return_value = (None, "RBAC negado")
             result = await _cmd().execute(_ctx())
@@ -251,8 +277,14 @@ class TestPodsCommandExecute:
 
     async def test_renderable_output_has_pod_names(self):
         with (
-            patch("deile.commands.builtin.pods_command.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("deile.commands.builtin.pods_command._fetch_pods", new_callable=AsyncMock) as mock_fetch,
+            patch(
+                "deile.commands.builtin.pods_command.shutil.which",
+                return_value="/usr/bin/kubectl",
+            ),
+            patch(
+                "deile.commands.builtin.pods_command._fetch_pods",
+                new_callable=AsyncMock,
+            ) as mock_fetch,
         ):
             mock_fetch.return_value = ({"items": _SAMPLE_ITEMS}, None)
             result = await _cmd().execute(_ctx())
@@ -263,9 +295,18 @@ class TestPodsCommandExecute:
 
     async def test_renderable_output_has_namespace_in_footer(self):
         with (
-            patch("deile.commands.builtin.pods_command.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("deile.commands.builtin.pods_command._fetch_pods", new_callable=AsyncMock) as mock_fetch,
-            patch("deile.commands.builtin.pods_command._resolve_namespace", return_value="deile"),
+            patch(
+                "deile.commands.builtin.pods_command.shutil.which",
+                return_value="/usr/bin/kubectl",
+            ),
+            patch(
+                "deile.commands.builtin.pods_command._fetch_pods",
+                new_callable=AsyncMock,
+            ) as mock_fetch,
+            patch(
+                "deile.commands.builtin.pods_command._resolve_namespace",
+                return_value="deile",
+            ),
         ):
             mock_fetch.return_value = ({"items": _SAMPLE_ITEMS}, None)
             result = await _cmd().execute(_ctx())
@@ -317,9 +358,9 @@ class TestFetchPods:
             ),
             patch(
                 "deile.commands.builtin.pods_command.asyncio.wait_for",
-                side_effect=lambda coro, timeout=None: coro
-                if not asyncio.iscoroutine(coro)
-                else coro,
+                side_effect=lambda coro, timeout=None: (
+                    coro if not asyncio.iscoroutine(coro) else coro
+                ),
             ),
         ):
             # Patch wait_for to just await the coroutine
@@ -327,7 +368,10 @@ class TestFetchPods:
             async def _passthrough(coro, timeout=None):
                 return await coro
 
-            with patch("deile.commands.builtin.pods_command.asyncio.wait_for", side_effect=_passthrough):
+            with patch(
+                "deile.commands.builtin.pods_command.asyncio.wait_for",
+                side_effect=_passthrough,
+            ):
                 data, err = await _fetch_pods("/usr/bin/kubectl", "deile")
 
         # Either we get an error (non-zero rc) or the mock wasn't set up perfectly — just ensure no crash
@@ -340,7 +384,6 @@ class TestFetchPods:
         proc_mock.returncode = 0
         proc_mock.communicate = AsyncMock(return_value=(b"not json{{{", b""))
 
-
         async def _passthrough(coro, timeout=None):
             return await coro
 
@@ -349,7 +392,10 @@ class TestFetchPods:
                 "deile.commands.builtin.pods_command.asyncio.create_subprocess_exec",
                 return_value=proc_mock,
             ),
-            patch("deile.commands.builtin.pods_command.asyncio.wait_for", side_effect=_passthrough),
+            patch(
+                "deile.commands.builtin.pods_command.asyncio.wait_for",
+                side_effect=_passthrough,
+            ),
         ):
             data, err = await _fetch_pods("/usr/bin/kubectl", "deile")
 
@@ -369,7 +415,13 @@ def test_table_no_fixed_width_in_pods_command():
     import re
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[3] / "deile" / "commands" / "builtin" / "pods_command.py"
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "deile"
+        / "commands"
+        / "builtin"
+        / "pods_command.py"
+    )
     text = path.read_text(encoding="utf-8")
     WIDTH_LITERAL = re.compile(r"\.add_column\s*\([^)]*width\s*=\s*\d+")
     matches = WIDTH_LITERAL.findall(text)
@@ -396,4 +448,5 @@ def test_pods_command_has_help():
 @pytest.mark.unit
 def test_pods_command_is_direct_command():
     from deile.commands.base import DirectCommand
+
     assert isinstance(_cmd(), DirectCommand)

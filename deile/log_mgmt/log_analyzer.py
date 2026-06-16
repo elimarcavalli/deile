@@ -23,9 +23,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from deile.log_mgmt.log_patterns import (AUTH_EXPIRED_PATTERNS,
-                                         PIPELINE_PATTERNS, Severity,
-                                         match_line)
+from deile.log_mgmt.log_patterns import (
+    AUTH_EXPIRED_PATTERNS,
+    PIPELINE_PATTERNS,
+    Severity,
+    match_line,
+)
 
 logger = logging.getLogger("deile.log_analyzer")
 
@@ -167,9 +170,7 @@ def _detect_error_spike(
     return []
 
 
-def _detect_auth_expiry(
-    pod_name: str, lines: List[str]
-) -> List[Anomaly]:
+def _detect_auth_expiry(pod_name: str, lines: List[str]) -> List[Anomaly]:
     """Detecta tokens/auth expirados nos logs."""
     anomalies: List[Anomaly] = []
     auth_lines: List[str] = []
@@ -197,9 +198,7 @@ def _detect_auth_expiry(
     return anomalies
 
 
-def _detect_flooding(
-    pod_name: str, lines: List[str], threshold: int
-) -> List[Anomaly]:
+def _detect_flooding(pod_name: str, lines: List[str], threshold: int) -> List[Anomaly]:
     """Detecta flooding: 200+ linhas idênticas consecutivas."""
     if len(lines) < threshold:
         return []
@@ -312,17 +311,13 @@ def scan_logs(
             continue
 
         # 1. Error spike
-        all_anomalies.extend(
-            _detect_error_spike(pod_name, lines, error_rate_threshold)
-        )
+        all_anomalies.extend(_detect_error_spike(pod_name, lines, error_rate_threshold))
 
         # 2. Auth expiry
         all_anomalies.extend(_detect_auth_expiry(pod_name, lines))
 
         # 3. Flooding
-        all_anomalies.extend(
-            _detect_flooding(pod_name, lines, flood_threshold)
-        )
+        all_anomalies.extend(_detect_flooding(pod_name, lines, flood_threshold))
 
         # 4. Pipeline silencioso (apenas para pods pipeline)
         if "pipeline" in pod_name.lower():
@@ -424,13 +419,13 @@ def _dispatch_anomalies(anomalies: List[Anomaly]) -> None:
     """
     try:
         from deile.log_mgmt.log_dispatcher import dispatch_anomalies
+
         dispatch_anomalies(anomalies)
     except ImportError:
-        logger.warning(
-            "log_dispatcher not available — skipping auto-dispatch"
-        )
+        logger.warning("log_dispatcher not available — skipping auto-dispatch")
 
 
 if __name__ == "__main__":  # pragma: no cover
     import sys
+
     sys.exit(main())

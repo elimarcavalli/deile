@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from deile.events.event_bus import Event, EventBus, EventPriority, EventType
 
 
@@ -25,8 +23,12 @@ async def test_publish_queue_full_returns_false_and_routes_to_dead_letter() -> N
     # Wire the bus as running without real workers so nothing drains the queue.
     bus._running = True
 
-    ev1 = Event(event_type=EventType.TASK_CREATED, source="test", priority=EventPriority.NORMAL)
-    ev2 = Event(event_type=EventType.TASK_STARTED, source="test", priority=EventPriority.NORMAL)
+    ev1 = Event(
+        event_type=EventType.TASK_CREATED, source="test", priority=EventPriority.NORMAL
+    )
+    ev2 = Event(
+        event_type=EventType.TASK_STARTED, source="test", priority=EventPriority.NORMAL
+    )
 
     # Fill the NORMAL queue to capacity.
     ok1 = await asyncio.wait_for(bus.publish(ev1), timeout=1)

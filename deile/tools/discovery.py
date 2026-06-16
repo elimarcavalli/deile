@@ -46,9 +46,7 @@ DEFAULT_TOOL_PACKAGES = [
 ]
 
 
-def discover_tools_in_package(
-    registry: "ToolRegistry", package_name: str
-) -> int:
+def discover_tools_in_package(registry: "ToolRegistry", package_name: str) -> int:
     """Importa ``package_name`` e registra toda subclasse concreta de ``Tool``.
 
     Tools cujo ``name`` já consta no registry são ignoradas. Falhas de
@@ -70,6 +68,7 @@ def discover_tools_in_package(
     # Pular aqui evita WARNING ruidoso de `NotImplementedError` ao
     # acessar `.name` em produção (25/mai/2026, painel local).
     from deile.tools.base import SyncTool  # late import — evita ciclo
+
     _base_classes = {Tool, SyncTool}
 
     discovered_count = 0
@@ -92,7 +91,9 @@ def discover_tools_in_package(
             # Silencioso em DEBUG — `.name` levantando é o protocolo do
             # próprio `Tool.name` pra dizer "não me registre".
             logger.debug(
-                "Skipping non-concrete tool %s: %s", name, exc,
+                "Skipping non-concrete tool %s: %s",
+                name,
+                exc,
             )
         except Exception as e:
             logger.warning(
@@ -103,9 +104,7 @@ def discover_tools_in_package(
     return discovered_count
 
 
-def load_schemas_from_directory(
-    registry: "ToolRegistry", schemas_dir: Path
-) -> int:
+def load_schemas_from_directory(registry: "ToolRegistry", schemas_dir: Path) -> int:
     """Carrega schemas JSON de ``schemas_dir`` e associa-os às tools registradas.
 
     Schemas cuja tool correspondente não está registrada são logados
@@ -135,9 +134,7 @@ def load_schemas_from_directory(
             continue
 
         if schema.name not in registry:
-            logger.warning(
-                f"Schema found for unregistered tool: {schema.name}"
-            )
+            logger.warning(f"Schema found for unregistered tool: {schema.name}")
             continue
 
         tool = registry.get(schema.name)

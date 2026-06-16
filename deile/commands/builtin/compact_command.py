@@ -16,8 +16,11 @@ from rich.table import Table
 from rich.text import Text
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
-from deile.commands.builtin._shared import (export_timestamp,
-                                            get_memory_manager, split_args)
+from deile.commands.builtin._shared import (
+    export_timestamp,
+    get_memory_manager,
+    split_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +101,11 @@ class CompactCommand(DirectCommand):
         mm = get_memory_manager(context)
         ss = await _get_session_store(context)
 
-        table = Table(title="Resumo de Memória e Sessões", show_header=True, header_style="bold cyan")
+        table = Table(
+            title="Resumo de Memória e Sessões",
+            show_header=True,
+            header_style="bold cyan",
+        )
         table.add_column("Métrica", style="white")
         table.add_column("Valor", style="green")
         table.add_column("Detalhes", style="dim")
@@ -130,8 +137,12 @@ class CompactCommand(DirectCommand):
                 count = stats.get("session_count", 0)
                 oldest = stats.get("oldest_last_used") or "—"
                 newest = stats.get("newest_last_used") or "—"
-                table.add_row("Sessões armazenadas", str(count), f"Mais recente: {newest[:10]}")
-                table.add_row("Sessão mais antiga", oldest[:10] if oldest != "—" else "—", "")
+                table.add_row(
+                    "Sessões armazenadas", str(count), f"Mais recente: {newest[:10]}"
+                )
+                table.add_row(
+                    "Sessão mais antiga", oldest[:10] if oldest != "—" else "—", ""
+                )
             except Exception as exc:
                 table.add_row("Sessões", "INDISPONÍVEL", str(exc)[:50])
         else:
@@ -270,7 +281,9 @@ class CompactCommand(DirectCommand):
                 except ValueError:
                     pass
 
-        table = Table(title="Análise de Sessões", show_header=True, header_style="bold cyan")
+        table = Table(
+            title="Análise de Sessões", show_header=True, header_style="bold cyan"
+        )
         table.add_column("Métrica", style="white")
         table.add_column("Valor", style="green")
         table.add_column("Detalhes", style="dim")
@@ -296,7 +309,9 @@ class CompactCommand(DirectCommand):
                 )
 
         if len(sessions) < 5:
-            tópicos_msg = f"dados insuficientes ({len(sessions)} sessão(ões) encontradas)"
+            tópicos_msg = (
+                f"dados insuficientes ({len(sessions)} sessão(ões) encontradas)"
+            )
         else:
             tópicos_msg = f"baseada em {len(sessions)} sessões de metadados reais"
         table.add_row("Análise de tópicos", tópicos_msg, "")
@@ -348,13 +363,21 @@ class CompactCommand(DirectCommand):
                     lines.append(f"Sessão: {s['session_id']}")
                     lines.append(f"Último uso: {s['last_used_at']}")
                     lines.append("-" * 50)
-                await asyncio.to_thread(export_path.write_text, "\n".join(lines), "utf-8")
+                await asyncio.to_thread(
+                    export_path.write_text, "\n".join(lines), "utf-8"
+                )
             elif fmt == "csv":
-                fields = list(sessions[0].keys()) if sessions else ["session_id", "last_used_at"]
+                fields = (
+                    list(sessions[0].keys())
+                    if sessions
+                    else ["session_id", "last_used_at"]
+                )
 
                 def _write_csv() -> None:
                     with open(export_path, "w", newline="", encoding="utf-8") as f:
-                        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                        writer = csv.DictWriter(
+                            f, fieldnames=fields, extrasaction="ignore"
+                        )
                         writer.writeheader()
                         writer.writerows(sessions)
 
@@ -410,6 +433,7 @@ class CompactCommand(DirectCommand):
                 raw = await asyncio.to_thread(import_path.read_text, "utf-8")
                 sessions = json.loads(raw)
             else:
+
                 def _read_csv() -> list:
                     with open(import_path, encoding="utf-8") as f:
                         return list(csv.DictReader(f))
@@ -419,7 +443,9 @@ class CompactCommand(DirectCommand):
             return CommandResult.error_result(f"Falha ao ler arquivo: {exc}")
 
         if not sessions:
-            return CommandResult.error_result("Nenhuma sessão válida encontrada no arquivo")
+            return CommandResult.error_result(
+                "Nenhuma sessão válida encontrada no arquivo"
+            )
 
         imported = 0
         for s in sessions:
@@ -442,4 +468,3 @@ class CompactCommand(DirectCommand):
             content_type="rich",
             sessions_imported=imported,
         )
-

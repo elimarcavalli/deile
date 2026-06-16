@@ -25,45 +25,77 @@ from dataclasses import replace
 from datetime import timedelta
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from deile.orchestration.forge import (CommentRef, GhCommandError, IssueRef,
-                                       MentionTrigger, declared_hosts,
-                                       find_last_pr_url)
+from deile.orchestration.forge import (
+    CommentRef,
+    GhCommandError,
+    IssueRef,
+    MentionTrigger,
+    declared_hosts,
+    find_last_pr_url,
+)
 from deile.orchestration.forge.refs import compute_batch_id_for_number
 from deile.orchestration.pipeline import pipeline_logger
 from deile.orchestration.pipeline._time_utils import format_iso_utc, now_utc
-from deile.orchestration.pipeline.pipeline_logger import (
-    log_auth_backoff, log_auth_fail, log_auth_recover, log_auth_skip,
-)
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
-from deile.orchestration.pipeline.dispatch_resolver import \
-    resolve_stage_max_retries
+from deile.orchestration.pipeline.dispatch_resolver import resolve_stage_max_retries
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
-from deile.orchestration.pipeline.implementer import (_review_was_blocked,
-                                                      parse_critique_verdict,
-                                                      parse_decompose_result,
-                                                      parse_refine_verdict)
-from deile.orchestration.pipeline.labels import (
-    FOLLOW_UPS_PROCESSED, GATE_REDISPATCHES_COMMENT, MENTION_DONE, PRIORITY_0,
-    PRIORITY_1, PRIORITY_2, PRIORITY_3, REFINAR, REFINE_WORKFLOW_STATES,
-    REVIEW_CONCLUDED, REVIEW_IN_PROGRESS, REVIEW_PENDING, TYPE_INTENT,
-    WORKFLOW_ARCHITECTURE, WORKFLOW_BLOCKED, WORKFLOW_DECOMPOSED,
-    WORKFLOW_IMPLEMENTING, WORKFLOW_NEW, WORKFLOW_PR, WORKFLOW_REFINING,
-    WORKFLOW_REVIEWED, WORKFLOW_REVIEWING, WORKFLOW_WAITING,
-    current_attempt_from_labels, current_refine_attempt_from_labels,
-    is_attempt_label, is_batch_label, is_refine_attempt_label,
-    issue_type_from_labels, make_attempt_label, make_refine_attempt_label,
-    parse_priority_from_labels, persona_for_type, refine_workflow_state)
 from deile.orchestration.pipeline.gc import run_terminal_gc
+from deile.orchestration.pipeline.implementer import (
+    _review_was_blocked,
+    parse_critique_verdict,
+    parse_decompose_result,
+    parse_refine_verdict,
+)
+from deile.orchestration.pipeline.labels import (
+    FOLLOW_UPS_PROCESSED,
+    GATE_REDISPATCHES_COMMENT,
+    MENTION_DONE,
+    PRIORITY_0,
+    PRIORITY_1,
+    PRIORITY_2,
+    PRIORITY_3,
+    REFINAR,
+    REFINE_WORKFLOW_STATES,
+    REVIEW_CONCLUDED,
+    REVIEW_IN_PROGRESS,
+    REVIEW_PENDING,
+    TYPE_INTENT,
+    WORKFLOW_ARCHITECTURE,
+    WORKFLOW_BLOCKED,
+    WORKFLOW_DECOMPOSED,
+    WORKFLOW_IMPLEMENTING,
+    WORKFLOW_NEW,
+    WORKFLOW_PR,
+    WORKFLOW_REFINING,
+    WORKFLOW_REVIEWED,
+    WORKFLOW_REVIEWING,
+    WORKFLOW_WAITING,
+    current_attempt_from_labels,
+    current_refine_attempt_from_labels,
+    is_attempt_label,
+    is_batch_label,
+    is_refine_attempt_label,
+    issue_type_from_labels,
+    make_attempt_label,
+    make_refine_attempt_label,
+    parse_priority_from_labels,
+    persona_for_type,
+    refine_workflow_state,
+)
 from deile.orchestration.pipeline.pipeline_logger import (
+    log_auth_backoff,
+    log_auth_fail,
+    log_auth_recover,
+    log_auth_skip,
     log_decomposition_fanout,
     log_reaper_block,
     log_reaper_unblock,
     log_refinement_critique,
     log_refinement_refine,
+    log_routing_dropped,
     log_routing_mention,
     log_routing_pr_unified,
-    log_routing_dropped,
 )
 
 # Mention triggers that describe a STICKY state (they re-appear on every poll
@@ -110,6 +142,7 @@ def sort_by_priority(candidates):
     returned by the forge. More sophisticated tiebreakers (merge-base distance,
     commit count, diff size) are deferred to a future iteration.
     """
+
     def _key(c):
         p = parse_priority_from_labels(getattr(c, "labels", ()))
         # Priority group: 0 for items with a priority label (ordered by N),
@@ -117,18 +150,38 @@ def sort_by_priority(candidates):
         if p is not None:
             return (0, p, getattr(c, "number", 0))
         return (1, 0, getattr(c, "number", 0))
+
     return sorted(candidates, key=_key)
 
 
 # --- Commit classification (issue #351) ------------------------------------
 
 # File extensions considered "code" for the purpose of re-review classification.
-_CODE_EXTENSIONS = frozenset({
-    ".py", ".ts", ".js", ".jsx", ".tsx", ".yaml", ".yml",
-    ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp",
-    ".sh", ".bash", ".zsh", ".fish",
-    ".toml", ".cfg", ".ini",
-})
+_CODE_EXTENSIONS = frozenset(
+    {
+        ".py",
+        ".ts",
+        ".js",
+        ".jsx",
+        ".tsx",
+        ".yaml",
+        ".yml",
+        ".go",
+        ".rs",
+        ".java",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".fish",
+        ".toml",
+        ".cfg",
+        ".ini",
+    }
+)
 
 # Extensions / path prefixes considered "docs-only".
 _DOCS_EXTENSIONS = frozenset({".md", ".rst", ".txt", ".adoc"})
@@ -172,9 +225,8 @@ def _classify_new_commits(commits: list[dict]) -> str:
     # Check if all files are docs.
     def _is_docs(f: str) -> bool:
         f_lower = f.lower()
-        return (
-            any(f_lower.endswith(ext) for ext in _DOCS_EXTENSIONS)
-            or any(f_lower.startswith(pfx) for pfx in _DOCS_PREFIXES)
+        return any(f_lower.endswith(ext) for ext in _DOCS_EXTENSIONS) or any(
+            f_lower.startswith(pfx) for pfx in _DOCS_PREFIXES
         )
 
     if all(_is_docs(f) for f in all_files):
@@ -182,8 +234,7 @@ def _classify_new_commits(commits: list[dict]) -> str:
 
     # Check if any code file was touched.
     has_code = any(
-        any(f.lower().endswith(ext) for ext in _CODE_EXTENSIONS)
-        for f in all_files
+        any(f.lower().endswith(ext) for ext in _CODE_EXTENSIONS) for f in all_files
     )
 
     if has_code:
@@ -257,18 +308,24 @@ async def _claim_for_classify(
         batch = await monitor.forge.claim_with_batch(kind, number)
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, f"{error_context} #{number} failed", exc,
+            monitor,
+            f"{error_context} #{number} failed",
+            exc,
             notifier_label=notifier_label,
         )
         return False
     if batch is None:
-        logger.debug("%s #%s already claimed by another monitor; skipping", kind, number)
+        logger.debug(
+            "%s #%s already claimed by another monitor; skipping", kind, number
+        )
         return False
     pipeline_logger.log_batch_claim(sha=batch, issues=[number], reason=error_context)
     return True
 
 
-async def _release_classify_claim(monitor: "PipelineMonitor", kind: str, number: int) -> None:
+async def _release_classify_claim(
+    monitor: "PipelineMonitor", kind: str, number: int
+) -> None:
     """Release the ``~batch:`` lock so the next stage can re-claim the item.
 
     Best-effort: the workflow label is already applied, so a clear failure must
@@ -295,6 +352,7 @@ _CLASSIFY_COMMENT = (
 
 # ----- stage 0: auto-classify new issues ---------------------------------
 
+
 async def classify_new_issues(monitor: "PipelineMonitor") -> None:
     """Apply ``~workflow:nova`` to open issues that are eligible but unclassified.
 
@@ -312,7 +370,9 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         issues = await monitor.forge.list_unclassified_issues()
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list unclassified issues (forge error)", exc,
+            monitor,
+            "could not list unclassified issues (forge error)",
+            exc,
             notifier_label="classify/list",
         )
         return
@@ -340,7 +400,9 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         # Claim before labelling to reduce the TOCTOU window with parallel
         # monitors (no-op for a single monitor — see _claim_for_classify).
         if not await _claim_for_classify(
-            monitor, "issue", issue.number,
+            monitor,
+            "issue",
+            issue.number,
             error_context="auto-classify claim",
             notifier_label=f"auto-classify claim #{issue.number}",
         ):
@@ -349,14 +411,18 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
             await monitor.forge.add_labels("issue", issue.number, [WORKFLOW_NEW])
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, f"auto-classify label #{issue.number} failed", exc,
+                monitor,
+                f"auto-classify label #{issue.number} failed",
+                exc,
                 notifier_label=f"auto-classify #{issue.number}",
             )
             continue
         except Exception as exc:  # noqa: BLE001 — best-effort, never abort loop
             monitor._stats.errors += 1
             logger.error("auto-classify label #%s failed: %s", issue.number, exc)
-            await monitor.notifier.error(f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}")
+            await monitor.notifier.error(
+                f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}"
+            )
             continue
         # Release the classify claim so Stage 1 (review) can pick the issue up
         # via its own claim — review_one_new_issue only considers issues with
@@ -365,7 +431,9 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         await _release_classify_claim(monitor, "issue", issue.number)
         monitor._stats.issues_classified += 1
         logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
-        await monitor.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
+        await monitor.notifier.issue_auto_classified(
+            issue.number, issue.title, issue.url
+        )
         # Post the standard "added to pipeline" comment, optionally with template reminder
         if empty_body:
             comment = (
@@ -380,11 +448,18 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
             comment = _CLASSIFY_COMMENT
         try:
             await monitor.forge.comment_on_issue(issue.number, comment)
-        except Exception as exc:  # noqa: BLE001 — comment is best-effort; label already applied
-            logger.warning("auto-classify comment #%s failed (label applied): %s", issue.number, exc)
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 — comment is best-effort; label already applied
+            logger.warning(
+                "auto-classify comment #%s failed (label applied): %s",
+                issue.number,
+                exc,
+            )
 
 
 # ----- PR triage: classify open non-draft PRs with no pipeline labels ----
+
 
 async def classify_new_prs(monitor: "PipelineMonitor") -> None:
     """Apply ``~review:pendente`` to open non-draft PRs that have no pipeline labels."""
@@ -392,7 +467,9 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         prs = await monitor.forge.list_unclassified_prs()
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list unclassified PRs (forge error)", exc,
+            monitor,
+            "could not list unclassified PRs (forge error)",
+            exc,
             notifier_label="pr_triage/list",
         )
         return
@@ -411,13 +488,17 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         # branches), leaving them stuck "pendente" forever.
         if not monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number):
             continue
-        if not await _claim_for_classify(monitor, "pr", pr.number, error_context="pr_triage claim"):
+        if not await _claim_for_classify(
+            monitor, "pr", pr.number, error_context="pr_triage claim"
+        ):
             continue
         try:
             await monitor.forge.add_labels("pr", pr.number, [REVIEW_PENDING])
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, f"pr_triage label #{pr.number} failed", exc,
+                monitor,
+                f"pr_triage label #{pr.number} failed",
+                exc,
                 notifier_label=f"pr_triage #{pr.number}",
             )
             continue
@@ -430,7 +511,9 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         # Priority inheritance (issue #369): if this PR closes an issue that
         # carries a ~prioridade:N label, inherit it onto the PR.
         try:
-            inherited = await monitor.forge.inherit_priority_from_linked_issue(pr.number)
+            inherited = await monitor.forge.inherit_priority_from_linked_issue(
+                pr.number
+            )
             if inherited is not None:
                 priority_labels = {
                     0: PRIORITY_0,
@@ -443,13 +526,17 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
                     await monitor.forge.add_labels("pr", pr.number, [label])
                     logger.info(
                         "pr_triage: inherited %s from linked issue for PR #%d",
-                        label, pr.number,
+                        label,
+                        pr.number,
                     )
         except Exception as exc:  # noqa: BLE001 — best-effort; never block triage
-            logger.debug("pr_triage: priority inheritance for PR #%d failed: %s", pr.number, exc)
+            logger.debug(
+                "pr_triage: priority inheritance for PR #%d failed: %s", pr.number, exc
+            )
 
 
 # ----- mention handling: unified trigger polling (issue #253) ----------
+
 
 async def process_mentions(monitor: "PipelineMonitor") -> None:
     """Unified mention processing: poll ALL trigger types and dispatch deduplicated.
@@ -575,7 +662,9 @@ async def _collect_mention_triggers(
             logger.warning("mention poll (%s) failed: %s", label, exc)
             return []
 
-    for issue in await _poll("assigned issues", monitor.forge.list_issues_assigned_to(gh_login)):
+    for issue in await _poll(
+        "assigned issues", monitor.forge.list_issues_assigned_to(gh_login)
+    ):
         # Gate: skip issues already owned by the pipeline (any ~workflow:* label).
         # Without this, every tick re-arms a MentionTrigger for every in-flight
         # issue, flooding the EVENTS panel (issue #483 — V1 fix).
@@ -583,13 +672,17 @@ async def _collect_mention_triggers(
             continue
         triggers.append(
             MentionTrigger(
-                trigger_type="assignee", issue=issue, trigger_author=gh_login,
+                trigger_type="assignee",
+                issue=issue,
+                trigger_author=gh_login,
             )
         )
     for pr in await _poll("assigned PRs", monitor.forge.list_prs_assigned_to(gh_login)):
         triggers.append(
             MentionTrigger(
-                trigger_type="assignee", pr=pr, trigger_author=gh_login,
+                trigger_type="assignee",
+                pr=pr,
+                trigger_author=gh_login,
             )
         )
     # Reviewer-request → um review por PR. NÃO contamos concorrência aqui: a
@@ -606,7 +699,9 @@ async def _collect_mention_triggers(
     ):
         triggers.append(
             MentionTrigger(
-                trigger_type="reviewer", pr=pr, trigger_author=gh_login,
+                trigger_type="reviewer",
+                pr=pr,
+                trigger_author=gh_login,
             )
         )
 
@@ -627,8 +722,11 @@ async def _collect_mention_triggers(
 
 
 async def _dispatch_mention_group(
-    monitor: "PipelineMonitor", dedup_key: str, group: list["MentionTrigger"],
-    gh_login: str, mono: float,
+    monitor: "PipelineMonitor",
+    dedup_key: str,
+    group: list["MentionTrigger"],
+    gh_login: str,
+    mono: float,
 ) -> None:
     """Route + dispatch one deduplicated mention group.
 
@@ -675,8 +773,15 @@ async def _dispatch_mention_group(
             try:
                 await monitor.forge.remove_labels("issue", number, [WORKFLOW_WAITING])
             except Exception as exc:  # noqa: BLE001
-                logger.warning("mention #%d: could not lift aguardando_stakeholder: %s", number, exc)
-            logger.info("mention #%d: decisão do stakeholder → retoma refino (sem one-shot)", number)
+                logger.warning(
+                    "mention #%d: could not lift aguardando_stakeholder: %s",
+                    number,
+                    exc,
+                )
+            logger.info(
+                "mention #%d: decisão do stakeholder → retoma refino (sem one-shot)",
+                number,
+            )
             return
         active = next((lb for lb in glabels if lb.startswith("~workflow:")), None)
         if active in GATE_REDISPATCHES_COMMENT and gstate == "open":
@@ -684,8 +789,14 @@ async def _dispatch_mention_group(
             # resume re-reads the issue comments on its next pass (briefs.py reads
             # ``gh issue view --comments``), so defer — do NOT spawn a parallel
             # one-shot.
-            logger.info("mention #%d ignorada p/ roteamento: já está no gate ativo (%s)", number, active)
-            log_routing_dropped(target_kind=kind, target=number, reason="deferred_active_gate")
+            logger.info(
+                "mention #%d ignorada p/ roteamento: já está no gate ativo (%s)",
+                number,
+                active,
+            )
+            log_routing_dropped(
+                target_kind=kind, target=number, reason="deferred_active_gate"
+            )
             return
         if active == WORKFLOW_BLOCKED:
             # Blocked is human-gated → DEFER silently (drop). Do NOT one-shot (a
@@ -693,8 +804,14 @@ async def _dispatch_mention_group(
             # postar a cada tick criou um LOOP INFINITO — a menção re-dispara a
             # cada tick → status + one-shot → novo claude worker (incidente #446).
             # O humano vê o próprio comentário; remover ~workflow:bloqueada retoma.
-            logger.info("mention #%d ignorada p/ roteamento: %s (human-gated, sem one-shot nem status)", number, WORKFLOW_BLOCKED)
-            log_routing_dropped(target_kind=kind, target=number, reason="issue_human_gated")
+            logger.info(
+                "mention #%d ignorada p/ roteamento: %s (human-gated, sem one-shot nem status)",
+                number,
+                WORKFLOW_BLOCKED,
+            )
+            log_routing_dropped(
+                target_kind=kind, target=number, reason="issue_human_gated"
+            )
             return
         # Fall through to mode="comment" (one-shot) for: a TERMINAL state
         # (em_pr / decomposta), a CLOSED issue in any state, or no ~workflow:*
@@ -726,13 +843,17 @@ async def _dispatch_mention_group(
             pr_now = None
         if pr_now is not None:
             pr_labels = set(pr_now.labels)
-            if REVIEW_IN_PROGRESS in pr_labels or any(is_batch_label(lb) for lb in pr_labels):
+            if REVIEW_IN_PROGRESS in pr_labels or any(
+                is_batch_label(lb) for lb in pr_labels
+            ):
                 logger.info(
                     "mention %s ignorada p/ roteamento: PR já em revisão pelo "
                     "pr_review (em_andamento/batch) — evita dispatch duplo",
                     dedup_key,
                 )
-                log_routing_dropped(target_kind=kind, target=number, reason="pr_in_review")
+                log_routing_dropped(
+                    target_kind=kind, target=number, reason="pr_in_review"
+                )
                 return
             if WORKFLOW_BLOCKED in pr_labels:
                 # Blocked PR is human-gated → DEFER silently (drop). pr_review já
@@ -740,14 +861,20 @@ async def _dispatch_mention_group(
                 # despachar pr_unified (poderia mergear uma PR que o humano
                 # bloqueou). NÃO postar status — postar por tick loopa (a menção
                 # re-dispara a cada tick). O humano remove a label para retomar.
-                logger.info("mention %s ignorada p/ roteamento: PR em %s (human-gated, sem dispatch nem status)", dedup_key, WORKFLOW_BLOCKED)
-                log_routing_dropped(target_kind=kind, target=number, reason="pr_human_gated")
+                logger.info(
+                    "mention %s ignorada p/ roteamento: PR em %s (human-gated, sem dispatch nem status)",
+                    dedup_key,
+                    WORKFLOW_BLOCKED,
+                )
+                log_routing_dropped(
+                    target_kind=kind, target=number, reason="pr_human_gated"
+                )
                 return
         mode = "pr_unified"
         role = (
-            "requested_reviewer" if "reviewer" in has
-            else "assignee" if "assignee" in has
-            else "author"
+            "requested_reviewer"
+            if "reviewer" in has
+            else "assignee" if "assignee" in has else "author"
         )
         log_routing_pr_unified(target=number, role=role, mode="pr_unified")
     else:
@@ -760,9 +887,12 @@ async def _dispatch_mention_group(
         if st.attempt >= monitor.config.resume_max_attempts:
             logger.warning(
                 "mention %s: attempt ceiling (%d) reached — marking done",
-                dedup_key, st.attempt,
+                dedup_key,
+                st.attempt,
             )
-            log_routing_dropped(target_kind=kind, target=number, reason="attempt_ceiling")
+            log_routing_dropped(
+                target_kind=kind, target=number, reason="attempt_ceiling"
+            )
             await _comment_mention_gave_up(monitor, kind, number, st.attempt)
             await _mark_mention_done(monitor, kind, number)
             monitor._resume_tracker.clear(number)
@@ -774,9 +904,12 @@ async def _dispatch_mention_group(
         log_routing_mention(target_kind="issue", target=number, action="comment")
     try:
         outcome = await monitor.implementer.mention(
-            monitor, primary,
-            trigger_types=trigger_types, all_triggers=group,
-            mode=mode, resume=resume,
+            monitor,
+            primary,
+            trigger_types=trigger_types,
+            all_triggers=group,
+            mode=mode,
+            resume=resume,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("mention dispatch error for %s: %s", dedup_key, exc)
@@ -799,17 +932,17 @@ async def _dispatch_mention_group(
         # Absorb the worker's ground-truth bookkeeping (attempt/fingerprint)
         # so the ceiling advances and a stuck loop is bounded.
         monitor._resume_tracker.update_from_worker(
-            number, fingerprint=outcome.fingerprint,
-            attempt=outcome.tentativa, budget_s=outcome.budget_acumulado_s,
+            number,
+            fingerprint=outcome.fingerprint,
+            attempt=outcome.tentativa,
+            budget_s=outcome.budget_acumulado_s,
         )
 
     if not outcome.ok:
         # No ~mention:processado → the sticky trigger retries next tick (in
         # RESUME mode, bounded by the ceiling above). Comment-driven work is
         # cursor-bounded, so it does not retry.
-        logger.warning(
-            "mention dispatch failed for %s: %s", dedup_key, outcome.error
-        )
+        logger.warning("mention dispatch failed for %s: %s", dedup_key, outcome.error)
         return
 
     monitor._stats.mentions_processed += 1
@@ -822,7 +955,9 @@ async def _dispatch_mention_group(
     if kind == "issue" and mode == "comment":
         derived_from_mention = parse_decompose_result(outcome.text)
         if derived_from_mention:
-            await _apply_decompose_handshake_from_mention(monitor, number, derived_from_mention)
+            await _apply_decompose_handshake_from_mention(
+                monitor, number, derived_from_mention
+            )
 
     if sticky:
         # Após a refactor "PR é o quadro", todo dispatch sticky de sucesso é
@@ -842,12 +977,16 @@ async def _dispatch_mention_group(
     )
 
 
-async def _mark_mention_done(monitor: "PipelineMonitor", kind: str, number: int) -> None:
+async def _mark_mention_done(
+    monitor: "PipelineMonitor", kind: str, number: int
+) -> None:
     """Best-effort apply ``~mention:processado`` so a sticky trigger stops re-firing."""
     try:
         await monitor.forge.add_labels(kind, number, [MENTION_DONE])
     except Exception as exc:  # noqa: BLE001 — marker is best-effort
-        logger.warning("could not mark %s #%d as %s: %s", kind, number, MENTION_DONE, exc)
+        logger.warning(
+            "could not mark %s #%d as %s: %s", kind, number, MENTION_DONE, exc
+        )
 
 
 async def _apply_decompose_handshake_from_mention(
@@ -884,7 +1023,9 @@ async def _apply_decompose_handshake_from_mention(
         else:
             await monitor.forge.add_labels("issue", number, [WORKFLOW_DECOMPOSED])
         # Limpa labels de refino residuais (best-effort).
-        cleanup = [REFINAR] + [lb for lb in current_labels if is_refine_attempt_label(lb)]
+        cleanup = [REFINAR] + [
+            lb for lb in current_labels if is_refine_attempt_label(lb)
+        ]
         cleanup = [lb for lb in cleanup if lb in current_labels]
         if cleanup:
             await monitor.forge.remove_labels("issue", number, cleanup)
@@ -897,7 +1038,9 @@ async def _apply_decompose_handshake_from_mention(
         return
     monitor._resume_tracker.clear(number)
     log_decomposition_fanout(intent=number, derivadas=derived, complexity=[])
-    logger.info("mention/decompose #%d → derivadas %s (handshake aplicado)", number, derived)
+    logger.info(
+        "mention/decompose #%d → derivadas %s (handshake aplicado)", number, derived
+    )
 
 
 async def _comment_mention_gave_up(
@@ -939,7 +1082,9 @@ async def _route_issue_to_pipeline(
     try:
         if not already_in_pipeline:
             await monitor.forge.add_labels("issue", number, [WORKFLOW_NEW])
-            logger.info("mention: routed issue #%d into pipeline (%s)", number, WORKFLOW_NEW)
+            logger.info(
+                "mention: routed issue #%d into pipeline (%s)", number, WORKFLOW_NEW
+            )
         await monitor.forge.add_labels("issue", number, [MENTION_DONE])
     except Exception as exc:  # noqa: BLE001 — never abort the loop
         logger.warning("mention: could not route issue #%d: %s", number, exc)
@@ -952,6 +1097,7 @@ async def _route_issue_to_pipeline(
 
 # ----- stage 1: review ---------------------------------------------------
 
+
 async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     """Stage 1. With the refinement gate ON (issue #257) this is the CRITIQUE of
     scope: dispatch the type's persona to judge CLARO/VAGO; clear → revisada,
@@ -962,7 +1108,9 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_NEW, limit=50)
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list new issues (forge error)", exc,
+            monitor,
+            "could not list new issues (forge error)",
+            exc,
             notifier_label="review/list",
         )
         return
@@ -974,7 +1122,8 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     # não-intencional — antes de os selectors downstream (refine/implement) a
     # congelarem. Espelha o filtro já presente no reconcile e no implement.
     candidates = [
-        i for i in sort_by_priority(issues)
+        i
+        for i in sort_by_priority(issues)
         if i.batch_id is None
         and monitor.identity.owns(i.title)
         and WORKFLOW_BLOCKED not in i.labels
@@ -992,7 +1141,8 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
         if available <= 0:
             logger.debug(
                 "critique: todos os %d slots ocupados (%d em voo); skip novos claims",
-                monitor.config.max_parallel, in_flight,
+                monitor.config.max_parallel,
+                in_flight,
             )
             return
         for target in candidates[:available]:
@@ -1007,7 +1157,9 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     if batch is None:
         return
     # Tag ownership so other monitors can identify who claimed this.
-    await monitor.forge.add_labels("issue", target.number, [monitor.identity.ownership_label()])
+    await monitor.forge.add_labels(
+        "issue", target.number, [monitor.identity.ownership_label()]
+    )
     await monitor.notifier.issue_picked_up(target.number, target.title, target.url)
     try:
         # Atomic: if review_callback or final transition fails, revert to WORKFLOW_NEW.
@@ -1095,10 +1247,14 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
             return
     # Ownership tag lets the implement stage accept this issue without a batch.
     try:
-        await monitor.forge.add_labels("issue", number, [monitor.identity.ownership_label()])
+        await monitor.forge.add_labels(
+            "issue", number, [monitor.identity.ownership_label()]
+        )
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, f"could not add ownership label to #{number} for critique", exc,
+            monitor,
+            f"could not add ownership label to #{number} for critique",
+            exc,
         )
         if multi:
             await monitor.forge.clear_batch_label("issue", number)
@@ -1109,7 +1265,9 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
             number, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING
         )
     except GhCommandError as exc:
-        await _record_forge_error(monitor, f"could not claim issue #{number} for critique", exc)
+        await _record_forge_error(
+            monitor, f"could not claim issue #{number} for critique", exc
+        )
         return
 
     # Fire-and-forget: o implementer grava o task_id no DispatchLedger e devolve
@@ -1124,12 +1282,16 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
                 number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_NEW
             )
         except Exception:  # noqa: BLE001 — rollback is best-effort
-            logger.warning("could not revert #%d to nova after critique failure", number)
+            logger.warning(
+                "could not revert #%d to nova after critique failure", number
+            )
         logger.warning("critique #%d failed: %s", number, (outcome.error or "")[:200])
         return
     logger.info(
         "critique #%d dispatched fire-and-forget (task_id=%s) — reconcile no "
-        "próximo tick", number, getattr(outcome, "task_id", "") or "",
+        "próximo tick",
+        number,
+        getattr(outcome, "task_id", "") or "",
     )
 
 
@@ -1171,7 +1333,10 @@ async def _apply_critique_verdict(
         number, current_refine_attempt_from_labels(target.labels)
     )
     # Block to the author once the refinement budget is exhausted.
-    if monitor._resume_tracker.refine_attempt(number) >= monitor.config.refine_max_attempts:
+    if (
+        monitor._resume_tracker.refine_attempt(number)
+        >= monitor.config.refine_max_attempts
+    ):
         await _block_refinement(monitor, target, reason)
         return
     # Send to the type-specific refinement state and mark it for the refine stage.
@@ -1182,7 +1347,9 @@ async def _apply_critique_verdict(
             number, from_label=WORKFLOW_REVIEWING, to_label=refine_state
         )
     except GhCommandError as exc:
-        await _record_forge_error(monitor, f"could not move #{number} to {refine_state}", exc)
+        await _record_forge_error(
+            monitor, f"could not move #{number} to {refine_state}", exc
+        )
         return
     logger.info("critique #%d VAGO → %s (%s)", number, refine_state, reason[:120])
 
@@ -1207,10 +1374,14 @@ async def reconcile_critique_issues(monitor: "PipelineMonitor") -> None:
     if not monitor.config.enable_refinement_gate:
         return
     try:
-        issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWING, limit=50)
+        issues = await monitor.forge.list_issues_with_label(
+            WORKFLOW_REVIEWING, limit=50
+        )
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list em_revisao issues for reconcile", exc,
+            monitor,
+            "could not list em_revisao issues for reconcile",
+            exc,
         )
         return
     ledger = getattr(monitor.implementer, "_ledger", None)
@@ -1235,7 +1406,9 @@ async def reconcile_critique_issues(monitor: "PipelineMonitor") -> None:
         # stage="classify", senão consultaria o endpoint errado (404 → fresh →
         # double-dispatch). Refine continua em stage="refine".
         state, info = await _fetch_reconcile_state(
-            monitor, task_id, "classify",
+            monitor,
+            task_id,
+            "classify",
             channel_id=f"pipeline-issue-{issue.number}",
         )
         if state == _RECON_RUNNING:
@@ -1250,7 +1423,8 @@ async def reconcile_critique_issues(monitor: "PipelineMonitor") -> None:
         except Exception as exc:  # noqa: BLE001 — sem snapshot fresco usa o atual
             logger.warning(
                 "reconcile critique #%d: get_issue falhou (%s); usando snapshot do tick",
-                issue.number, exc,
+                issue.number,
+                exc,
             )
             fresh = issue
         verdict_text = info.get("last_result_full") or ""
@@ -1282,11 +1456,17 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     # Coleta candidatas das três fontes e deduplicamos por number.
     try:
         by_refinar = await monitor.forge.list_issues_with_label(REFINAR, limit=50)
-        by_refining = await monitor.forge.list_issues_with_label(WORKFLOW_REFINING, limit=50)
-        by_arch = await monitor.forge.list_issues_with_label(WORKFLOW_ARCHITECTURE, limit=50)
+        by_refining = await monitor.forge.list_issues_with_label(
+            WORKFLOW_REFINING, limit=50
+        )
+        by_arch = await monitor.forge.list_issues_with_label(
+            WORKFLOW_ARCHITECTURE, limit=50
+        )
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list issues to refine (forge error)", exc,
+            monitor,
+            "could not list issues to refine (forge error)",
+            exc,
             notifier_label="refine/list",
         )
         return
@@ -1297,15 +1477,21 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
             seen[issue.number] = issue
     issues = list(seen.values())
 
-    _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
-                 WORKFLOW_PR, WORKFLOW_DECOMPOSED)
+    _excluded = (
+        WORKFLOW_WAITING,
+        WORKFLOW_BLOCKED,
+        WORKFLOW_IMPLEMENTING,
+        WORKFLOW_PR,
+        WORKFLOW_DECOMPOSED,
+    )
     # Anti-loop (issue #418): pula issues promovidas a ``revisada`` NESTE tick.
     # ``reconcile_refine_issues`` roda antes (mesmo tick) e, ao convergir, marca a
     # issue aqui; o índice de labels do GitHub ainda a lista sob ``refinar`` por
     # eventual consistency, então sem este guard o rehydrate a rebaixaria de volta.
     _promoted = getattr(monitor, "_refine_promoted_this_tick", set())
     candidates = [
-        i for i in sort_by_priority(issues)
+        i
+        for i in sort_by_priority(issues)
         if not any(lb in i.labels for lb in _excluded)
         and i.number not in _promoted
         and monitor.identity.owns(i.title)
@@ -1319,7 +1505,8 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     if available <= 0:
         logger.debug(
             "refine: todos os %d slots ocupados (%d em voo); skip novos dispatches",
-            monitor.config.max_parallel, in_flight,
+            monitor.config.max_parallel,
+            in_flight,
         )
         return
     dispatched = 0
@@ -1327,7 +1514,9 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
         if dispatched >= available:
             break
         # Anti-double-dispatch: refino já em voo (ledger entry) aguarda reconcile.
-        if ledger is not None and ledger.get(DispatchLedger.key_for_issue(target.number)):
+        if ledger is not None and ledger.get(
+            DispatchLedger.key_for_issue(target.number)
+        ):
             continue
         if await _refine_one_issue_dispatch(monitor, target):
             dispatched += 1
@@ -1348,16 +1537,24 @@ async def _refine_one_issue_dispatch(monitor: "PipelineMonitor", target) -> bool
     if not any(s in target.labels for s in REFINE_WORKFLOW_STATES):
         refine_state = refine_workflow_state(issue_type)
         cur = next(
-            (s for s in (WORKFLOW_NEW, WORKFLOW_REVIEWING, WORKFLOW_REVIEWED) if s in target.labels),
+            (
+                s
+                for s in (WORKFLOW_NEW, WORKFLOW_REVIEWING, WORKFLOW_REVIEWED)
+                if s in target.labels
+            ),
             None,
         )
         try:
             if cur:
-                await monitor.forge.transition_issue(number, from_label=cur, to_label=refine_state)
+                await monitor.forge.transition_issue(
+                    number, from_label=cur, to_label=refine_state
+                )
             else:
                 await monitor.forge.add_labels("issue", number, [refine_state])
         except GhCommandError as exc:
-            await _record_forge_error(monitor, f"could not rehydrate #{number} into {refine_state}", exc)
+            await _record_forge_error(
+                monitor, f"could not rehydrate #{number} into {refine_state}", exc
+            )
         return False  # refined on the next tick
 
     # Garante consistência: se a issue chegou pelo estado (em_refinamento /
@@ -1367,7 +1564,9 @@ async def _refine_one_issue_dispatch(monitor: "PipelineMonitor", target) -> bool
         try:
             await monitor.forge.add_labels("issue", number, [REFINAR])
         except GhCommandError as exc:
-            logger.warning("refine #%d: could not re-add 'refinar' label: %s", number, exc)
+            logger.warning(
+                "refine #%d: could not re-add 'refinar' label: %s", number, exc
+            )
 
     # Reconcilia o contador in-memory com a label durável ~refine:N ANTES de
     # checar o teto. Após restart do pod, a label é a fonte da verdade.
@@ -1375,7 +1574,10 @@ async def _refine_one_issue_dispatch(monitor: "PipelineMonitor", target) -> bool
         number, current_refine_attempt_from_labels(target.labels)
     )
     # Ceiling guard (belt-and-suspenders with the critique-side check).
-    if monitor._resume_tracker.refine_attempt(number) >= monitor.config.refine_max_attempts:
+    if (
+        monitor._resume_tracker.refine_attempt(number)
+        >= monitor.config.refine_max_attempts
+    ):
         await _block_refinement(monitor, target, "teto de refinamentos atingido")
         return False
 
@@ -1390,8 +1592,10 @@ async def _refine_one_issue_dispatch(monitor: "PipelineMonitor", target) -> bool
         monitor._resume_tracker.bump_refine(number)
         await _persist_refine_attempt(monitor, number)
         logger.warning(
-            "refine #%d failed (passe %d): %s", number,
-            monitor._resume_tracker.refine_attempt(number), (outcome.error or "")[:200],
+            "refine #%d failed (passe %d): %s",
+            number,
+            monitor._resume_tracker.refine_attempt(number),
+            (outcome.error or "")[:200],
         )
         return False
 
@@ -1403,12 +1607,16 @@ async def _refine_one_issue_dispatch(monitor: "PipelineMonitor", target) -> bool
     if ledger is not None and task_id:
         ledger.record(
             DispatchLedger.key_for_issue(number),
-            task_id=task_id, session_id="", stage="refine",
+            task_id=task_id,
+            session_id="",
+            stage="refine",
             extra={"before_body": before_body},
         )
     logger.info(
         "refine #%d dispatched fire-and-forget (task_id=%s) — reconcile no "
-        "próximo tick", number, task_id,
+        "próximo tick",
+        number,
+        task_id,
     )
     return True
 
@@ -1433,19 +1641,30 @@ async def reconcile_refine_issues(monitor: "PipelineMonitor") -> None:
     if not monitor.config.enable_refinement_gate:
         return
     try:
-        by_refining = await monitor.forge.list_issues_with_label(WORKFLOW_REFINING, limit=50)
-        by_arch = await monitor.forge.list_issues_with_label(WORKFLOW_ARCHITECTURE, limit=50)
+        by_refining = await monitor.forge.list_issues_with_label(
+            WORKFLOW_REFINING, limit=50
+        )
+        by_arch = await monitor.forge.list_issues_with_label(
+            WORKFLOW_ARCHITECTURE, limit=50
+        )
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list refine issues for reconcile", exc,
+            monitor,
+            "could not list refine issues for reconcile",
+            exc,
         )
         return
     ledger = getattr(monitor.implementer, "_ledger", None)
     if ledger is None:
         return
     own = monitor.identity.ownership_label()
-    _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
-                 WORKFLOW_PR, WORKFLOW_DECOMPOSED)
+    _excluded = (
+        WORKFLOW_WAITING,
+        WORKFLOW_BLOCKED,
+        WORKFLOW_IMPLEMENTING,
+        WORKFLOW_PR,
+        WORKFLOW_DECOMPOSED,
+    )
     seen: dict = {}
     for issue in (*by_refining, *by_arch):
         if issue.number not in seen:
@@ -1464,7 +1683,9 @@ async def reconcile_refine_issues(monitor: "PipelineMonitor") -> None:
             ledger.clear(key)
             continue
         state, info = await _fetch_reconcile_state(
-            monitor, task_id, "refine",
+            monitor,
+            task_id,
+            "refine",
             channel_id=f"pipeline-issue-{issue.number}",
         )
         if state == _RECON_RUNNING:
@@ -1485,8 +1706,11 @@ _REFINE_CONVERGED_RATIO = 0.02
 
 
 async def _promote_refine_to_reviewed(
-    monitor: "PipelineMonitor", target, refine_state: str,
-    comment: str, log_msg: str,
+    monitor: "PipelineMonitor",
+    target,
+    refine_state: str,
+    comment: str,
+    log_msg: str,
 ) -> None:
     """Promove uma issue refinada para ``~workflow:revisada`` e limpa os labels
     de refino. Compartilhada pelos dois caminhos de convergência em
@@ -1539,7 +1763,8 @@ async def _apply_refine_verdict(
         await _persist_refine_attempt(monitor, number)
         logger.warning(
             "refine #%d concluiu com erro (passe %d) — deixa pro próximo tick",
-            number, monitor._resume_tracker.refine_attempt(number),
+            number,
+            monitor._resume_tracker.refine_attempt(number),
         )
         return
 
@@ -1553,7 +1778,9 @@ async def _apply_refine_verdict(
             (s for s in REFINE_WORKFLOW_STATES if s in target.labels),
             refine_workflow_state(issue_type),
         )
-        cleanup_labels = [REFINAR] + [lb for lb in target.labels if is_refine_attempt_label(lb)]
+        cleanup_labels = [REFINAR] + [
+            lb for lb in target.labels if is_refine_attempt_label(lb)
+        ]
         try:
             await monitor.forge.transition_issue(
                 number,
@@ -1568,8 +1795,14 @@ async def _apply_refine_verdict(
                 exc,
             )
         monitor._resume_tracker.clear(number)
-        log_decomposition_fanout(intent=number, derivadas=derived_from_refine, complexity=[])
-        logger.info("refine/decompose #%d → derivadas %s (handshake via refine)", number, derived_from_refine)
+        log_decomposition_fanout(
+            intent=number, derivadas=derived_from_refine, complexity=[]
+        )
+        logger.info(
+            "refine/decompose #%d → derivadas %s (handshake via refine)",
+            number,
+            derived_from_refine,
+        )
         return
 
     verdict = parse_refine_verdict(verdict_text)
@@ -1617,10 +1850,14 @@ async def _apply_refine_verdict(
             logger.warning(
                 "refine #%d: corpo ainda CRESCENDO no passe %d "
                 "(%d → %d chars) — escopo divergindo; bloqueando early",
-                number, current_refine_attempt, prev_len, after_len,
+                number,
+                current_refine_attempt,
+                prev_len,
+                after_len,
             )
             await _block_refinement(
-                monitor, target,
+                monitor,
+                target,
                 "refino divergindo: o escopo só cresce a cada passe "
                 "(intent amplo demais) — divida em sub-issues menores ou "
                 "escope manualmente, e remova ~workflow:bloqueada",
@@ -1642,11 +1879,16 @@ async def _apply_refine_verdict(
             converged = True
         elif verdict == "ok":
             denom = max(len(before_body), 1)
-            if abs(len(after_body) - len(before_body)) / denom <= _REFINE_CONVERGED_RATIO:
+            if (
+                abs(len(after_body) - len(before_body)) / denom
+                <= _REFINE_CONVERGED_RATIO
+            ):
                 converged = True
     if converged:
         await _promote_refine_to_reviewed(
-            monitor, target, refine_state,
+            monitor,
+            target,
+            refine_state,
             "✅ Refino convergiu: o passe não mudou o escopo de forma "
             "substancial — promovido a `~workflow:revisada` sem re-crítica. Se o "
             "escopo ainda estiver insuficiente, aplique `~workflow:bloqueada` "
@@ -1663,12 +1905,19 @@ async def _apply_refine_verdict(
     monitor._resume_tracker.bump_refine(number)
     await _persist_refine_attempt(monitor, number)
     try:
-        await monitor.forge.transition_issue(number, from_label=refine_state, to_label=WORKFLOW_NEW)
+        await monitor.forge.transition_issue(
+            number, from_label=refine_state, to_label=WORKFLOW_NEW
+        )
     except GhCommandError as exc:
-        await _record_forge_error(monitor, f"could not return #{number} to nova after refine", exc)
+        await _record_forge_error(
+            monitor, f"could not return #{number} to nova after refine", exc
+        )
         return
-    logger.info("refine #%d body mudou (passe %d) → nova (re-crítica)", number,
-                monitor._resume_tracker.refine_attempt(number))
+    logger.info(
+        "refine #%d body mudou (passe %d) → nova (re-crítica)",
+        number,
+        monitor._resume_tracker.refine_attempt(number),
+    )
 
 
 async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> None:
@@ -1689,8 +1938,13 @@ async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> N
     # Remove também o contador durável ~refine:N: o unblock começa com contagem
     # fresca (o tracker in-memory já foi limpo por _block → clear).
     stale = [
-        s for s in (WORKFLOW_REVIEWING, WORKFLOW_NEW, WORKFLOW_IMPLEMENTING,
-                    *REFINE_WORKFLOW_STATES)
+        s
+        for s in (
+            WORKFLOW_REVIEWING,
+            WORKFLOW_NEW,
+            WORKFLOW_IMPLEMENTING,
+            *REFINE_WORKFLOW_STATES,
+        )
         if s in issue.labels and s != refine_state
     ]
     stale += [lb for lb in issue.labels if is_refine_attempt_label(lb)]
@@ -1699,13 +1953,17 @@ async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> N
             await monitor.forge.remove_labels("issue", number, stale)
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, f"could not strip stale labels {stale} from #{number}", exc,
+                monitor,
+                f"could not strip stale labels {stale} from #{number}",
+                exc,
             )
     if refine_state not in issue.labels:
         try:
             await monitor.forge.add_labels("issue", number, [refine_state])
         except GhCommandError as exc:
-            await _record_forge_error(monitor, f"could not rest #{number} in {refine_state}", exc)
+            await _record_forge_error(
+                monitor, f"could not rest #{number} in {refine_state}", exc
+            )
     await monitor.forge.add_labels("issue", number, [REFINAR])
     if getattr(issue, "author", ""):
         await monitor.forge.assign_issue(number, issue.author)
@@ -1756,7 +2014,8 @@ async def _ensure_ownership_label(
             logger.warning(
                 "issue #%d revisada sem ownership (~by:*) nem batch — "
                 "adicionando %s (issue #375)",
-                issue.number, ownership_label,
+                issue.number,
+                ownership_label,
             )
             try:
                 await monitor.forge.add_labels("issue", issue.number, [ownership_label])
@@ -1764,7 +2023,9 @@ async def _ensure_ownership_label(
             except GhCommandError as exc:
                 logger.warning(
                     "could not add ownership label %s to #%d: %s",
-                    ownership_label, issue.number, exc,
+                    ownership_label,
+                    issue.number,
+                    exc,
                 )
         updated.append(issue)
     return updated
@@ -1796,7 +2057,9 @@ async def fetch_reviewed_and_ensure_ownership(
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list reviewed issues (forge error)", exc,
+            monitor,
+            "could not list reviewed issues (forge error)",
+            exc,
             notifier_label=notifier_label,
         )
         return None, None
@@ -1825,7 +2088,9 @@ async def _resolve_reviewed_snapshot(
         raw = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list reviewed issues (forge error)", exc,
+            monitor,
+            "could not list reviewed issues (forge error)",
+            exc,
             notifier_label=notifier_label,
         )
         return None
@@ -1853,12 +2118,15 @@ async def decompose_one_reviewed_intent(
         return
     ownership_label = monitor.identity.ownership_label()
     target = next(
-        (i for i in sort_by_priority(issues)
-         if issue_type_from_labels(i.labels) == TYPE_INTENT
-         and WORKFLOW_DECOMPOSED not in i.labels
-         and WORKFLOW_BLOCKED not in i.labels
-         and monitor._this_monitor_owns(i)
-         and (i.batch_id is not None or ownership_label in i.labels)),
+        (
+            i
+            for i in sort_by_priority(issues)
+            if issue_type_from_labels(i.labels) == TYPE_INTENT
+            and WORKFLOW_DECOMPOSED not in i.labels
+            and WORKFLOW_BLOCKED not in i.labels
+            and monitor._this_monitor_owns(i)
+            and (i.batch_id is not None or ownership_label in i.labels)
+        ),
         None,
     )
     if target is None:
@@ -1873,7 +2141,9 @@ async def decompose_one_reviewed_intent(
         complexity=[],
     )
     if not outcome.ok and not derived:
-        logger.warning("decompose #%d failed: %s", target.number, (outcome.error or "")[:200])
+        logger.warning(
+            "decompose #%d failed: %s", target.number, (outcome.error or "")[:200]
+        )
         return  # stays revisada — retry next tick
     # Diagnostic (#2): the parser returned [] but the architect may still have
     # created issues via gh in its run. Log the tail of the outcome so we can
@@ -1883,7 +2153,8 @@ async def decompose_one_reviewed_intent(
         tail = (outcome.text or "")[-600:].replace("\n", " | ")
         logger.warning(
             "decompose #%d: ok but parser returned [] — outcome tail: %s",
-            target.number, tail,
+            target.number,
+            tail,
         )
     # Mark decomposed when derived issues were created (even if the ok flag is
     # noisy) so we never re-decompose and duplicate the derived issues.
@@ -1892,7 +2163,9 @@ async def decompose_one_reviewed_intent(
             target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_DECOMPOSED
         )
     except GhCommandError as exc:
-        await _record_forge_error(monitor, f"could not mark #{target.number} decomposed", exc)
+        await _record_forge_error(
+            monitor, f"could not mark #{target.number} decomposed", exc
+        )
     logger.info("decompose #%d → derivadas %s", target.number, derived)
     await monitor.notifier.issue_reviewed(
         target.number, f"{target.title} (decomposta em {len(derived)})", target.url
@@ -1916,8 +2189,11 @@ _RECON_GONE = "gone"
 
 
 async def _fetch_reconcile_state(
-    monitor: "PipelineMonitor", task_id: str, stage: str,
-    *, channel_id: str = "",
+    monitor: "PipelineMonitor",
+    task_id: str,
+    stage: str,
+    *,
+    channel_id: str = "",
 ) -> Tuple[str, dict]:
     """Consulta ``/v1/dispatches/{task_id}/resume-info`` e normaliza o estado.
 
@@ -1944,7 +2220,9 @@ async def _fetch_reconcile_state(
         return _RECON_GONE, {}
     try:
         url = implementer._resolve_endpoint(stage)
-    except Exception:  # noqa: BLE001 — stage inválido é programming bug; trate como gone
+    except (
+        Exception
+    ):  # noqa: BLE001 — stage inválido é programming bug; trate como gone
         url = None
     try:
         info = await client.get_resume_info(task_id, endpoint_url=url)
@@ -1952,7 +2230,9 @@ async def _fetch_reconcile_state(
         logger.info(
             "reconcile: resume-info lookup falhou pra task_id=%s stage=%s: %s "
             "— tratando como sumida",
-            task_id, stage, exc,
+            task_id,
+            stage,
+            exc,
         )
         return _RECON_GONE, {}
     if not isinstance(info, dict):
@@ -1967,7 +2247,8 @@ async def _fetch_reconcile_state(
 
 
 async def _capture_implement_fleet_cost(
-    monitor: "PipelineMonitor", issue_number: int,
+    monitor: "PipelineMonitor",
+    issue_number: int,
 ) -> None:
     """Lê o resume-info do implement concluído e persiste o custo central (#638).
 
@@ -1980,23 +2261,33 @@ async def _capture_implement_fleet_cost(
         if ledger is None:
             return
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+
         entry = ledger.get(DispatchLedger.key_for_issue(issue_number))
         task_id = (entry or {}).get("task_id") or ""
         if not task_id:
             return
         await _fetch_reconcile_state(
-            monitor, task_id, "implement",
+            monitor,
+            task_id,
+            "implement",
             channel_id=f"pipeline-issue-{issue_number}",
         )
-    except Exception as exc:  # noqa: BLE001 — captura de custo nunca bloqueia o reconcile
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 — captura de custo nunca bloqueia o reconcile
         logger.debug(
             "captura de custo do implement #%d falhou (non-fatal): %s",
-            issue_number, exc,
+            issue_number,
+            exc,
         )
 
 
 def _record_fleet_usage_from_reconcile(
-    url: Optional[str], info: dict, stage: str, channel_id: str, task_id: str,
+    url: Optional[str],
+    info: dict,
+    stage: str,
+    channel_id: str,
+    task_id: str,
 ) -> None:
     """Persiste custo central de um fire-and-forget concluído (issue #638).
 
@@ -2004,9 +2295,11 @@ def _record_fleet_usage_from_reconcile(
     bloco ``usage`` (só o cli-worker o preenche), então o recorder retorna 0.
     Best-effort isolado — o recorder nunca propaga exceção.
     """
-    from deile.orchestration.pipeline.fleet_cost_recorder import \
-        record_fleet_usage_from_resume_info
+    from deile.orchestration.pipeline.fleet_cost_recorder import (
+        record_fleet_usage_from_resume_info,
+    )
     from deile.orchestration.pipeline.implementer import _worker_kind_from_url
+
     record_fleet_usage_from_resume_info(
         info,
         worker_kind=_worker_kind_from_url(url or ""),
@@ -2034,13 +2327,19 @@ async def _count_total_in_flight(monitor: "PipelineMonitor") -> int:
     # Issues nos três estados-lock de issue (em_revisao, em_refinamento,
     # em_arquitetura, em_implementacao).
     seen_issue: set[int] = set()
-    for label in (WORKFLOW_REVIEWING, WORKFLOW_REFINING,
-                  WORKFLOW_ARCHITECTURE, WORKFLOW_IMPLEMENTING):
+    for label in (
+        WORKFLOW_REVIEWING,
+        WORKFLOW_REFINING,
+        WORKFLOW_ARCHITECTURE,
+        WORKFLOW_IMPLEMENTING,
+    ):
         try:
             issues = await monitor.forge.list_issues_with_label(label, limit=50)
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, f"in-flight count: list {label} failed", exc,
+                monitor,
+                f"in-flight count: list {label} failed",
+                exc,
             )
             continue
         for i in issues:
@@ -2055,8 +2354,11 @@ async def _count_total_in_flight(monitor: "PipelineMonitor") -> int:
             # #515 esfomeada com in_flight=3 = #508 órfã + #418/#416
             # aguardando_stakeholder). Espelha a exclusão já feita no candidate
             # filter do refino (``_excluded``).
-            if (WORKFLOW_BLOCKED in i.labels or WORKFLOW_PR in i.labels
-                    or WORKFLOW_WAITING in i.labels):
+            if (
+                WORKFLOW_BLOCKED in i.labels
+                or WORKFLOW_PR in i.labels
+                or WORKFLOW_WAITING in i.labels
+            ):
                 continue
             if _mine(i):
                 seen_issue.add(i.number)
@@ -2070,7 +2372,10 @@ async def _count_total_in_flight(monitor: "PipelineMonitor") -> int:
     for pr in prs:
         if REVIEW_IN_PROGRESS not in pr.labels or WORKFLOW_BLOCKED in pr.labels:
             continue
-        if monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number) or own in pr.labels:
+        if (
+            monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number)
+            or own in pr.labels
+        ):
             total += 1
     return total
 
@@ -2087,11 +2392,14 @@ async def _count_in_flight_issues(monitor: "PipelineMonitor") -> int:
     """
     try:
         issues = await monitor.forge.list_issues_with_label(
-            WORKFLOW_IMPLEMENTING, limit=50,
+            WORKFLOW_IMPLEMENTING,
+            limit=50,
         )
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list in-flight issues (forge error)", exc,
+            monitor,
+            "could not list in-flight issues (forge error)",
+            exc,
         )
         return 0
     ownership_label = monitor.identity.ownership_label()
@@ -2128,11 +2436,14 @@ async def reconcile_implementing_issues(monitor: "PipelineMonitor") -> None:
     """
     try:
         issues = await monitor.forge.list_issues_with_label(
-            WORKFLOW_IMPLEMENTING, limit=50,
+            WORKFLOW_IMPLEMENTING,
+            limit=50,
         )
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list implementing issues for reconcile", exc,
+            monitor,
+            "could not list implementing issues for reconcile",
+            exc,
         )
         return
     ownership_label = monitor.identity.ownership_label()
@@ -2150,7 +2461,8 @@ async def reconcile_implementing_issues(monitor: "PipelineMonitor") -> None:
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning(
                 "reconcile #%d: has_open_pr_for_issue failed: %s",
-                issue.number, exc,
+                issue.number,
+                exc,
             )
             continue
         if not has_pr:
@@ -2159,7 +2471,8 @@ async def reconcile_implementing_issues(monitor: "PipelineMonitor") -> None:
         # Worker finished! Transition to em_pr.
         logger.info(
             "reconcile #%d: PR detected via ground truth → transitioning to %s",
-            issue.number, WORKFLOW_PR,
+            issue.number,
+            WORKFLOW_PR,
         )
         # Issue #638: o implement é fire-and-forget (resposta do 202 descartada).
         # Agora que o worker concluiu (PR existe), lê o resume-info uma vez para
@@ -2216,14 +2529,16 @@ async def implement_one_reviewed_issue(
     if available_slots <= 0:
         logger.debug(
             "implement: all %d slots busy (%d in-flight); skipping new claims",
-            monitor.config.max_parallel, in_flight,
+            monitor.config.max_parallel,
+            in_flight,
         )
         return
     # Accept issues without ~batch: when the ownership label proves this monitor did the
     # review (e.g. operator manually promoted to ~workflow:revisada or batch label removed).
     ownership_label = monitor.identity.ownership_label()
     candidates = [
-        i for i in issues
+        i
+        for i in issues
         # intent decomposes (separate stage), it does not implement code.
         if issue_type_from_labels(i.labels) != TYPE_INTENT
         # Defense-in-depth: never re-pick an issue already claimed for
@@ -2248,7 +2563,9 @@ async def implement_one_reviewed_issue(
         # curtos de ``WORKER_AUTH_EXPIRED``. O target será reavaliado no
         # próximo tick depois que a janela expirar.
         if is_target_auth_paused(monitor, "issue", target.number):
-            _paused_until = monitor._paused_until_ts.get(_auth_target_key("issue", target.number), 0.0)
+            _paused_until = monitor._paused_until_ts.get(
+                _auth_target_key("issue", target.number), 0.0
+            )
             _rem = max(0, int(_paused_until - _monotonic()))
             log_auth_skip(
                 target=_auth_target_key("issue", target.number),
@@ -2264,14 +2581,22 @@ async def implement_one_reviewed_issue(
         # this issue — belt-and-suspenders behind the mention/gate integration —
         # do NOT open a second PR. Park it in em_pr so it leaves the queue (the
         # existing PR is the work).
-        if monitor.config.enable_refinement_gate and await monitor.forge.has_open_pr_for_issue(target.number):
-            logger.info("implement #%d: PR aberta já existe — parkando em em_pr (sem duplicar)", target.number)
+        if (
+            monitor.config.enable_refinement_gate
+            and await monitor.forge.has_open_pr_for_issue(target.number)
+        ):
+            logger.info(
+                "implement #%d: PR aberta já existe — parkando em em_pr (sem duplicar)",
+                target.number,
+            )
             try:
                 await monitor.forge.transition_issue(
                     target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_PR
                 )
             except GhCommandError as exc:
-                await _record_forge_error(monitor, f"could not park #{target.number} in em_pr", exc)
+                await _record_forge_error(
+                    monitor, f"could not park #{target.number} in em_pr", exc
+                )
             # Drop any stale refine residue so the issue carries one ~workflow:.
             await monitor.forge.remove_labels(
                 "issue", target.number, [REFINAR, *REFINE_WORKFLOW_STATES]
@@ -2283,11 +2608,15 @@ async def implement_one_reviewed_issue(
         # relies on the PID lock + single-replica Recreate + hash sharding.
         try:
             await monitor.forge.transition_issue(
-                target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_IMPLEMENTING
+                target.number,
+                from_label=WORKFLOW_REVIEWED,
+                to_label=WORKFLOW_IMPLEMENTING,
             )
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, f"could not claim issue #{target.number} for implementation", exc,
+                monitor,
+                f"could not claim issue #{target.number} for implementation",
+                exc,
                 notifier_label=f"implement claim #{target.number}",
             )
             continue
@@ -2319,18 +2648,21 @@ async def implement_one_reviewed_issue(
         if isinstance(outcome, BaseException):
             logger.exception(
                 "implement #%d: fire-and-forget dispatch raised",
-                target.number, exc_info=outcome,
+                target.number,
+                exc_info=outcome,
             )
         else:
             task_id = getattr(outcome, "task_id", "") or ""
             logger.info(
                 "implement #%d: dispatched fire-and-forget (task_id=%s, "
                 "reconcile on next tick)",
-                target.number, task_id,
+                target.number,
+                task_id,
             )
 
 
 # ----- stage 2b: resume parked, continuable implementations (issue #254) -----
+
 
 async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     """Re-dispatch parked, continuable implementations in RESUME mode.
@@ -2350,10 +2682,14 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     → block flow).
     """
     try:
-        issues = await monitor.forge.list_issues_with_label(WORKFLOW_IMPLEMENTING, limit=50)
+        issues = await monitor.forge.list_issues_with_label(
+            WORKFLOW_IMPLEMENTING, limit=50
+        )
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list in-progress issues (forge error)", exc,
+            monitor,
+            "could not list in-progress issues (forge error)",
+            exc,
             notifier_label="resume/list",
         )
         return
@@ -2361,7 +2697,8 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     # Sort by priority so the most urgent parked issue is resumed first.
     target = next(
         (
-            i for i in sort_by_priority(issues)
+            i
+            for i in sort_by_priority(issues)
             if WORKFLOW_BLOCKED not in i.labels
             and WORKFLOW_PR not in i.labels
             and i.number not in monitor._resume_in_flight
@@ -2391,7 +2728,8 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     except Exception as exc:  # noqa: BLE001 — best-effort; segue para o fluxo normal
         logger.warning(
             "resume #%d: has_open_pr_for_issue falhou (%s) — segue fluxo normal",
-            target.number, exc,
+            target.number,
+            exc,
         )
 
     state = monitor._resume_tracker.get(target.number)
@@ -2400,15 +2738,20 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     _impl_max_attempts = resolve_stage_max_retries("implement")
     if state.attempt >= _impl_max_attempts:
         await _block_issue(
-            monitor, target.number,
+            monitor,
+            target.number,
             f"teto de tentativas atingido ({state.attempt}/"
             f"{_impl_max_attempts}) sem concluir",
         )
         return
     # Budget ceiling (0 = disabled).
-    if monitor.config.resume_budget > 0 and state.budget_s >= monitor.config.resume_budget:
+    if (
+        monitor.config.resume_budget > 0
+        and state.budget_s >= monitor.config.resume_budget
+    ):
         await _block_issue(
-            monitor, target.number,
+            monitor,
+            target.number,
             f"orçamento de tempo esgotado ({state.budget_s:.0f}s >= "
             f"{monitor.config.resume_budget}s) sem concluir",
         )
@@ -2457,7 +2800,9 @@ def _absorb_progress(
     read as zero progress) and must stay identical across the implement and
     review stages.
     """
-    zero_progress = monitor._resume_tracker.is_zero_progress(number, outcome.fingerprint)
+    zero_progress = monitor._resume_tracker.is_zero_progress(
+        number, outcome.fingerprint
+    )
     monitor._resume_tracker.update_from_worker(
         number,
         fingerprint=outcome.fingerprint,
@@ -2496,7 +2841,9 @@ async def _finalize_implement_outcome(
     if not outcome.ok and "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
         logger.info(
             "implement #%d: dispatch skipped (claude ainda alive) — manter %s "
-            "(sem consumir tentativa)", number, WORKFLOW_IMPLEMENTING,
+            "(sem consumir tentativa)",
+            number,
+            WORKFLOW_IMPLEMENTING,
         )
         return
 
@@ -2512,7 +2859,9 @@ async def _finalize_implement_outcome(
     if not outcome.ok and not ended:
         monitor._stats.errors += 1
         monitor._stats.claude_errors += 1
-        err_detail = (outcome.error or "implementation failed")[:PIPELINE_MSG_TRUNCATE_CHARS]
+        err_detail = (outcome.error or "implementation failed")[
+            :PIPELINE_MSG_TRUNCATE_CHARS
+        ]
         # Adaptive escalation (#6): two consecutive failures of the same kind
         # (TIMEOUT, WORKER_UNREACHABLE, etc.) usually point at a non-transient
         # cause — escalate to block instead of burning the full resume ceiling.
@@ -2527,37 +2876,47 @@ async def _finalize_implement_outcome(
             # devem queimar a issue em ``~workflow:bloqueada`` se o
             # próximo tick puder ter sucesso.
             count, pause_s = record_auth_failure_and_maybe_pause(
-                monitor, "issue", number,
+                monitor,
+                "issue",
+                number,
             )
             if pause_s > 0:
                 logger.warning(
                     "implement #%d: WORKER_AUTH_EXPIRED #%d — pausando por %.0fs",
-                    number, count, pause_s,
+                    number,
+                    count,
+                    pause_s,
                 )
                 return  # target permanece em ~workflow:em_implementacao
             logger.warning(
                 "implement #%d: WORKER_AUTH_EXPIRED #%d (abaixo do threshold) — "
                 "manter parked; reaper retoma no próximo tick",
-                number, count,
+                number,
+                count,
             )
-            await _park_or_keep(monitor, number, "WORKER_AUTH_EXPIRED transitório",
-                                resume=resume)
+            await _park_or_keep(
+                monitor, number, "WORKER_AUTH_EXPIRED transitório", resume=resume
+            )
             return
         streak = monitor._resume_tracker.record_failure(number, err_kind)
         if streak >= 2 and err_kind in _ESCALATE_ON_REPEAT:
             logger.warning(
                 "implement #%d: 2x %s consecutive — escalating to block",
-                number, err_kind,
+                number,
+                err_kind,
             )
             await _block_issue(
-                monitor, number,
+                monitor,
+                number,
                 f"falha repetida ({err_kind}) em duas tentativas seguidas — "
                 f"causa provavelmente não-transitória; humano deve intervir.",
             )
             return
         logger.error(
             "implement #%d failed: %s — parked in %s",
-            number, err_detail, WORKFLOW_IMPLEMENTING,
+            number,
+            err_detail,
+            WORKFLOW_IMPLEMENTING,
         )
         await _park_or_keep(monitor, number, err_detail, resume=resume)
         return
@@ -2570,11 +2929,13 @@ async def _finalize_implement_outcome(
             )
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, f"could not transition issue #{number} to em_pr", exc,
+                monitor,
+                f"could not transition issue #{number} to em_pr",
+                exc,
             )
         monitor._resume_tracker.clear(number)
         # Decisão #46 — sucesso real: reseta contadores de backoff de auth.
-        log_auth_recover(target=_auth_target_key("issue", number), reason='success')
+        log_auth_recover(target=_auth_target_key("issue", number), reason="success")
         reset_auth_failures(monitor, "issue", number)
         monitor._stats.issues_implemented += 1
         await monitor.notifier.implementation_finished(number, pr_url)
@@ -2584,7 +2945,8 @@ async def _finalize_implement_outcome(
     # consecutive attempts with the SAME substantive fingerprint = 0 progress).
     if zero_progress:
         await _block_issue(
-            monitor, number,
+            monitor,
+            number,
             "duas tentativas seguidas sem progresso substantivo (diff idêntico)",
         )
         return
@@ -2600,10 +2962,12 @@ async def _finalize_implement_outcome(
     if incomplete_count >= ceiling:
         logger.warning(
             "implement #%d: %d-th 'incompleto sem PR' — escalating to block",
-            number, incomplete_count,
+            number,
+            incomplete_count,
         )
         await _block_issue(
-            monitor, number,
+            monitor,
+            number,
             f"agente finalizou sem abrir PR {incomplete_count}x consecutivas "
             f"(teto {ceiling}) — provável incapacidade de cumprir o escopo; "
             f"humano deve revisar a issue.",
@@ -2611,7 +2975,10 @@ async def _finalize_implement_outcome(
         return
     logger.warning(
         "implement #%d: incompleto (sem PR) %d/%d — parked in %s%s",
-        number, incomplete_count, ceiling, WORKFLOW_IMPLEMENTING,
+        number,
+        incomplete_count,
+        ceiling,
+        WORKFLOW_IMPLEMENTING,
         " (será retomada)" if resume else "",
     )
     await _park_or_keep(
@@ -2672,7 +3039,9 @@ def _auth_target_key(kind: str, number: int) -> str:
 
 
 def is_target_auth_paused(
-    monitor: "PipelineMonitor", kind: str, number: int,
+    monitor: "PipelineMonitor",
+    kind: str,
+    number: int,
 ) -> bool:
     """True se o target ainda está dentro de uma janela de pausa por auth.
 
@@ -2692,7 +3061,9 @@ def is_target_auth_paused(
 
 
 def record_auth_failure_and_maybe_pause(
-    monitor: "PipelineMonitor", kind: str, number: int,
+    monitor: "PipelineMonitor",
+    kind: str,
+    number: int,
 ) -> tuple[int, float]:
     """Incrementa o contador de falhas auth do target e, se necessário,
     agenda uma pausa.
@@ -2704,21 +3075,35 @@ def record_auth_failure_and_maybe_pause(
     key = _auth_target_key(kind, number)
     count = monitor._auth_failures_by_target.get(key, 0) + 1
     monitor._auth_failures_by_target[key] = count
-    log_auth_fail(target=key, attempts=count, threshold=_AUTH_BACKOFF_THRESHOLD, reason='WORKER_AUTH_EXPIRED')
+    log_auth_fail(
+        target=key,
+        attempts=count,
+        threshold=_AUTH_BACKOFF_THRESHOLD,
+        reason="WORKER_AUTH_EXPIRED",
+    )
     if count < _AUTH_BACKOFF_THRESHOLD:
         return count, 0.0
-    backoff_s = min(_AUTH_BACKOFF_BASE_S * (2 ** count), _AUTH_BACKOFF_MAX_S)
-    log_auth_backoff(target=key, attempts=count, until_iso=format_iso_utc(now_utc() + timedelta(seconds=backoff_s)), backoff_s=int(backoff_s))
+    backoff_s = min(_AUTH_BACKOFF_BASE_S * (2**count), _AUTH_BACKOFF_MAX_S)
+    log_auth_backoff(
+        target=key,
+        attempts=count,
+        until_iso=format_iso_utc(now_utc() + timedelta(seconds=backoff_s)),
+        backoff_s=int(backoff_s),
+    )
     monitor._paused_until_ts[key] = _monotonic() + backoff_s
     logger.warning(
         "auth backoff: target=%s count=%d pause_for=%.0fs",
-        key, count, backoff_s,
+        key,
+        count,
+        backoff_s,
     )
     return count, backoff_s
 
 
 def reset_auth_failures(
-    monitor: "PipelineMonitor", kind: str, number: int,
+    monitor: "PipelineMonitor",
+    kind: str,
+    number: int,
 ) -> None:
     """Reseta o contador e o timestamp de pausa para o target dado.
 
@@ -2776,18 +3161,23 @@ async def _block(
     auto-resume) without re-entering it; a human removes the label to unblock.
     """
     commenter = (
-        monitor.forge.comment_on_issue if kind == "issue"
+        monitor.forge.comment_on_issue
+        if kind == "issue"
         else monitor.forge.comment_on_pr
     )
     try:
         await commenter(number, comment)
-    except Exception as exc:  # noqa: BLE001 — comment is best-effort; label still applied
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 — comment is best-effort; label still applied
         logger.warning("block %s: could not comment on #%d: %s", kind, number, exc)
     try:
         await monitor.forge.add_labels(kind, number, [WORKFLOW_BLOCKED])
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, f"could not apply {WORKFLOW_BLOCKED} to {kind} #{number}", exc,
+            monitor,
+            f"could not apply {WORKFLOW_BLOCKED} to {kind} #{number}",
+            exc,
         )
     monitor._resume_tracker.clear(number)
     monitor._stats.issues_blocked += 1
@@ -2812,7 +3202,8 @@ async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> 
 
 
 async def _handle_review_concluded_invalidation(
-    monitor: "PipelineMonitor", pr,
+    monitor: "PipelineMonitor",
+    pr,
 ) -> None:
     """Check if a PR with ``~review:concluida`` has new commits since the
     review was concluded and, if so, invalidate the label based on commit
@@ -2830,31 +3221,37 @@ async def _handle_review_concluded_invalidation(
     """
     # 1. Get the timestamp of when ~review:concluida was applied.
     concluded_at = await monitor.forge.label_applied_at(
-        "pr", pr.number, REVIEW_CONCLUDED,
+        "pr",
+        pr.number,
+        REVIEW_CONCLUDED,
     )
     if concluded_at is None:
         logger.debug(
             "invalidation #%d: could not determine when %s was applied; skipping",
-            pr.number, REVIEW_CONCLUDED,
+            pr.number,
+            REVIEW_CONCLUDED,
         )
         return
 
     # 2. Check for new commits since the label was applied.
     try:
         commits = await monitor.forge.get_pr_commits_since(
-            pr.number, concluded_at,
+            pr.number,
+            concluded_at,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "invalidation #%d: get_pr_commits_since failed: %s",
-            pr.number, exc,
+            pr.number,
+            exc,
         )
         return
 
     if not commits:
         logger.debug(
             "invalidation #%d: no new commits since %s was applied",
-            pr.number, REVIEW_CONCLUDED,
+            pr.number,
+            REVIEW_CONCLUDED,
         )
         return
 
@@ -2863,7 +3260,9 @@ async def _handle_review_concluded_invalidation(
     commit_count = len(commits)
     logger.info(
         "invalidation #%d: %d new commit(s) since review concluded — %s",
-        pr.number, commit_count, classification,
+        pr.number,
+        commit_count,
+        classification,
     )
 
     # 4. Act on the classification.
@@ -2891,7 +3290,9 @@ async def _handle_review_concluded_invalidation(
     except GhCommandError as exc:
         logger.warning(
             "invalidation #%d: could not remove %s: %s",
-            pr.number, REVIEW_CONCLUDED, exc,
+            pr.number,
+            REVIEW_CONCLUDED,
+            exc,
         )
         return
     try:
@@ -2899,7 +3300,9 @@ async def _handle_review_concluded_invalidation(
     except GhCommandError as exc:
         logger.warning(
             "invalidation #%d: could not add %s: %s",
-            pr.number, REVIEW_PENDING, exc,
+            pr.number,
+            REVIEW_PENDING,
+            exc,
         )
         # Best-effort recovery: re-add REVIEW_CONCLUDED so the PR
         # isn't left label-less.
@@ -2963,7 +3366,9 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
         prs = await monitor.forge.list_open_prs(limit=50)
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list PRs for review reconcile", exc,
+            monitor,
+            "could not list PRs for review reconcile",
+            exc,
         )
         return
     ledger = getattr(monitor.implementer, "_ledger", None)
@@ -2973,7 +3378,10 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
     for pr in sort_by_priority(prs):
         if REVIEW_IN_PROGRESS not in pr.labels or WORKFLOW_BLOCKED in pr.labels:
             continue
-        if not (monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number) or own in pr.labels):
+        if not (
+            monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number)
+            or own in pr.labels
+        ):
             continue
         key = DispatchLedger.key_for_pr(pr.number)
         entry = ledger.get(key)
@@ -2984,7 +3392,9 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
             ledger.clear(key)
             continue
         state, info = await _fetch_reconcile_state(
-            monitor, task_id, "pr_review",
+            monitor,
+            task_id,
+            "pr_review",
             channel_id=f"pipeline-pr-{pr.number}",
         )
         if state == _RECON_RUNNING:
@@ -2998,7 +3408,8 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
         except Exception as exc:  # noqa: BLE001 — na dúvida, trata como aberta
             logger.warning(
                 "reconcile review #%d: get_pr falhou (%s); assume aberta",
-                pr.number, exc,
+                pr.number,
+                exc,
             )
             still_open = pr
         if still_open is None:
@@ -3009,11 +3420,13 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
                 )
             except GhCommandError as exc:
                 await _record_forge_error(
-                    monitor, f"could not transition merged PR #{pr.number} to concluida", exc,
+                    monitor,
+                    f"could not transition merged PR #{pr.number} to concluida",
+                    exc,
                 )
             await monitor.forge.clear_batch_label("pr", pr.number)
             monitor._resume_tracker.clear(pr.number)
-            log_auth_recover(target=_auth_target_key("pr", pr.number), reason='success')
+            log_auth_recover(target=_auth_target_key("pr", pr.number), reason="success")
             reset_auth_failures(monitor, "pr", pr.number)
             ledger.clear(key)
             monitor._stats.prs_reviewed += 1
@@ -3023,14 +3436,18 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
             except Exception as exc:  # noqa: BLE001 — best-effort
                 logger.warning(
                     "reconcile_review_prs: GC failed for PR #%d: %s",
-                    pr.number, exc,
+                    pr.number,
+                    exc,
                 )
             await _post_merge_follow_ups(monitor, pr)
             continue
         last_full = info.get("last_result_full") or ""
         if info.get("last_is_error") or _review_was_blocked_marker(last_full):
             await _block_pr(
-                monitor, pr.number, pr.title, pr.url,
+                monitor,
+                pr.number,
+                pr.title,
+                pr.url,
                 "review/merge concluiu com erro ou marcador BLOQUEADO",
             )
             ledger.clear(key)
@@ -3042,7 +3459,9 @@ async def reconcile_review_prs(monitor: "PipelineMonitor") -> None:
             )
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, f"could not transition reviewed PR #{pr.number} to concluida", exc,
+                monitor,
+                f"could not transition reviewed PR #{pr.number} to concluida",
+                exc,
             )
         await monitor.forge.clear_batch_label("pr", pr.number)
         ledger.clear(key)
@@ -3060,14 +3479,12 @@ def _review_was_blocked_marker(text: str) -> bool:
     if not text:
         return False
     low = text.lower()
-    return (
-        _ENDED_BLOQUEADO in low
-        or "bloqueado" in low
-        or "request_changes" in low
-    )
+    return _ENDED_BLOQUEADO in low or "bloqueado" in low or "request_changes" in low
 
 
-async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabled: bool) -> None:
+async def _resume_review_one_pr(
+    monitor: "PipelineMonitor", target, resume_enabled: bool
+) -> None:
     """Processamento BLOQUEANTE do resume de uma PR (review/merge), extraído de
     ``review_one_open_pr`` para rodar em background task — NÃO congela o loop do
     monitor. A lógica (Fix A SHA-guard, Fix #8 auto-correção, teto, proof-of-work,
@@ -3093,7 +3510,8 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
         if not outcome.ok and "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
             logger.info(
                 "pr_review #%d: dispatch skipped (claude ainda alive) — manter "
-                "em_andamento (sem consumir tentativa)", target.number,
+                "em_andamento (sem consumir tentativa)",
+                target.number,
             )
             await monitor.forge.clear_batch_label("pr", target.number)
             return
@@ -3111,7 +3529,8 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
                 "pr_review #%d: HEAD SHA %s não mudou desde a última review "
                 "incompleta — nenhum fix foi aplicado; forçando zero_progress "
                 "(re-review do mesmo HEAD é loop)",
-                target.number, current_sha[:8],
+                target.number,
+                current_sha[:8],
             )
             zero_progress = True
 
@@ -3125,7 +3544,8 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
             monitor._stats.errors += 1
             monitor._stats.claude_errors += 1
             logger.error(
-                "pr_review #%d failed: %s", target.number,
+                "pr_review #%d failed: %s",
+                target.number,
                 (outcome.error or "review failed")[:PIPELINE_MSG_TRUNCATE_CHARS],
             )
             # Issue #309 fase 3 (estratégia C — auth-expired guard): bloqueia
@@ -3137,12 +3557,16 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
                 # após o threshold paramos por uma janela; o reaper retoma
                 # automaticamente quando a pausa expira.
                 count, pause_s = record_auth_failure_and_maybe_pause(
-                    monitor, "pr", target.number,
+                    monitor,
+                    "pr",
+                    target.number,
                 )
                 logger.warning(
                     "pr_review #%d: WORKER_AUTH_EXPIRED #%d (pause=%.0fs) — "
                     "liberando batch; reaper retoma após pausa",
-                    target.number, count, pause_s,
+                    target.number,
+                    count,
+                    pause_s,
                 )
                 await monitor.forge.clear_batch_label("pr", target.number)
                 return
@@ -3156,7 +3580,8 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
             logger.warning(
                 "pr_review #%d: worker error não-auth (%s); liberando batch pra reaper "
                 "retomar (não marca concluida sem proof-of-work — Bug A fix)",
-                target.number, (outcome.error or "")[:120],
+                target.number,
+                (outcome.error or "")[:120],
             )
             await monitor.forge.clear_batch_label("pr", target.number)
             return
@@ -3164,7 +3589,10 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
         if blocked:
             await monitor.forge.clear_batch_label("pr", target.number)
             await _block_pr(
-                monitor, target.number, target.title, target.url,
+                monitor,
+                target.number,
+                target.title,
+                target.url,
                 outcome.motivo_bloqueio or "o agente declarou BLOQUEADO sem motivo",
             )
             return
@@ -3172,19 +3600,27 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
         if merged:
             try:
                 await monitor.forge.transition_pr(
-                    target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
+                    target.number,
+                    from_label=REVIEW_IN_PROGRESS,
+                    to_label=REVIEW_CONCLUDED,
                 )
             except GhCommandError as exc:
                 await _record_forge_error(
-                    monitor, f"could not transition PR #{target.number} to concluida", exc,
+                    monitor,
+                    f"could not transition PR #{target.number} to concluida",
+                    exc,
                 )
             await monitor.forge.clear_batch_label("pr", target.number)
             monitor._resume_tracker.clear(target.number)
             # Decisão #46 — sucesso real: reseta contadores de backoff de auth.
-            log_auth_recover(target=_auth_target_key("pr", target.number), reason='success')
+            log_auth_recover(
+                target=_auth_target_key("pr", target.number), reason="success"
+            )
             reset_auth_failures(monitor, "pr", target.number)
             monitor._stats.prs_reviewed += 1
-            await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=True)
+            await monitor.notifier.pr_reviewed(
+                target.number, target.title, target.url, merged=True
+            )
             await _post_merge_follow_ups(monitor, target)
             return
 
@@ -3198,7 +3634,9 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
                 _current_sha_now = getattr(target, "head_sha", "") or ""
                 _last_sha_now = monitor._resume_tracker.reviewed_sha(target.number)
                 _sha_guard_fired = bool(
-                    _current_sha_now and _last_sha_now and _current_sha_now == _last_sha_now
+                    _current_sha_now
+                    and _last_sha_now
+                    and _current_sha_now == _last_sha_now
                 )
                 # Fix #8 (issue #521) — auto-correção da PRÓPRIA PR. Quando o
                 # SHA-guard disparou (HEAD inalterado) E a review pediu mudança
@@ -3210,7 +3648,9 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
                 if (
                     _sha_guard_fired
                     and _review_was_blocked(outcome.text)
-                    and monitor._owns_pr_branch(target.head_ref, pr_number=target.number)
+                    and monitor._owns_pr_branch(
+                        target.head_ref, pr_number=target.number
+                    )
                     and monitor._resume_tracker.address_attempt(target.number)
                     < MAX_ADDRESS_ATTEMPTS
                 ):
@@ -3219,18 +3659,23 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
                         "pr_review #%d: review pediu mudança + HEAD %s inalterado — "
                         "despachando address (implement + push) tentativa %d/%d em "
                         "vez de bloquear (Fix #8)",
-                        target.number, _current_sha_now[:8], _k, MAX_ADDRESS_ATTEMPTS,
+                        target.number,
+                        _current_sha_now[:8],
+                        _k,
+                        MAX_ADDRESS_ATTEMPTS,
                     )
                     # NÃO regrava reviewed_sha: queremos detectar no próximo tick se
                     # o address mudou o HEAD. Mantém ~review:em_andamento; libera o
                     # batch para o próximo tick re-claimar.
                     _addr_outcome = await monitor.implementer.address_review(
-                        monitor, target,
+                        monitor,
+                        target,
                     )
                     if not _addr_outcome.ok:
                         logger.warning(
                             "pr_review #%d: address dispatch falhou (%s) — "
-                            "em_andamento; reaper/reconcile retomam", target.number,
+                            "em_andamento; reaper/reconcile retomam",
+                            target.number,
                             (_addr_outcome.error or "")[:160],
                         )
                     await monitor.forge.clear_batch_label("pr", target.number)
@@ -3244,10 +3689,15 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
                         "depois remova ~workflow:bloqueada"
                     )
                 else:
-                    _block_reason = "duas tentativas de review/merge sem progresso (diff idêntico)"
+                    _block_reason = (
+                        "duas tentativas de review/merge sem progresso (diff idêntico)"
+                    )
                 await monitor.forge.clear_batch_label("pr", target.number)
                 await _block_pr(
-                    monitor, target.number, target.title, target.url,
+                    monitor,
+                    target.number,
+                    target.title,
+                    target.url,
                     _block_reason,
                 )
                 return
@@ -3261,7 +3711,9 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
                 monitor._resume_tracker.set_reviewed_sha(target.number, _sha_to_record)
             # Release the batch lock so the next tick can re-claim; keep em_andamento.
             await monitor.forge.clear_batch_label("pr", target.number)
-            logger.info("pr_review #%d incompleto — em_andamento (será retomada)", target.number)
+            logger.info(
+                "pr_review #%d incompleto — em_andamento (será retomada)", target.number
+            )
             return
 
         # Issue #309 fase 3.5 — Bug B fix: proof-of-work check antes de marcar
@@ -3272,7 +3724,10 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
         # ação real do worker).
         bot_login = await _resolve_bot_login(monitor)
         has_proof = await _assert_review_proof_of_work(
-            monitor.forge, "pr", target.number, bot_login,
+            monitor.forge,
+            "pr",
+            target.number,
+            bot_login,
             since_ts=int(time.time() - 7200),  # janela: últimas 2h
         )
         if not has_proof:
@@ -3291,11 +3746,15 @@ async def _resume_review_one_pr(monitor: "PipelineMonitor", target, resume_enabl
             )
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, f"could not transition PR #{target.number} to concluida", exc,
+                monitor,
+                f"could not transition PR #{target.number} to concluida",
+                exc,
             )
         await monitor.forge.clear_batch_label("pr", target.number)
         monitor._stats.prs_reviewed += 1
-        await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=False)
+        await monitor.notifier.pr_reviewed(
+            target.number, target.title, target.url, merged=False
+        )
     finally:
         monitor._resume_in_flight.discard(target.number)
 
@@ -3305,7 +3764,9 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         prs = await monitor.forge.list_open_prs(limit=50)
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list PRs (forge error)", exc,
+            monitor,
+            "could not list PRs (forge error)",
+            exc,
             notifier_label="pr_review/list",
         )
         return
@@ -3337,7 +3798,11 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             await _handle_review_concluded_invalidation(monitor, pr)
 
     def _candidate(pr) -> bool:
-        if pr.is_draft or REVIEW_CONCLUDED in pr.labels or WORKFLOW_BLOCKED in pr.labels:
+        if (
+            pr.is_draft
+            or REVIEW_CONCLUDED in pr.labels
+            or WORKFLOW_BLOCKED in pr.labels
+        ):
             return False
         if not monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number):
             return False
@@ -3386,17 +3851,23 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         except Exception as exc:  # noqa: BLE001 — fail-open on API hiccup
             logger.debug(
                 "branch_exists check failed for PR #%d (%s); proceeding",
-                target.number, exc,
+                target.number,
+                exc,
             )
             branch_alive = True
         if not branch_alive:
             logger.warning(
                 "PR #%d has orphan head_ref=%r (branch deleted on remote); "
                 "marking %s",
-                target.number, target.head_ref, WORKFLOW_BLOCKED,
+                target.number,
+                target.head_ref,
+                WORKFLOW_BLOCKED,
             )
             await _block_pr(
-                monitor, target.number, target.title, target.url,
+                monitor,
+                target.number,
+                target.title,
+                target.url,
                 f"branch `{target.head_ref}` foi removida do remote — "
                 "restaure a branch ou feche a PR manualmente",
             )
@@ -3416,13 +3887,15 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     except Exception as exc:  # noqa: BLE001 — fail-open: CI check não trava review
         logger.debug(
             "get_ci_status falhou para PR #%d (%s); prossegue sem gate",
-            target.number, exc,
+            target.number,
+            exc,
         )
         _ci_status = "none"
     if _ci_status == "pending":
         logger.info(
             "pr_review #%d: CI em execução (pending) — skip dispatch neste tick "
-            "(aguarda CI terminar; reconcile no próximo)", target.number,
+            "(aguarda CI terminar; reconcile no próximo)",
+            target.number,
         )
         return
     is_resume = REVIEW_IN_PROGRESS in target.labels
@@ -3437,7 +3910,9 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             return
     # Tag ownership so other monitors can identify who claimed this PR —
     # mirrors the identical pattern in stage 1 for issues.
-    await monitor.forge.add_labels("pr", target.number, [monitor.identity.ownership_label()])
+    await monitor.forge.add_labels(
+        "pr", target.number, [monitor.identity.ownership_label()]
+    )
     if is_resume:
         state = monitor._resume_tracker.get(target.number)
         # Attempt ceiling for review/merge — per-stage max_retries (issue #391).
@@ -3445,7 +3920,10 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         if state.attempt >= _review_max_attempts:
             await monitor.forge.clear_batch_label("pr", target.number)
             await _block_pr(
-                monitor, target.number, target.title, target.url,
+                monitor,
+                target.number,
+                target.title,
+                target.url,
                 f"teto de tentativas atingido ({state.attempt}/"
                 f"{_review_max_attempts}) sem mergear",
             )
@@ -3473,13 +3951,16 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         if not outcome.ok:
             logger.warning(
                 "pr_review #%d: fresh dispatch falhou (%s) — em_andamento; "
-                "reaper/reconcile retomam", target.number,
+                "reaper/reconcile retomam",
+                target.number,
                 (outcome.error or "")[:160],
             )
             return
         logger.info(
             "pr_review #%d dispatched fire-and-forget (task_id=%s) — reconcile "
-            "no próximo tick", target.number, getattr(outcome, "task_id", "") or "",
+            "no próximo tick",
+            target.number,
+            getattr(outcome, "task_id", "") or "",
         )
         return
 
@@ -3523,12 +4004,16 @@ async def _assert_review_proof_of_work(
     try:
         if hasattr(forge, "has_bot_activity_since"):
             return await forge.has_bot_activity_since(
-                kind, number, bot_login, since_ts=since_ts,
+                kind,
+                number,
+                bot_login,
+                since_ts=since_ts,
             )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
             "proof_of_work check: forge.has_bot_activity_since raised: %s — "
-            "assuming true (fail-open)", exc,
+            "assuming true (fail-open)",
+            exc,
         )
         return True
     # Forge não suporta proof-of-work check — fail-open.
@@ -3543,7 +4028,9 @@ async def _post_merge_follow_ups(monitor: "PipelineMonitor", target) -> None:
         try:
             await monitor._post_merge_cb(target.number, target.title, target.url)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("post_merge_callback failed for PR #%d: %s", target.number, exc)
+            logger.warning(
+                "post_merge_callback failed for PR #%d: %s", target.number, exc
+            )
 
 
 async def _block_pr(
@@ -3564,6 +4051,7 @@ async def _block_pr(
 
 
 # ----- stage 4: follow-up issues from merged PR --------------------------
+
 
 async def stage4_follow_ups(
     monitor: "PipelineMonitor", pr_number: int, pr_title: str, pr_url: str
@@ -3617,12 +4105,15 @@ async def stage4_follow_ups(
     try:
         await monitor.forge.comment_on_pr(pr_number, report)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("stage 4: could not post follow-up report on PR #%s: %s", pr_number, exc)
+        logger.warning(
+            "stage 4: could not post follow-up report on PR #%s: %s", pr_number, exc
+        )
 
     await monitor.notifier.follow_ups_processed(pr_number, len(opened), len(skipped))
 
 
 # ----- standalone stage 4: follow_ups action -----------------------------
+
 
 async def standalone_follow_ups(monitor: "PipelineMonitor") -> None:
     """Process follow-ups for recently merged PRs that haven't been processed yet.
@@ -3647,13 +4138,15 @@ async def standalone_follow_ups(monitor: "PipelineMonitor") -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "standalone follow_ups: could not mark PR #%d processed: %s",
-                pr.number, exc,
+                pr.number,
+                exc,
             )
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 def _extract_pr_url(text: str) -> Optional[str]:
     """Return the last PR/MR URL found in *text* (gap #14).
@@ -3754,7 +4247,9 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             if own_label not in pr.labels:
                 continue
             applied_at = await monitor.forge.label_applied_at(
-                "pr", pr.number, REVIEW_IN_PROGRESS,
+                "pr",
+                pr.number,
+                REVIEW_IN_PROGRESS,
             )
             if applied_at is None:
                 continue  # forge sem suporte ou label sem timestamp
@@ -3762,9 +4257,14 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             if age < threshold:
                 continue
             await _reap_one(
-                monitor, kind="pr", number=pr.number, labels=pr.labels,
-                from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_PENDING,
-                max_attempts=max_attempts, age_seconds=age,
+                monitor,
+                kind="pr",
+                number=pr.number,
+                labels=pr.labels,
+                from_label=REVIEW_IN_PROGRESS,
+                to_label=REVIEW_PENDING,
+                max_attempts=max_attempts,
+                age_seconds=age,
                 description=f"PR #{pr.number} review stuck há {age // 60}min",
                 url=pr.url,
             )
@@ -3778,14 +4278,18 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             )
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, "reaper: list_issues_with_label failed", exc,
+                monitor,
+                "reaper: list_issues_with_label failed",
+                exc,
             )
             return
         for issue in sort_by_priority(impl_issues):
             if own_label not in issue.labels:
                 continue
             applied_at = await monitor.forge.label_applied_at(
-                "issue", issue.number, WORKFLOW_IMPLEMENTING,
+                "issue",
+                issue.number,
+                WORKFLOW_IMPLEMENTING,
             )
             if applied_at is None:
                 continue
@@ -3793,9 +4297,14 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             if age < threshold:
                 continue
             await _reap_one(
-                monitor, kind="issue", number=issue.number, labels=issue.labels,
-                from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_REVIEWED,
-                max_attempts=max_attempts, age_seconds=age,
+                monitor,
+                kind="issue",
+                number=issue.number,
+                labels=issue.labels,
+                from_label=WORKFLOW_IMPLEMENTING,
+                to_label=WORKFLOW_REVIEWED,
+                max_attempts=max_attempts,
+                age_seconds=age,
                 description=f"issue #{issue.number} implement stuck há {age // 60}min",
                 url=issue.url,
             )
@@ -3810,14 +4319,18 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             )
         except GhCommandError as exc:
             await _record_forge_error(
-                monitor, "reaper: list_issues_with_label(em_revisao) failed", exc,
+                monitor,
+                "reaper: list_issues_with_label(em_revisao) failed",
+                exc,
             )
             return
         for issue in sort_by_priority(reviewing_issues):
             if own_label not in issue.labels:
                 continue
             applied_at = await monitor.forge.label_applied_at(
-                "issue", issue.number, WORKFLOW_REVIEWING,
+                "issue",
+                issue.number,
+                WORKFLOW_REVIEWING,
             )
             if applied_at is None:
                 continue
@@ -3825,9 +4338,14 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             if age < threshold:
                 continue
             await _reap_one(
-                monitor, kind="issue", number=issue.number, labels=issue.labels,
-                from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_NEW,
-                max_attempts=max_attempts, age_seconds=age,
+                monitor,
+                kind="issue",
+                number=issue.number,
+                labels=issue.labels,
+                from_label=WORKFLOW_REVIEWING,
+                to_label=WORKFLOW_NEW,
+                max_attempts=max_attempts,
+                age_seconds=age,
                 description=f"issue #{issue.number} em_revisao stuck há {age // 60}min",
                 url=issue.url,
             )
@@ -3843,7 +4361,9 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
                 refine_issues = await monitor.forge.list_issues_with_label(refine_state)
             except GhCommandError as exc:
                 await _record_forge_error(
-                    monitor, f"reaper: list_issues_with_label({refine_state}) failed", exc,
+                    monitor,
+                    f"reaper: list_issues_with_label({refine_state}) failed",
+                    exc,
                 )
                 continue
             for issue in sort_by_priority(refine_issues):
@@ -3854,7 +4374,9 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
                 if not entry or not entry.get("task_id"):
                     continue
                 applied_at = await monitor.forge.label_applied_at(
-                    "issue", issue.number, refine_state,
+                    "issue",
+                    issue.number,
+                    refine_state,
                 )
                 if applied_at is None:
                     continue
@@ -3862,9 +4384,14 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
                 if age < threshold:
                     continue
                 await _reap_one(
-                    monitor, kind="issue", number=issue.number, labels=issue.labels,
-                    from_label=refine_state, to_label=WORKFLOW_NEW,
-                    max_attempts=max_attempts, age_seconds=age,
+                    monitor,
+                    kind="issue",
+                    number=issue.number,
+                    labels=issue.labels,
+                    from_label=refine_state,
+                    to_label=WORKFLOW_NEW,
+                    max_attempts=max_attempts,
+                    age_seconds=age,
                     description=f"issue #{issue.number} {refine_state} stuck há {age // 60}min",
                     url=issue.url,
                 )
@@ -3910,7 +4437,9 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
                     if entry and entry.get("task_id"):
                         continue  # item sadio com dispatch em voo — não é zumbi
                 applied_at = await monitor.forge.label_applied_at(
-                    "issue", issue.number, refine_state,
+                    "issue",
+                    issue.number,
+                    refine_state,
                 )
                 if applied_at is None:
                     continue
@@ -3930,9 +4459,14 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
                 else:
                     to_label = WORKFLOW_NEW
                 await _reap_one(
-                    monitor, kind="issue", number=issue.number, labels=issue.labels,
-                    from_label=refine_state, to_label=to_label,
-                    max_attempts=max_attempts, age_seconds=age,
+                    monitor,
+                    kind="issue",
+                    number=issue.number,
+                    labels=issue.labels,
+                    from_label=refine_state,
+                    to_label=to_label,
+                    max_attempts=max_attempts,
+                    age_seconds=age,
                     description=(
                         f"issue #{issue.number} {refine_state} zumbi "
                         f"(sem task_id há {age // 60}min, hard-TTL={arch_hard_threshold // 60}min)"
@@ -3980,16 +4514,21 @@ async def _reap_one(
             await monitor.forge.remove_labels(kind, number, to_remove)
         except GhCommandError as exc:
             logger.warning(
-                "reaper #%d: remove_labels failed: %s", number, exc,
+                "reaper #%d: remove_labels failed: %s",
+                number,
+                exc,
             )
         try:
             await monitor.forge.add_labels(
-                kind, number,
+                kind,
+                number,
                 [WORKFLOW_BLOCKED, make_attempt_label(next_attempt)],
             )
         except GhCommandError as exc:
             logger.warning(
-                "reaper #%d: add bloqueada failed: %s", number, exc,
+                "reaper #%d: add bloqueada failed: %s",
+                number,
+                exc,
             )
         msg = (
             f"⛔ Reaper esgotou retries ({next_attempt}/{max_attempts}) — "
@@ -4006,15 +4545,22 @@ async def _reap_one(
         monitor._stats.issues_blocked += 1
         logger.warning(
             "reaper BLOCKED %s #%d after %d attempts (age=%ds)",
-            kind, number, next_attempt, age_seconds,
+            kind,
+            number,
+            next_attempt,
+            age_seconds,
         )
         log_reaper_block(
-            target_kind=kind, target=number, attempts=next_attempt,
-            cap=max_attempts, reason=description,
+            target_kind=kind,
+            target=number,
+            attempts=next_attempt,
+            cap=max_attempts,
+            reason=description,
         )
         try:
             await monitor.notifier.reaper_blocked(
-                number, url,
+                number,
+                url,
                 kind=kind,
                 attempt=next_attempt,
                 max_attempts=max_attempts,
@@ -4033,22 +4579,34 @@ async def _reap_one(
     except GhCommandError as exc:
         logger.warning(
             "reaper #%d: remove_labels failed: %s — skipping add_labels to preserve "
-            "label-state invariant; will retry next tick", number, exc,
+            "label-state invariant; will retry next tick",
+            number,
+            exc,
         )
         return
     try:
         await monitor.forge.add_labels(
-            kind, number, [to_label, make_attempt_label(next_attempt)],
+            kind,
+            number,
+            [to_label, make_attempt_label(next_attempt)],
         )
     except GhCommandError as exc:
         logger.warning("reaper #%d: add_labels failed: %s", number, exc)
     logger.info(
         "reaper RELEASED %s #%d to %s (attempt %d/%d, age=%ds)",
-        kind, number, to_label, next_attempt, max_attempts, age_seconds,
+        kind,
+        number,
+        to_label,
+        next_attempt,
+        max_attempts,
+        age_seconds,
     )
     log_reaper_unblock(
-        target_kind=kind, target=number, attempts=next_attempt,
-        reason=description, last_activity_s=age_seconds,
+        target_kind=kind,
+        target=number,
+        attempts=next_attempt,
+        reason=description,
+        last_activity_s=age_seconds,
     )
 
 
@@ -4065,9 +4623,12 @@ async def reconcile_closed_issues(monitor: "PipelineMonitor") -> None:
     """
     try:
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_PR, limit=50)
-    except Exception as exc:  # noqa: BLE001 — best-effort; do not count toward forge_errors
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 — best-effort; do not count toward forge_errors
         logger.warning(
-            "reconcile_closed_issues: could not list em_pr issues: %s", exc,
+            "reconcile_closed_issues: could not list em_pr issues: %s",
+            exc,
         )
         return
     for issue in issues:
@@ -4076,19 +4637,24 @@ async def reconcile_closed_issues(monitor: "PipelineMonitor") -> None:
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning(
                 "reconcile_closed_issues: get_issue #%d failed: %s",
-                issue.number, exc,
+                issue.number,
+                exc,
             )
             continue
         if current is None or current.state != "closed":
             continue
         try:
-            result = await run_terminal_gc(monitor.forge, "issue", issue.number, "closed")
+            result = await run_terminal_gc(
+                monitor.forge, "issue", issue.number, "closed"
+            )
             logger.debug(
                 "reconcile_closed_issues: GC %s for closed issue #%d",
-                result, issue.number,
+                result,
+                issue.number,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning(
                 "reconcile_closed_issues: GC failed for issue #%d: %s",
-                issue.number, exc,
+                issue.number,
+                exc,
             )

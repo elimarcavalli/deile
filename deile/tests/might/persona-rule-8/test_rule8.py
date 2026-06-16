@@ -51,7 +51,9 @@ def _format_tool_calls(tool_results) -> str:
     return "\n".join(lines)
 
 
-async def run_turn(agent: DeileAgent, session_id: str, label: str, user_input: str) -> None:
+async def run_turn(
+    agent: DeileAgent, session_id: str, label: str, user_input: str
+) -> None:
     print("=" * 100)
     print(f"=== {label}")
     print(f"USER: {user_input}")
@@ -70,7 +72,9 @@ async def run_turn(agent: DeileAgent, session_id: str, label: str, user_input: s
     print("\n--- METADATA ---")
     print(f"  duration: {dt:.2f}s")
     print(f"  model_used: {response.metadata.get('model_used', '?')}")
-    print(f"  status: {response.status.value if hasattr(response.status, 'value') else response.status}")
+    print(
+        f"  status: {response.status.value if hasattr(response.status, 'value') else response.status}"
+    )
     print()
 
 

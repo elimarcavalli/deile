@@ -14,6 +14,7 @@ O ``--in-pod`` roda o device-auth DENTRO do pod (sem o CLI no host). Prova:
 O CLI do ``deploy.py`` é hand-rolled (sem argparse); todo ``subprocess`` (kubectl)
 e as etapas de cluster são mockados — nenhuma chamada real ao cluster.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -81,10 +82,14 @@ def test_handler_in_pod_delegates_to_in_pod_function():
         return 0
 
     with patch.object(mod, "_k8s_in_pod_cli_worker_login", side_effect=fake_in_pod):
-        rc = handler({
-            "extra": ["codex", "--in-pod"],
-            "k8s_namespace": None, "yes": True, "dry_run": False,
-        })
+        rc = handler(
+            {
+                "extra": ["codex", "--in-pod"],
+                "k8s_namespace": None,
+                "yes": True,
+                "dry_run": False,
+            }
+        )
     assert rc == 0
     assert len(calls) == 1
     assert calls[0][0] == "codex"

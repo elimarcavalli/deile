@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from deile.tools.messaging import (DiscordGetUserProfileTool,
-                                   DiscordMentionRoleTool,
-                                   DiscordPinMessageTool, DiscordReactTool,
-                                   DiscordSendDMTool, DiscordSendMessageTool,
-                                   DiscordStartThreadTool,
-                                   WhatsAppSendTemplateTool)
+from deile.tools.messaging import (
+    DiscordGetUserProfileTool,
+    DiscordMentionRoleTool,
+    DiscordPinMessageTool,
+    DiscordReactTool,
+    DiscordSendDMTool,
+    DiscordSendMessageTool,
+    DiscordStartThreadTool,
+    WhatsAppSendTemplateTool,
+)
 
 ALL_TOOLS = [
     DiscordSendMessageTool,

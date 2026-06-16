@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 print("🧪 HOT-RELOAD FUNCTIONALITY TEST")
 print("=" * 40)
 
+
 class HotReloadTest:
     """Hot-reload functionality test"""
 
@@ -59,18 +60,18 @@ class HotReloadTest:
             # Create initial configuration file
             config_file = self.temp_dir / "persona_config.yaml"
             initial_config = {
-                'personas': {
-                    'enabled': True,
-                    'persona_configs': {
-                        'test_persona': {
-                            'capabilities': ['initial_capability'],
-                            'communication_style': 'technical'
+                "personas": {
+                    "enabled": True,
+                    "persona_configs": {
+                        "test_persona": {
+                            "capabilities": ["initial_capability"],
+                            "communication_style": "technical",
                         }
-                    }
+                    },
                 }
             }
 
-            with open(config_file, 'w') as f:
+            with open(config_file, "w") as f:
                 yaml.dump(initial_config, f)
 
             initial_mtime = config_file.stat().st_mtime
@@ -79,7 +80,7 @@ class HotReloadTest:
             self.log_result(
                 "Initial file creation",
                 True,
-                f"Initial mtime: {initial_mtime}, size: {initial_size}"
+                f"Initial mtime: {initial_mtime}, size: {initial_size}",
             )
 
             # Simulate file change detection
@@ -87,37 +88,49 @@ class HotReloadTest:
 
             # Modify the configuration file
             updated_config = initial_config.copy()
-            updated_config['personas']['persona_configs']['test_persona']['capabilities'] = ['updated_capability']
-            updated_config['personas']['persona_configs']['test_persona']['hot_reload_test'] = 'success'
+            updated_config["personas"]["persona_configs"]["test_persona"][
+                "capabilities"
+            ] = ["updated_capability"]
+            updated_config["personas"]["persona_configs"]["test_persona"][
+                "hot_reload_test"
+            ] = "success"
 
-            with open(config_file, 'w') as f:
+            with open(config_file, "w") as f:
                 yaml.dump(updated_config, f)
 
             updated_mtime = config_file.stat().st_mtime
             updated_size = config_file.stat().st_size
 
             # Check if file change can be detected
-            change_detected = (updated_mtime != initial_mtime) or (updated_size != initial_size)
+            change_detected = (updated_mtime != initial_mtime) or (
+                updated_size != initial_size
+            )
 
             self.log_result(
                 "File change detection",
                 change_detected,
-                f"Updated mtime: {updated_mtime}, size: {updated_size}"
+                f"Updated mtime: {updated_mtime}, size: {updated_size}",
             )
 
             # Test configuration reload simulation
-            with open(config_file, 'r') as f:
+            with open(config_file, "r") as f:
                 reloaded_config = yaml.safe_load(f)
 
             reload_successful = (
-                reloaded_config['personas']['persona_configs']['test_persona'].get('hot_reload_test') == 'success' and
-                'updated_capability' in reloaded_config['personas']['persona_configs']['test_persona']['capabilities']
+                reloaded_config["personas"]["persona_configs"]["test_persona"].get(
+                    "hot_reload_test"
+                )
+                == "success"
+                and "updated_capability"
+                in reloaded_config["personas"]["persona_configs"]["test_persona"][
+                    "capabilities"
+                ]
             )
 
             self.log_result(
                 "Configuration reload simulation",
                 reload_successful,
-                "Updated configuration successfully reloaded"
+                "Updated configuration successfully reloaded",
             )
 
         except Exception as e:
@@ -137,12 +150,12 @@ class HotReloadTest:
             observers = [test_observer]
 
             # Simulate configuration change notification
-            test_config = {'capabilities': ['notification_test']}
+            test_config = {"capabilities": ["notification_test"]}
 
             # Notify all observers
             for observer in observers:
                 try:
-                    observer('test_persona', test_config, 'updated')
+                    observer("test_persona", test_config, "updated")
                 except Exception as e:
                     print(f"      Observer error: {e}")
 
@@ -151,7 +164,7 @@ class HotReloadTest:
             self.log_result(
                 "Observer notification",
                 notification_successful,
-                f"Observers notified: {len(self.observer_calls)} calls"
+                f"Observers notified: {len(self.observer_calls)} calls",
             )
 
             # Test multiple observers
@@ -166,7 +179,7 @@ class HotReloadTest:
             # Notify all observers again
             for observer in observers:
                 try:
-                    observer('multi_test_persona', {'test': 'data'}, 'added')
+                    observer("multi_test_persona", {"test": "data"}, "added")
                 except Exception as e:
                     print(f"      Observer error: {e}")
 
@@ -175,7 +188,7 @@ class HotReloadTest:
             self.log_result(
                 "Multiple observer support",
                 multiple_observers_working,
-                f"Total observer calls: {len(self.observer_calls)}"
+                f"Total observer calls: {len(self.observer_calls)}",
             )
 
         except Exception as e:
@@ -190,12 +203,14 @@ class HotReloadTest:
             corrupted_config_file = self.temp_dir / "corrupted_config.yaml"
 
             # Write corrupted YAML
-            with open(corrupted_config_file, 'w') as f:
-                f.write("personas:\n  enabled: true\n  invalid_yaml: [\n    - missing_bracket")
+            with open(corrupted_config_file, "w") as f:
+                f.write(
+                    "personas:\n  enabled: true\n  invalid_yaml: [\n    - missing_bracket"
+                )
 
             # Try to load corrupted file
             try:
-                with open(corrupted_config_file, 'r') as f:
+                with open(corrupted_config_file, "r") as f:
                     yaml.safe_load(f)
                 corruption_handled = False
             except yaml.YAMLError:
@@ -204,14 +219,14 @@ class HotReloadTest:
             self.log_result(
                 "Corrupted file resilience",
                 corruption_handled,
-                "Corrupted YAML correctly rejected"
+                "Corrupted YAML correctly rejected",
             )
 
             # Test resilience to missing files during reload
             missing_file = self.temp_dir / "missing_config.yaml"
 
             try:
-                with open(missing_file, 'r') as f:
+                with open(missing_file, "r") as f:
                     yaml.safe_load(f)
                 missing_file_handled = False
             except FileNotFoundError:
@@ -220,7 +235,7 @@ class HotReloadTest:
             self.log_result(
                 "Missing file resilience",
                 missing_file_handled,
-                "Missing file correctly handled"
+                "Missing file correctly handled",
             )
 
             # Test observer error resilience
@@ -231,23 +246,27 @@ class HotReloadTest:
                 self.observer_calls.append(("resilience_test", event_type, config))
 
             observers = [failing_observer, working_observer]
-            working_calls_before = len([c for c in self.observer_calls if c[0] == "resilience_test"])
+            working_calls_before = len(
+                [c for c in self.observer_calls if c[0] == "resilience_test"]
+            )
 
             # Notify observers with error handling
             for observer in observers:
                 try:
-                    observer('resilience_persona', {'test': 'data'}, 'updated')
+                    observer("resilience_persona", {"test": "data"}, "updated")
                 except Exception:
                     # In real implementation, this would be logged but not stop other observers
                     continue
 
-            working_calls_after = len([c for c in self.observer_calls if c[0] == "resilience_test"])
+            working_calls_after = len(
+                [c for c in self.observer_calls if c[0] == "resilience_test"]
+            )
             resilience_working = working_calls_after > working_calls_before
 
             self.log_result(
                 "Observer error resilience",
                 resilience_working,
-                "Working observer called despite failing observer"
+                "Working observer called despite failing observer",
             )
 
         except Exception as e:
@@ -277,6 +296,7 @@ class HotReloadTest:
         print("\n" + "=" * 40)
         return failed_tests == 0
 
+
 async def run_hot_reload_test():
     """Run hot-reload functionality test"""
     test_suite = HotReloadTest()
@@ -304,6 +324,7 @@ async def run_hot_reload_test():
     finally:
         await test_suite.teardown()
 
+
 if __name__ == "__main__":
     print("Starting hot-reload functionality test...\n")
 
@@ -316,5 +337,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n💥 Test suite crashed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

@@ -18,8 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Mapping, Optional, Sequence
 
-from deile.orchestration.pipeline.constants import (ISSUE_BODY_MAX_CHARS,
-                                                    claude_timeout_seconds)
+from deile.orchestration.pipeline.constants import (
+    ISSUE_BODY_MAX_CHARS,
+    claude_timeout_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +133,14 @@ class ClaudeDispatcher:
             # subprocess failed, check for auth-related error messages so we
             # can surface a clear warning instead of leaving the operator
             # guessing about the root cause.
-            _auth_hints = ("authentication", "unauthorized", "api key", "login", "sign in", "auth")
+            _auth_hints = (
+                "authentication",
+                "unauthorized",
+                "api key",
+                "login",
+                "sign in",
+                "auth",
+            )
             if any(h in stderr_text.lower() for h in _auth_hints):
                 logger.warning(
                     "claude -p failed with a possible auth error and "
@@ -154,8 +163,7 @@ class ClaudeDispatcher:
 # Canonical prompt templates
 # ---------------------------------------------------------------------------
 
-IMPLEMENT_PROMPT_TEMPLATE = textwrap.dedent(
-    """\
+IMPLEMENT_PROMPT_TEMPLATE = textwrap.dedent("""\
     Você está numa worktree isolada (.worktrees/<branch>) do repositório {repo}.
     Sua tarefa: pegar a issue #{number} ({title}), implementar a feature seguindo
     o workflow do projeto, criar testes para todos os casos de uso, rodar tudo
@@ -172,12 +180,10 @@ IMPLEMENT_PROMPT_TEMPLATE = textwrap.dedent(
 
     Contexto da issue:
     {issue_body}
-    """
-)
+    """)
 
 
-REVIEW_PROMPT_TEMPLATE = textwrap.dedent(
-    """\
+REVIEW_PROMPT_TEMPLATE = textwrap.dedent("""\
     Você está numa worktree isolada do repositório {repo} ({pr_noun} #{number}: {title}).
     Sua tarefa: revisar a {pr_noun}, corrigir o que estiver errado, cobrir todos os
     casos de uso com testes, garantir 100% de aprovação dos testes, documentar
@@ -189,8 +195,7 @@ REVIEW_PROMPT_TEMPLATE = textwrap.dedent(
     - Use `{merge_cmd}` (não squash) e respeite a config do repo.
     - Quando terminar, responda EXATAMENTE com a URL da {pr_noun} mergeada numa
       única linha (ex: {pr_url_pattern}). Sem prosa adicional.
-    """
-)
+    """)
 
 
 def _default_forge_for_dispatch(repo: str):
@@ -201,6 +206,7 @@ def _default_forge_for_dispatch(repo: str):
     ...)`` callers keep getting GH-shaped commands without code changes.
     """
     from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+
     cli = shutil.which("gh") or "gh"
     return ForgeConfig(
         kind=ForgeKind.GITHUB,
@@ -220,6 +226,7 @@ def _resolve_forge_for_prompt(repo: str, forge, *, number: int, branch: str):
     """
     from deile.orchestration.forge.base import ForgeKind
     from deile.orchestration.forge.cli_renderer import render_brief_cmds
+
     cfg = forge or _default_forge_for_dispatch(repo)
     cmds = render_brief_cmds(cfg, number=number, branch=branch, main="main")
     pr_noun = "PR" if cfg.kind is ForgeKind.GITHUB else "MR"
@@ -227,15 +234,24 @@ def _resolve_forge_for_prompt(repo: str, forge, *, number: int, branch: str):
 
 
 def render_implement_prompt(
-    repo: str, number: int, title: str, issue_body: str, *, forge=None,
+    repo: str,
+    number: int,
+    title: str,
+    issue_body: str,
+    *,
+    forge=None,
 ) -> str:
     cfg, cmds, pr_noun = _resolve_forge_for_prompt(
-        repo, forge, number=number, branch="<branch>",
+        repo,
+        forge,
+        number=number,
+        branch="<branch>",
     )
     # ``create_cmd`` is the bare verb the prompt mentions in prose (``gh
     # pr create`` / ``glab mr create``) — not the fully-parameterised
     # snippet, which would over-specify and confuse the agent.
     from deile.orchestration.forge.base import ForgeKind
+
     create_cmd = "gh pr create" if cfg.kind is ForgeKind.GITHUB else "glab mr create"
     # Spikes deliver measured evidence, not production code — their PR must
     # ``Refs`` (never ``Closes``) the issue, mirroring the pipeline implement
@@ -245,6 +261,7 @@ def render_implement_prompt(
     # worker path — but it shares the same close-keyword safety so a spike run
     # locally never auto-closes a half-proven issue.
     from deile.orchestration.pipeline.briefs import _close_keyword
+
     close_keyword = _close_keyword(title, issue_body)
     return IMPLEMENT_PROMPT_TEMPLATE.format(
         repo=repo,
@@ -259,10 +276,17 @@ def render_implement_prompt(
 
 
 def render_review_prompt(
-    repo: str, number: int, title: str, *, forge=None,
+    repo: str,
+    number: int,
+    title: str,
+    *,
+    forge=None,
 ) -> str:
     _cfg, cmds, pr_noun = _resolve_forge_for_prompt(
-        repo, forge, number=number, branch=f"pr/{number}",
+        repo,
+        forge,
+        number=number,
+        branch=f"pr/{number}",
     )
     return REVIEW_PROMPT_TEMPLATE.format(
         repo=repo,

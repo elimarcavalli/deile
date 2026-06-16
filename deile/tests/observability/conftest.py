@@ -19,6 +19,7 @@ def otel_sdk_available() -> bool:
     try:
         import opentelemetry  # noqa: F401
         import opentelemetry.sdk.trace  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -27,10 +28,14 @@ def otel_sdk_available() -> bool:
 @pytest.fixture(autouse=True)
 def _reset_singletons(monkeypatch):
     """Reseta singletons + limpa envs OTLP antes/depois de cada teste."""
-    from deile.observability import (reset_dispatch_export,
-                                     reset_dispatch_log_export,
-                                     reset_dispatch_metrics, reset_metrics,
-                                     reset_observability_config, reset_tracer)
+    from deile.observability import (
+        reset_dispatch_export,
+        reset_dispatch_log_export,
+        reset_dispatch_metrics,
+        reset_metrics,
+        reset_observability_config,
+        reset_tracer,
+    )
 
     for env in (
         "DEILE_OTLP_ENDPOINT",
@@ -79,8 +84,9 @@ def in_memory_exporter(monkeypatch):
 
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import \
-        InMemorySpanExporter
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
 
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -95,12 +101,14 @@ def in_memory_exporter(monkeypatch):
     # teste setamos o atributo direto via monkeypatch (revertido no teardown,
     # não vaza para outros testes).
     import opentelemetry.trace as _ot_trace
+
     monkeypatch.setattr(_ot_trace, "_TRACER_PROVIDER", provider, raising=False)
 
     # Ligar OTLP via env para get_tracer() escolher OtlpTracer.
     monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
 
     from deile.observability import reset_observability_config, reset_tracer
+
     reset_observability_config()
     reset_tracer()
 
@@ -124,8 +132,10 @@ def in_memory_log_exporter(monkeypatch):
 
     try:
         from opentelemetry.sdk._logs import LoggerProvider
-        from opentelemetry.sdk._logs.export import (InMemoryLogExporter,
-                                                    SimpleLogRecordProcessor)
+        from opentelemetry.sdk._logs.export import (
+            InMemoryLogExporter,
+            SimpleLogRecordProcessor,
+        )
     except ImportError:
         pytest.skip("opentelemetry SDK logs não disponível")
 
@@ -139,8 +149,11 @@ def in_memory_log_exporter(monkeypatch):
     # Ligar OTLP via env para get_log_provider() não retornar None.
     monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
 
-    from deile.observability import (reset_dispatch_log_export,
-                                     reset_observability_config)
+    from deile.observability import (
+        reset_dispatch_log_export,
+        reset_observability_config,
+    )
+
     reset_observability_config()
     reset_dispatch_log_export()
 
@@ -173,8 +186,8 @@ def in_memory_dispatch_metrics_reader(monkeypatch):
     # Ligar OTLP via env para get_dispatch_meter_provider() não retornar None.
     monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
 
-    from deile.observability import (reset_dispatch_metrics,
-                                     reset_observability_config)
+    from deile.observability import reset_dispatch_metrics, reset_observability_config
+
     reset_observability_config()
     reset_dispatch_metrics()
 
@@ -222,6 +235,7 @@ def in_memory_metrics_reader(monkeypatch):
     monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://test-collector:4317")
 
     from deile.observability import reset_metrics, reset_observability_config
+
     reset_observability_config()
     reset_metrics()
 

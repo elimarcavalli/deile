@@ -28,24 +28,30 @@ class _FakeHandle:
         self.pricing = pricing
 
 
-def _make_openai_provider(input_per_1m: float, cached_per_1m: float | None) -> OpenAIProvider:
+def _make_openai_provider(
+    input_per_1m: float, cached_per_1m: float | None
+) -> OpenAIProvider:
     """Build an OpenAIProvider with stubbed pricing — no client init needed."""
     provider = OpenAIProvider.__new__(OpenAIProvider)
-    provider._handle = _FakeHandle(SimpleNamespace(
-        input_per_1m_usd=input_per_1m,
-        output_per_1m_usd=10.0,
-        cached_input_per_1m_usd=cached_per_1m,
-    ))
+    provider._handle = _FakeHandle(
+        SimpleNamespace(
+            input_per_1m_usd=input_per_1m,
+            output_per_1m_usd=10.0,
+            cached_input_per_1m_usd=cached_per_1m,
+        )
+    )
     return provider
 
 
 def _make_deepseek_provider() -> DeepSeekProvider:
     provider = DeepSeekProvider.__new__(DeepSeekProvider)
-    provider._handle = _FakeHandle(SimpleNamespace(
-        input_per_1m_usd=1.0,
-        output_per_1m_usd=2.0,
-        cached_input_per_1m_usd=0.1,
-    ))
+    provider._handle = _FakeHandle(
+        SimpleNamespace(
+            input_per_1m_usd=1.0,
+            output_per_1m_usd=2.0,
+            cached_input_per_1m_usd=0.1,
+        )
+    )
     return provider
 
 

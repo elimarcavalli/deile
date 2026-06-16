@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 def _make_stub_module(name: str) -> MagicMock:
@@ -23,7 +21,9 @@ def _make_stub_module(name: str) -> MagicMock:
 
 
 class TestImportWithoutDeilebot:
-    def test_register_messaging_tools_returns_zero_without_deilebot(self, monkeypatch, caplog):
+    def test_register_messaging_tools_returns_zero_without_deilebot(
+        self, monkeypatch, caplog
+    ):
         """BOT_CLIENT_AVAILABLE=False path — returns 0, logs skip."""
         import deile.tools.messaging.auto_discover as ad
 
@@ -42,7 +42,9 @@ class TestImportWithoutDeilebot:
                 mock_registry = MagicMock()
                 mock_registry.__contains__ = MagicMock(return_value=False)
 
-                with caplog.at_level(logging.DEBUG, logger="deile.tools.messaging.auto_discover"):
+                with caplog.at_level(
+                    logging.DEBUG, logger="deile.tools.messaging.auto_discover"
+                ):
                     result = ad.register_messaging_tools(mock_registry)
 
         assert result == 0
@@ -77,4 +79,5 @@ class TestImportWithoutDeilebot:
     def test_deile_integrations_bot_exposes_bot_client_available(self):
         """integrations/bot must expose BOT_CLIENT_AVAILABLE so the lazy gate works."""
         from deile.integrations.bot import BOT_CLIENT_AVAILABLE  # noqa: F401
+
         assert isinstance(BOT_CLIENT_AVAILABLE, bool)

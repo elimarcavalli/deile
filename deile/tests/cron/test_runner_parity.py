@@ -5,6 +5,7 @@ These tests do NOT mock the AuditLogger internals — they use a real (tmp_path)
 AuditLogger to verify that the fields CronRunner passes to log_cron_fire /
 log_cron_skipped round-trip correctly through the AuditEvent.details dict.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -27,7 +28,9 @@ def audit_logger(tmp_path):
     return AuditLogger(log_dir=str(tmp_path / "logs"))
 
 
-def _due_entry(entry_id: str = "job-1", prompt: str = "run backup", cron: str = "* * * * *") -> CronEntry:
+def _due_entry(
+    entry_id: str = "job-1", prompt: str = "run backup", cron: str = "* * * * *"
+) -> CronEntry:
     # Use cron-only (no run_at) with last_fired_at far enough in the past that
     # next_fire_at ends up before now, making the entry immediately due.
     return CronEntry(
@@ -131,4 +134,6 @@ class TestCronSkippedFieldParity:
         ev = events[0]
         assert ev.resource == "cron:allfields-skip"
         for field in ("name", "reason"):
-            assert field in ev.details, f"missing field {field!r} in CRON_SKIPPED details"
+            assert (
+                field in ev.details
+            ), f"missing field {field!r} in CRON_SKIPPED details"

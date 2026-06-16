@@ -34,23 +34,23 @@ def _load_gitignore_patterns(working_directory: Path) -> List[str]:
 
     if gitignore_path.exists():
         try:
-            content = gitignore_path.read_text(encoding='utf-8')
+            content = gitignore_path.read_text(encoding="utf-8")
             for line in content.splitlines():
                 line = line.strip()
                 # Ignora linhas vazias e comentários
-                if line and not line.startswith('#'):
+                if line and not line.startswith("#"):
                     patterns.append(line)
         except (OSError, UnicodeDecodeError) as exc:
             # If the file can't be read or decoded, continue with no patterns;
             # log so the silent fallback is at least diagnosable.
-            logger.debug(
-                "failed to read .gitignore at %s: %s", gitignore_path, exc
-            )
+            logger.debug("failed to read .gitignore at %s: %s", gitignore_path, exc)
 
     return patterns
 
 
-def _should_ignore(file_path: Path, patterns: List[str], working_directory: Path) -> bool:
+def _should_ignore(
+    file_path: Path, patterns: List[str], working_directory: Path
+) -> bool:
     """Verifica se um arquivo deve ser ignorado baseado nos padrões do .gitignore"""
     if not patterns:
         return False
@@ -58,25 +58,25 @@ def _should_ignore(file_path: Path, patterns: List[str], working_directory: Path
     try:
         # Caminho relativo ao diretório de trabalho
         relative_path = file_path.relative_to(working_directory)
-        path_str = str(relative_path).replace('\\', '/')
+        path_str = str(relative_path).replace("\\", "/")
 
         # Verifica cada padrão
         for pattern in patterns:
             # Remove / no final para diretórios
-            clean_pattern = pattern.rstrip('/')
+            clean_pattern = pattern.rstrip("/")
 
             # Verifica match direto
             if fnmatch.fnmatch(path_str, clean_pattern):
                 return True
 
             # Verifica match com padrão de diretório
-            if fnmatch.fnmatch(path_str, clean_pattern + '/*'):
+            if fnmatch.fnmatch(path_str, clean_pattern + "/*"):
                 return True
 
             # Verifica se está dentro de um diretório ignorado
-            parts = path_str.split('/')
+            parts = path_str.split("/")
             for i in range(len(parts)):
-                partial_path = '/'.join(parts[:i+1])
+                partial_path = "/".join(parts[: i + 1])
                 if fnmatch.fnmatch(partial_path, clean_pattern):
                     return True
 
@@ -106,13 +106,15 @@ def _collect_entries(
     if full_path.is_file():
         # Se é um arquivo específico, não aplica filtros do .gitignore
         stat = full_path.stat()
-        files_info.append({
-            "name": full_path.name,
-            "type": "file",
-            "size": stat.st_size,
-            "modified": stat.st_mtime,
-            "path": str(full_path.relative_to(working_directory))
-        })
+        files_info.append(
+            {
+                "name": full_path.name,
+                "type": "file",
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+                "path": str(full_path.relative_to(working_directory)),
+            }
+        )
         return files_info
 
     # Se é um diretório, carrega padrões do .gitignore
@@ -137,7 +139,7 @@ def _collect_entries(
 
     for entry in entries:
         # Pula arquivos ocultos se não solicitado
-        if not show_hidden and entry.name.startswith('.'):
+        if not show_hidden and entry.name.startswith("."):
             continue
 
         # Verifica se deve ser ignorado pelo .gitignore
@@ -155,13 +157,15 @@ def _collect_entries(
                 rel = str(entry.relative_to(working_directory))
             except ValueError:
                 rel = str(entry)
-            files_info.append({
-                "name": entry.name,
-                "type": "directory" if entry.is_dir() else "file",
-                "size": stat.st_size if entry.is_file() else None,
-                "modified": stat.st_mtime,
-                "path": rel,
-            })
+            files_info.append(
+                {
+                    "name": entry.name,
+                    "type": "directory" if entry.is_dir() else "file",
+                    "size": stat.st_size if entry.is_file() else None,
+                    "modified": stat.st_mtime,
+                    "path": rel,
+                }
+            )
         except (PermissionError, OSError):
             # Pula arquivos sem permissão
             continue
@@ -177,10 +181,7 @@ def _render_tree(target_path: str, files_info: List[Dict[str, Any]]) -> str:
     Caps at ``_MAX_DIRS_SHOWN`` directories and ``_MAX_FILES_SHOWN`` files;
     a trailing "... e mais N itens" line accounts for the remainder.
     """
-    rich_display_lines = [
-        f"● list_files({target_path})",
-        "⎿ Estrutura do projeto:"
-    ]
+    rich_display_lines = [f"● list_files({target_path})", "⎿ Estrutura do projeto:"]
 
     # Cria tree structure visual
     if files_info:
@@ -206,9 +207,8 @@ def _render_tree(target_path: str, files_info: List[Dict[str, Any]]) -> str:
             rich_display_lines.append(f"   {prefix}📄 {file_info['name']}")
 
         # Indica se há mais itens (dirs hidden + files hidden).
-        total_remaining = (
-            (len(dirs) - len(shown_dirs))
-            + (len(files) - len(shown_files))
+        total_remaining = (len(dirs) - len(shown_dirs)) + (
+            len(files) - len(shown_files)
         )
         if total_remaining > 0:
             rich_display_lines.append(f"   └── ... e mais {total_remaining} itens")

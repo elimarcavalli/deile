@@ -14,7 +14,10 @@ from deile.cron.store import CronEntry
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_entry(entry_id: str = "cron-abc123", prompt: str = "do something") -> CronEntry:
+
+def _make_entry(
+    entry_id: str = "cron-abc123", prompt: str = "do something"
+) -> CronEntry:
     """Return a minimal one-shot CronEntry for testing."""
     return CronEntry(
         id=entry_id,
@@ -106,6 +109,7 @@ async def test_process_input_raises_returns_error_string():
 @pytest.mark.unit
 async def test_agent_provider_raises_returns_error_string():
     """When agent_provider itself raises, callback returns error string, not raises."""
+
     async def failing_provider():
         raise ConnectionError("DB unreachable")
 

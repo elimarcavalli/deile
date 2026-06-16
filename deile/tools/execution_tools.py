@@ -9,8 +9,15 @@ import tempfile
 from pathlib import Path
 
 from ..core.exceptions import ValidationError
-from .base import (SecurityLevel, SyncTool, ToolCategory, ToolContext,
-                   ToolResult, ToolSchema, ToolStatus)
+from .base import (
+    SecurityLevel,
+    SyncTool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+    ToolStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +161,8 @@ class PythonExecutionTool(SyncTool):
                 return ToolResult(
                     status=ToolStatus.SUCCESS,
                     data=stdout.strip(),
-                    message=stdout.strip() or "Python executed successfully (no stdout)",
+                    message=stdout.strip()
+                    or "Python executed successfully (no stdout)",
                     metadata={
                         "exit_code": result.returncode,
                         "stdout": stdout,
@@ -279,8 +287,7 @@ class PipInstallTool(SyncTool):
                     },
                     {
                         "description": (
-                            "Upgrade an existing dep to its latest matching "
-                            "version"
+                            "Upgrade an existing dep to its latest matching " "version"
                         ),
                         "parameters": {"package": "rich", "upgrade": True},
                     },
@@ -310,6 +317,7 @@ class PipInstallTool(SyncTool):
     def _normalize_pkg_name(spec: str) -> str:
         """Return the canonical PEP 503 name from a spec like 'requests>=2.0[extras]'."""
         from packaging.utils import canonicalize_name
+
         bare = re.sub(r"\[.*?\]", "", spec)
         bare = re.split(r"[<>=!~]", bare, maxsplit=1)[0]
         return canonicalize_name(bare.strip())
@@ -349,7 +357,9 @@ class PipInstallTool(SyncTool):
         package = context.parsed_args.get("package")
         version = context.parsed_args.get("version")
         update_requirements = context.parsed_args.get("update_requirements", True)
-        requirements_file = context.parsed_args.get("requirements_file", "requirements.txt")
+        requirements_file = context.parsed_args.get(
+            "requirements_file", "requirements.txt"
+        )
         upgrade = context.parsed_args.get("upgrade", False)
         timeout = context.parsed_args.get("timeout", 120)
 
@@ -421,7 +431,9 @@ class PipInstallTool(SyncTool):
                     requirements_updated = True
                     requirements_note = f"Appended {spec!r} to {requirements_file}."
                 except OSError as e:
-                    requirements_note = f"WARNING: could not update {requirements_file}: {e}"
+                    requirements_note = (
+                        f"WARNING: could not update {requirements_file}: {e}"
+                    )
 
         msg = f"Installed {spec}."
         if requirements_note:
@@ -516,13 +528,15 @@ class TestRunnerTool(SyncTool):
         test_commands = {
             "pytest": ["python3", "-m", "pytest"],
             "unittest": ["python3", "-m", "unittest"],
-            "nose": ["nosetests"]
+            "nose": ["nosetests"],
         }
 
         if test_type not in test_commands:
             return ToolResult.error_result(
                 message=f"Unsupported test type: {test_type}",
-                error=ValidationError(f"test_type must be one of: {list(test_commands.keys())}")
+                error=ValidationError(
+                    f"test_type must be one of: {list(test_commands.keys())}"
+                ),
             )
 
         cmd = test_commands[test_type].copy()
@@ -567,6 +581,6 @@ class TestRunnerTool(SyncTool):
                 "test_path": test_path,
                 "exit_code": result.returncode,
                 "stdout": output,
-                "stderr": error_output
-            }
+                "stderr": error_output,
+            },
         )

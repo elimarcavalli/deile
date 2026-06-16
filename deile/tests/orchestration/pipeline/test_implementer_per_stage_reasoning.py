@@ -20,8 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from deile.config.settings import reset_settings
-from deile.orchestration.pipeline.github_client import (CommentRef,
-                                                        MentionTrigger, PrRef)
+from deile.orchestration.pipeline.github_client import CommentRef, MentionTrigger, PrRef
 from deile.orchestration.pipeline.implementer import WorkerImplementer
 from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES
 
@@ -29,8 +28,7 @@ from deile.orchestration.pipeline.model_resolver import PIPELINE_STAGES
 @pytest.fixture(autouse=True)
 def _isolate_settings(monkeypatch):
     for stage in PIPELINE_STAGES:
-        monkeypatch.delenv(f"DEILE_PIPELINE_REASONING_{stage.upper()}",
-                           raising=False)
+        monkeypatch.delenv(f"DEILE_PIPELINE_REASONING_{stage.upper()}", raising=False)
     monkeypatch.delenv("DEILE_REASONING_EFFORT", raising=False)
     reset_settings()
     yield
@@ -50,11 +48,14 @@ class _FakeClient:
 def _make_monitor():
     monitor = SimpleNamespace()
     monitor.config = SimpleNamespace(
-        repo="owner/name", main_branch="main", base_repo_path=Path("/tmp/x"),
+        repo="owner/name",
+        main_branch="main",
+        base_repo_path=Path("/tmp/x"),
         mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
     from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+
     monitor.forge = SimpleNamespace(
         config=ForgeConfig(
             kind=ForgeKind.GITHUB,
@@ -72,7 +73,9 @@ def _issue(number=1, labels=()):
 
 def _pr(number=7):
     return SimpleNamespace(
-        number=number, title="t", head_ref=f"auto/issue-{number}",
+        number=number,
+        title="t",
+        head_ref=f"auto/issue-{number}",
         url=f"https://github.com/owner/name/pull/{number}",
     )
 
@@ -91,9 +94,11 @@ def _mention_trigger_issue_comment(number=1):
 
 def _mention_trigger_pr_assignee(number=7):
     pr = PrRef(
-        number=number, title="t",
+        number=number,
+        title="t",
         url=f"https://github.com/owner/name/pull/{number}",
-        head_ref=f"auto/issue-{number}", labels=(),
+        head_ref=f"auto/issue-{number}",
+        labels=(),
     )
     return MentionTrigger(trigger_type="assignee", pr=pr)
 
@@ -126,7 +131,8 @@ class TestStageReasoningPropagation:
         assert client.last_payload["preferred_reasoning"] == "high"
 
     async def test_global_reasoning_effort_propagates_to_all_stages(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """DEILE_REASONING_EFFORT overrides opinionated defaults for every stage."""
         monkeypatch.setenv("DEILE_REASONING_EFFORT", "ultracode")
@@ -161,17 +167,23 @@ class TestStageReasoningPropagation:
         client = _FakeClient({"ok": True, "summary": "answered"})
         trigger = _mention_trigger_issue_comment()
         await WorkerImplementer(client=client).mention(
-            _make_monitor(), trigger,
-            trigger_types=["comment"], all_triggers=[trigger], mode="comment",
+            _make_monitor(),
+            trigger,
+            trigger_types=["comment"],
+            all_triggers=[trigger],
+            mode="comment",
         )
         assert client.last_payload["preferred_reasoning"] == "low"
 
     async def test_preferred_reasoning_coexists_with_preferred_model(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """Both wire fields coexist on the same payload."""
         monkeypatch.setenv("DEILE_PIPELINE_REASONING_IMPLEMENT", "high")
-        monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT", "anthropic:claude-opus-4-8")
+        monkeypatch.setenv(
+            "DEILE_PIPELINE_MODEL_IMPLEMENT", "anthropic:claude-opus-4-8"
+        )
         reset_settings()
         client = _FakeClient({"ok": True, "summary": "done"})
         await WorkerImplementer(client=client).implement(_make_monitor(), _issue())

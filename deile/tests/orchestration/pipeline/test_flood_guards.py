@@ -20,14 +20,15 @@ from typing import Dict, List, Tuple
 from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
-from deile.orchestration.pipeline.implementer import (WorkerImplementer,
-                                                      WorkOutcome)
-from deile.orchestration.pipeline.labels import (REFINAR, REVIEW_IN_PROGRESS,
-                                                 WORKFLOW_ARCHITECTURE,
-                                                 WORKFLOW_BLOCKED,
-                                                 WORKFLOW_REVIEWED)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.implementer import WorkerImplementer, WorkOutcome
+from deile.orchestration.pipeline.labels import (
+    REFINAR,
+    REVIEW_IN_PROGRESS,
+    WORKFLOW_ARCHITECTURE,
+    WORKFLOW_BLOCKED,
+    WORKFLOW_REVIEWED,
+)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 from deile.orchestration.pipeline.resume_state import ResumeTracker
 
 # ---------------------------------------------------------------------------
@@ -35,11 +36,20 @@ from deile.orchestration.pipeline.resume_state import ResumeTracker
 # ---------------------------------------------------------------------------
 
 _NOTIFIER_METHODS = (
-    "issue_picked_up", "issue_reviewed", "implementation_started",
-    "implementation_finished", "implementation_parked", "implementation_resumed",
-    "implementation_blocked", "pr_picked_up", "pr_reviewed",
-    "issue_auto_classified", "follow_ups_processed", "error",
-    "pr_auto_classified", "mention_processed",
+    "issue_picked_up",
+    "issue_reviewed",
+    "implementation_started",
+    "implementation_finished",
+    "implementation_parked",
+    "implementation_resumed",
+    "implementation_blocked",
+    "pr_picked_up",
+    "pr_reviewed",
+    "issue_auto_classified",
+    "follow_ups_processed",
+    "error",
+    "pr_auto_classified",
+    "mention_processed",
 )
 
 
@@ -81,7 +91,9 @@ def _worker_response(
     return resp
 
 
-def _pr(number: int, *labels: str, head_sha: str = "", head_ref: str = "auto/issue-1") -> PrRef:
+def _pr(
+    number: int, *labels: str, head_sha: str = "", head_ref: str = "auto/issue-1"
+) -> PrRef:
     return PrRef(
         number=number,
         title="t",
@@ -92,11 +104,17 @@ def _pr(number: int, *labels: str, head_sha: str = "", head_ref: str = "auto/iss
     )
 
 
-def _issue(number: int, *labels: str, body: str = "corpo", author: str = "alice") -> IssueRef:
+def _issue(
+    number: int, *labels: str, body: str = "corpo", author: str = "alice"
+) -> IssueRef:
     return IssueRef(
-        number=number, title="t",
+        number=number,
+        title="t",
         url=f"https://github.com/owner/name/issues/{number}",
-        labels=tuple(labels), body=body, state="open", author=author,
+        labels=tuple(labels),
+        body=body,
+        state="open",
+        author=author,
     )
 
 
@@ -149,7 +167,9 @@ def _make_monitor_for_review(
 
     client = _FakeWorkerClient(worker_responses)
     implementer = WorkerImplementer(client=client)
-    monitor = PipelineMonitor(cfg, github=github, notifier=notifier, implementer=implementer)
+    monitor = PipelineMonitor(
+        cfg, github=github, notifier=notifier, implementer=implementer
+    )
     return monitor, notifier, client
 
 
@@ -178,6 +198,7 @@ async def _review_and_drain(monitor) -> None:
 # ===========================================================================
 # Fix A — ResumeTracker: set_reviewed_sha / reviewed_sha (unit)
 # ===========================================================================
+
 
 class TestResumeTrackerShaGuard:
     """Unit tests para os dois novos métodos do ResumeTracker (Fix A)."""
@@ -216,33 +237,49 @@ class TestResumeTrackerShaGuard:
 # Fix A — PrRef.head_sha propagado pelos from_*_json (unit)
 # ===========================================================================
 
+
 class TestPrRefHeadSha:
     """Garante que os factory methods populam head_sha corretamente."""
 
     def test_from_gh_json_com_head_ref_oid(self):
         item = {
-            "number": 42, "title": "t", "url": "u",
-            "labels": [], "headRefName": "auto/issue-42",
-            "baseRefName": "main", "state": "open",
-            "isDraft": False, "headRefOid": "deadbeef1234567890ab",
+            "number": 42,
+            "title": "t",
+            "url": "u",
+            "labels": [],
+            "headRefName": "auto/issue-42",
+            "baseRefName": "main",
+            "state": "open",
+            "isDraft": False,
+            "headRefOid": "deadbeef1234567890ab",
         }
         pr = PrRef.from_gh_json(item)
         assert pr.head_sha == "deadbeef1234567890ab"
 
     def test_from_gh_json_sem_head_ref_oid(self):
         item = {
-            "number": 1, "title": "t", "url": "u",
-            "labels": [], "headRefName": "branch",
-            "baseRefName": "main", "state": "open", "isDraft": False,
+            "number": 1,
+            "title": "t",
+            "url": "u",
+            "labels": [],
+            "headRefName": "branch",
+            "baseRefName": "main",
+            "state": "open",
+            "isDraft": False,
         }
         pr = PrRef.from_gh_json(item)
         assert pr.head_sha == ""
 
     def test_from_gl_json_com_sha(self):
         item = {
-            "iid": 7, "title": "mr", "web_url": "u", "labels": [],
-            "source_branch": "auto/issue-7", "target_branch": "main",
-            "state": "opened", "draft": False,
+            "iid": 7,
+            "title": "mr",
+            "web_url": "u",
+            "labels": [],
+            "source_branch": "auto/issue-7",
+            "target_branch": "main",
+            "state": "opened",
+            "draft": False,
             "sha": "cafebabe0000",
         }
         pr = PrRef.from_gl_json(item)
@@ -250,9 +287,14 @@ class TestPrRefHeadSha:
 
     def test_from_gl_json_com_diff_refs(self):
         item = {
-            "iid": 8, "title": "mr", "web_url": "u", "labels": [],
-            "source_branch": "auto/issue-8", "target_branch": "main",
-            "state": "opened", "draft": False,
+            "iid": 8,
+            "title": "mr",
+            "web_url": "u",
+            "labels": [],
+            "source_branch": "auto/issue-8",
+            "target_branch": "main",
+            "state": "opened",
+            "draft": False,
             "diff_refs": {"head_sha": "feedfeed1111"},
         }
         pr = PrRef.from_gl_json(item)
@@ -260,9 +302,14 @@ class TestPrRefHeadSha:
 
     def test_from_gl_json_sem_sha(self):
         item = {
-            "iid": 9, "title": "mr", "web_url": "u", "labels": [],
-            "source_branch": "auto/issue-9", "target_branch": "main",
-            "state": "opened", "draft": False,
+            "iid": 9,
+            "title": "mr",
+            "web_url": "u",
+            "labels": [],
+            "source_branch": "auto/issue-9",
+            "target_branch": "main",
+            "state": "opened",
+            "draft": False,
         }
         pr = PrRef.from_gl_json(item)
         assert pr.head_sha == ""
@@ -271,6 +318,7 @@ class TestPrRefHeadSha:
 # ===========================================================================
 # Fix A — review_one_open_pr: SHA guard de re-review (integração)
 # ===========================================================================
+
 
 class TestReviewHeadShaFloodGuard:
     """Fix A: PR revisada 2x com MESMO head_sha → bloqueada no 2º resume.
@@ -306,7 +354,9 @@ class TestReviewHeadShaFloodGuard:
         # Após o 1º resume incompleto, SHA deve estar gravado.
         assert monitor._resume_tracker.reviewed_sha(10) == SHA
         # NÃO bloqueado ainda.
-        blocked_after_first = WORKFLOW_BLOCKED in _added_labels(monitor.github, "pr", 10)
+        blocked_after_first = WORKFLOW_BLOCKED in _added_labels(
+            monitor.github, "pr", 10
+        )
         assert not blocked_after_first, "Não deve bloquear após 1ª review incompleta"
 
         # Tick 2 (RESUME): mesmo SHA, fingerprint diferente (worker re-escreveu).
@@ -351,7 +401,9 @@ class TestReviewHeadShaFloodGuard:
         pr_2 = _pr(10, REVIEW_IN_PROGRESS, head_sha=SHA_2)
         monitor.github.list_open_prs = AsyncMock(return_value=[pr_2])
         client._responses = [
-            _worker_response(ended="concluido", pr_url="https://x/pull/10", tentativa=2),
+            _worker_response(
+                ended="concluido", pr_url="https://x/pull/10", tentativa=2
+            ),
         ]
 
         monitor.github.add_labels.reset_mock()
@@ -359,9 +411,9 @@ class TestReviewHeadShaFloodGuard:
 
         # SHA mudou → não bloqueia; deve concluir normalmente.
         added = _added_labels(monitor.github, "pr", 10)
-        assert WORKFLOW_BLOCKED not in added, (
-            "Não deve bloquear quando o HEAD SHA mudou (fix foi aplicado)"
-        )
+        assert (
+            WORKFLOW_BLOCKED not in added
+        ), "Não deve bloquear quando o HEAD SHA mudou (fix foi aplicado)"
 
     async def test_head_sha_vazio_comportamento_legacy(self):
         """head_sha="" (forge sem suporte) → guard não ativa (retrocompat)."""
@@ -389,14 +441,15 @@ class TestReviewHeadShaFloodGuard:
         await _review_and_drain(monitor)
 
         added = _added_labels(monitor.github, "pr", 10)
-        assert WORKFLOW_BLOCKED not in added, (
-            "Guard SHA não deve ativar quando head_sha está vazio (retrocompat)"
-        )
+        assert (
+            WORKFLOW_BLOCKED not in added
+        ), "Guard SHA não deve ativar quando head_sha está vazio (retrocompat)"
 
 
 # ===========================================================================
 # Fix B — ResumeTracker: record_refine_body_len / get_prev_refine_body_len (unit)
 # ===========================================================================
+
 
 class TestResumeTrackerRefineBodyLen:
     """Unit tests para os dois novos métodos do ResumeTracker (Fix B)."""
@@ -433,6 +486,7 @@ class TestResumeTrackerRefineBodyLen:
 # ===========================================================================
 # Fix B — _apply_refine_verdict: divergence early-stop (integração)
 # ===========================================================================
+
 
 class _SeqWorkerClientForRefine:
     """Worker client fake compatível com o modelo fire-and-forget (issue #373).
@@ -528,16 +582,22 @@ def _make_monitor_for_refine(
     github.create_issue = AsyncMock(return_value=0)
 
     if get_issue_body_fn is None:
+
         def get_issue_body_fn(number):
             base = registry.get(number)
             body = base.body if base else "corpo"
             labels = base.labels if base else ("feature",)
             author = base.author if base else "alice"
             return IssueRef(
-                number=number, title="t",
-                url=f"u/{number}", labels=labels,
-                body=body, state="open", author=author,
+                number=number,
+                title="t",
+                url=f"u/{number}",
+                labels=labels,
+                body=body,
+                state="open",
+                author=author,
             )
+
     github.get_issue = AsyncMock(side_effect=get_issue_body_fn)
 
     notifier = MagicMock()
@@ -549,7 +609,9 @@ def _make_monitor_for_refine(
     client = _SeqWorkerClientForRefine(worker_responses)
 
     monitor = PipelineMonitor(
-        cfg, github=github, notifier=notifier,
+        cfg,
+        github=github,
+        notifier=notifier,
         implementer=WorkerImplementer(client=client, ledger=ledger),
     )
     return monitor, github, client
@@ -571,7 +633,7 @@ class TestRefineDivergenceEarlyStop:
         # - before_body (capturado no dispatch): body da issue na lista
         # - after_body (re-lido após o passe): body retornado por get_issue
 
-        body_v1 = "Quero uma feature."         # body original (passe 1)
+        body_v1 = "Quero uma feature."  # body original (passe 1)
         body_v2 = "Quero uma feature. Gap 2."  # passe 2: cresceu
         body_v3 = "Quero uma feature. Gap 2. Gap 3."  # passe 3: cresceu de novo
 
@@ -601,9 +663,12 @@ class TestRefineDivergenceEarlyStop:
 
         # Simula passe 1: before=v1, after=v2 → body mudou (normal, sem early-stop).
         # refine_attempt=0 antes → bump → 1.
-        github.get_issue = AsyncMock(return_value=_issue(1, *feature_labels, body=body_v2))
+        github.get_issue = AsyncMock(
+            return_value=_issue(1, *feature_labels, body=body_v2)
+        )
         await _apply_refine_verdict(
-            monitor, issue_base,
+            monitor,
+            issue_base,
             {"last_result_full": "REFINO: OK", "last_is_error": False},
             body_v1,
         )
@@ -616,9 +681,12 @@ class TestRefineDivergenceEarlyStop:
         # Simula passe 2: before=v2, after=v3 → body cresceu de novo.
         # refine_attempt=1 → bump → 2 (ainda abaixo do limiar de 3).
         github.add_labels.reset_mock()
-        github.get_issue = AsyncMock(return_value=_issue(1, *feature_labels, body=body_v3))
+        github.get_issue = AsyncMock(
+            return_value=_issue(1, *feature_labels, body=body_v3)
+        )
         await _apply_refine_verdict(
-            monitor, issue_base,
+            monitor,
+            issue_base,
             {"last_result_full": "REFINO: OK", "last_is_error": False},
             body_v2,
         )
@@ -660,9 +728,12 @@ class TestRefineDivergenceEarlyStop:
         body_v4 = body_v3 + " Gap 4."
 
         github.add_labels.reset_mock()
-        github.get_issue = AsyncMock(return_value=_issue(1, *feature_labels, body=body_v4))
+        github.get_issue = AsyncMock(
+            return_value=_issue(1, *feature_labels, body=body_v4)
+        )
         await _apply_refine_verdict(
-            monitor, issue_base,
+            monitor,
+            issue_base,
             {"last_result_full": "REFINO: OK", "last_is_error": False},
             body_v3,
         )
@@ -674,9 +745,12 @@ class TestRefineDivergenceEarlyStop:
         body_v5 = body_v4 + " Gap 5."
         github.add_labels.reset_mock()
         github.comment_on_issue.reset_mock()
-        github.get_issue = AsyncMock(return_value=_issue(1, *feature_labels, body=body_v5))
+        github.get_issue = AsyncMock(
+            return_value=_issue(1, *feature_labels, body=body_v5)
+        )
         await _apply_refine_verdict(
-            monitor, issue_base,
+            monitor,
+            issue_base,
             {"last_result_full": "REFINO: OK", "last_is_error": False},
             body_v4,
         )
@@ -700,9 +774,12 @@ class TestRefineDivergenceEarlyStop:
         monitor, github, _ = _make_monitor_for_refine([issue_base], [])
 
         # Passe 1: v1 → v2 (cresceu, attempt=0 → 1).
-        github.get_issue = AsyncMock(return_value=_issue(1, *feature_labels, body=body_v2))
+        github.get_issue = AsyncMock(
+            return_value=_issue(1, *feature_labels, body=body_v2)
+        )
         await _apply_refine_verdict(
-            monitor, issue_base,
+            monitor,
+            issue_base,
             {"last_result_full": "REFINO: OK", "last_is_error": False},
             body_v1,
         )
@@ -711,9 +788,12 @@ class TestRefineDivergenceEarlyStop:
         # Passe 2: v2 → v2 (corpo inalterado → CONVERGÊNCIA → promove revisada).
         github.add_labels.reset_mock()
         github.transition_issue.reset_mock()
-        github.get_issue = AsyncMock(return_value=_issue(1, *feature_labels, body=body_v3))
+        github.get_issue = AsyncMock(
+            return_value=_issue(1, *feature_labels, body=body_v3)
+        )
         await _apply_refine_verdict(
-            monitor, issue_base,
+            monitor,
+            issue_base,
             {"last_result_full": "REFINO: OK", "last_is_error": False},
             body_v2,  # before_body = v2, after_body = v3 = v2 → convergência
         )
@@ -721,7 +801,8 @@ class TestRefineDivergenceEarlyStop:
         assert WORKFLOW_BLOCKED not in _added_labels(github, "issue", 1)
         # Verifica que foi promovida para revisada (transition chamada).
         transition_targets = [
-            call.kwargs.get("to_label") for call in github.transition_issue.await_args_list
+            call.kwargs.get("to_label")
+            for call in github.transition_issue.await_args_list
         ]
         assert WORKFLOW_REVIEWED in transition_targets
 
@@ -739,11 +820,14 @@ class TestRefineDivergenceEarlyStop:
         monitor._resume_tracker.get(1).refine_attempt = 4
 
         body_depois = "corpo mais longo do que antes"
-        github.get_issue = AsyncMock(return_value=_issue(1, *feature_labels, body=body_depois))
+        github.get_issue = AsyncMock(
+            return_value=_issue(1, *feature_labels, body=body_depois)
+        )
 
         # Sem prev_len gravado (-1) → guard não ativa mesmo com attempt>=3.
         await _apply_refine_verdict(
-            monitor, issue_base,
+            monitor,
+            issue_base,
             {"last_result_full": "REFINO: OK", "last_is_error": False},
             "corpo",  # before_body (body original)
         )
@@ -754,6 +838,7 @@ class TestRefineDivergenceEarlyStop:
 # ===========================================================================
 # Fix #8 (issue #521) — ResumeTracker: address_attempt counters (unit)
 # ===========================================================================
+
 
 class TestResumeTrackerAddressAttempt:
     """Unit tests dos novos contadores de address-feedback (Fix #8)."""
@@ -799,6 +884,7 @@ class TestResumeTrackerAddressAttempt:
 # Fix #8 (issue #521) — review_one_open_pr: auto-fix da PRÓPRIA PR (integração)
 # ===========================================================================
 
+
 # Resposta de review da PRÓPRIA PR que conclui REQUEST_CHANGES sem mergear.
 # ``summary`` carrega o veredict que ``_review_was_blocked`` detecta; ``ended``
 # fica "incompleto" (não-merged) para cair no caminho resume não-merged.
@@ -835,7 +921,9 @@ class TestSelfPrAutoFix:
         pr_1 = _pr(10, REVIEW_IN_PROGRESS, head_sha=SHA, head_ref="auto/issue-10")
         monitor, _, client = _make_monitor_for_review(
             prs=[pr_1],
-            worker_responses=[_request_changes_response(fingerprint="fp1", tentativa=1)],
+            worker_responses=[
+                _request_changes_response(fingerprint="fp1", tentativa=1)
+            ],
         )
         await _review_and_drain(monitor)
         assert monitor._resume_tracker.reviewed_sha(10) == SHA
@@ -855,9 +943,9 @@ class TestSelfPrAutoFix:
 
         # NÃO bloqueou.
         added = _added_labels(monitor.github, "pr", 10)
-        assert WORKFLOW_BLOCKED not in added, (
-            f"Não deve bloquear na 1ª tentativa de auto-fix; add_labels={added}"
-        )
+        assert (
+            WORKFLOW_BLOCKED not in added
+        ), f"Não deve bloquear na 1ª tentativa de auto-fix; add_labels={added}"
         # Contador de address incrementado.
         assert monitor._resume_tracker.address_attempt(10) == 1
         # Despachou um IMPLEMENT (address) além do pr_review.
@@ -878,7 +966,9 @@ class TestSelfPrAutoFix:
         pr = _pr(10, REVIEW_IN_PROGRESS, head_sha=SHA, head_ref="auto/issue-10")
         monitor, _, client = _make_monitor_for_review(
             prs=[pr],
-            worker_responses=[_request_changes_response(fingerprint="fpz", tentativa=3)],
+            worker_responses=[
+                _request_changes_response(fingerprint="fpz", tentativa=3)
+            ],
         )
         monitor._resume_tracker.set_reviewed_sha(10, SHA)
         monitor._resume_tracker.bump_address_attempt(10)  # já fez 1 (= cap)
@@ -889,13 +979,13 @@ class TestSelfPrAutoFix:
 
         # Com address esgotado e HEAD inalterado → BLOQUEIA.
         added = _added_labels(monitor.github, "pr", 10)
-        assert WORKFLOW_BLOCKED in added, (
-            f"Esperava ~workflow:bloqueada após esgotar auto-fix; add_labels={added}"
-        )
+        assert (
+            WORKFLOW_BLOCKED in added
+        ), f"Esperava ~workflow:bloqueada após esgotar auto-fix; add_labels={added}"
         # NÃO despachou novo address (só o pr_review).
-        assert "implement" not in _payload_stages(client), (
-            f"Não deve despachar address após o cap; stages={_payload_stages(client)}"
-        )
+        assert "implement" not in _payload_stages(
+            client
+        ), f"Não deve despachar address após o cap; stages={_payload_stages(client)}"
         # Mensagem de bloqueio cita a auto-correção esgotada. ``comment_on_pr``
         # é chamado posicionalmente (number, comment).
         block_comments = [
@@ -903,9 +993,9 @@ class TestSelfPrAutoFix:
             for c in monitor.github.comment_on_pr.await_args_list
         ]
         joined = "\n".join(str(x) for x in block_comments)
-        assert "auto-correção" in joined, (
-            f"Mensagem de bloqueio deve citar auto-correção esgotada; got: {joined!r}"
-        )
+        assert (
+            "auto-correção" in joined
+        ), f"Mensagem de bloqueio deve citar auto-correção esgotada; got: {joined!r}"
 
     async def test_head_mudou_nao_conta_address_reseta_e_segue(self):
         """O HEAD MUDOU entre reviews (worker pushou o fix) → NÃO bloqueia, NÃO
@@ -937,9 +1027,9 @@ class TestSelfPrAutoFix:
         await _review_and_drain(monitor)
 
         added = _added_labels(monitor.github, "pr", 10)
-        assert WORKFLOW_BLOCKED not in added, (
-            f"HEAD mudou → não deve bloquear; add_labels={added}"
-        )
+        assert (
+            WORKFLOW_BLOCKED not in added
+        ), f"HEAD mudou → não deve bloquear; add_labels={added}"
         # Contador resetado.
         assert monitor._resume_tracker.address_attempt(10) == 0
         # Novo SHA gravado para o próximo ciclo.
@@ -973,14 +1063,16 @@ class TestSelfPrAutoFix:
         await _review_and_drain(monitor)
 
         # Houve 2 dispatches: review (wait=True) e address (wait=False).
-        assert waits == [True, False], (
-            f"Esperava review wait=True e address wait=False; got {waits}"
-        )
+        assert waits == [
+            True,
+            False,
+        ], f"Esperava review wait=True e address wait=False; got {waits}"
 
 
 # ===========================================================================
 # Issue #445 — RESUME de review roda em background (não congela o tick)
 # ===========================================================================
+
 
 class TestResumeReviewNonBlocking:
     """O caminho de RESUME não pode bloquear o loop do monitor: ele agora roda
@@ -998,7 +1090,9 @@ class TestResumeReviewNonBlocking:
         async def _slow_review(_monitor, _target, *, resume):
             await gate.wait()
             return WorkOutcome(
-                ok=True, text="https://x/pull/10 MERGED", ended="concluido",
+                ok=True,
+                text="https://x/pull/10 MERGED",
+                ended="concluido",
             )
 
         monitor.implementer = MagicMock()

@@ -30,11 +30,18 @@ def _mk_workdir(root: Path, task_id: str, *, lease_heartbeat=None, mtime=None) -
     wd.mkdir(parents=True)
     (wd / "data.txt").write_text("x")
     if lease_heartbeat is not None:
-        (wd / ".lease.json").write_text(json.dumps({
-            "pod": "dead-pod", "pid": 999999, "heartbeat_at": lease_heartbeat,
-        }))
+        (wd / ".lease.json").write_text(
+            json.dumps(
+                {
+                    "pod": "dead-pod",
+                    "pid": 999999,
+                    "heartbeat_at": lease_heartbeat,
+                }
+            )
+        )
     if mtime is not None:
         import os
+
         os.utime(wd, (mtime, mtime))
     return wd
 
@@ -83,7 +90,9 @@ def test_has_session_predicate_collects_workdir_without_session(tmp_path):
     _mk_workdir(root, _TASK, lease_heartbeat=None, mtime=time.time())
     # has_session sempre False → workdir sem sessão é elegível mesmo recente.
     res = core.startup_cleanup(
-        root, retention_days=7, has_session=lambda _wd: False,
+        root,
+        retention_days=7,
+        has_session=lambda _wd: False,
     )
     assert res["workdirs_removed"] == 1
     assert not (root / _TASK).exists()
@@ -99,18 +108,21 @@ class TestClassifyProviderError:
     ``error_code`` específico (resumível) em vez de conclusão limpa."""
 
     def test_402_insufficient_credit(self):
-        assert core.classify_provider_error(
-            "Error: 402 Payment Required"
-        ) == "INSUFFICIENT_CREDIT"
-        assert core.classify_provider_error(
-            "insufficient credit on your account"
-        ) == "INSUFFICIENT_CREDIT"
-        assert core.classify_provider_error(
-            "You exceeded your current quota"
-        ) == "INSUFFICIENT_CREDIT"
-        assert core.classify_provider_error(
-            "insufficient_quota"
-        ) == "INSUFFICIENT_CREDIT"
+        assert (
+            core.classify_provider_error("Error: 402 Payment Required")
+            == "INSUFFICIENT_CREDIT"
+        )
+        assert (
+            core.classify_provider_error("insufficient credit on your account")
+            == "INSUFFICIENT_CREDIT"
+        )
+        assert (
+            core.classify_provider_error("You exceeded your current quota")
+            == "INSUFFICIENT_CREDIT"
+        )
+        assert (
+            core.classify_provider_error("insufficient_quota") == "INSUFFICIENT_CREDIT"
+        )
 
     def test_429_rate_limit(self):
         assert core.classify_provider_error("HTTP 429") == "RATE_LIMIT"
@@ -119,25 +131,23 @@ class TestClassifyProviderError:
         assert core.classify_provider_error("overloaded_error") == "RATE_LIMIT"
 
     def test_5xx_provider_error(self):
-        assert core.classify_provider_error(
-            "internal server error"
-        ) == "PROVIDER_ERROR"
+        assert core.classify_provider_error("internal server error") == "PROVIDER_ERROR"
         assert core.classify_provider_error("502 Bad Gateway") == "PROVIDER_ERROR"
-        assert core.classify_provider_error(
-            "service unavailable"
-        ) == "PROVIDER_ERROR"
+        assert core.classify_provider_error("service unavailable") == "PROVIDER_ERROR"
 
     def test_connection_errors(self):
         assert core.classify_provider_error("ECONNRESET") == "PROVIDER_CONN"
-        assert core.classify_provider_error(
-            "connection reset by peer"
-        ) == "PROVIDER_CONN"
+        assert (
+            core.classify_provider_error("connection reset by peer") == "PROVIDER_CONN"
+        )
         assert core.classify_provider_error("socket hang up") == "PROVIDER_CONN"
 
     def test_clean_output_is_none(self):
         assert core.classify_provider_error("all tests passed, PR opened") is None
         assert core.classify_provider_error("") is None
-        assert core.classify_provider_error("commit 402abc done") is None  # não é \b402\b
+        assert (
+            core.classify_provider_error("commit 402abc done") is None
+        )  # não é \b402\b
 
     def test_credit_wins_over_rate_limit_priority(self):
         # 402 + 429 no mesmo texto → o mais caro de re-gastar (crédito) ganha.

@@ -36,7 +36,11 @@ def _fmt_ts(value: Optional[float]) -> str:
     if value is None:
         return "--:--:--"
     try:
-        return datetime.fromtimestamp(value, tz=timezone.utc).astimezone().strftime("%H:%M:%S")
+        return (
+            datetime.fromtimestamp(value, tz=timezone.utc)
+            .astimezone()
+            .strftime("%H:%M:%S")
+        )
     except (OSError, OverflowError, ValueError):
         return "--:--:--"
 
@@ -119,13 +123,13 @@ class ClusterStatusScreen:
         table = Table(show_header=False, expand=True, box=None, padding=(0, 1))
         table.add_column(justify="left")
         table.add_column(justify="right")
-        table.add_row(f"pipeline uptime {uptime}",
-                      f"ticks={ticks} errors={errors}")
+        table.add_row(f"pipeline uptime {uptime}", f"ticks={ticks} errors={errors}")
         table.add_row(f"last-tick: {last}", f"next-tick: {nxt}")
         pods = status.get("pods_seen") or {}
         if pods:
             pods_text = "  ".join(
-                f"{name}={info.get('ready_replicas','?')}" for name, info in pods.items()
+                f"{name}={info.get('ready_replicas','?')}"
+                for name, info in pods.items()
             )
             table.add_row(Text(pods_text, style="dim"), Text(""))
         return table
@@ -135,7 +139,8 @@ class ClusterStatusScreen:
         if not items:
             return Panel(
                 Text("(empty — no eligible work for next tick)", style="dim"),
-                title="Backlog", border_style="dim",
+                title="Backlog",
+                border_style="dim",
             )
         table = Table(expand=True, padding=(0, 1))
         table.add_column("Kind", style="cyan")
@@ -158,7 +163,8 @@ class ClusterStatusScreen:
         if not events:
             return Panel(
                 Text("(no recent events)", style="dim"),
-                title="Recent activity", border_style="dim",
+                title="Recent activity",
+                border_style="dim",
             )
         table = Table(expand=True, padding=(0, 1), show_header=False)
         table.add_column("when", style="dim", justify="right")
@@ -177,7 +183,8 @@ class ClusterStatusScreen:
         if not ledger:
             return Panel(
                 Text("(empty — no in-flight dispatches)", style="dim"),
-                title="Pipeline ledger", border_style="dim",
+                title="Pipeline ledger",
+                border_style="dim",
             )
         table = Table(expand=True, padding=(0, 1))
         table.add_column("Key", style="cyan")
@@ -240,11 +247,13 @@ class LiveSessionScreen:
         layout.add_row(self._render_chat(data.chat))
         if data.api_errors:
             layout.add_row(
-                Panel(Text(" • ".join(data.api_errors), style="yellow"),
-                      title="API errors", border_style="yellow"),
+                Panel(
+                    Text(" • ".join(data.api_errors), style="yellow"),
+                    title="API errors",
+                    border_style="yellow",
+                ),
             )
-        return Panel(layout, title=header,
-                     border_style="green" if alive else "dim")
+        return Panel(layout, title=header, border_style="green" if alive else "dim")
 
     @staticmethod
     def _render_command(command: Optional[Dict[str, Any]]) -> RenderableType:
@@ -255,7 +264,8 @@ class LiveSessionScreen:
         cmd_text = " ".join(_truncate(part, 40) for part in cmd[:8])
         return Panel(
             Text(cmd_text + "\n\n" + _truncate(full_prompt, 400)),
-            title="Command", border_style="cyan",
+            title="Command",
+            border_style="cyan",
         )
 
     @staticmethod
@@ -269,8 +279,10 @@ class LiveSessionScreen:
         completed = _fmt_ts(session.get("last_completed_at"))
         table.add_row(f"started {started}", f"elapsed {duration}")
         table.add_row(f"completed {completed}", f"cost {cost}")
-        table.add_row(f"attempt {session.get('attempt') or 1}",
-                      f"workdir_exists={session.get('workdir_exists')}")
+        table.add_row(
+            f"attempt {session.get('attempt') or 1}",
+            f"workdir_exists={session.get('workdir_exists')}",
+        )
         return table
 
     @staticmethod
@@ -279,7 +291,8 @@ class LiveSessionScreen:
         if not turns:
             return Panel(
                 Text("(no conversation yet — chat JSONL not present)", style="dim"),
-                title="Conversation", border_style="dim",
+                title="Conversation",
+                border_style="dim",
             )
         table = Table(expand=True, padding=(0, 1), show_header=False)
         table.add_column("when", style="dim")
@@ -289,11 +302,17 @@ class LiveSessionScreen:
             role = turn.get("role") or turn.get("type")
             marker = "▶" if turn.get("in_progress") else " "
             if role == "tool":
-                preview = f"{turn.get('tool_name')}({_truncate(turn.get('tool_input'), 40)})"
+                preview = (
+                    f"{turn.get('tool_name')}({_truncate(turn.get('tool_input'), 40)})"
+                )
             else:
-                preview = _truncate(turn.get("content") or turn.get("summary") or "", 70)
+                preview = _truncate(
+                    turn.get("content") or turn.get("summary") or "", 70
+                )
             table.add_row(
-                _fmt_ts(turn.get("ts") if isinstance(turn.get("ts"), (int, float)) else None),
+                _fmt_ts(
+                    turn.get("ts") if isinstance(turn.get("ts"), (int, float)) else None
+                ),
                 f"{marker} {role or '?'}",
                 preview,
             )
@@ -318,7 +337,8 @@ class HistoryScreen:
         if not data.sessions:
             return Panel(
                 Text("(no historical sessions)", style="dim"),
-                title="TASK HISTORY", border_style="dim",
+                title="TASK HISTORY",
+                border_style="dim",
             )
         table = Table(expand=True, padding=(0, 1))
         table.add_column("Task", style="cyan")

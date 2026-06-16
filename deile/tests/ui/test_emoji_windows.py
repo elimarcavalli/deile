@@ -51,9 +51,12 @@ class TestCheckEmojiSupportWindows:
     def test_runs_chcp_and_returns_true_on_win32(self) -> None:
         saved = _purge_emoji_env()
         try:
-            with patch("deile.ui.emoji_support.sys.platform", "win32"), \
-                 patch("deile.ui.emoji_support.subprocess.run") as mock_run:
+            with (
+                patch("deile.ui.emoji_support.sys.platform", "win32"),
+                patch("deile.ui.emoji_support.subprocess.run") as mock_run,
+            ):
                 from deile.ui.emoji_support import EmojiManager
+
                 manager = EmojiManager()
 
             assert manager.supports_emoji is True
@@ -74,12 +77,15 @@ class TestCheckEmojiSupportWindows:
         """
         saved = _purge_emoji_env()
         try:
-            with patch("deile.ui.emoji_support.sys.platform", "win32"), \
-                 patch(
-                     "deile.ui.emoji_support.subprocess.run",
-                     side_effect=OSError("chcp missing"),
-                 ):
+            with (
+                patch("deile.ui.emoji_support.sys.platform", "win32"),
+                patch(
+                    "deile.ui.emoji_support.subprocess.run",
+                    side_effect=OSError("chcp missing"),
+                ),
+            ):
                 from deile.ui.emoji_support import EmojiManager
+
                 manager = EmojiManager()
 
             assert manager.supports_emoji is False
@@ -97,8 +103,10 @@ class TestEnableUnicodeConsoleWindows:
         # Snapshot env so the test cleanup is deterministic.
         saved_env = os.environ.get("PYTHONIOENCODING")
         try:
-            with patch("deile.ui.emoji_support.sys.platform", "win32"), \
-                 patch("deile.ui.emoji_support.subprocess.run") as mock_run:
+            with (
+                patch("deile.ui.emoji_support.sys.platform", "win32"),
+                patch("deile.ui.emoji_support.subprocess.run") as mock_run,
+            ):
                 from deile.ui.emoji_support import EmojiManager
 
                 # Bypass __init__ — we don't want the init-time chcp call to
@@ -122,9 +130,12 @@ class TestEnableUnicodeConsoleWindows:
 
     def test_returns_true_without_chcp_on_posix(self) -> None:
         """Negative control — POSIX path is a no-op that still returns True."""
-        with patch("deile.ui.emoji_support.sys.platform", "linux"), \
-             patch("deile.ui.emoji_support.subprocess.run") as mock_run:
+        with (
+            patch("deile.ui.emoji_support.sys.platform", "linux"),
+            patch("deile.ui.emoji_support.subprocess.run") as mock_run,
+        ):
             from deile.ui.emoji_support import EmojiManager
+
             manager = EmojiManager.__new__(EmojiManager)
             manager.supports_emoji = True
             manager.emoji_map = {}
@@ -139,12 +150,15 @@ class TestEnableUnicodeConsoleWindows:
         """Exception in subprocess.run → enable_unicode_console returns False
         and does NOT raise. The fallback is degraded emoji rendering, not a
         crash on Windows users' first session."""
-        with patch("deile.ui.emoji_support.sys.platform", "win32"), \
-             patch(
-                 "deile.ui.emoji_support.subprocess.run",
-                 side_effect=OSError("chcp missing"),
-             ):
+        with (
+            patch("deile.ui.emoji_support.sys.platform", "win32"),
+            patch(
+                "deile.ui.emoji_support.subprocess.run",
+                side_effect=OSError("chcp missing"),
+            ),
+        ):
             from deile.ui.emoji_support import EmojiManager
+
             manager = EmojiManager.__new__(EmojiManager)
             manager.supports_emoji = True
             manager.emoji_map = {}

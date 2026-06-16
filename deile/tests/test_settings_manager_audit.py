@@ -23,9 +23,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deile.commands.settings_manager import (SettingsManager, _hash_value,
-                                             _is_secret_key,
-                                             _value_fingerprint)
+from deile.commands.settings_manager import (
+    SettingsManager,
+    _hash_value,
+    _is_secret_key,
+    _value_fingerprint,
+)
 
 pytestmark = pytest.mark.security
 
@@ -152,12 +155,13 @@ class TestSetSettingPermissionAndAudit:
         mgr = _make_manager(tmp_path)
         pm_mock = MagicMock()
         pm_mock.check_permission.return_value = False
-        with patch(
-            "deile.commands._settings_security_hooks.get_permission_manager",
-            return_value=pm_mock,
-        ), patch(
-            "deile.commands.settings_manager._emit_settings_audit"
-        ) as audit_mock:
+        with (
+            patch(
+                "deile.commands._settings_security_hooks.get_permission_manager",
+                return_value=pm_mock,
+            ),
+            patch("deile.commands.settings_manager._emit_settings_audit") as audit_mock,
+        ):
             mgr.set_setting("logging.level", "INFO", scope="global")
         audit_mock.assert_called_once()
         kwargs = audit_mock.call_args.kwargs
@@ -256,12 +260,13 @@ class TestSkillsPathPermissionAndAudit:
         mgr = _make_manager(tmp_path)
         pm_mock = MagicMock()
         pm_mock.check_permission.return_value = False
-        with patch(
-            "deile.commands._settings_security_hooks.get_permission_manager",
-            return_value=pm_mock,
-        ), patch(
-            "deile.commands.settings_manager._emit_settings_audit"
-        ) as audit_mock:
+        with (
+            patch(
+                "deile.commands._settings_security_hooks.get_permission_manager",
+                return_value=pm_mock,
+            ),
+            patch("deile.commands.settings_manager._emit_settings_audit") as audit_mock,
+        ):
             mgr.add_skills_path(tmp_path / "x", scope="global")
         audit_mock.assert_called_once()
         assert audit_mock.call_args.kwargs["result"] == "denied"

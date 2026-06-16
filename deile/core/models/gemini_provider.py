@@ -12,18 +12,32 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 from google.genai._api_client import BaseApiClient as _GenaiBaseApiClient
-from google.genai.types import (AutomaticFunctionCallingConfig,
-                                GenerateContentConfig, HttpOptions, Tool)
+from google.genai.types import (
+    AutomaticFunctionCallingConfig,
+    GenerateContentConfig,
+    HttpOptions,
+    Tool,
+)
 
 from ...storage.debug_logger import get_debug_logger, is_debug_enabled
 from ..exceptions import ConfigurationError, ModelError
 from ..loop_guard import check_tool_call, make_guard, record_tool_outcome
-from .base import (DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage, ModelProvider,
-                   ModelResponse, ModelSize, ModelType, ModelUsage)
+from .base import (
+    DEFAULT_MAX_TOOL_ITERATIONS,
+    ModelMessage,
+    ModelProvider,
+    ModelResponse,
+    ModelSize,
+    ModelType,
+    ModelUsage,
+)
 from .error_mapping import make_gemini_envelope
 from .errors import ProviderInvocationError
-from .tool_execution import (OUTCOME_EXCEPTION, OUTCOME_NOT_FOUND,
-                             resolve_and_execute_tool)
+from .tool_execution import (
+    OUTCOME_EXCEPTION,
+    OUTCOME_NOT_FOUND,
+    resolve_and_execute_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +136,7 @@ def _stringify_for_model(value: Any) -> Any:
 
 class GeminiProvider(ModelProvider):
     """Provedor para modelos Google Gemini"""
-    
+
     @staticmethod
     def _resolve_init_args(gemini_config, api_key):
         """Normalize GeminiProvider's overloaded positional init arguments.
@@ -143,7 +157,9 @@ class GeminiProvider(ModelProvider):
         handle = None
         if isinstance(gemini_config, ModelHandle):
             handle = gemini_config
-            provider_cfg = api_key  # second positional arg is ProviderConfig in bootstrap
+            provider_cfg = (
+                api_key  # second positional arg is ProviderConfig in bootstrap
+            )
             api_key = (
                 os.getenv(provider_cfg.api_key_env)
                 if isinstance(provider_cfg, _PC)
@@ -159,6 +175,7 @@ class GeminiProvider(ModelProvider):
         if gemini_config is None:
             try:
                 from ...config.manager import get_config_manager
+
                 config_manager = get_config_manager()
                 # Recarrega para garantir os valores mais recentes
                 config_manager.reload_config()
@@ -166,6 +183,7 @@ class GeminiProvider(ModelProvider):
             except Exception as e:
                 # Fallback APENAS em caso de erro crítico
                 from ...config.manager import GeminiConfig
+
                 gemini_config = GeminiConfig()
                 logger.warning("Failed to load ConfigManager, using defaults: %s", e)
 
@@ -200,36 +218,30 @@ class GeminiProvider(ModelProvider):
             mime_type=mime_type,
         )
 
-    def __init__(
-        self,
-        gemini_config=None,
-        api_key: Optional[str] = None,
-        **config
-    ):
+    def __init__(self, gemini_config=None, api_key: Optional[str] = None, **config):
         handle, gemini_config, api_key = self._resolve_init_args(gemini_config, api_key)
         if handle is not None:
             self._handle = handle
 
         super().__init__(gemini_config.model_name, **config)
-        
+
         # Armazena configuração
         self.gemini_config = gemini_config
-        
+
         # Configura API key
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
             raise ConfigurationError(
                 "Google API Key not found. Please set GOOGLE_API_KEY environment variable",
-                config_key="GOOGLE_API_KEY"
+                config_key="GOOGLE_API_KEY",
             )
-        
+
         # Configura cliente com novo SDK
         # IMPORTANTE: Function Calling (tools) só funciona na versão v1beta
         self.client = genai.Client(
-            api_key=self.api_key,
-            http_options=HttpOptions(api_version="v1beta")
+            api_key=self.api_key, http_options=HttpOptions(api_version="v1beta")
         )
-        
+
         # Mapeia tamanhos de modelo
         self._model_size_mapping = {
             "gemini-1.5-pro": ModelSize.LARGE,
@@ -237,25 +249,25 @@ class GeminiProvider(ModelProvider):
             "gemini-1.5-flash": ModelSize.MEDIUM,
             "gemini-1.0-pro": ModelSize.MEDIUM,
         }
-        
+
         # Debug logger
         self.debug_logger = get_debug_logger()
-        
+
         # Armazena configurações para uso posterior
         self.generation_config = self.gemini_config.generation_config.copy()
         self.tool_config = self.gemini_config.tool_config
-        
+
         # Inicializa ferramentas disponíveis
         self._available_tools = self._get_available_tools()
-        
+
         # Health check timing control
         self._last_request_time = 0.0
         self._last_health_check_time = 0.0
         self._health_check_interval = 300.0  # 5 minutos em segundos
-        
+
         # Chat sessions cache (per session_id)
         self._chat_sessions = {}
-    
+
     def _thinking_config_for(self, effort: Optional[str]) -> Optional[Any]:
         """Constrói ``types.ThinkingConfig`` para o *effort*, ou ``None``.
 
@@ -268,43 +280,52 @@ class GeminiProvider(ModelProvider):
             return None
         try:
             from deile.core.models.reasoning import gemini_thinking_kwargs
+
             tk = gemini_thinking_kwargs(self.model_name, effort)
             if not tk:
                 return None
             from google.genai import types as _gtypes
+
             return _gtypes.ThinkingConfig(**tk)
         except Exception as exc:  # noqa: BLE001 — reasoning nunca quebra o turno
             logger.debug("gemini thinking_config skipped: %s", exc)
             return None
 
-    def _create_generation_config(self, tools: Optional[List[Tool]] = None, **kwargs) -> GenerateContentConfig:
+    def _create_generation_config(
+        self, tools: Optional[List[Tool]] = None, **kwargs
+    ) -> GenerateContentConfig:
         """Cria configuração para geração de conteúdo"""
         # Reasoning effort (best-effort) — extraído antes de filtrar params.
         _reasoning_effort = kwargs.pop("reasoning_effort", None)
         config_params = {**self.generation_config, **kwargs}
-        
+
         # Remove parâmetros que não são suportados pelo novo SDK
         supported_params = {
-            'temperature', 'top_k', 'top_p', 'max_output_tokens', 
-            'candidate_count', 'stop_sequences'
+            "temperature",
+            "top_k",
+            "top_p",
+            "max_output_tokens",
+            "candidate_count",
+            "stop_sequences",
         }
-        filtered_params = {k: v for k, v in config_params.items() if k in supported_params}
-        
+        filtered_params = {
+            k: v for k, v in config_params.items() if k in supported_params
+        }
+
         # Obtém function declarations para tools
         function_declarations = self._get_tools_for_generate_content()
-        
+
         # Configura automatic function calling apenas se há tools disponíveis
         # HABILITADO: permite que o Gemini execute funções automaticamente
         afc_config = None
         tools_wrapper = None
         if function_declarations:
             afc_config = AutomaticFunctionCallingConfig(
-                disable=False,
-                maximum_remote_calls=10
+                disable=False, maximum_remote_calls=10
             )
-            
+
             tools_wrapper = [{"function_declarations": function_declarations}]
-        
+
         _gcc_kwargs: Dict[str, Any] = dict(
             tools=tools_wrapper,  # Wrapped no formato correto
             automatic_function_calling=afc_config,
@@ -314,30 +335,35 @@ class GeminiProvider(ModelProvider):
         if _tc is not None:
             _gcc_kwargs["thinking_config"] = _tc
         return GenerateContentConfig(**_gcc_kwargs)
-    
+
     def _get_tools_for_generate_content(self) -> Optional[List]:
         """Obtém tools no formato correto para generate_content (não Tool objects, mas FunctionDeclaration)"""
         try:
             from ...tools.base import SecurityLevel
             from ...tools.registry import get_tool_registry
-            
+
             tool_registry = get_tool_registry()
-            
+
             # Obtém function declarations diretamente (não Tool objects)
             function_declarations = tool_registry.get_gemini_functions(
-                authorized_only=True,
-                security_level=SecurityLevel.MODERATE
+                authorized_only=True, security_level=SecurityLevel.MODERATE
             )
-            
+
             if function_declarations:
-                logger.info(f"Loaded {len(function_declarations)} function declarations for generate_content")
+                logger.info(
+                    f"Loaded {len(function_declarations)} function declarations for generate_content"
+                )
                 return function_declarations  # Retorna FunctionDeclaration objects diretamente
             else:
-                logger.warning("No function declarations available for generate_content")
+                logger.warning(
+                    "No function declarations available for generate_content"
+                )
                 return None
-                
+
         except Exception as e:
-            logger.error(f"Failed to load function declarations for generate_content: {e}")
+            logger.error(
+                f"Failed to load function declarations for generate_content: {e}"
+            )
             return None
 
     def _get_available_tools(self) -> Optional[List[Tool]]:
@@ -345,28 +371,30 @@ class GeminiProvider(ModelProvider):
         try:
             from ...tools.base import SecurityLevel
             from ...tools.registry import get_tool_registry
-            
+
             tool_registry = get_tool_registry()
-            
+
             # Obtém function declarations com nível de segurança moderado
             function_declarations = tool_registry.get_gemini_functions(
-                authorized_only=True,
-                security_level=SecurityLevel.MODERATE
+                authorized_only=True, security_level=SecurityLevel.MODERATE
             )
-            
+
             if function_declarations:
                 # Converte para Tool objects do novo SDK
-                tools = [Tool(function_declarations=[func_decl]) for func_decl in function_declarations]
+                tools = [
+                    Tool(function_declarations=[func_decl])
+                    for func_decl in function_declarations
+                ]
                 logger.info(f"Loaded {len(tools)} tools for Function Calling (New SDK)")
                 return tools
             else:
                 logger.warning("No tools available for Function Calling")
                 return None
-                
+
         except Exception as e:
             logger.error(f"Failed to load tools for Function Calling: {e}")
             return None
-    
+
     @property
     def provider_name(self) -> str:
         return "gemini"
@@ -386,13 +414,13 @@ class GeminiProvider(ModelProvider):
             if self.model_name.startswith(model_prefix):
                 return size
         return ModelSize.MEDIUM  # Default
-    
+
     async def generate(
         self,
         messages: List[ModelMessage],
         system_instruction: Optional[str] = None,
         execution_context: Optional[Dict[str, Any]] = None,
-        **kwargs
+        **kwargs,
     ) -> ModelResponse:
         """Gera resposta usando novo Google GenAI SDK com Function Calling support"""
         start_time = time.time()
@@ -414,9 +442,9 @@ class GeminiProvider(ModelProvider):
                         "model": self.model_name,
                         "system_instruction": system_instruction,
                         "execution_context": execution_context,
-                        "kwargs": kwargs
+                        "kwargs": kwargs,
                     },
-                    config=self.gemini_config.generation_config
+                    config=self.gemini_config.generation_config,
                 )
 
             # Processa mensagens com suporte a multi-modal (file_data)
@@ -438,7 +466,7 @@ class GeminiProvider(ModelProvider):
                 await self.debug_logger.log_response(
                     response,
                     execution_time=execution_time,
-                    request_id=self.debug_logger.request_count
+                    request_id=self.debug_logger.request_count,
                 )
 
             # Persiste usage (idêntico ao contrato dos demais providers).
@@ -456,7 +484,8 @@ class GeminiProvider(ModelProvider):
                     )
                     # Issue #303 fase 4 — popula atributos do span de LLM.
                     self._set_llm_span_usage(
-                        _llm_span, response.usage,
+                        _llm_span,
+                        response.usage,
                         latency_ms=int(execution_time * 1000),
                     )
             except Exception as exc:  # noqa: BLE001 — telemetry must never block
@@ -473,11 +502,14 @@ class GeminiProvider(ModelProvider):
             envelope = make_gemini_envelope(e, self.provider_id, self.model_name)
 
             if is_debug_enabled():
-                await self.debug_logger.log_error(e, {
-                    "provider": "gemini",
-                    "execution_time": execution_time,
-                    "error_type": envelope.error_type,
-                })
+                await self.debug_logger.log_error(
+                    e,
+                    {
+                        "provider": "gemini",
+                        "execution_time": execution_time,
+                        "error_type": envelope.error_type,
+                    },
+                )
 
             # Registra falha pra reports não esconderem custo de tentativas
             # que erraram no meio (request foi enviado, o provedor cobra
@@ -509,12 +541,15 @@ class GeminiProvider(ModelProvider):
             envelope = make_gemini_envelope(e, self.provider_id, self.model_name)
 
             if is_debug_enabled():
-                await self.debug_logger.log_error(e, {
-                    "provider": "gemini",
-                    "execution_time": execution_time,
-                    "error_type": envelope.error_type,
-                    "original_error": str(e),
-                })
+                await self.debug_logger.log_error(
+                    e,
+                    {
+                        "provider": "gemini",
+                        "execution_time": execution_time,
+                        "error_type": envelope.error_type,
+                        "original_error": str(e),
+                    },
+                )
 
             raise ProviderInvocationError(envelope) from e
         finally:
@@ -540,9 +575,11 @@ class GeminiProvider(ModelProvider):
         TEXT_DELTA after the response completes. This is the documented
         degraded path called out in the streaming-UI design doc.
         """
-        from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                                     StreamEventType,
-                                                     UnifiedStreamEvent)
+        from deile.core.models.stream_events import (
+            ModelUsageSnapshot,
+            StreamEventType,
+            UnifiedStreamEvent,
+        )
 
         system_instruction = self._compose_system_instruction(system_instruction)
 
@@ -609,7 +646,8 @@ class GeminiProvider(ModelProvider):
                     )
                 except Exception as exc:  # noqa: BLE001 — telemetry must never block
                     logger.debug(
-                        "gemini usage record (stream/tools) failed: %s", exc,
+                        "gemini usage record (stream/tools) failed: %s",
+                        exc,
                     )
                 snap = ModelUsageSnapshot(
                     input_tokens=usage.prompt_tokens,
@@ -687,7 +725,9 @@ class GeminiProvider(ModelProvider):
             },
         )
 
-    def format_user_file_part(self, file_uri: str, mime_type: str = "text/plain") -> Any:
+    def format_user_file_part(
+        self, file_uri: str, mime_type: str = "text/plain"
+    ) -> Any:
         """Build the SDK-specific ``genai.types.File`` part to attach to a user message.
 
         Keeps the ``google.genai`` import isolated inside the provider adapter
@@ -695,7 +735,7 @@ class GeminiProvider(ModelProvider):
         fields (uri + mime type) and this method materializes the SDK object.
         """
         return types.File(
-            name=file_uri.split('/')[-1],
+            name=file_uri.split("/")[-1],
             uri=file_uri,
             mime_type=mime_type,
         )
@@ -704,42 +744,44 @@ class GeminiProvider(ModelProvider):
         """Valida configuração do provedor"""
         try:
             # Testa configuração com uma requisição simples
-            test_response = await self.generate([
-                ModelMessage(role="user", content="Hello")
-            ])
+            test_response = await self.generate(
+                [ModelMessage(role="user", content="Hello")]
+            )
             return bool(test_response.content)
         except Exception:
             return False
-    
+
     async def health_check(self) -> bool:
         """Verifica saúde do provedor com controle inteligente de timing"""
         current_time = time.time()
-        
+
         # Se nunca houve requests, não precisa fazer health check
         if self._last_request_time == 0.0:
             logger.debug("No requests made yet, skipping health check")
             return self._is_available
-        
+
         # Verifica se precisa fazer health check baseado no intervalo e última request
         time_since_last_request = current_time - self._last_request_time
         time_since_last_check = current_time - self._last_health_check_time
-        
+
         # Só faz health check se:
         # 1. Passou do intervalo configurado OU
-        # 2. Nunca fez health check antes OU  
+        # 2. Nunca fez health check antes OU
         # 3. A última request foi há muito tempo (mais que o intervalo)
         should_check = (
-            time_since_last_check >= self._health_check_interval or
-            self._last_health_check_time == 0.0 or
-            time_since_last_request >= self._health_check_interval
+            time_since_last_check >= self._health_check_interval
+            or self._last_health_check_time == 0.0
+            or time_since_last_request >= self._health_check_interval
         )
-        
+
         if not should_check:
-            logger.debug(f"Health check skipped - time since last check: {time_since_last_check:.1f}s")
+            logger.debug(
+                f"Health check skipped - time since last check: {time_since_last_check:.1f}s"
+            )
             return self._is_available
-        
+
         logger.debug("Performing health check...")
-        
+
         try:
             # Health check simples
             test_messages = [ModelMessage(role="user", content="test")]
@@ -753,14 +795,18 @@ class GeminiProvider(ModelProvider):
             self._last_health_check_time = current_time
             logger.warning(f"Health check failed: {e}")
             return False
-    
+
     # Limite de iterações do loop de function calling manual.
     # Why: cap defensivo contra loops infinitos quando o modelo encadeia chamadas
     # sem convergir para uma resposta final.
     MAX_TOOL_ITERATIONS = DEFAULT_MAX_TOOL_ITERATIONS
 
-    async def create_chat_session(self, session_id: str, system_instruction: Optional[str] = None,
-                                  reasoning_effort: Optional[str] = None) -> Any:
+    async def create_chat_session(
+        self,
+        session_id: str,
+        system_instruction: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Any:
         """Cria ou retorna chat session existente para session_id.
 
         Usa function calling MANUAL: o SDK recebe FunctionDeclarations completos
@@ -788,18 +834,17 @@ class GeminiProvider(ModelProvider):
                 tools=tools_param,
                 automatic_function_calling=afc_config,
                 system_instruction=system_instruction,
-                temperature=self.generation_config.get('temperature', 0.1),
-                max_output_tokens=self.generation_config.get('max_output_tokens', 16384),
+                temperature=self.generation_config.get("temperature", 0.1),
+                max_output_tokens=self.generation_config.get(
+                    "max_output_tokens", 16384
+                ),
             )
             _tc = self._thinking_config_for(reasoning_effort)
             if _tc is not None:
                 _cfg_kwargs["thinking_config"] = _tc
             config = types.GenerateContentConfig(**_cfg_kwargs)
 
-            chat = self.client.chats.create(
-                model=self.model_name,
-                config=config
-            )
+            chat = self.client.chats.create(model=self.model_name, config=config)
 
             self._chat_sessions[session_id] = chat
             logger.info(
@@ -812,7 +857,9 @@ class GeminiProvider(ModelProvider):
 
         except Exception as e:
             logger.error(f"Error creating chat session for {session_id}: {e}")
-            raise ModelError(f"[CHAT_SESSION_ERROR] Failed to create chat session: {str(e)}") from e
+            raise ModelError(
+                f"[CHAT_SESSION_ERROR] Failed to create chat session: {str(e)}"
+            ) from e
 
     async def execute_function_call(
         self,
@@ -894,10 +941,14 @@ class GeminiProvider(ModelProvider):
             tool_result.metadata = {}
         tool_result.metadata.setdefault("function_name", function_name)
 
-        return tool_result, self._tool_result_to_function_response(tool_result, function_name)
+        return tool_result, self._tool_result_to_function_response(
+            tool_result, function_name
+        )
 
     @staticmethod
-    def _tool_result_to_function_response(tool_result: Any, function_name: str) -> Dict[str, Any]:
+    def _tool_result_to_function_response(
+        tool_result: Any, function_name: str
+    ) -> Dict[str, Any]:
         """Converte ``ToolResult`` em payload JSON-serializable para function_response.
 
         O Gemini exige que o ``response`` da Part seja um dict serializável.
@@ -919,9 +970,11 @@ class GeminiProvider(ModelProvider):
         return {
             "status": "error",
             "error": tool_result.message or f"{function_name} failed",
-            "error_code": tool_result.metadata.get("error_code", "EXECUTION_ERROR")
-            if tool_result.metadata
-            else "EXECUTION_ERROR",
+            "error_code": (
+                tool_result.metadata.get("error_code", "EXECUTION_ERROR")
+                if tool_result.metadata
+                else "EXECUTION_ERROR"
+            ),
         }
 
     # TODO(streaming-cleanup): once all callers migrate to ToolLoopExecutor + generate_stream(tools=...), this method can be removed. Currently still used by deile/core/agent.py:_process_iterative_function_calling.
@@ -1044,7 +1097,8 @@ class GeminiProvider(ModelProvider):
         # send_message é síncrono no SDK — usamos to_thread para não bloquear o loop.
         response = await asyncio.to_thread(chat.send_message, message)
         agg_usage = self._aggregate_usage(
-            agg_usage, self._extract_gemini_usage(response),
+            agg_usage,
+            self._extract_gemini_usage(response),
         )
 
         for iteration in range(cap):
@@ -1055,7 +1109,8 @@ class GeminiProvider(ModelProvider):
 
             if not function_calls:
                 logger.debug(
-                    "Manual function calling loop finished after %d iteration(s)", iteration
+                    "Manual function calling loop finished after %d iteration(s)",
+                    iteration,
                 )
                 break
 
@@ -1083,7 +1138,9 @@ class GeminiProvider(ModelProvider):
                 tool_results.append(tool_result)
                 record_tool_outcome(guard, tool_result)
                 function_response_parts.append(
-                    types.Part.from_function_response(name=call["name"], response=payload)
+                    types.Part.from_function_response(
+                        name=call["name"], response=payload
+                    )
                 )
 
             if loop_aborted:
@@ -1092,14 +1149,18 @@ class GeminiProvider(ModelProvider):
                 # same hash. The error result and break message we already
                 # appended will surface to the user.
                 break
-            response = await asyncio.to_thread(chat.send_message, function_response_parts)
+            response = await asyncio.to_thread(
+                chat.send_message, function_response_parts
+            )
             agg_usage = self._aggregate_usage(
-                agg_usage, self._extract_gemini_usage(response),
+                agg_usage,
+                self._extract_gemini_usage(response),
             )
         else:
             # Loop esgotou o cap sem terminar — o modelo continua querendo chamar tools.
             logger.warning(
-                "Manual function calling loop hit max_iterations=%d without convergence", cap
+                "Manual function calling loop hit max_iterations=%d without convergence",
+                cap,
             )
             tail_text = self._extract_response_text(response)
             if tail_text:
@@ -1130,7 +1191,9 @@ class GeminiProvider(ModelProvider):
     # ao longo do loop multi-turn de function calling.
 
     def _extract_gemini_usage(
-        self, response: Any, request_time: float = 0.0,
+        self,
+        response: Any,
+        request_time: float = 0.0,
     ) -> ModelUsage:
         """Converte `usage_metadata` do SDK Google GenAI num `ModelUsage`
         com `cost_estimate` calculado.
@@ -1240,7 +1303,7 @@ class GeminiProvider(ModelProvider):
         return "".join(chunks)
 
     # Métodos auxiliares privados para novo Google GenAI SDK
-    
+
     async def _generate_with_new_sdk(
         self,
         messages: List[Dict[str, Any]],
@@ -1256,13 +1319,13 @@ class GeminiProvider(ModelProvider):
                 contents=messages,
                 config=config,  # types.GenerateContentConfig(...) ou dict compatível
             )
-            
+
             # Usa helper compartilhado: extrai prompt/candidates/cached, e
             # calcula `cost_estimate` via `_compute_cost` do catálogo.
             # Antes a montagem era inline e descartava
             # `cached_content_token_count` (cache hits ficavam fora do custo).
             usage = self._extract_gemini_usage(response)
-            
+
             # Extrai conteúdo via helper que itera ``candidates[*].content.parts``
             # e pula parts não-textuais (thought_signature, function_call, etc.).
             # Acessar ``response.text`` direto em modelos com "thinking" ativo
@@ -1270,29 +1333,32 @@ class GeminiProvider(ModelProvider):
             # in the response: ['thought_signature']`` em cada chamada — usar o
             # helper evita esse ruído e ainda garante o fallback consistente.
             content = self._extract_response_text(response)
-            
+
             # Fallback se ainda não temos conteúdo
             if not content:
                 content = "I apologize, but I couldn't generate a proper response. Please try again."
-            
+
             # Cria resposta final
             model_response = ModelResponse(
                 content=content,
                 model_name=self.model_name,
                 usage=usage,
                 raw_response=response,
-                finish_reason=getattr(response.candidates[0], 'finish_reason', None) if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0 else None,
-                metadata={
-                    "generation_config": config,
-                    "sdk_version": "google-genai"
-                }
+                finish_reason=(
+                    getattr(response.candidates[0], "finish_reason", None)
+                    if hasattr(response, "candidates")
+                    and response.candidates
+                    and len(response.candidates) > 0
+                    else None
+                ),
+                metadata={"generation_config": config, "sdk_version": "google-genai"},
             )
-            
+
             # Atualiza estatísticas
             self._update_stats(usage)
-            
+
             return model_response
-            
+
         except genai_errors.APIError:
             # API-level failure: let it propagate untouched so ``generate``
             # classifies it into a typed ProviderErrorEnvelope.
@@ -1302,10 +1368,12 @@ class GeminiProvider(ModelProvider):
             raise ModelError(
                 f"Generation failed with new SDK: {str(e)}",
                 model_name=self.model_name,
-                error_code="NEW_SDK_ERROR"
+                error_code="NEW_SDK_ERROR",
             ) from e
-    
-    def _process_messages_for_gemini(self, messages: List[ModelMessage]) -> List[Dict[str, Any]]:
+
+    def _process_messages_for_gemini(
+        self, messages: List[ModelMessage]
+    ) -> List[Dict[str, Any]]:
         """Converte ``ModelMessage`` em ``contents`` para o Google GenAI SDK.
 
         Mapeia ``assistant`` para o role ``model`` que o SDK do Google GenAI

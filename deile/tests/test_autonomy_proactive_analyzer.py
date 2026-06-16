@@ -12,8 +12,11 @@ from pathlib import Path
 import pytest
 
 from deile.core.file_resolver import FileMatch, MatchType
-from deile.core.proactive_analyzer import (ProactiveAction, ProactiveAnalyzer,
-                                           ProactiveIntent)
+from deile.core.proactive_analyzer import (
+    ProactiveAction,
+    ProactiveAnalyzer,
+    ProactiveIntent,
+)
 
 
 class TestProactiveAction:
@@ -51,13 +54,13 @@ class TestProactiveIntent:
             target="test.txt",
             confidence=0.95,
             context="Read test file",
-            priority=1
+            priority=1,
         )
 
         assert intent.action == ProactiveAction.READ_FILE
         assert intent.target == "test.txt"
         assert intent.confidence == 0.95
-        assert not intent.autonomous_eligible   # Default
+        assert not intent.autonomous_eligible  # Default
         assert len(intent.chained_actions) == 0  # Default
 
     def test_intent_with_resolved_file(self):
@@ -68,7 +71,7 @@ class TestProactiveIntent:
             confidence=0.9,
             match_type=MatchType.EXACT,
             reason="Exact match",
-            exists=True
+            exists=True,
         )
 
         intent = ProactiveIntent(
@@ -77,7 +80,7 @@ class TestProactiveIntent:
             confidence=0.95,
             context="Read test file",
             resolved_file=file_match,
-            autonomous_eligible=True
+            autonomous_eligible=True,
         )
 
         assert intent.resolved_file == file_match
@@ -89,21 +92,23 @@ class TestProactiveIntent:
             action=ProactiveAction.READ_FILE,
             target="readme",
             confidence=0.8,
-            context="Read readme file"
+            context="Read readme file",
         )
 
         fallback_intent = ProactiveIntent(
             action=ProactiveAction.SUGGEST_ALTERNATIVES,
             target="readme",
             confidence=0.6,
-            context="Suggest alternatives"
+            context="Suggest alternatives",
         )
 
         main_intent.chained_actions = [fallback_intent]
 
         assert len(main_intent.chained_actions) == 1
-        assert main_intent.chained_actions[0].action == ProactiveAction.SUGGEST_ALTERNATIVES
-
+        assert (
+            main_intent.chained_actions[0].action
+            == ProactiveAction.SUGGEST_ALTERNATIVES
+        )
 
 
 class TestProactiveAnalyzer:
@@ -116,12 +121,7 @@ class TestProactiveAnalyzer:
         workspace = Path(temp_dir)
 
         # Create test files
-        test_files = [
-            "README.md",
-            "config.py",
-            "main.py",
-            "data.json"
-        ]
+        test_files = ["README.md", "config.py", "main.py", "data.json"]
 
         for filename in test_files:
             (workspace / filename).write_text(f"Content of {filename}")
@@ -184,7 +184,9 @@ class TestProactiveAnalyzer:
         user_input = "list files"
         intents = await analyzer.analyze(user_input)
 
-        list_intents = [i for i in intents if i.action == ProactiveAction.LIST_DIRECTORY]
+        list_intents = [
+            i for i in intents if i.action == ProactiveAction.LIST_DIRECTORY
+        ]
         assert len(list_intents) > 0
 
     @pytest.mark.asyncio
@@ -220,8 +222,10 @@ class TestProactiveAnalyzer:
             read_intents = [i for i in intents if i.action == ProactiveAction.READ_FILE]
 
             assert len(read_intents) > 0
-            assert any(any(target in intent.target for target in expected_targets)
-                      for intent in read_intents)
+            assert any(
+                any(target in intent.target for target in expected_targets)
+                for intent in read_intents
+            )
 
     @pytest.mark.asyncio
     async def test_target_extraction_list_files(self, analyzer):
@@ -234,11 +238,15 @@ class TestProactiveAnalyzer:
 
         for user_input, expected_targets in test_cases:
             intents = await analyzer.analyze(user_input)
-            list_intents = [i for i in intents if i.action == ProactiveAction.LIST_FILES]
+            list_intents = [
+                i for i in intents if i.action == ProactiveAction.LIST_FILES
+            ]
 
             if list_intents:  # Some might not match depending on patterns
-                assert any(any(target in intent.target for target in expected_targets)
-                          for intent in list_intents)
+                assert any(
+                    any(target in intent.target for target in expected_targets)
+                    for intent in list_intents
+                )
 
     @pytest.mark.asyncio
     async def test_confidence_scoring(self, analyzer):
@@ -274,8 +282,10 @@ class TestProactiveAnalyzer:
             assert len(main_intent.chained_actions) > 0
             # Chained actions should be fallbacks (different action or lower priority)
             for chained in main_intent.chained_actions:
-                assert (chained.action != main_intent.action or
-                       chained.priority <= main_intent.priority)
+                assert (
+                    chained.action != main_intent.action
+                    or chained.priority <= main_intent.priority
+                )
 
     @pytest.mark.asyncio
     async def test_empty_input_handling(self, analyzer):
@@ -320,8 +330,12 @@ class TestProactiveAnalyzer:
 
             # Higher confidence should generally have higher priority
             if len(intents) > 1:
-                sorted_by_conf = sorted(intents, key=lambda i: i.confidence, reverse=True)
-                _sorted_by_prio = sorted(intents, key=lambda i: i.priority, reverse=True)
+                sorted_by_conf = sorted(
+                    intents, key=lambda i: i.confidence, reverse=True
+                )
+                _sorted_by_prio = sorted(
+                    intents, key=lambda i: i.priority, reverse=True
+                )
                 # Not always exact match, but should be correlated
                 assert sorted_by_conf[0].priority >= min(i.priority for i in intents)
 
@@ -371,7 +385,7 @@ class TestProactiveAnalyzerIntegration:
             "config.yaml": "database:\n  host: localhost",
             "main.py": "if __name__ == '__main__':",
             ".env": "DATABASE_URL=sqlite:///app.db",
-            "Dockerfile": "FROM python:3.9"
+            "Dockerfile": "FROM python:3.9",
         }
 
         for filename, content in project_files.items():
@@ -421,8 +435,11 @@ class TestProactiveAnalyzerIntegration:
             assert len(read_intents) > 0
 
             # Should have resolved to README.md
-            resolved_readme = [i for i in read_intents
-                             if i.resolved_file and "README" in str(i.resolved_file.path).upper()]
+            resolved_readme = [
+                i
+                for i in read_intents
+                if i.resolved_file and "README" in str(i.resolved_file.path).upper()
+            ]
             assert len(resolved_readme) > 0
 
     @pytest.mark.asyncio
@@ -447,10 +464,15 @@ class TestProactiveAnalyzerIntegration:
             assert len(read_intents) > 0
 
             # Should resolve to some config file
-            config_intents = [i for i in read_intents
-                            if i.resolved_file and
-                            ("config" in str(i.resolved_file.path).lower() or
-                             ".env" in str(i.resolved_file.path).lower())]
+            config_intents = [
+                i
+                for i in read_intents
+                if i.resolved_file
+                and (
+                    "config" in str(i.resolved_file.path).lower()
+                    or ".env" in str(i.resolved_file.path).lower()
+                )
+            ]
             assert len(config_intents) > 0
 
     @pytest.mark.asyncio
@@ -460,7 +482,7 @@ class TestProactiveAnalyzerIntegration:
             "read the main python file",
             "show me the app code",
             "examine the source files",
-            "open main.py"
+            "open main.py",
         ]
 
         for scenario in test_scenarios:
@@ -486,7 +508,9 @@ class TestProactiveAnalyzerIntegration:
         for scenario in test_scenarios:
             intents = await project_analyzer.analyze_enhanced(scenario)
 
-            list_intents = [i for i in intents if i.action == ProactiveAction.LIST_DIRECTORY]
+            list_intents = [
+                i for i in intents if i.action == ProactiveAction.LIST_DIRECTORY
+            ]
             assert len(list_intents) > 0
 
     @pytest.mark.asyncio
@@ -529,7 +553,7 @@ class TestProactiveAnalyzerIntegration:
         ambiguous_scenarios = [
             "read some file",
             "show me something",
-            "examine the code"
+            "examine the code",
         ]
 
         for scenario in autonomous_scenarios:

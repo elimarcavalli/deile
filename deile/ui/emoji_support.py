@@ -12,32 +12,34 @@ from typing import Dict, Optional
 
 class EmojiManager:
     """Manages emoji display with fallbacks for Windows terminal"""
-    
+
     def __init__(self):
         self.supports_emoji = self._check_emoji_support()
         self.emoji_map = self._build_emoji_map()
-    
+
     def _check_emoji_support(self) -> bool:
         """Check if the current terminal supports emojis"""
         # Check environment variables that indicate emoji support
-        if os.getenv('TERM_PROGRAM') in ['iTerm.app', 'Apple_Terminal']:
+        if os.getenv("TERM_PROGRAM") in ["iTerm.app", "Apple_Terminal"]:
             return True
-        
-        if os.getenv('COLORTERM') in ['truecolor', '24bit']:
+
+        if os.getenv("COLORTERM") in ["truecolor", "24bit"]:
             return True
-        
+
         # Windows Terminal and modern terminals
-        if os.getenv('WT_SESSION'):  # Windows Terminal
+        if os.getenv("WT_SESSION"):  # Windows Terminal
             return True
-            
-        if os.getenv('TERM_PROGRAM') == 'vscode':  # VS Code terminal
+
+        if os.getenv("TERM_PROGRAM") == "vscode":  # VS Code terminal
             return True
-        
+
         # Try to enable Unicode support on Windows
         if sys.platform == "win32":
             try:
                 # Try to set console to UTF-8
-                subprocess.run(['cmd', '/c', 'chcp', '65001'], capture_output=True, check=False)
+                subprocess.run(
+                    ["cmd", "/c", "chcp", "65001"], capture_output=True, check=False
+                )
                 # Most modern Windows terminals support emojis now
                 return True
             except Exception:
@@ -46,102 +48,100 @@ class EmojiManager:
         # Linux/Mac terminals generally support emojis
         if sys.platform in ["linux", "darwin"]:
             return True
-        
+
         return False
-    
+
     def _build_emoji_map(self) -> Dict[str, str]:
         """Build mapping of emoji names to characters or fallback text"""
         emoji_fallbacks = {
             # Status emojis
-            'success': '✅' if self.supports_emoji else '[OK]',
-            'error': '❌' if self.supports_emoji else '[ERROR]',
-            'warning': '⚠️' if self.supports_emoji else '[WARNING]',
-            'info': 'ℹ️' if self.supports_emoji else '[INFO]',
-            'loading': '⏳' if self.supports_emoji else '[...]',
-            'processing': '⚡' if self.supports_emoji else '[PROC]',
-            
+            "success": "✅" if self.supports_emoji else "[OK]",
+            "error": "❌" if self.supports_emoji else "[ERROR]",
+            "warning": "⚠️" if self.supports_emoji else "[WARNING]",
+            "info": "ℹ️" if self.supports_emoji else "[INFO]",
+            "loading": "⏳" if self.supports_emoji else "[...]",
+            "processing": "⚡" if self.supports_emoji else "[PROC]",
             # Actions
-            'create': '📝' if self.supports_emoji else '[CREATE]',
-            'read': '📖' if self.supports_emoji else '[READ]',
-            'write': '✏️' if self.supports_emoji else '[WRITE]',
-            'delete': '🗑️' if self.supports_emoji else '[DELETE]',
-            'search': '🔍' if self.supports_emoji else '[SEARCH]',
-            'execute': '⚙️' if self.supports_emoji else '[EXEC]',
-            
+            "create": "📝" if self.supports_emoji else "[CREATE]",
+            "read": "📖" if self.supports_emoji else "[READ]",
+            "write": "✏️" if self.supports_emoji else "[WRITE]",
+            "delete": "🗑️" if self.supports_emoji else "[DELETE]",
+            "search": "🔍" if self.supports_emoji else "[SEARCH]",
+            "execute": "⚙️" if self.supports_emoji else "[EXEC]",
             # Files
-            'python': '🐍' if self.supports_emoji else '[PY]',
-            'javascript': '💛' if self.supports_emoji else '[JS]',
-            'html': '🌐' if self.supports_emoji else '[HTML]',
-            'css': '🎨' if self.supports_emoji else '[CSS]',
-            'markdown': '📝' if self.supports_emoji else '[MD]',
-            'text': '📄' if self.supports_emoji else '[TXT]',
-            'json': '⚙️' if self.supports_emoji else '[JSON]',
-            'image': '🖼️' if self.supports_emoji else '[IMG]',
-            'file': '📄' if self.supports_emoji else '[FILE]',
-            
+            "python": "🐍" if self.supports_emoji else "[PY]",
+            "javascript": "💛" if self.supports_emoji else "[JS]",
+            "html": "🌐" if self.supports_emoji else "[HTML]",
+            "css": "🎨" if self.supports_emoji else "[CSS]",
+            "markdown": "📝" if self.supports_emoji else "[MD]",
+            "text": "📄" if self.supports_emoji else "[TXT]",
+            "json": "⚙️" if self.supports_emoji else "[JSON]",
+            "image": "🖼️" if self.supports_emoji else "[IMG]",
+            "file": "📄" if self.supports_emoji else "[FILE]",
             # Interface
-            'sparkles': '✨' if self.supports_emoji else '*',
-            'rocket': '🚀' if self.supports_emoji else '^',
-            'wave': '👋' if self.supports_emoji else 'Bye',
-            'robot': '🤖' if self.supports_emoji else '[AI]',
-            'brain': '🧠' if self.supports_emoji else '[BRAIN]',
-            'magic': '✨' if self.supports_emoji else '[*]',
-            'gear': '⚙️' if self.supports_emoji else '[CFG]',
-            'chart': '📊' if self.supports_emoji else '[STATS]',
-            'clock': '⏱️' if self.supports_emoji else '[TIME]',
-            'tool': '🔧' if self.supports_emoji else '[TOOL]',
-            'lightbulb': '💡' if self.supports_emoji else '[IDEA]',
-            
+            "sparkles": "✨" if self.supports_emoji else "*",
+            "rocket": "🚀" if self.supports_emoji else "^",
+            "wave": "👋" if self.supports_emoji else "Bye",
+            "robot": "🤖" if self.supports_emoji else "[AI]",
+            "brain": "🧠" if self.supports_emoji else "[BRAIN]",
+            "magic": "✨" if self.supports_emoji else "[*]",
+            "gear": "⚙️" if self.supports_emoji else "[CFG]",
+            "chart": "📊" if self.supports_emoji else "[STATS]",
+            "clock": "⏱️" if self.supports_emoji else "[TIME]",
+            "tool": "🔧" if self.supports_emoji else "[TOOL]",
+            "lightbulb": "💡" if self.supports_emoji else "[IDEA]",
             # Special
-            'deile_logo': '🔮' if self.supports_emoji else '[DEILE]',
-            'ai_agent': '🤖' if self.supports_emoji else '[AGENT]'
+            "deile_logo": "🔮" if self.supports_emoji else "[DEILE]",
+            "ai_agent": "🤖" if self.supports_emoji else "[AGENT]",
         }
-        
+
         return emoji_fallbacks
-    
+
     def get(self, emoji_name: str, fallback: Optional[str] = None) -> str:
         """Get emoji or fallback text"""
         if emoji_name in self.emoji_map:
             return self.emoji_map[emoji_name]
-        
+
         if fallback:
             return fallback if not self.supports_emoji else emoji_name
-        
+
         return emoji_name
-    
+
     def format_text(self, text: str) -> str:
         """Replace emoji placeholders in text with appropriate characters"""
         # Simple replacement for common patterns
         replacements = {
-            ':success:': self.get('success'),
-            ':error:': self.get('error'),
-            ':warning:': self.get('warning'),
-            ':info:': self.get('info'),
-            ':sparkles:': self.get('sparkles'),
-            ':wave:': self.get('wave'),
-            ':robot:': self.get('robot'),
-            ':rocket:': self.get('rocket'),
-            ':tool:': self.get('tool'),
-            ':clock:': self.get('clock'),
-            ':lightbulb:': self.get('lightbulb')
+            ":success:": self.get("success"),
+            ":error:": self.get("error"),
+            ":warning:": self.get("warning"),
+            ":info:": self.get("info"),
+            ":sparkles:": self.get("sparkles"),
+            ":wave:": self.get("wave"),
+            ":robot:": self.get("robot"),
+            ":rocket:": self.get("rocket"),
+            ":tool:": self.get("tool"),
+            ":clock:": self.get("clock"),
+            ":lightbulb:": self.get("lightbulb"),
         }
-        
+
         formatted_text = text
         for placeholder, emoji in replacements.items():
             formatted_text = formatted_text.replace(placeholder, emoji)
-        
+
         return formatted_text
-    
+
     def enable_unicode_console(self) -> bool:
         """Try to enable Unicode support on Windows console"""
         if sys.platform == "win32":
             try:
                 # Set console code page to UTF-8
-                subprocess.run(['cmd', '/c', 'chcp', '65001'], capture_output=True, check=False)
-                
+                subprocess.run(
+                    ["cmd", "/c", "chcp", "65001"], capture_output=True, check=False
+                )
+
                 # Set environment variables for better Unicode support
-                os.environ['PYTHONIOENCODING'] = 'utf-8'
-                
+                os.environ["PYTHONIOENCODING"] = "utf-8"
+
                 return True
             except Exception:
                 return False
@@ -171,14 +171,45 @@ def format_with_emojis(text: str) -> str:
 
 
 # Common emoji shortcuts
-def SUCCESS() -> str: return emoji('success')
-def ERROR() -> str: return emoji('error')
-def WARNING() -> str: return emoji('warning')
-def INFO() -> str: return emoji('info')
-def SPARKLES() -> str: return emoji('sparkles')
-def WAVE() -> str: return emoji('wave')
-def ROBOT() -> str: return emoji('robot')
-def ROCKET() -> str: return emoji('rocket')
-def TOOL() -> str: return emoji('tool')
-def CLOCK() -> str: return emoji('clock')
-def LIGHTBULB() -> str: return emoji('lightbulb')
+def SUCCESS() -> str:
+    return emoji("success")
+
+
+def ERROR() -> str:
+    return emoji("error")
+
+
+def WARNING() -> str:
+    return emoji("warning")
+
+
+def INFO() -> str:
+    return emoji("info")
+
+
+def SPARKLES() -> str:
+    return emoji("sparkles")
+
+
+def WAVE() -> str:
+    return emoji("wave")
+
+
+def ROBOT() -> str:
+    return emoji("robot")
+
+
+def ROCKET() -> str:
+    return emoji("rocket")
+
+
+def TOOL() -> str:
+    return emoji("tool")
+
+
+def CLOCK() -> str:
+    return emoji("clock")
+
+
+def LIGHTBULB() -> str:
+    return emoji("lightbulb")

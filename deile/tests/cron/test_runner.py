@@ -23,8 +23,13 @@ class TestTick:
         assert fired == 0
 
     async def test_tick_fires_due_oneshot(self, store):
-        store.add(CronEntry(id="o1", prompt="hi",
-                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+        store.add(
+            CronEntry(
+                id="o1",
+                prompt="hi",
+                run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
         cb = AsyncMock(return_value="result")
         runner = CronRunner(store, fire_callback=cb)
         fired = await runner.tick()
@@ -35,8 +40,13 @@ class TestTick:
         assert loaded.last_result == "result"
 
     async def test_tick_no_callback_skips_gracefully(self, store):
-        store.add(CronEntry(id="o1", prompt="hi",
-                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+        store.add(
+            CronEntry(
+                id="o1",
+                prompt="hi",
+                run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
         runner = CronRunner(store)  # no callback
         fired = await runner.tick()
         assert fired == 1  # counted as fired (to advance)
@@ -44,8 +54,13 @@ class TestTick:
         assert "no callback" in (loaded.last_result or "")
 
     async def test_tick_callback_exception_marks_error(self, store):
-        store.add(CronEntry(id="o1", prompt="hi",
-                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+        store.add(
+            CronEntry(
+                id="o1",
+                prompt="hi",
+                run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
 
         async def boom(_e):
             raise RuntimeError("boom")
@@ -58,9 +73,14 @@ class TestTick:
         assert not loaded.enabled
 
     async def test_tick_dms_result_when_configured(self, store):
-        store.add(CronEntry(id="o1", prompt="hi",
-                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
-                            notify_user_id="42"))
+        store.add(
+            CronEntry(
+                id="o1",
+                prompt="hi",
+                run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+                notify_user_id="42",
+            )
+        )
 
         dm_calls = []
 
@@ -80,8 +100,14 @@ class TestTick:
 
     async def test_tick_emits_cron_fire_event(self, store):
         from unittest.mock import MagicMock, patch
-        store.add(CronEntry(id="o1", prompt="hi",
-                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+
+        store.add(
+            CronEntry(
+                id="o1",
+                prompt="hi",
+                run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
         mock_logger = MagicMock()
         with patch("deile.cron.runner.get_audit_logger", return_value=mock_logger):
             runner = CronRunner(store, fire_callback=AsyncMock(return_value="ok"))
@@ -92,8 +118,14 @@ class TestTick:
 
     async def test_tick_no_callback_emits_cron_skipped(self, store):
         from unittest.mock import MagicMock, patch
-        store.add(CronEntry(id="o1", prompt="hi",
-                            run_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+
+        store.add(
+            CronEntry(
+                id="o1",
+                prompt="hi",
+                run_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
         mock_logger = MagicMock()
         with patch("deile.cron.runner.get_audit_logger", return_value=mock_logger):
             runner = CronRunner(store)
@@ -104,7 +136,8 @@ class TestTick:
 class TestLifecycle:
     async def test_start_then_stop(self, store):
         runner = CronRunner(
-            store, fire_callback=AsyncMock(return_value="ok"),
+            store,
+            fire_callback=AsyncMock(return_value="ok"),
             poll_interval_seconds=1,
         )
         await runner.start()

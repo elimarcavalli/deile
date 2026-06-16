@@ -14,8 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from deile.config.settings import (LogLevel, Settings, get_settings,
-                                   reset_settings)
+from deile.config.settings import LogLevel, Settings, get_settings, reset_settings
 
 
 @pytest.fixture(autouse=True)
@@ -64,13 +63,17 @@ class TestApplyOverrides:
 
     def test_ui_overrides(self):
         s = Settings()
-        s.apply_overrides({"ui": {"streaming_enabled": False, "show_tool_details": True}})
+        s.apply_overrides(
+            {"ui": {"streaming_enabled": False, "show_tool_details": True}}
+        )
         assert s.streaming_enabled is False
         assert s.show_tool_details is True
 
     def test_model_overrides(self):
         s = Settings()
-        s.apply_overrides({"model": {"default_provider": "anthropic", "max_context_tokens": 16000}})
+        s.apply_overrides(
+            {"model": {"default_provider": "anthropic", "max_context_tokens": 16000}}
+        )
         assert s.default_model_provider == "anthropic"
         assert s.max_context_tokens == 16000
 
@@ -82,13 +85,17 @@ class TestApplyOverrides:
 
     def test_concurrency_overrides(self):
         s = Settings()
-        s.apply_overrides({"concurrency": {"max_concurrent_requests": 5, "request_timeout": 60}})
+        s.apply_overrides(
+            {"concurrency": {"max_concurrent_requests": 5, "request_timeout": 60}}
+        )
         assert s.max_concurrent_requests == 5
         assert s.request_timeout == 60
 
     def test_file_safety_overrides(self):
         s = Settings()
-        s.apply_overrides({"file_safety": {"enabled": False, "max_file_size_bytes": 2048}})
+        s.apply_overrides(
+            {"file_safety": {"enabled": False, "max_file_size_bytes": 2048}}
+        )
         assert s.enable_file_safety_checks is False
         assert s.max_file_size_bytes == 2048
 
@@ -174,7 +181,9 @@ class TestGetSettingsLayered:
         home = tmp_path / "home"
         (home / ".deile").mkdir(parents=True)
         (home / ".deile" / "settings.json").write_text(
-            json.dumps({"logging": {"level": "INFO"}, "ui": {"streaming_enabled": True}}),
+            json.dumps(
+                {"logging": {"level": "INFO"}, "ui": {"streaming_enabled": True}}
+            ),
             encoding="utf-8",
         )
         project = tmp_path / "project"
@@ -186,8 +195,8 @@ class TestGetSettingsLayered:
         monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
         s = get_settings()
-        assert s.log_level == LogLevel.DEBUG          # project wins
-        assert s.streaming_enabled is True            # inherited from user
+        assert s.log_level == LogLevel.DEBUG  # project wins
+        assert s.streaming_enabled is True  # inherited from user
 
     def test_legacy_fallback_when_no_new_layers(self, monkeypatch, tmp_path):
         monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
@@ -307,7 +316,10 @@ class TestSettingsFileOverride:
         assert s.environment == "from-default-home-2"
 
     def test_project_layer_skipped_when_same_file_as_global(
-        self, monkeypatch, tmp_path, caplog,
+        self,
+        monkeypatch,
+        tmp_path,
+        caplog,
     ):
         monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         """HOME == cwd → o mesmo JSON é detectado e o project layer é pulado.
@@ -331,6 +343,7 @@ class TestSettingsFileOverride:
         # O warning antigo era "applying project layer ... WITHOUT explicit trust".
         # Deve estar ausente porque agora detectamos same_file e pulamos.
         assert not any(
-            "project layer" in record.message and "WITHOUT explicit trust" in record.message
+            "project layer" in record.message
+            and "WITHOUT explicit trust" in record.message
             for record in caplog.records
         )

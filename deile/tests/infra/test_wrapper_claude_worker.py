@@ -38,7 +38,8 @@ def wrapper_mod():
     repo_root = Path(__file__).resolve().parents[3]
     wrapper_path = repo_root / "infra" / "k8s" / "wrapper.py"
     spec = importlib.util.spec_from_file_location(
-        "wrapper_under_test_claude_worker", str(wrapper_path),
+        "wrapper_under_test_claude_worker",
+        str(wrapper_path),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -66,7 +67,9 @@ def test_load_allowed_repo_patterns_reads_file(wrapper_mod, tmp_path, monkeypatc
     assert any(p.match("git@github.com:elimarcavalli/deilebot.git") for p in patterns)
 
 
-def test_load_allowed_repo_patterns_fails_when_missing(wrapper_mod, tmp_path, monkeypatch):
+def test_load_allowed_repo_patterns_fails_when_missing(
+    wrapper_mod, tmp_path, monkeypatch
+):
     """Arquivo ausente → ``SystemExit`` (sem whitelist, NÃO arrancamos)."""
     missing = tmp_path / "nonexistent.regex"
     monkeypatch.setenv("DEILE_CLAUDE_ALLOWED_REPOS_FILE", str(missing))
@@ -76,7 +79,9 @@ def test_load_allowed_repo_patterns_fails_when_missing(wrapper_mod, tmp_path, mo
     assert "missing" in str(exc.value).lower()
 
 
-def test_load_allowed_repo_patterns_fails_when_empty(wrapper_mod, tmp_path, monkeypatch):
+def test_load_allowed_repo_patterns_fails_when_empty(
+    wrapper_mod, tmp_path, monkeypatch
+):
     """Arquivo só com comentários → ``SystemExit`` (allowlist vazia é proibida)."""
     config = tmp_path / "allowed_repos.regex"
     config.write_text("# only comments\n\n#another\n")
@@ -87,7 +92,9 @@ def test_load_allowed_repo_patterns_fails_when_empty(wrapper_mod, tmp_path, monk
     assert "empty" in str(exc.value).lower()
 
 
-def test_load_allowed_repo_patterns_rejects_invalid_regex(wrapper_mod, tmp_path, monkeypatch):
+def test_load_allowed_repo_patterns_rejects_invalid_regex(
+    wrapper_mod, tmp_path, monkeypatch
+):
     """Regex inválido na config → ``SystemExit`` (não pode iniciar com pattern quebrado).
 
     Este caso não estava no plano original mas é defesa simétrica óbvia:
@@ -139,7 +146,8 @@ def test_sensitive_keys_includes_anthropic_api_key(wrapper_mod):
 
 
 def test_run_claude_worker_strips_anthropic_api_key_from_env(
-    wrapper_mod, monkeypatch,
+    wrapper_mod,
+    monkeypatch,
 ):
     """``_run_claude_worker`` remove ``ANTHROPIC_API_KEY`` de ``os.environ``
     ANTES de delegar pro servidor — o ``claude -p`` herda um env sem a key,
@@ -155,18 +163,24 @@ def test_run_claude_worker_strips_anthropic_api_key_from_env(
     # Infra pesada stubada — só nos interessa o strip do ANTHROPIC_API_KEY.
     monkeypatch.setattr(wrapper_mod, "_harden_runtime_dirs", lambda: None)
     monkeypatch.setattr(
-        wrapper_mod, "_load_allowed_repo_patterns", lambda: [object()],
+        wrapper_mod,
+        "_load_allowed_repo_patterns",
+        lambda: [object()],
     )
     monkeypatch.setattr(
-        wrapper_mod, "_install_git_repo_guard", lambda patterns: None,
+        wrapper_mod,
+        "_install_git_repo_guard",
+        lambda patterns: None,
     )
     # _load_secret_files emula o mount do Secret deile reinjetando a API key
     # (caminho real onde a key voltaria pro env via arquivo de Secret).
     monkeypatch.setattr(
-        wrapper_mod, "_load_secret_files",
-        lambda role_dir: (os.environ.__setitem__("ANTHROPIC_API_KEY",
-                                                  "sk-ant-leak"),
-                          ["ANTHROPIC_API_KEY"])[1],
+        wrapper_mod,
+        "_load_secret_files",
+        lambda role_dir: (
+            os.environ.__setitem__("ANTHROPIC_API_KEY", "sk-ant-leak"),
+            ["ANTHROPIC_API_KEY"],
+        )[1],
     )
     monkeypatch.setattr(wrapper_mod, "_setup_forge_credentials", lambda: None)
 
@@ -175,13 +189,16 @@ def test_run_claude_worker_strips_anthropic_api_key_from_env(
     real_is_file = wrapper_mod.Path.is_file
     real_read_text = wrapper_mod.Path.read_text
     monkeypatch.setattr(
-        wrapper_mod.Path, "is_file",
+        wrapper_mod.Path,
+        "is_file",
         lambda self: True if self.name == _BEARER else real_is_file(self),
     )
     monkeypatch.setattr(
-        wrapper_mod.Path, "read_text",
-        lambda self, *a, **k: "bearer-xyz" if self.name == _BEARER
-        else real_read_text(self, *a, **k),
+        wrapper_mod.Path,
+        "read_text",
+        lambda self, *a, **k: (
+            "bearer-xyz" if self.name == _BEARER else real_read_text(self, *a, **k)
+        ),
     )
 
     captured_env = {}
@@ -199,9 +216,9 @@ def test_run_claude_worker_strips_anthropic_api_key_from_env(
     rc = wrapper_mod._run_claude_worker([])
 
     assert rc == 0
-    assert "ANTHROPIC_API_KEY" not in os.environ, (
-        "ANTHROPIC_API_KEY deve ser removido de os.environ pelo claude-worker"
-    )
+    assert (
+        "ANTHROPIC_API_KEY" not in os.environ
+    ), "ANTHROPIC_API_KEY deve ser removido de os.environ pelo claude-worker"
     assert captured_env["ANTHROPIC_API_KEY"] is None, (
         "o env visto pelo servidor (e herdado pelo claude -p) não pode conter "
         "ANTHROPIC_API_KEY"

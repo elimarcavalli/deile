@@ -38,7 +38,8 @@ def mock_adapter(tmp_path, monkeypatch):
     """Adapter mock trivial + allowlist canônica apontada por env var."""
     pkg_dir = Path(cli_adapters.__path__[0])
     mod_path = pkg_dir / "zzz_mock_allowlist.py"
-    mod_path.write_text(textwrap.dedent('''\
+    mod_path.write_text(
+        textwrap.dedent("""\
         from cli_adapters.base import BaseCliAdapter, WorkResult, ModelInfo
 
 
@@ -57,7 +58,9 @@ def mock_adapter(tmp_path, monkeypatch):
         ADAPTER = MockAdapter(
             kind="mock", default_port=8799, auth_env_keys=["MOCK_API_KEY"],
         )
-    '''), encoding="utf-8")
+    """),
+        encoding="utf-8",
+    )
     cli_adapters.reload_adapters()
 
     monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "mock")
@@ -122,7 +125,9 @@ async def test_dispatch_blocks_path_traversal_slug(mock_adapter, monkeypatch):
         resp = await client.post(
             "/v1/dispatch",
             json={
-                "brief": "x", "branch": "b", "cli_model": "m",
+                "brief": "x",
+                "branch": "b",
+                "cli_model": "m",
                 "resume": {"repo": "../../etc/passwd"},
             },
             headers=_AUTH_HEADERS,
@@ -163,9 +168,9 @@ async def test_dispatch_allows_repo_in_allowlist(mock_adapter, monkeypatch):
         body = await resp.json()
         assert body.get("error_code") != "REPO_NOT_ALLOWED"
 
-    assert clone_calls == ["elimarcavalli/deile"], (
-        "clone DEVE ser tentado para repo permitido"
-    )
+    assert clone_calls == [
+        "elimarcavalli/deile"
+    ], "clone DEVE ser tentado para repo permitido"
 
 
 async def test_dispatch_without_repo_slug_skips_allowlist(mock_adapter, monkeypatch):
@@ -188,4 +193,5 @@ async def test_dispatch_without_repo_slug_skips_allowlist(mock_adapter, monkeypa
 def _make_async(value):
     async def _coro(*_a, **_kw):
         return value
+
     return _coro

@@ -18,8 +18,11 @@ from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
 
-from ...core.interfaces.selector import (InteractiveSelector,
-                                         SelectorNotSupported, SelectorOption)
+from ...core.interfaces.selector import (
+    InteractiveSelector,
+    SelectorNotSupported,
+    SelectorOption,
+)
 
 _STYLE = Style.from_dict(
     {
@@ -45,6 +48,7 @@ class PromptToolkitSelector(InteractiveSelector):
         # false positives here since select() has its own guard.
         try:
             import os as _os
+
             tty_stdin = sys.stdin.isatty() or _os.isatty(sys.stdin.fileno())
             tty_stdout = sys.stdout.isatty() or _os.isatty(sys.stdout.fileno())
             return bool(tty_stdin and tty_stdout)

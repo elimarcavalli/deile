@@ -56,7 +56,9 @@ def test_post_write_hint_for_executable_extensions(filename, expected_kind):
     assert filename in hint["command"]
 
 
-@pytest.mark.parametrize("filename", ["README.md", "notes.txt", "image.png", "no_extension"])
+@pytest.mark.parametrize(
+    "filename", ["README.md", "notes.txt", "image.png", "no_extension"]
+)
 def test_post_write_hint_skipped_for_non_executable(filename):
     assert _post_write_validation_hint(filename) is None
 
@@ -182,7 +184,10 @@ def test_pip_install_requirements_idempotency(tmp_path):
     req.write_text("rich>=13.0\n# comment line\nclick==8.1.0\n", encoding="utf-8")
 
     fake_ok = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="Successfully installed requests-2.31.0\n", stderr=""
+        args=[],
+        returncode=0,
+        stdout="Successfully installed requests-2.31.0\n",
+        stderr="",
     )
 
     import deile.tools.execution_tools as exec_mod
@@ -213,8 +218,10 @@ def test_pip_install_requirements_idempotency(tmp_path):
     assert contents.count("\nrequests\n") == 1 or contents.endswith("requests\n")
     # Total requests-named entries: exactly 1
     matches = [
-        line for line in contents.splitlines()
-        if line.strip() and not line.strip().startswith("#")
+        line
+        for line in contents.splitlines()
+        if line.strip()
+        and not line.strip().startswith("#")
         and PipInstallTool._normalize_pkg_name(line) == "requests"
     ]
     assert len(matches) == 1
@@ -227,6 +234,7 @@ def test_pip_install_creates_requirements_when_absent(tmp_path):
 
     fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
     import deile.tools.execution_tools as exec_mod
+
     real_run = exec_mod.subprocess.run
     exec_mod.subprocess.run = lambda *a, **kw: fake_ok
     try:
@@ -262,6 +270,7 @@ def test_pip_install_propagates_pip_failure(tmp_path):
         args=[], returncode=1, stdout="", stderr="ERROR: Could not find a version"
     )
     import deile.tools.execution_tools as exec_mod
+
     real_run = exec_mod.subprocess.run
     exec_mod.subprocess.run = lambda *a, **kw: fake_fail
     try:
@@ -286,6 +295,7 @@ def test_pip_install_skip_requirements_when_disabled(tmp_path):
 
     fake_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
     import deile.tools.execution_tools as exec_mod
+
     real_run = exec_mod.subprocess.run
     exec_mod.subprocess.run = lambda *a, **kw: fake_ok
     try:
@@ -453,7 +463,9 @@ async def test_validation_gate_re_invokes_once_on_unvalidated_write():
     # History contains the pre-gate assistant turn AND the synthetic user prompt
     roles = [e["role"] for e in session.conversation_history]
     assert roles == ["assistant", "user"]
-    assert session.conversation_history[0]["metadata"].get("validation_gate_pre") is True
+    assert (
+        session.conversation_history[0]["metadata"].get("validation_gate_pre") is True
+    )
     assert session.conversation_history[1]["metadata"].get("validation_gate") is True
 
 
@@ -463,7 +475,9 @@ async def test_validation_gate_no_op_when_validated():
     session = AgentSession(session_id="t")
 
     # _process_iterative_function_calling must NOT be called
-    agent._process_iterative_function_calling = AsyncMock(side_effect=AssertionError("should not run"))
+    agent._process_iterative_function_calling = AsyncMock(
+        side_effect=AssertionError("should not run")
+    )
 
     content_out, results_out = await agent._apply_validation_gate(
         user_input="orig",

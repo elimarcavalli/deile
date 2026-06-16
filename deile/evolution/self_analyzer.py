@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class ImprovementCategory(Enum):
     """Categorias de melhorias identificadas"""
+
     PERFORMANCE = "performance"
     CODE_QUALITY = "code_quality"
     USER_EXPERIENCE = "user_experience"
@@ -25,6 +26,7 @@ class ImprovementCategory(Enum):
 @dataclass
 class PerformanceMetric:
     """Métrica de performance"""
+
     name: str
     value: float
     unit: str
@@ -39,6 +41,7 @@ class PerformanceMetric:
 @dataclass
 class ImprovementOpportunity:
     """Oportunidade de melhoria identificada"""
+
     opportunity_id: str
     category: ImprovementCategory
     description: str
@@ -116,7 +119,7 @@ class SelfAnalyzer:
         metric_name: str,
         value: float,
         unit: str = "",
-        metadata: Dict[str, Any] = None
+        metadata: Dict[str, Any] = None,
     ) -> None:
         """Registra uma métrica de performance"""
         metric = PerformanceMetric(
@@ -124,7 +127,7 @@ class SelfAnalyzer:
             value=value,
             unit=unit,
             timestamp=time.time(),
-            metadata=metadata or {}
+            metadata=metadata or {},
         )
 
         if metric_name not in self._metrics:
@@ -134,7 +137,9 @@ class SelfAnalyzer:
 
         # Limita número de métricas armazenadas
         if len(self._metrics[metric_name]) > self.max_metrics_per_type:
-            self._metrics[metric_name] = self._metrics[metric_name][-self.max_metrics_per_type:]
+            self._metrics[metric_name] = self._metrics[metric_name][
+                -self.max_metrics_per_type :
+            ]
 
         logger.debug(f"Métrica registrada: {metric_name} = {value} {unit}")
 
@@ -157,7 +162,7 @@ class SelfAnalyzer:
                 "min": min(values),
                 "max": max(values),
                 "count": len(values),
-                "trend": self._calculate_trend(values)
+                "trend": self._calculate_trend(values),
             }
 
         return current
@@ -186,7 +191,9 @@ class SelfAnalyzer:
             opportunities.extend(response_time_opportunities)
 
             # Prioriza oportunidades
-            opportunities.sort(key=lambda o: o.priority * o.impact_estimate, reverse=True)
+            opportunities.sort(
+                key=lambda o: o.priority * o.impact_estimate, reverse=True
+            )
 
             # Armazena oportunidades
             self._improvement_opportunities.extend(opportunities)
@@ -194,7 +201,9 @@ class SelfAnalyzer:
             # Limita número de oportunidades armazenadas
             self._improvement_opportunities = self._improvement_opportunities[-100:]
 
-            logger.info(f"Análise concluída: {len(opportunities)} oportunidades identificadas")
+            logger.info(
+                f"Análise concluída: {len(opportunities)} oportunidades identificadas"
+            )
             return opportunities
 
         except Exception as e:
@@ -205,7 +214,7 @@ class SelfAnalyzer:
         self,
         category: Optional[ImprovementCategory] = None,
         min_priority: int = 1,
-        max_results: int = 20
+        max_results: int = 20,
     ) -> List[ImprovementOpportunity]:
         """Retorna oportunidades de melhoria filtradas"""
         opportunities = self._improvement_opportunities
@@ -230,7 +239,7 @@ class SelfAnalyzer:
             "memory_usage_mb": 500.0,
             "cpu_usage_percent": 50.0,
             "error_rate_percent": 1.0,
-            "tasks_per_minute": 10.0
+            "tasks_per_minute": 10.0,
         }
 
         logger.debug(f"Baselines estabelecidos: {self._baselines}")
@@ -269,7 +278,9 @@ class SelfAnalyzer:
             trend = self._calculate_trend(recent_values)
 
             # Identifica tendências negativas
-            if trend < -0.1 and metric_name.endswith(("_time", "_latency", "_duration")):
+            if trend < -0.1 and metric_name.endswith(
+                ("_time", "_latency", "_duration")
+            ):
                 opportunity = ImprovementOpportunity(
                     opportunity_id=f"perf_{metric_name}_{int(time.time())}",
                     category=ImprovementCategory.PERFORMANCE,
@@ -280,7 +291,7 @@ class SelfAnalyzer:
                     confidence=0.8,
                     evidence=[f"Tendência negativa: {trend:.3f}"],
                     metrics_supporting=[metric_name],
-                    proposed_solution=f"Investigar e otimizar {metric_name}"
+                    proposed_solution=f"Investigar e otimizar {metric_name}",
                 )
                 opportunities.append(opportunity)
 
@@ -306,9 +317,11 @@ class SelfAnalyzer:
                         impact_estimate=0.7,
                         effort_estimate=6,
                         confidence=0.9,
-                        evidence=[f"Memória atual: {current_memory:.1f}MB (baseline: {baseline_memory:.1f}MB)"],
+                        evidence=[
+                            f"Memória atual: {current_memory:.1f}MB (baseline: {baseline_memory:.1f}MB)"
+                        ],
                         metrics_supporting=["memory_usage_mb"],
-                        proposed_solution="Implementar otimizações de memória e garbage collection"
+                        proposed_solution="Implementar otimizações de memória e garbage collection",
                     )
                     opportunities.append(opportunity)
 
@@ -333,7 +346,7 @@ class SelfAnalyzer:
                     confidence=0.9,
                     evidence=[f"{len(recent_errors)} erros na última hora"],
                     metrics_supporting=["error_count"],
-                    proposed_solution="Implementar melhor tratamento de erros e logging"
+                    proposed_solution="Implementar melhor tratamento de erros e logging",
                 )
                 opportunities.append(opportunity)
 
@@ -359,9 +372,11 @@ class SelfAnalyzer:
                         impact_estimate=0.5,
                         effort_estimate=5,
                         confidence=0.7,
-                        evidence=[f"Tempo médio: {avg_time:.1f}ms (baseline: {baseline_time:.1f}ms)"],
+                        evidence=[
+                            f"Tempo médio: {avg_time:.1f}ms (baseline: {baseline_time:.1f}ms)"
+                        ],
                         metrics_supporting=["response_time_ms"],
-                        proposed_solution="Otimizar algoritmos e implementar caching"
+                        proposed_solution="Otimizar algoritmos e implementar caching",
                     )
                     opportunities.append(opportunity)
 
@@ -393,8 +408,7 @@ class SelfAnalyzer:
 
         for metric_name in self._metrics:
             self._metrics[metric_name] = [
-                m for m in self._metrics[metric_name]
-                if m.timestamp > cutoff_time
+                m for m in self._metrics[metric_name] if m.timestamp > cutoff_time
             ]
 
     async def get_stats(self) -> Dict[str, Any]:
@@ -407,5 +421,5 @@ class SelfAnalyzer:
             "metric_types": len(self._metrics),
             "improvement_opportunities": len(self._improvement_opportunities),
             "baselines": self._baselines.copy(),
-            "analysis_interval_seconds": self.analysis_interval
+            "analysis_interval_seconds": self.analysis_interval,
         }

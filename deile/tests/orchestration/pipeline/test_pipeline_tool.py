@@ -6,8 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.github_client import GhCommandError, IssueRef
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 from deile.tools.base import ToolContext, ToolStatus
 from deile.tools.pipeline_tool import PipelineTool
 
@@ -191,7 +190,9 @@ class TestPipelineToolReset:
         agent = MagicMock()
         monitor = _make_monitor()
         issue = IssueRef(
-            number=7, title="t", url="u",
+            number=7,
+            title="t",
+            url="u",
             labels=("intent", "~batch:abc12345", "~by:default"),
         )
         monitor.github.get_issue = AsyncMock(return_value=issue)

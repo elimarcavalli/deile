@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import time
 
-from deile.core.models.tier_router import (BreakerState, CircuitBreaker,
-                                           _ProviderBreaker)
+from deile.core.models.tier_router import BreakerState, CircuitBreaker, _ProviderBreaker
 
 
 def test_is_open_does_not_transition_state_after_cooldown() -> None:

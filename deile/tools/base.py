@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class ToolStatus(Enum):
     """Status de execução de uma tool"""
+
     PENDING = "pending"
     RUNNING = "running"
     SUCCESS = "success"
@@ -23,6 +24,7 @@ class ToolStatus(Enum):
 
 class ToolCategory(Enum):
     """Categorias de tools do sistema"""
+
     FILE = "file"
     EXECUTION = "execution"
     SEARCH = "search"
@@ -36,6 +38,7 @@ class ToolCategory(Enum):
 
 class SecurityLevel(Enum):
     """Níveis de segurança para tools"""
+
     SAFE = "safe"
     MODERATE = "moderate"
     DANGEROUS = "dangerous"
@@ -43,22 +46,25 @@ class SecurityLevel(Enum):
 
 class DisplayPolicy(Enum):
     """Políticas de exibição para output de tools"""
-    SYSTEM = "system"      # Sistema exibe o resultado
-    AGENT = "agent"        # Agente processa e responde  
-    BOTH = "both"          # Sistema exibe, agente responde sobre resultado
-    SILENT = "silent"      # Nenhum output visível (internal)
+
+    SYSTEM = "system"  # Sistema exibe o resultado
+    AGENT = "agent"  # Agente processa e responde
+    BOTH = "both"  # Sistema exibe, agente responde sobre resultado
+    SILENT = "silent"  # Nenhum output visível (internal)
 
 
 class ShowCliPolicy(Enum):
     """Controle granular de show_cli behavior"""
-    ALWAYS = "always"      # Sempre exibir independente do parâmetro
-    PARAMETER = "parameter" # Respeitar show_cli parameter
-    NEVER = "never"        # Nunca exibir (silent tools)
+
+    ALWAYS = "always"  # Sempre exibir independente do parâmetro
+    PARAMETER = "parameter"  # Respeitar show_cli parameter
+    NEVER = "never"  # Nunca exibir (silent tools)
 
 
 @dataclass
 class ToolSchema:
     """Schema completo para Function Calling API"""
+
     name: str
     description: str
     parameters: Dict[str, Any]  # JSON Schema format
@@ -68,7 +74,7 @@ class ToolSchema:
     category: ToolCategory = ToolCategory.OTHER
     enabled: bool = True
     max_execution_time: int = 30
-    
+
     def to_anthropic_tool(self) -> Dict[str, Any]:
         """Converte para o formato de tool do SDK Anthropic.
 
@@ -114,7 +120,7 @@ class ToolSchema:
 
         # Adiciona required fields ao schema se existir
         if self.required:
-            converted_params['required'] = self.required
+            converted_params["required"] = self.required
 
         # Remove additionalProperties — o Schema protobuf do Gemini não
         # suporta esse campo JSON Schema. O SDK converte camelCase →
@@ -123,9 +129,7 @@ class ToolSchema:
         converted_params = self._strip_unsupported_gemini_fields(converted_params)
 
         return FunctionDeclaration(
-            name=self.name,
-            description=self.description,
-            parameters=converted_params
+            name=self.name, description=self.description, parameters=converted_params
         )
 
     def _convert_parameters_to_json_schema(self, params):
@@ -135,15 +139,15 @@ class ToolSchema:
 
         converted = {}
         for key, value in params.items():
-            if key == 'type' and isinstance(value, str):
+            if key == "type" and isinstance(value, str):
                 # Converte tipos em maiúscula para minúscula
                 type_map = {
-                    'STRING': 'string',
-                    'OBJECT': 'object',
-                    'ARRAY': 'array',
-                    'BOOLEAN': 'boolean',
-                    'INTEGER': 'integer',
-                    'NUMBER': 'number'
+                    "STRING": "string",
+                    "OBJECT": "object",
+                    "ARRAY": "array",
+                    "BOOLEAN": "boolean",
+                    "INTEGER": "integer",
+                    "NUMBER": "number",
                 }
                 converted[key] = type_map.get(value, value.lower())
             elif isinstance(value, dict):
@@ -152,7 +156,11 @@ class ToolSchema:
             elif isinstance(value, list):
                 # Converte listas
                 converted[key] = [
-                    self._convert_parameters_to_json_schema(item) if isinstance(item, dict) else item
+                    (
+                        self._convert_parameters_to_json_schema(item)
+                        if isinstance(item, dict)
+                        else item
+                    )
                     for item in value
                 ]
             else:
@@ -177,9 +185,11 @@ class ToolSchema:
                 stripped[key] = ToolSchema._strip_unsupported_gemini_fields(value)
             elif isinstance(value, list):
                 stripped[key] = [
-                    ToolSchema._strip_unsupported_gemini_fields(item)
-                    if isinstance(item, dict)
-                    else item
+                    (
+                        ToolSchema._strip_unsupported_gemini_fields(item)
+                        if isinstance(item, dict)
+                        else item
+                    )
                     for item in value
                 ]
             else:
@@ -197,26 +207,26 @@ class ToolSchema:
             "security_level": self.security_level.value,
             "category": self.category.value,
             "enabled": self.enabled,
-            "max_execution_time": self.max_execution_time
+            "max_execution_time": self.max_execution_time,
         }
-    
+
     @classmethod
-    def from_json_file(cls, schema_file: Path) -> 'ToolSchema':
+    def from_json_file(cls, schema_file: Path) -> "ToolSchema":
         """Carrega schema de arquivo JSON"""
         try:
-            with open(schema_file, 'r', encoding='utf-8') as f:
+            with open(schema_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            
+
             return cls(
-                name=data['name'],
-                description=data['description'],
-                parameters=data['parameters'],
-                required=data.get('required', []),
-                examples=data.get('examples', []),
-                security_level=SecurityLevel(data.get('security_level', 'moderate')),
-                category=ToolCategory(data.get('category', 'other')),
-                enabled=data.get('enabled', True),
-                max_execution_time=data.get('max_execution_time', 30)
+                name=data["name"],
+                description=data["description"],
+                parameters=data["parameters"],
+                required=data.get("required", []),
+                examples=data.get("examples", []),
+                security_level=SecurityLevel(data.get("security_level", "moderate")),
+                category=ToolCategory(data.get("category", "other")),
+                enabled=data.get("enabled", True),
+                max_execution_time=data.get("max_execution_time", 30),
             )
         except Exception as e:
             logger.error(f"Error loading tool schema from {schema_file}: {e}")
@@ -226,6 +236,7 @@ class ToolSchema:
 @dataclass
 class ToolContext:
     """Contexto de execução de uma tool"""
+
     user_input: str
     parsed_args: Dict[str, Any] = field(default_factory=dict)
     session_data: Dict[str, Any] = field(default_factory=dict)
@@ -233,15 +244,15 @@ class ToolContext:
     file_list: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)
-    
+
     def get(self, key: str, default: Any = None) -> Any:
         """Get value from session_data with default"""
         return self.session_data.get(key, default)
-    
+
     def set(self, key: str, value: Any) -> None:
         """Set value in session_data"""
         self.session_data[key] = value
-    
+
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Get value from any context location"""
         # Procura em parsed_args primeiro
@@ -259,6 +270,7 @@ class ToolContext:
 @dataclass
 class ToolResult:
     """Resultado estendido com display control"""
+
     status: ToolStatus
     data: Any = None
     message: str = ""
@@ -269,27 +281,24 @@ class ToolResult:
     show_cli: bool = True
     artifact_path: Optional[str] = None
     display_data: Optional[Dict[str, Any]] = None  # Data formatada para UI
-    
+
     @property
     def is_success(self) -> bool:
         """Verifica se a execução foi bem-sucedida"""
         return self.status == ToolStatus.SUCCESS
-    
+
     @property
     def is_error(self) -> bool:
         """Verifica se houve erro na execução"""
         return self.status == ToolStatus.ERROR
-    
+
     @staticmethod
-    def success_result(data: Any = None, message: str = "", **metadata) -> 'ToolResult':
+    def success_result(data: Any = None, message: str = "", **metadata) -> "ToolResult":
         """Cria um resultado de sucesso"""
         return ToolResult(
-            status=ToolStatus.SUCCESS,
-            data=data,
-            message=message,
-            metadata=metadata
+            status=ToolStatus.SUCCESS, data=data, message=message, metadata=metadata
         )
-    
+
     @staticmethod
     def error_result(
         message: str,
@@ -301,7 +310,7 @@ class ToolResult:
         execution_time: float = 0.0,
         metadata: Optional[Dict[str, Any]] = None,
         **extra,
-    ) -> 'ToolResult':
+    ) -> "ToolResult":
         """Cria um resultado de erro.
 
         Aceita tanto ``metadata={'k': v}`` (forma estruturada) como kwargs livres
@@ -316,7 +325,7 @@ class ToolResult:
         merged: Dict[str, Any] = dict(metadata) if metadata else {}
         merged.update(extra)
         if error_code:
-            merged['error_code'] = error_code
+            merged["error_code"] = error_code
         return ToolResult(
             status=ToolStatus.ERROR,
             data=data,
@@ -326,12 +335,12 @@ class ToolResult:
             execution_time=execution_time,
             display_policy=display_policy,
         )
-    
+
     def __str__(self) -> str:
         if self.message:
             return f"[{self.status.value}] {self.message}"
         return f"[{self.status.value}]"
-    
+
     def get_rich_display(self, tool_name: str = "", args: Dict[str, Any] = None) -> str:
         """Retorna formatação rica para exibir resultado da tool"""
         return f"● {tool_name}({args or ''})\n  ⎿  {self.message}"
@@ -339,16 +348,16 @@ class ToolResult:
 
 class Tool(ABC):
     """Interface base abstrata para todas as tools do DEILE com Function Calling support
-    
+
     Implementa o padrão Strategy para permitir diferentes implementações
     de ferramentas de forma intercambiável e extensível.
     """
-    
+
     def __init__(self, schema: Optional[ToolSchema] = None):
         self._is_enabled = True
         self._execution_count = 0
         self._schema = schema
-    
+
     @property
     def name(self) -> str:
         """Nome único da tool. Default: schema.name. Subclasses sem schema devem sobrescrever."""
@@ -370,59 +379,59 @@ class Tool(ABC):
         if self._schema is None:
             return ToolCategory.OTHER.value
         return self._schema.category.value
-    
+
     @property
     def version(self) -> str:
         """Versão da tool"""
         return "1.0.0"
-    
+
     @property
     def is_enabled(self) -> bool:
         """Verifica se a tool está habilitada"""
         return self._is_enabled
-    
+
     @property
     def execution_count(self) -> int:
         """Contador de execuções da tool"""
         return self._execution_count
-    
+
     @property
     def schema(self) -> Optional[ToolSchema]:
         """Schema da tool para Function Calling"""
         return self._schema
-    
+
     def set_schema(self, schema: ToolSchema) -> None:
         """Define schema da tool"""
         self._schema = schema
-    
+
     def load_schema_from_file(self, schema_file: Path) -> None:
         """Carrega schema de arquivo JSON"""
         self._schema = ToolSchema.from_json_file(schema_file)
-    
+
     def get_function_definition(self) -> Optional[Dict[str, Any]]:
         """Retorna definição da função para Gemini API"""
         if not self._schema:
             return None
         return self._schema.to_gemini_function()
-    
+
     def enable(self) -> None:
         """Habilita a tool"""
         self._is_enabled = True
-    
+
     def disable(self) -> None:
         """Desabilita a tool"""
         self._is_enabled = False
-    
+
     @abstractmethod
     async def execute(self, context: ToolContext) -> ToolResult:
         """Executa a tool com o contexto fornecido
-        
+
         Args:
             context: Contexto de execução contendo dados necessários
-            
+
         Returns:
             ToolResult: Resultado da execução
-            
+
         Raises:
             ToolError: Erro específico da tool
         """
@@ -430,7 +439,7 @@ class Tool(ABC):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.category})"
-    
+
     def __repr__(self) -> str:
         return f"<Tool: {self.name}>"
 
@@ -445,6 +454,7 @@ class SyncTool(Tool):
     async def execute(self, context: ToolContext) -> ToolResult:
         """Wrapper assíncrono para tools síncronas — executa em thread pool para não bloquear o event loop."""
         import time
+
         start_time = time.time()
 
         try:
@@ -457,5 +467,5 @@ class SyncTool(Tool):
                 status=ToolStatus.ERROR,
                 error=e,
                 message=f"Error executing {self.name}: {str(e)}",
-                execution_time=time.time() - start_time
+                execution_time=time.time() - start_time,
             )

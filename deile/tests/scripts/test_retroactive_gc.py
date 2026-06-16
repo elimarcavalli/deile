@@ -1,4 +1,5 @@
 """Tests for scripts/retroactive_gc.py (issue #590)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,8 +8,6 @@ import json
 import time
 from pathlib import Path
 from typing import Dict, List
-
-import pytest
 
 from deile.orchestration.forge.refs import IssueRef
 
@@ -36,7 +35,9 @@ class _FakeForge:
         self.added: Dict[int, List] = {}
         self.deleted_labels: List[str] = []
 
-    async def list_issues_with_label(self, label: str, *, limit: int = 50) -> List[IssueRef]:
+    async def list_issues_with_label(
+        self, label: str, *, limit: int = 50
+    ) -> List[IssueRef]:
         return [i for i in self._issues.values() if label in i.labels][:limit]
 
     async def get_issue(self, number: int):
@@ -50,8 +51,11 @@ class _FakeForge:
         issue = self._issues.get(number)
         if issue is not None:
             self._issues[number] = IssueRef(
-                number=issue.number, title=issue.title, url=issue.url,
-                labels=(*issue.labels, *labels), state=issue.state,
+                number=issue.number,
+                title=issue.title,
+                url=issue.url,
+                labels=(*issue.labels, *labels),
+                state=issue.state,
             )
 
     async def list_repo_labels(self) -> List[str]:
@@ -65,9 +69,11 @@ class _FakeForge:
 
 def _closed_issue(number: int, *labels: str) -> IssueRef:
     return IssueRef(
-        number=number, title="t",
+        number=number,
+        title="t",
         url=f"https://github.com/o/r/issues/{number}",
-        labels=labels, state="closed",
+        labels=labels,
+        state="closed",
     )
 
 
@@ -78,7 +84,9 @@ class TestDryRun:
         forge = _FakeForge(issues=[issue])
 
         result = asyncio.run(
-            run_retroactive_gc(forge, dry_run=True, checkpoint_path=tmp_path / "ckpt.json")
+            run_retroactive_gc(
+                forge, dry_run=True, checkpoint_path=tmp_path / "ckpt.json"
+            )
         )
 
         assert result["dry_run"] is True
@@ -103,7 +111,9 @@ class TestCheckpointResume:
     def test_checkpoint_resume(self, tmp_path):
         """Items already in checkpoint are skipped (resume from item 51 after stop at 50)."""
         ckpt_path = tmp_path / "ckpt.json"
-        ckpt_path.write_text(json.dumps({"processed": ["issue:50"], "last_item": "issue:50"}))
+        ckpt_path.write_text(
+            json.dumps({"processed": ["issue:50"], "last_item": "issue:50"})
+        )
 
         issue_51 = _closed_issue(51, "~workflow:em_pr")
         issue_50 = _closed_issue(50, "~workflow:em_pr")
@@ -118,8 +128,11 @@ class TestAuditOrphanBatchLabels:
     def test_deletes_orphan_batch_labels_preserves_referenced(self):
         """Deletes exactly the orphan batch labels; preserves labels with references."""
         issue_with_ref = IssueRef(
-            number=1, title="t", url="u",
-            labels=("~batch:aabbccdd", "~batch:11223344"), state="open",
+            number=1,
+            title="t",
+            url="u",
+            labels=("~batch:aabbccdd", "~batch:11223344"),
+            state="open",
         )
 
         forge = _FakeForge(
@@ -169,14 +182,21 @@ class TestRateLimitCompliance:
 class TestLabelSetsMatchGcPy:
     def test_workflow_transitional_labels_stripped_from_issues(self):
         """Transitional ~workflow:* labels are stripped from issues (matches gc.py)."""
-        for label in ("~workflow:nova", "~workflow:em_revisao", "~workflow:em_implementacao",
-                      "~workflow:em_pr", "~workflow:bloqueada"):
+        for label in (
+            "~workflow:nova",
+            "~workflow:em_revisao",
+            "~workflow:em_implementacao",
+            "~workflow:em_pr",
+            "~workflow:bloqueada",
+        ):
             assert _should_strip_from_issue(label), f"expected {label!r} to be stripped"
 
     def test_workflow_terminal_labels_preserved_from_issues(self):
         """Terminal ~workflow labels are preserved (matches gc.py)."""
         for label in ("~workflow:decomposta", "~workflow:concluida"):
-            assert not _should_strip_from_issue(label), f"expected {label!r} to be preserved"
+            assert not _should_strip_from_issue(
+                label
+            ), f"expected {label!r} to be preserved"
 
     def test_type_labels_preserved(self):
         """Type labels (bug, feature, etc.) are preserved."""

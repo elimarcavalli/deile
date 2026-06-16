@@ -11,6 +11,7 @@ script added under ``might/`` is covered automatically. Top-level only —
 methods of ``Test*`` classes are intentionally excluded (pytest's own class
 collection handles them).
 """
+
 from __future__ import annotations
 
 import ast

@@ -73,8 +73,9 @@ def _is_posix() -> bool:
 # ── Prometheus exposition ────────────────────────────────────────────────
 
 
-def format_metrics(snapshot: Dict[str, Any], *, uptime_s: float,
-                   busy_kind: Optional[str]) -> str:
+def format_metrics(
+    snapshot: Dict[str, Any], *, uptime_s: float, busy_kind: Optional[str]
+) -> str:
     """Serializa um snapshot do :class:`InstanceState` em formato Prometheus text.
 
     Formato segue https://prometheus.io/docs/instrumenting/exposition_formats/
@@ -158,9 +159,7 @@ def format_metrics(snapshot: Dict[str, Any], *, uptime_s: float,
 
 def _escape_label(value: str) -> str:
     """Escape de label value conforme spec Prometheus."""
-    return (value.replace("\\", "\\\\")
-                 .replace("\"", "\\\"")
-                 .replace("\n", "\\n"))
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _format_labels(labels: Dict[str, str]) -> str:
@@ -184,7 +183,11 @@ def _fmt_float(v: float) -> str:
     # ``repr`` preserva precisão; usamos string normal para evitar ``1e-05``
     # quando não é necessário — o painel/Prometheus aceitam ambos, mas
     # o output fica mais legível.
-    return repr(v) if abs(v) < 1e-4 or abs(v) > 1e15 else f"{v:.6f}".rstrip("0").rstrip(".") or "0"
+    return (
+        repr(v)
+        if abs(v) < 1e-4 or abs(v) > 1e15
+        else f"{v:.6f}".rstrip("0").rstrip(".") or "0"
+    )
 
 
 # ── Server ────────────────────────────────────────────────────────────────
@@ -204,8 +207,9 @@ class StatusServer:
     file diretamente nesse caso.
     """
 
-    def __init__(self, instance_state: "InstanceState",
-                 socket_path: Optional[Path] = None) -> None:
+    def __init__(
+        self, instance_state: "InstanceState", socket_path: Optional[Path] = None
+    ) -> None:
         self._instance_state = instance_state
         self._socket_path = (
             Path(socket_path)
@@ -272,7 +276,8 @@ class StatusServer:
                 # vai falhar logo abaixo com erro claro — propagamos.
                 logger.warning(
                     "StatusServer não conseguiu remover socket legado %s: %s",
-                    self._socket_path, exc,
+                    self._socket_path,
+                    exc,
                 )
             self._server = await asyncio.start_unix_server(
                 self._handle_client,
@@ -285,11 +290,13 @@ class StatusServer:
             except OSError as exc:
                 logger.warning(
                     "StatusServer chmod %s falhou: %s (socket continua usável)",
-                    self._socket_path, exc,
+                    self._socket_path,
+                    exc,
                 )
             logger.debug(
                 "StatusServer iniciado: %s (instance=%s)",
-                self._socket_path, self._instance_state.instance_id,
+                self._socket_path,
+                self._instance_state.instance_id,
             )
 
     async def stop(self) -> None:
@@ -307,7 +314,8 @@ class StatusServer:
                 except Exception as exc:  # noqa: BLE001 — shutdown best-effort
                     logger.debug(
                         "StatusServer wait_closed levantou (id=%s): %s",
-                        self._instance_state.instance_id, exc,
+                        self._instance_state.instance_id,
+                        exc,
                     )
             try:
                 self._socket_path.unlink()
@@ -316,11 +324,13 @@ class StatusServer:
             except OSError as exc:
                 logger.debug(
                     "StatusServer unlink %s falhou: %s",
-                    self._socket_path, exc,
+                    self._socket_path,
+                    exc,
                 )
             logger.debug(
                 "StatusServer parado: %s (instance=%s)",
-                self._socket_path, self._instance_state.instance_id,
+                self._socket_path,
+                self._instance_state.instance_id,
             )
 
     async def serve_forever(self) -> None:
@@ -344,13 +354,15 @@ class StatusServer:
         except Exception as exc:  # noqa: BLE001 — qualquer erro do server
             logger.warning(
                 "StatusServer.serve_forever encerrou com erro (id=%s): %s",
-                self._instance_state.instance_id, exc,
+                self._instance_state.instance_id,
+                exc,
             )
 
     # ── request handling ──────────────────────────────────────────────────
 
-    async def _handle_client(self, reader: asyncio.StreamReader,
-                             writer: asyncio.StreamWriter) -> None:
+    async def _handle_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         """Atende 1 request por conexão. Sem keep-alive."""
         try:
             try:
@@ -378,7 +390,8 @@ class StatusServer:
         except Exception as exc:  # noqa: BLE001 — defensive
             logger.warning(
                 "StatusServer handler error (id=%s): %s",
-                self._instance_state.instance_id, exc,
+                self._instance_state.instance_id,
+                exc,
             )
         finally:
             try:
@@ -407,7 +420,9 @@ class StatusServer:
                 if isinstance(action, dict) and action.get("kind")
                 else None
             )
-            return format_metrics(snap, uptime_s=uptime, busy_kind=busy_kind).encode("utf-8")
+            return format_metrics(snap, uptime_s=uptime, busy_kind=busy_kind).encode(
+                "utf-8"
+            )
         if command == "FLUSH":
             # Forçar flush: o ``InstanceState`` flusha em toda mutação, mas
             # exposed como debug hook. Acessamos o internal ``_heartbeat``
@@ -461,8 +476,7 @@ class StatusClient:
 
     DEFAULT_TIMEOUT_S = 0.5
 
-    def __init__(self, socket_path: Path,
-                 timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
+    def __init__(self, socket_path: Path, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
         self._socket_path = Path(socket_path)
         self._timeout_s = float(timeout_s)
 
@@ -534,7 +548,9 @@ class StatusClient:
             return None
         except OSError as exc:
             logger.debug(
-                "StatusClient I/O error em %s: %s", self._socket_path, exc,
+                "StatusClient I/O error em %s: %s",
+                self._socket_path,
+                exc,
             )
             return None
         finally:

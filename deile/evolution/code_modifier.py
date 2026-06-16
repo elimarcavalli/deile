@@ -20,7 +20,9 @@ class CodeModifier:
         self._is_initialized = True
         logger.info("CodeModifier inicializado")
 
-    async def generate_improvement_plan(self, opportunity: ImprovementOpportunity) -> Dict[str, Any]:
+    async def generate_improvement_plan(
+        self, opportunity: ImprovementOpportunity
+    ) -> Dict[str, Any]:
         """Gera plano de modificação para uma oportunidade"""
         # Implementação básica - pode ser expandida com AI
         return {
@@ -31,19 +33,24 @@ class CodeModifier:
                     "file": "example.py",
                     "type": "optimization",
                     "description": "Otimização baseada na oportunidade",
-                    "changes": []
+                    "changes": [],
                 }
             ],
-            "estimated_impact": opportunity.impact_estimate
+            "estimated_impact": opportunity.impact_estimate,
         }
 
-    async def apply_modification(self, modification_plan: Dict[str, Any]) -> Dict[str, Any]:
+    async def apply_modification(
+        self, modification_plan: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Aplica modificação no sistema real"""
         try:
             # Implementação básica - aplicaria as modificações reais
             await asyncio.sleep(1)  # Simula tempo de aplicação
 
-            return {"success": True, "applied_changes": len(modification_plan.get("modifications", []))}
+            return {
+                "success": True,
+                "applied_changes": len(modification_plan.get("modifications", [])),
+            }
 
         except Exception as e:
             return {"success": False, "error": str(e)}

@@ -12,8 +12,7 @@ import logging
 
 import pytest
 
-from deile.observability import (reset_dispatch_metrics,
-                                 reset_observability_config)
+from deile.observability import reset_dispatch_metrics, reset_observability_config
 
 pytestmark = pytest.mark.unit
 
@@ -25,6 +24,7 @@ class TestSdkAbsent:
         reset_dispatch_metrics()
 
         import deile.observability.dispatch_metrics as dm
+
         monkeypatch.setattr(dm, "metrics_available", lambda: False)
 
         # Não levanta.
@@ -36,6 +36,7 @@ class TestSdkAbsent:
         reset_dispatch_metrics()
 
         import deile.observability.dispatch_metrics as dm
+
         monkeypatch.setattr(dm, "metrics_available", lambda: False)
 
         with caplog.at_level(logging.INFO, logger=dm._logger.name):
@@ -50,6 +51,7 @@ class TestSdkAbsent:
         reset_dispatch_metrics()
 
         import deile.observability.dispatch_metrics as dm
+
         monkeypatch.setattr(dm, "metrics_available", lambda: False)
 
         with caplog.at_level(logging.INFO, logger=dm._logger.name):
@@ -63,6 +65,7 @@ class TestSdkAbsent:
 
     def test_sdk_warned_false_at_import(self):
         import deile.observability.dispatch_metrics as dm
+
         assert dm._sdk_warned is False
 
     def test_provider_none_when_sdk_absent(self, monkeypatch):
@@ -71,6 +74,7 @@ class TestSdkAbsent:
         reset_dispatch_metrics()
 
         import deile.observability.dispatch_metrics as dm
+
         monkeypatch.setattr(dm, "metrics_available", lambda: False)
 
         assert dm._get_dispatch_meter_provider() is None

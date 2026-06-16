@@ -18,8 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from deile.config.settings import (LogLevel, Settings, _load_layered_settings,
-                                   get_settings, reset_settings)
+from deile.config.settings import (
+    LogLevel,
+    Settings,
+    _load_layered_settings,
+    get_settings,
+    reset_settings,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -130,9 +135,7 @@ class TestProjectLayerTrust:
         s = _load_layered_settings()
         assert s.log_level == LogLevel.WARNING
 
-    def test_default_policy_auto_applies_with_warning(
-        self, monkeypatch, tmp_path
-    ):
+    def test_default_policy_auto_applies_with_warning(self, monkeypatch, tmp_path):
         monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         home = tmp_path / "home"
         # No explicit trust config => defaults: dirs=[], default='auto'.
@@ -149,9 +152,7 @@ class TestProjectLayerTrust:
         # In 'auto' grace-period, project still wins, but a loud warning
         # must be emitted.
         assert s.log_level == LogLevel.WARNING
-        assert any(
-            "WITHOUT explicit trust" in r.getMessage() for r in records
-        )
+        assert any("WITHOUT explicit trust" in r.getMessage() for r in records)
 
     def test_no_warning_when_allowlisted(self, monkeypatch, tmp_path):
         monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
@@ -192,13 +193,9 @@ class TestProjectLayerTrust:
 
         with _capture_settings_warnings() as records:
             _load_layered_settings()
-        assert not any(
-            "project layer" in r.getMessage() for r in records
-        )
+        assert not any("project layer" in r.getMessage() for r in records)
 
-    def test_get_settings_threaded_through_layered_loader(
-        self, monkeypatch, tmp_path
-    ):
+    def test_get_settings_threaded_through_layered_loader(self, monkeypatch, tmp_path):
         monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         """Smoke test that get_settings() uses the new gate."""
         home = tmp_path / "home"

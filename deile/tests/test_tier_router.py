@@ -9,9 +9,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from deile.core.models.tier import ModelTier
-from deile.core.models.tier_router import (BreakerState, CircuitBreaker,
-                                           NoProviderAvailable, RoutingPolicy,
-                                           TierRouter)
+from deile.core.models.tier_router import (
+    BreakerState,
+    CircuitBreaker,
+    NoProviderAvailable,
+    RoutingPolicy,
+    TierRouter,
+)
 
 # Path to the real YAML (used in integration-style tests)
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
@@ -20,6 +24,7 @@ _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.y
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_provider(provider_id: str) -> MagicMock:
     p = MagicMock()
@@ -31,6 +36,7 @@ def _make_provider(provider_id: str) -> MagicMock:
 # ---------------------------------------------------------------------------
 # RoutingPolicy tests
 # ---------------------------------------------------------------------------
+
 
 class TestRoutingPolicy:
     def test_from_yaml_loads_task_optimized(self):
@@ -64,6 +70,7 @@ class TestRoutingPolicy:
         _policy = RoutingPolicy.from_yaml(_YAML_PATH, "task_optimized")
         # Build a custom policy with only tier_1 to test missing tier
         from deile.core.models.tier_router import RoutingPolicy as RP
+
         p = RP("test", {ModelTier.TIER_1: ["a:b"]})
         assert p.cascade_for_tier(ModelTier.TIER_4) == []
 
@@ -78,6 +85,7 @@ class TestRoutingPolicy:
 # ---------------------------------------------------------------------------
 # CircuitBreaker tests
 # ---------------------------------------------------------------------------
+
 
 class TestCircuitBreaker:
     def test_initially_closed(self):
@@ -155,12 +163,16 @@ class TestCircuitBreaker:
 # TierRouter tests
 # ---------------------------------------------------------------------------
 
+
 class TestTierRouter:
     def _make_router(self, cascade: list, cb: CircuitBreaker = None):
-        policy = RoutingPolicy("test", {
-            ModelTier.TIER_1: cascade,
-            ModelTier.TIER_2: cascade,
-        })
+        policy = RoutingPolicy(
+            "test",
+            {
+                ModelTier.TIER_1: cascade,
+                ModelTier.TIER_2: cascade,
+            },
+        )
         catalog = MagicMock()
         cb = cb or CircuitBreaker()
         return TierRouter(catalog, policy, cb)

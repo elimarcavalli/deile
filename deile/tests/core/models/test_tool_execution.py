@@ -11,11 +11,14 @@ import json
 
 import pytest
 
-from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
-                                              OUTCOME_NOT_FOUND, OUTCOME_RAN,
-                                              build_tool_result_payload,
-                                              payload_to_text,
-                                              resolve_and_execute_tool)
+from deile.core.models.tool_execution import (
+    OUTCOME_EXCEPTION,
+    OUTCOME_NOT_FOUND,
+    OUTCOME_RAN,
+    build_tool_result_payload,
+    payload_to_text,
+    resolve_and_execute_tool,
+)
 from deile.tools.base import ToolResult, ToolStatus
 
 
@@ -45,10 +48,9 @@ class _FakeRegistry:
 @pytest.fixture
 def install_registry(monkeypatch):
     def _install(registry):
-        monkeypatch.setattr(
-            "deile.tools.registry.get_tool_registry", lambda: registry
-        )
+        monkeypatch.setattr("deile.tools.registry.get_tool_registry", lambda: registry)
         return registry
+
     return _install
 
 
@@ -133,9 +135,7 @@ async def test_resolve_tool_raises_exception(install_registry):
 async def test_resolve_does_not_swallow_cancelled_error(install_registry):
     """``except Exception`` must NOT catch ``asyncio.CancelledError`` — it is a
     ``BaseException`` and has to propagate so cancellation is honoured."""
-    install_registry(
-        _FakeRegistry({"t": _FakeTool("t", exc=asyncio.CancelledError())})
-    )
+    install_registry(_FakeRegistry({"t": _FakeTool("t", exc=asyncio.CancelledError())}))
 
     with pytest.raises(asyncio.CancelledError):
         await resolve_and_execute_tool(
@@ -149,6 +149,7 @@ async def test_resolve_does_not_swallow_cancelled_error(install_registry):
 async def test_resolve_registry_without_get_or_tools(install_registry):
     """A registry exposing neither ``get`` nor ``_tools`` resolves to
     not-found with an empty available list rather than raising."""
+
     class _BareRegistry:
         pass
 
@@ -206,9 +207,7 @@ class TestBuildToolResultPayload:
         # OpenAI flag: ``message`` is always present (even empty) so the
         # provider's downstream JSON shape stays stable.
         result = ToolResult(status=ToolStatus.SUCCESS, message="", data="payload")
-        out = build_tool_result_payload(
-            result, OUTCOME_RAN, "t", include_message=True
-        )
+        out = build_tool_result_payload(result, OUTCOME_RAN, "t", include_message=True)
         assert out == {"status": "success", "result": "payload", "message": ""}
 
     def test_success_with_none_data_serialises_to_empty_string(self):

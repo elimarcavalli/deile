@@ -48,8 +48,11 @@ from typing import List, Optional
 import yaml
 
 from deile.core.exceptions import DEILEError
-from deile.orchestration.pipeline._time_utils import (format_iso_utc, now_utc,
-                                                      parse_iso_utc)
+from deile.orchestration.pipeline._time_utils import (
+    format_iso_utc,
+    now_utc,
+    parse_iso_utc,
+)
 from deile.orchestration.pipeline.actions import ACTION_NAMES
 from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 
@@ -222,7 +225,11 @@ class Schedule:
         legacy behaviour.
         """
         now = now or now_utc()
-        cutoff = (now - timedelta(hours=replay_window_hours)) if replay_window_hours else None
+        cutoff = (
+            (now - timedelta(hours=replay_window_hours))
+            if replay_window_hours
+            else None
+        )
         out: List[PendingRun] = []
 
         for r in self.recurring:
@@ -260,21 +267,25 @@ class Schedule:
                     if candidate > now:
                         break
                     latest = candidate
-                out.append(PendingRun(
-                    when=latest,
-                    entry_id=r.id,
-                    action=r.action,
-                    is_oneshot=False,
-                ))
-            else:
-                cursor = next_at
-                while cursor <= now:
-                    out.append(PendingRun(
-                        when=cursor,
+                out.append(
+                    PendingRun(
+                        when=latest,
                         entry_id=r.id,
                         action=r.action,
                         is_oneshot=False,
-                    ))
+                    )
+                )
+            else:
+                cursor = next_at
+                while cursor <= now:
+                    out.append(
+                        PendingRun(
+                            when=cursor,
+                            entry_id=r.id,
+                            action=r.action,
+                            is_oneshot=False,
+                        )
+                    )
                     try:
                         cursor = next_after(r.cron, cursor)
                     except CronExpressionError:
@@ -283,14 +294,16 @@ class Schedule:
         for o in self.oneshot:
             if o.completed or o.run_at > now:
                 continue
-            out.append(PendingRun(
-                when=o.run_at,
-                entry_id=o.id,
-                action=o.action,
-                is_oneshot=True,
-                target_issue=o.target_issue,
-                target_pr=o.target_pr,
-            ))
+            out.append(
+                PendingRun(
+                    when=o.run_at,
+                    entry_id=o.id,
+                    action=o.action,
+                    is_oneshot=True,
+                    target_issue=o.target_issue,
+                    target_pr=o.target_pr,
+                )
+            )
 
         out.sort(key=lambda p: p.when)
         return out
@@ -315,8 +328,7 @@ class Schedule:
         cutoff = now_utc() - timedelta(days=max_age_days)
         before = len(self.oneshot)
         self.oneshot = [
-            o for o in self.oneshot
-            if not (o.completed and o.run_at < cutoff)
+            o for o in self.oneshot if not (o.completed and o.run_at < cutoff)
         ]
         return before - len(self.oneshot)
 

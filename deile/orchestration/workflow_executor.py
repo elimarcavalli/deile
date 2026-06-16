@@ -10,9 +10,14 @@ from ..core.exceptions import DEILEError
 from ..tools.base import ToolContext, ToolStatus
 from ..tools.registry import get_tool_registry
 from ._objective_steps import derive_step_specs
-from .sqlite_task_manager import (SQLiteTaskManager, Task, TaskList,
-                                  TaskPriority, TaskStatus,
-                                  get_sqlite_task_manager)
+from .sqlite_task_manager import (
+    SQLiteTaskManager,
+    Task,
+    TaskList,
+    TaskPriority,
+    TaskStatus,
+    get_sqlite_task_manager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class WorkflowStep:
     """Representa um step de workflow que será convertido em Task"""
+
     action: str
     params: Dict[str, Any] = None
     description: str = ""
@@ -37,17 +43,18 @@ class WorkflowExecutor:
         self.tool_registry = get_tool_registry()
 
         self._action_handlers: Dict[str, Callable] = {
-            'tool': self._execute_tool_action,
-            'command': self._execute_command_action,
-            'validation': self._execute_validation_action,
+            "tool": self._execute_tool_action,
+            "command": self._execute_command_action,
+            "validation": self._execute_validation_action,
         }
         # Keeps background loop tasks alive (prevents GC cancellation)
         self._running_loops: set = set()
         # In-memory store for Callables that cannot be JSON-serialized to SQLite
         self._step_funcs: Dict[str, Dict[str, Optional[Callable]]] = {}
 
-    async def create_workflow_from_objective(self, objective: str,
-                                           context: Optional[Dict[str, Any]] = None) -> TaskList:
+    async def create_workflow_from_objective(
+        self, objective: str, context: Optional[Dict[str, Any]] = None
+    ) -> TaskList:
         """Cria workflow baseado em objetivo do usuário."""
         steps = await self._analyze_objective_to_steps(objective, context or {})
 
@@ -61,7 +68,9 @@ class WorkflowExecutor:
         for i, step in enumerate(steps):
             await self._add_workflow_step_to_list(step, task_list.id, i)
 
-        logger.info("Created workflow with %d steps for objective: %s", len(steps), objective)
+        logger.info(
+            "Created workflow with %d steps for objective: %s", len(steps), objective
+        )
         return task_list
 
     async def execute_task(self, task: Task) -> Dict[str, Any]:
@@ -69,9 +78,9 @@ class WorkflowExecutor:
         logger.info("Executing task: %s", task.title)
 
         try:
-            action_type = task.metadata.get('action_type', 'tool')
-            action_name = task.metadata.get('action_name', '')
-            params = task.metadata.get('params', {})
+            action_type = task.metadata.get("action_type", "tool")
+            action_name = task.metadata.get("action_name", "")
+            params = task.metadata.get("params", {})
 
             handler = self._action_handlers.get(action_type)
             if handler is None:
@@ -80,36 +89,39 @@ class WorkflowExecutor:
             result = await handler(action_name, params, task)
 
             step_funcs = self._step_funcs.get(task.id, {})
-            if step_funcs.get('validation_func'):
-                validation_result = await self._run_validation(task, result, step_funcs['validation_func'])
-                if not validation_result['success']:
+            if step_funcs.get("validation_func"):
+                validation_result = await self._run_validation(
+                    task, result, step_funcs["validation_func"]
+                )
+                if not validation_result["success"]:
                     raise DEILEError(f"Validation failed: {validation_result['error']}")
 
             return {
-                'success': True,
-                'data': result,
-                'message': f"Task '{task.title}' completed successfully",
+                "success": True,
+                "data": result,
+                "message": f"Task '{task.title}' completed successfully",
             }
 
         except Exception as e:
             logger.error("Task execution failed: %s", e)
 
             step_funcs = self._step_funcs.get(task.id, {})
-            if step_funcs.get('rollback_func'):
+            if step_funcs.get("rollback_func"):
                 try:
-                    await self._run_rollback(task, step_funcs['rollback_func'])
+                    await self._run_rollback(task, step_funcs["rollback_func"])
                     logger.info("Rollback completed for task %s", task.id)
                 except Exception as rollback_error:
                     logger.error("Rollback failed: %s", rollback_error)
 
             return {
-                'success': False,
-                'error': str(e),
-                'message': f"Task '{task.title}' failed: {str(e)}",
+                "success": False,
+                "error": str(e),
+                "message": f"Task '{task.title}' failed: {str(e)}",
             }
 
-    async def start_workflow_execution(self, objective: str,
-                                      context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def start_workflow_execution(
+        self, objective: str, context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Inicia execução completa de workflow baseado em objetivo."""
         task_list = await self.create_workflow_from_objective(objective, context)
         await self.task_manager.activate_task_list(task_list.id)
@@ -117,13 +129,13 @@ class WorkflowExecutor:
         self._running_loops.add(loop_task)
         loop_task.add_done_callback(self._running_loops.discard)
         return {
-            'workflow_id': task_list.id,
-            'status': 'started',
-            'total_steps': task_list.total_tasks,
-            'execution_info': {
-                'list_id': task_list.id,
-                'status': 'started',
-                'total_tasks': task_list.total_tasks,
+            "workflow_id": task_list.id,
+            "status": "started",
+            "total_steps": task_list.total_tasks,
+            "execution_info": {
+                "list_id": task_list.id,
+                "status": "started",
+                "total_tasks": task_list.total_tasks,
             },
         }
 
@@ -141,20 +153,27 @@ class WorkflowExecutor:
                 await self.task_manager.mark_task_completed(
                     list_id=list_id,
                     task_id=task.id,
-                    success=result['success'],
-                    result_data=result.get('data') if isinstance(result.get('data'), dict) else None,
-                    error_message=result.get('error'),
+                    success=result["success"],
+                    result_data=(
+                        result.get("data")
+                        if isinstance(result.get("data"), dict)
+                        else None
+                    ),
+                    error_message=result.get("error"),
                 )
 
-                if not result['success']:
+                if not result["success"]:
                     task_list = await self.task_manager.load_task_list(list_id)
                     if task_list and task_list.stop_on_failure:
                         logger.info(
-                            "Stopping workflow %s on step failure (stop_on_failure=True)", list_id
+                            "Stopping workflow %s on step failure (stop_on_failure=True)",
+                            list_id,
                         )
                         break
         except Exception as exc:
-            logger.error("Workflow loop %s aborted due to infrastructure error: %s", list_id, exc)
+            logger.error(
+                "Workflow loop %s aborted due to infrastructure error: %s", list_id, exc
+            )
 
     async def monitor_workflow_progress(self, workflow_id: str) -> Dict[str, Any]:
         """Monitora progresso de um workflow."""
@@ -163,8 +182,9 @@ class WorkflowExecutor:
             raise DEILEError(f"Workflow {workflow_id} not found")
         return status
 
-    async def wait_for_workflow_completion(self, workflow_id: str,
-                                          timeout: Optional[timedelta] = None) -> Dict[str, Any]:
+    async def wait_for_workflow_completion(
+        self, workflow_id: str, timeout: Optional[timedelta] = None
+    ) -> Dict[str, Any]:
         """Aguarda conclusão de um workflow."""
         start_time = datetime.now()
         max_wait = timeout or timedelta(hours=1)
@@ -172,33 +192,34 @@ class WorkflowExecutor:
         while True:
             status = await self.monitor_workflow_progress(workflow_id)
 
-            if status['is_completed']:
+            if status["is_completed"]:
                 return {
-                    'status': 'completed',
-                    'success': not status['has_failures'],
-                    'final_stats': status,
+                    "status": "completed",
+                    "success": not status["has_failures"],
+                    "final_stats": status,
                 }
 
-            if status['has_failures']:
+            if status["has_failures"]:
                 return {
-                    'status': 'failed',
-                    'success': False,
-                    'final_stats': status,
+                    "status": "failed",
+                    "success": False,
+                    "final_stats": status,
                 }
 
             if datetime.now() - start_time > max_wait:
                 return {
-                    'status': 'timeout',
-                    'success': False,
-                    'message': f"Workflow timed out after {max_wait}",
+                    "status": "timeout",
+                    "success": False,
+                    "message": f"Workflow timed out after {max_wait}",
                 }
 
             await asyncio.sleep(2)
 
     # Métodos privados
 
-    async def _analyze_objective_to_steps(self, objective: str,
-                                         context: Dict[str, Any]) -> List[WorkflowStep]:
+    async def _analyze_objective_to_steps(
+        self, objective: str, context: Dict[str, Any]
+    ) -> List[WorkflowStep]:
         """Analisa objetivo e converte em steps executáveis.
 
         A heurística keyword->tool vive em :func:`derive_step_specs`
@@ -208,30 +229,36 @@ class WorkflowExecutor:
         """
         # Mapa de overrides por tool: chave do param -> chave em ``context``.
         context_overrides = {
-            'read_file': {'path': 'target_file'},
-            'find_in_files': {'pattern': 'search_pattern', 'path': 'search_path'},
-            'bash_execute': {'command': 'command'},
+            "read_file": {"path": "target_file"},
+            "find_in_files": {"pattern": "search_pattern", "path": "search_path"},
+            "bash_execute": {"command": "command"},
         }
 
         steps: List[WorkflowStep] = []
         for spec in derive_step_specs(objective):
             params = dict(spec.params)
-            if spec.tool_name == 'list_files' and params.get('recursive') is True:
-                params['path'] = context.get('target_dir', params.get('path', '.'))
-            for param_key, context_key in context_overrides.get(spec.tool_name, {}).items():
+            if spec.tool_name == "list_files" and params.get("recursive") is True:
+                params["path"] = context.get("target_dir", params.get("path", "."))
+            for param_key, context_key in context_overrides.get(
+                spec.tool_name, {}
+            ).items():
                 if context_key in context:
                     params[param_key] = context[context_key]
 
-            steps.append(WorkflowStep(
-                action=spec.tool_name,
-                params=params,
-                description=spec.description,
-                timeout=spec.timeout,
-            ))
+            steps.append(
+                WorkflowStep(
+                    action=spec.tool_name,
+                    params=params,
+                    description=spec.description,
+                    timeout=spec.timeout,
+                )
+            )
 
         return steps
 
-    async def _add_workflow_step_to_list(self, step: WorkflowStep, list_id: str, index: int) -> Task:
+    async def _add_workflow_step_to_list(
+        self, step: WorkflowStep, list_id: str, index: int
+    ) -> Task:
         """Adiciona workflow step como task na lista SQLite, persistindo metadata."""
         depends_on = []
         if index > 0:
@@ -240,15 +267,15 @@ class WorkflowExecutor:
                 depends_on = [existing_tasks[-1].id]
 
         is_registered_tool = self.tool_registry.get_enabled(step.action) is not None
-        action_type = 'tool' if is_registered_tool else step.action
+        action_type = "tool" if is_registered_tool else step.action
 
         task_metadata = {
-            'list_id': list_id,
-            'action_type': action_type,
-            'action_name': step.action,
-            'params': step.params or {},
-            'timeout': step.timeout,
-            'retry_count': step.retry_count,
+            "list_id": list_id,
+            "action_type": action_type,
+            "action_name": step.action,
+            "params": step.params or {},
+            "timeout": step.timeout,
+            "retry_count": step.retry_count,
         }
 
         task = await self.task_manager.add_task_to_list(
@@ -259,19 +286,21 @@ class WorkflowExecutor:
             priority=TaskPriority.MEDIUM,
             estimated_duration=timedelta(seconds=step.timeout),
             metadata=task_metadata,
-            tags=['workflow', f'action:{step.action}'],
+            tags=["workflow", f"action:{step.action}"],
         )
 
         # Callables cannot be JSON-serialized to SQLite — store in memory keyed by task.id
         if step.validation is not None or step.rollback is not None:
             self._step_funcs[task.id] = {
-                'validation_func': step.validation,
-                'rollback_func': step.rollback,
+                "validation_func": step.validation,
+                "rollback_func": step.rollback,
             }
 
         return task
 
-    async def _execute_tool_action(self, action_name: str, params: Dict[str, Any], task: Task) -> Any:
+    async def _execute_tool_action(
+        self, action_name: str, params: Dict[str, Any], task: Task
+    ) -> Any:
         """Executa ação usando tool registry."""
         if self.tool_registry.get_enabled(action_name) is None:
             raise DEILEError(f"Tool '{action_name}' not found in registry")
@@ -280,7 +309,7 @@ class WorkflowExecutor:
             user_input=task.description,
             parsed_args=params,
             session_data={},
-            working_directory='.',
+            working_directory=".",
             file_list=[],
         )
 
@@ -293,44 +322,57 @@ class WorkflowExecutor:
         # family as the plan_manager bug fix). The payload lives in ``data``.
         return result.data
 
-    async def _execute_command_action(self, command: str, params: Dict[str, Any], task: Task) -> Any:
+    async def _execute_command_action(
+        self, command: str, params: Dict[str, Any], task: Task
+    ) -> Any:
         """Executa comando do sistema via bash_execute tool."""
-        return await self._execute_tool_action('bash_execute', {'command': command, **params}, task)
+        return await self._execute_tool_action(
+            "bash_execute", {"command": command, **params}, task
+        )
 
-    async def _execute_validation_action(self, validation_type: str, params: Dict[str, Any], task: Task) -> Any:
+    async def _execute_validation_action(
+        self, validation_type: str, params: Dict[str, Any], task: Task
+    ) -> Any:
         """Valida resultado dos steps anteriores do workflow.
 
         'general': falha se qualquer step anterior do mesmo task_list falhou.
         """
-        if validation_type != 'general':
+        if validation_type != "general":
             raise DEILEError(
                 f"Unknown validation type: '{validation_type}'. Supported: 'general'"
             )
 
-        list_id = task.metadata.get('list_id')
+        list_id = task.metadata.get("list_id")
         if not list_id:
-            raise DEILEError("Cannot run general validation: list_id missing from task metadata")
+            raise DEILEError(
+                "Cannot run general validation: list_id missing from task metadata"
+            )
 
         tasks = await self.task_manager._get_tasks_for_list(list_id)
         failed = [t for t in tasks if t.id != task.id and t.status == TaskStatus.FAILED]
         if failed:
-            failed_titles = ', '.join(t.title for t in failed)
+            failed_titles = ", ".join(t.title for t in failed)
             raise DEILEError(
                 f"General validation failed: {len(failed)} step(s) failed — {failed_titles}"
             )
 
-        return {'validation_passed': True, 'message': 'All previous steps completed successfully'}
+        return {
+            "validation_passed": True,
+            "message": "All previous steps completed successfully",
+        }
 
-    async def _run_validation(self, task: Task, result: Any, validation_func: Callable) -> Dict[str, Any]:
+    async def _run_validation(
+        self, task: Task, result: Any, validation_func: Callable
+    ) -> Dict[str, Any]:
         """Executa validação do resultado de uma task."""
         try:
             if asyncio.iscoroutinefunction(validation_func):
                 validation_result = await validation_func(result)
             else:
                 validation_result = validation_func(result)
-            return {'success': True, 'result': validation_result}
+            return {"success": True, "result": validation_result}
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            return {"success": False, "error": str(e)}
 
     async def _run_rollback(self, task: Task, rollback_func: Callable) -> None:
         """Executa rollback de uma task."""

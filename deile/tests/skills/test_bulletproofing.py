@@ -14,8 +14,11 @@ import threading
 import pytest
 
 from deile.skills.base import Skill
-from deile.skills.registry import (SkillRegistry, get_skill_registry,
-                                   reset_skill_registry)
+from deile.skills.registry import (
+    SkillRegistry,
+    get_skill_registry,
+    reset_skill_registry,
+)
 
 
 @pytest.fixture(autouse=True)

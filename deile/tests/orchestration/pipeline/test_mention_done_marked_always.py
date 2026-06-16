@@ -17,8 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.implementer import WorkOutcome
 from deile.orchestration.pipeline.labels import MENTION_DONE
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
 
 def _make_monitor(*, assigned_prs=None, review_request_prs=None) -> PipelineMonitor:
@@ -41,7 +40,10 @@ def _make_monitor(*, assigned_prs=None, review_request_prs=None) -> PipelineMoni
     github.remove_labels = AsyncMock()
     github.get_issue = AsyncMock(
         return_value=IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1", labels=(),
+            number=1,
+            title="t",
+            url="https://github.com/o/r/issues/1",
+            labels=(),
         )
     )
 
@@ -50,7 +52,10 @@ def _make_monitor(*, assigned_prs=None, review_request_prs=None) -> PipelineMoni
         setattr(notifier, attr, AsyncMock())
 
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=MagicMock(), claude=MagicMock(),
+        cfg,
+        github=github,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
         notifier=notifier,
     )
     monitor.implementer = MagicMock()
@@ -62,8 +67,11 @@ def _make_monitor(*, assigned_prs=None, review_request_prs=None) -> PipelineMoni
 
 def _pr(number: int) -> PrRef:
     return PrRef(
-        number=number, title="pr", url=f"https://github.com/o/r/pull/{number}",
-        labels=(), head_ref=f"auto/issue-{number}",
+        number=number,
+        title="pr",
+        url=f"https://github.com/o/r/pull/{number}",
+        labels=(),
+        head_ref=f"auto/issue-{number}",
     )
 
 

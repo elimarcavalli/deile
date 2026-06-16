@@ -160,6 +160,7 @@ def make_envelope_builder(
     used to repeat. Providers with a non-standard body layout (e.g. Gemini)
     keep their own builder.
     """
+
     def _classify(exc: Exception) -> str:
         return classify_provider_error(
             exc, body_extractor, extra_msg_markers=extra_msg_markers

@@ -1,9 +1,9 @@
 """Tests: history ring buffer and dedup for LiveSessionView export (#547)."""
+
 from __future__ import annotations
 
 import json
 import sys
-from collections import deque
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[3]
@@ -12,6 +12,7 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
         sys.path.insert(0, str(_p))
 
 import _panel as panel
+
 from deile.ui.panel.observability.screens import LiveSessionData
 
 
@@ -22,9 +23,12 @@ class TestHistoryRingBuffer:
 
     def test_consecutive_dedup(self):
         v = panel.LiveSessionView()
-        snap = {"polled_at": "2026-01-01T00:00:00Z",
-                "session": {"task_id": "t1"},
-                "command": None, "chat": None}
+        snap = {
+            "polled_at": "2026-01-01T00:00:00Z",
+            "session": {"task_id": "t1"},
+            "command": None,
+            "chat": None,
+        }
         snap_key = json.dumps(snap, sort_keys=True, default=str)
         # First add
         if snap_key != v._history_last_key:
@@ -39,10 +43,18 @@ class TestHistoryRingBuffer:
     def test_different_snaps_both_kept(self):
         v = panel.LiveSessionView()
         snaps = [
-            {"polled_at": "2026-01-01T00:00:00Z", "session": {"task_id": "t1"},
-             "command": None, "chat": None},
-            {"polled_at": "2026-01-01T00:00:01Z", "session": {"task_id": "t2"},
-             "command": None, "chat": None},
+            {
+                "polled_at": "2026-01-01T00:00:00Z",
+                "session": {"task_id": "t1"},
+                "command": None,
+                "chat": None,
+            },
+            {
+                "polled_at": "2026-01-01T00:00:01Z",
+                "session": {"task_id": "t2"},
+                "command": None,
+                "chat": None,
+            },
         ]
         for snap in snaps:
             key = json.dumps(snap, sort_keys=True, default=str)
@@ -53,12 +65,19 @@ class TestHistoryRingBuffer:
 
     def test_history_in_export_v2(self):
         history = [
-            {"polled_at": "2026-01-01T00:00:00Z", "session": None, "command": None, "chat": None}
+            {
+                "polled_at": "2026-01-01T00:00:00Z",
+                "session": None,
+                "command": None,
+                "chat": None,
+            }
         ]
         data = LiveSessionData(
             session=None, command=None, chat=None, api_errors=[], stdout=None
         )
-        obj = panel._build_live_session_json(data, history, redactor=None, include_history=True)
+        obj = panel._build_live_session_json(
+            data, history, redactor=None, include_history=True
+        )
         assert obj["schema_version"] == "deile.export.v2"
         assert len(obj["history"]) == 1
         assert obj["history"][0]["polled_at"] == "2026-01-01T00:00:00Z"
@@ -67,7 +86,9 @@ class TestHistoryRingBuffer:
         data = LiveSessionData(
             session=None, command=None, chat=None, api_errors=[], stdout=None
         )
-        obj = panel._build_live_session_json(data, [], redactor=None, include_history=True)
+        obj = panel._build_live_session_json(
+            data, [], redactor=None, include_history=True
+        )
         assert obj["schema_version"] == "deile.export.v2"
         assert obj["history"] == []
 
@@ -83,7 +104,11 @@ class TestHistoryRingBuffer:
     def test_default_no_history_v1_with_payload(self):
         """AC14: v1 snapshot still includes the payload field."""
         data = LiveSessionData(
-            session={"task_id": "t1"}, command=None, chat=None, api_errors=[], stdout=None
+            session={"task_id": "t1"},
+            command=None,
+            chat=None,
+            api_errors=[],
+            stdout=None,
         )
         obj = panel._build_live_session_json(data, [], redactor=None)
         assert obj["schema_version"] == "deile.export.v1"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,9 +11,7 @@ import deile.orchestration.pipeline.pipeline_logger as pl
 from deile.orchestration.pipeline.pipeline_logger import log_auth_recover, log_auth_skip
 from deile.orchestration.pipeline.stages import (
     _AUTH_BACKOFF_THRESHOLD,
-    _auth_target_key,
     record_auth_failure_and_maybe_pause,
-    reset_auth_failures,
 )
 
 
@@ -50,12 +48,16 @@ def test_log_auth_backoff_pattern(caplog):
             record_auth_failure_and_maybe_pause(mon, "issue", 42)
     lines = _events(caplog)
     pattern = r"auth\.backoff\s+target=\S+\s+attempts=\d+\s+until_iso=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\s+backoff_s=\d+"
-    assert any(re.search(pattern, line) for line in lines), f"No auth.backoff match in: {lines}"
+    assert any(
+        re.search(pattern, line) for line in lines
+    ), f"No auth.backoff match in: {lines}"
 
 
 def test_log_auth_skip_pattern(caplog):
     with caplog.at_level(logging.INFO, logger="deile.pipeline.events"):
-        log_auth_skip(target="issue:99", until_iso="2023-11-14T22:21:20Z", remaining_s=480)
+        log_auth_skip(
+            target="issue:99", until_iso="2023-11-14T22:21:20Z", remaining_s=480
+        )
     lines = _events(caplog)
     assert lines, "No auth.skip line emitted"
     pattern = r"auth\.skip\s+target=\S+\s+until_iso=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\s+remaining_s=\d+"
@@ -89,4 +91,6 @@ def test_auth_backoff_concrete_values(monkeypatch, caplog):
     assert backoff_lines, f"No auth.backoff line in: {lines}"
     line = backoff_lines[0]
     assert "backoff_s=480" in line, f"Expected backoff_s=480 in: {line!r}"
-    assert "until_iso=2023-11-14T22:21:20Z" in line, f"Expected until_iso=2023-11-14T22:21:20Z in: {line!r}"
+    assert (
+        "until_iso=2023-11-14T22:21:20Z" in line
+    ), f"Expected until_iso=2023-11-14T22:21:20Z in: {line!r}"

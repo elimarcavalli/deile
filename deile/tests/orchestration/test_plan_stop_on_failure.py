@@ -18,10 +18,21 @@ from datetime import datetime
 
 import pytest
 
-from deile.orchestration.plan_manager import (ExecutionPlan, PlanManager,
-                                              PlanStatus, PlanStep, StepStatus)
-from deile.tools.base import (SecurityLevel, SyncTool, ToolCategory,
-                              ToolContext, ToolResult, ToolSchema)
+from deile.orchestration.plan_manager import (
+    ExecutionPlan,
+    PlanManager,
+    PlanStatus,
+    PlanStep,
+    StepStatus,
+)
+from deile.tools.base import (
+    SecurityLevel,
+    SyncTool,
+    ToolCategory,
+    ToolContext,
+    ToolResult,
+    ToolSchema,
+)
 
 
 class _AlwaysFails(SyncTool):
@@ -38,14 +49,16 @@ class _AlwaysFails(SyncTool):
         return ToolCategory.OTHER.value
 
     def __init__(self) -> None:
-        super().__init__(schema=ToolSchema(
-            name="always_fails",
-            description="deterministically fails",
-            parameters={},
-            required=[],
-            security_level=SecurityLevel.SAFE,
-            category=ToolCategory.OTHER,
-        ))
+        super().__init__(
+            schema=ToolSchema(
+                name="always_fails",
+                description="deterministically fails",
+                parameters={},
+                required=[],
+                security_level=SecurityLevel.SAFE,
+                category=ToolCategory.OTHER,
+            )
+        )
 
     def execute_sync(self, context: ToolContext) -> ToolResult:
         return ToolResult.error_result("boom", error_code="BOOM")
@@ -54,14 +67,16 @@ class _AlwaysFails(SyncTool):
 class _Records(SyncTool):
     def __init__(self, log: list) -> None:
         self._log = log
-        super().__init__(schema=ToolSchema(
-            name="records",
-            description="records execution",
-            parameters={"label": {"type": "string", "description": "label"}},
-            required=["label"],
-            security_level=SecurityLevel.SAFE,
-            category=ToolCategory.OTHER,
-        ))
+        super().__init__(
+            schema=ToolSchema(
+                name="records",
+                description="records execution",
+                parameters={"label": {"type": "string", "description": "label"}},
+                required=["label"],
+                security_level=SecurityLevel.SAFE,
+                category=ToolCategory.OTHER,
+            )
+        )
 
     @property
     def name(self) -> str:
@@ -87,6 +102,7 @@ def plan_manager(tmp_path):
     # and test_stop_on_failure_false_continues don't fight over duplicate
     # registrations of the same tool name.
     from deile.tools.registry import ToolRegistry
+
     pm.tool_registry = ToolRegistry()
     return pm
 
@@ -118,8 +134,12 @@ async def test_stop_on_failure_halts_outer_loop(plan_manager) -> None:
     # be picked up on the next outer-loop tick.
     steps = [
         PlanStep(id="s1", tool_name="always_fails", params={}, description="will fail"),
-        PlanStep(id="s2", tool_name="records", params={"label": "second"},
-                 description="second batch"),
+        PlanStep(
+            id="s2",
+            tool_name="records",
+            params={"label": "second"},
+            description="second batch",
+        ),
     ]
     # Both s1 and s2 have no dependency; with max_concurrent_steps=1, only s1
     # is taken in batch 1, then if not stopped, s2 runs in batch 2.
@@ -133,6 +153,7 @@ async def test_stop_on_failure_halts_outer_loop(plan_manager) -> None:
     # Bypass async approval / persistence side effects we don't care about.
     async def noop_save(_plan):
         return None
+
     plan_manager._save_plan = noop_save  # type: ignore[assignment]
 
     plan_manager._stop_flags[plan.id] = False
@@ -151,8 +172,12 @@ async def test_stop_on_failure_false_continues(plan_manager) -> None:
 
     steps = [
         PlanStep(id="s1", tool_name="always_fails", params={}, description="will fail"),
-        PlanStep(id="s2", tool_name="records", params={"label": "second"},
-                 description="second batch"),
+        PlanStep(
+            id="s2",
+            tool_name="records",
+            params={"label": "second"},
+            description="second batch",
+        ),
     ]
     plan = _new_plan(stop_on_failure=False, steps=steps)
     plan.max_concurrent_steps = 1
@@ -162,6 +187,7 @@ async def test_stop_on_failure_false_continues(plan_manager) -> None:
 
     async def noop_save(_plan):
         return None
+
     plan_manager._save_plan = noop_save  # type: ignore[assignment]
     plan_manager._stop_flags[plan.id] = False
 

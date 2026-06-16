@@ -27,10 +27,12 @@ if str(_INFRA_K8S) not in sys.path:
 class TestDeployKeyPropagation:
     def test_openrouter_in_llm_keys(self):
         import deploy  # noqa: PLC0415
+
         assert "OPENROUTER_API_KEY" in deploy.LLM_KEYS
 
     def test_create_namespace_accepts_openrouter_key(self):
         import deploy  # noqa: PLC0415
+
         cfg = deploy.CreateNamespaceConfig(openrouter_key="sk-or-x")
         assert cfg.openrouter_key == "sk-or-x"
 
@@ -39,6 +41,7 @@ class TestDeployKeyPropagation:
         import inspect
 
         import deploy  # noqa: PLC0415
+
         src = inspect.getsource(deploy)
         assert '"--openrouter-key":' in src
         assert '"openrouter_key"' in src

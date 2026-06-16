@@ -22,8 +22,7 @@ from .discovery import discover_skills
 from .language_detector import LanguageDetector
 from .registry import get_skill_registry
 from .router import SkillRouter
-from .slash_command_bridge import (register_skills_as_commands,
-                                   unregister_skill_commands)
+from .slash_command_bridge import register_skills_as_commands, unregister_skill_commands
 from .watcher import SkillsWatcher
 
 logger = logging.getLogger(__name__)
@@ -66,15 +65,21 @@ async def bootstrap_skills_with_handle(
     for skill in skills:
         registry.register(skill)
     for name, old_path, new_path in overrides:
-        logger.debug("skills: %r from %s overrides previous definition from %s",
-                     name, new_path, old_path)
+        logger.debug(
+            "skills: %r from %s overrides previous definition from %s",
+            name,
+            new_path,
+            old_path,
+        )
 
     logger.info("skills: registry now holds %d skill(s)", len(registry))
 
     if command_registry is not None:
         unregister_skill_commands(command_registry)
         registered = register_skills_as_commands(skills, command_registry)
-        logger.info("skills: registered %d skill(s) as /<name> slash commands", registered)
+        logger.info(
+            "skills: registered %d skill(s) as /<name> slash commands", registered
+        )
 
     router = SkillRouter(
         registry=registry,

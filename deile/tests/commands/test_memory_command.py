@@ -41,17 +41,20 @@ class _FakeAgent:
 
 def _make_mock_mm(usage_data: dict | None = None) -> MagicMock:
     mm = MagicMock()
-    mm.get_memory_usage = AsyncMock(return_value=usage_data or {
-        "total_memory_mb": 1.5,
-        "components": {
-            "working_memory": {"entries": 3, "memory_mb": 0.5},
-            "episodic_memory": {"entries": 10, "memory_mb": 0.6},
-            "semantic_memory": {"entries": 5, "memory_mb": 0.3},
-            "procedural_memory": {"entries": 2, "memory_mb": 0.1},
-        },
-        "manager_stats": {},
-        "consolidation_active": False,
-    })
+    mm.get_memory_usage = AsyncMock(
+        return_value=usage_data
+        or {
+            "total_memory_mb": 1.5,
+            "components": {
+                "working_memory": {"entries": 3, "memory_mb": 0.5},
+                "episodic_memory": {"entries": 10, "memory_mb": 0.6},
+                "semantic_memory": {"entries": 5, "memory_mb": 0.3},
+                "procedural_memory": {"entries": 2, "memory_mb": 0.1},
+            },
+            "manager_stats": {},
+            "consolidation_active": False,
+        }
+    )
     mm.optimize_memory = AsyncMock(return_value={"consolidated": 5, "freed_mb": 0.2})
     return mm
 
@@ -85,8 +88,18 @@ class TestStatusReadsFromMemoryManager:
 
     async def test_status_values_change_as_session_grows(self):
         """Values differ when MemoryManager reports more entries."""
-        mm1 = _make_mock_mm({"total_memory_mb": 0.0, "components": {"working_memory": {"entries": 0, "memory_mb": 0.0}}})
-        mm2 = _make_mock_mm({"total_memory_mb": 5.0, "components": {"working_memory": {"entries": 50, "memory_mb": 5.0}}})
+        mm1 = _make_mock_mm(
+            {
+                "total_memory_mb": 0.0,
+                "components": {"working_memory": {"entries": 0, "memory_mb": 0.0}},
+            }
+        )
+        mm2 = _make_mock_mm(
+            {
+                "total_memory_mb": 5.0,
+                "components": {"working_memory": {"entries": 50, "memory_mb": 5.0}},
+            }
+        )
 
         result1 = await _cmd().execute(_ctx("status", agent=_FakeAgent(mm1)))
         result2 = await _cmd().execute(_ctx("status", agent=_FakeAgent(mm2)))
@@ -119,7 +132,9 @@ class TestCompactCallsOptimizeMemory:
 
     async def test_compact_reports_real_result(self):
         mm = _make_mock_mm()
-        mm.optimize_memory = AsyncMock(return_value={"consolidated": 12, "freed_mb": 1.5})
+        mm.optimize_memory = AsyncMock(
+            return_value={"consolidated": 12, "freed_mb": 1.5}
+        )
         agent = _FakeAgent(mm)
         result = await _cmd().execute(_ctx("compact", agent=agent))
         rendered = _render(result.content)
@@ -133,6 +148,7 @@ class TestCompactCallsOptimizeMemory:
 
     async def test_compact_exception_raises_command_error(self):
         from deile.core.exceptions import CommandError
+
         mm = MagicMock()
         mm.optimize_memory = AsyncMock(side_effect=RuntimeError("out of memory"))
         agent = _FakeAgent(mm)
@@ -147,8 +163,13 @@ class TestCompactCallsOptimizeMemory:
 
 class TestCheckpointSaveWritesToDisk:
     async def test_checkpoint_save_writes_to_disk(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
 
         mm = _make_mock_mm()
         agent = _FakeAgent(mm)
@@ -166,8 +187,13 @@ class TestCheckpointSaveWritesToDisk:
         assert "mytest" in index
 
     async def test_checkpoint_save_success_message(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
 
         result = await _cmd().execute(_ctx("save cp_test"))
         rendered = _render(result.content)
@@ -181,11 +207,20 @@ class TestCheckpointSaveWritesToDisk:
 
 class TestCheckpointRestoreReadsFromDisk:
     async def test_checkpoint_restore_reads_from_disk(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
 
         # Create checkpoint file manually
-        cp_data = {"name": "restore_test", "saved_at": "2026-01-01T00:00:00", "memory_usage": {}}
+        cp_data = {
+            "name": "restore_test",
+            "saved_at": "2026-01-01T00:00:00",
+            "memory_usage": {},
+        }
         cp_path = tmp_path / "restore_test.json"
         cp_path.write_text(json.dumps(cp_data), encoding="utf-8")
 
@@ -196,16 +231,29 @@ class TestCheckpointRestoreReadsFromDisk:
 
     async def test_checkpoint_restore_fails_if_not_exists(self, tmp_path, monkeypatch):
         from deile.core.exceptions import CommandError
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
 
         with pytest.raises(CommandError, match="não encontrado"):
             await _cmd().execute(_ctx("restore ghost_checkpoint"))
 
-    async def test_checkpoint_restore_session_b_after_save_session_a(self, tmp_path, monkeypatch):
+    async def test_checkpoint_restore_session_b_after_save_session_a(
+        self, tmp_path, monkeypatch
+    ):
         """Checkpoint saved in 'session A' must be readable in 'session B'."""
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
 
         mm = _make_mock_mm()
         # Session A: save
@@ -225,10 +273,17 @@ class TestCheckpointRestoreReadsFromDisk:
 
 class TestCheckpointListReadsIndex:
     async def test_checkpoint_list_reads_index(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
 
-        index = {"cp1": {"name": "cp1", "saved_at": "2026-01-01T00:00:00", "size_bytes": 100}}
+        index = {
+            "cp1": {"name": "cp1", "saved_at": "2026-01-01T00:00:00", "size_bytes": 100}
+        }
         (tmp_path / "index.json").write_text(json.dumps(index))
 
         result = await _cmd().execute(_ctx("list"))
@@ -237,8 +292,13 @@ class TestCheckpointListReadsIndex:
         assert "cp1" in rendered
 
     async def test_checkpoint_list_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
 
         result = await _cmd().execute(_ctx("list"))
         assert result.success is True
@@ -254,13 +314,16 @@ class TestCheckpointListReadsIndex:
 class TestClearTypeHandlesNoneSafely:
     async def test_clear_working_reduces_usage(self):
         """After clearing conversation, usage should reflect 0 messages."""
+
         class _Session:
             conversation_history = ["msg1", "msg2"]
             context_data = {}
             memory = []
 
         session_obj = _Session()
-        ctx = CommandContext(user_input="/memory clear conversation", args="clear conversation")
+        ctx = CommandContext(
+            user_input="/memory clear conversation", args="clear conversation"
+        )
         ctx.session = session_obj
         result = await _cmd().execute(ctx)
         assert result.success is True
@@ -268,12 +331,15 @@ class TestClearTypeHandlesNoneSafely:
 
     async def test_clear_type_handles_none_safely(self):
         """None session attributes must not raise AttributeError."""
+
         class _NoneSession:
             conversation_history = None
             context_data = None
             memory = None
 
-        ctx = CommandContext(user_input="/memory clear conversation", args="clear conversation")
+        ctx = CommandContext(
+            user_input="/memory clear conversation", args="clear conversation"
+        )
         ctx.session = _NoneSession()
         result = await _cmd().execute(ctx)
         assert result.success is True
@@ -284,6 +350,7 @@ class TestClearTypeHandlesNoneSafely:
 
     async def test_clear_unknown_type_raises(self):
         from deile.core.exceptions import CommandError
+
         with pytest.raises(CommandError, match="desconhecido"):
             await _cmd().execute(_ctx("clear foobar"))
 
@@ -436,6 +503,7 @@ class TestClearAdditionalTypes:
 class TestExportErrorPath:
     async def test_export_invalid_path_raises(self, tmp_path):
         from deile.core.exceptions import CommandError
+
         bad_path = tmp_path / "nonexistent_dir" / "sub" / "out.json"
         with pytest.raises(CommandError, match="Falha ao escrever"):
             await _cmd().execute(_ctx(f"export {bad_path}"))
@@ -479,6 +547,7 @@ class TestAdditionalCoverage:
 
     async def test_unknown_action_raises(self):
         from deile.core.exceptions import CommandError
+
         with pytest.raises(CommandError, match="desconhecida"):
             await _cmd().execute(_ctx("frobnicate"))
 
@@ -489,8 +558,14 @@ class TestAdditionalCoverage:
 
     async def test_restore_invalid_json_raises(self, tmp_path, monkeypatch):
         from deile.core.exceptions import CommandError
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
 
         (tmp_path / "bad.json").write_text("not valid json", encoding="utf-8")
         with pytest.raises(CommandError, match="Falha ao ler checkpoint"):
@@ -498,20 +573,31 @@ class TestAdditionalCoverage:
 
     async def test_restore_no_name_raises(self):
         from deile.core.exceptions import CommandError
+
         with pytest.raises(CommandError, match="requer"):
             await _cmd().execute(_ctx("restore"))
 
     async def test_save_no_args_uses_default_name(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
 
         result = await _cmd().execute(_ctx("save"))
         assert result.success is True
 
     async def test_save_with_failing_mm_still_succeeds(self, tmp_path, monkeypatch):
         """When mm.get_memory_usage raises during save, checkpoint still writes."""
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
         mm = MagicMock()
         mm.get_memory_usage = AsyncMock(side_effect=RuntimeError("db error"))
         result = await _cmd().execute(_ctx("save failtest", agent=_FakeAgent(mm)))
@@ -528,6 +614,7 @@ class TestAdditionalCoverage:
 
     async def test_export_no_args_uses_default_filename(self, tmp_path):
         import os
+
         orig = os.getcwd()
         os.chdir(tmp_path)
         try:
@@ -539,7 +626,9 @@ class TestAdditionalCoverage:
     async def test_status_with_not_initialized_falls_back(self):
         """When real_usage has status='not_initialized', fall back to session data."""
         mm = MagicMock()
-        mm.get_memory_usage = AsyncMock(return_value={"status": "not_initialized", "components": {}})
+        mm.get_memory_usage = AsyncMock(
+            return_value={"status": "not_initialized", "components": {}}
+        )
         agent = _FakeAgent(mm)
         result = await _cmd().execute(_ctx("status", agent=agent))
         assert result.success is True
@@ -557,8 +646,12 @@ class TestAdditionalCoverage:
         """When index file has invalid JSON, _load_index returns {}."""
         idx = tmp_path / "index.json"
         idx.write_text("not-valid-json")
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", idx)
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX", idx
+        )
         result = await _cmd().execute(_ctx("list"))
         assert result.success is True
         rendered = _render(result.content)
@@ -567,16 +660,28 @@ class TestAdditionalCoverage:
     async def test_save_path_traversal_raises(self, tmp_path, monkeypatch):
         """Checkpoint names with directory separators are rejected."""
         from deile.core.exceptions import CommandError
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
         with pytest.raises(CommandError, match="inválido"):
             await _cmd().execute(_ctx("save ../../evil"))
 
     async def test_restore_path_traversal_raises(self, tmp_path, monkeypatch):
         """Restore rejects names with directory separators."""
         from deile.core.exceptions import CommandError
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
-        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path
+        )
+        monkeypatch.setattr(
+            "deile.commands.builtin.memory_command._CHECKPOINT_INDEX",
+            tmp_path / "index.json",
+        )
         with pytest.raises(CommandError, match="inválido"):
             await _cmd().execute(_ctx("restore ../../etc/passwd"))
 
@@ -595,6 +700,7 @@ class TestUsageHighImpact:
 
     async def test_usage_medium_impact_recommendation(self):
         """When total_impact > 2 but <= 5, shows medium impact recommendation."""
+
         class _Session:
             conversation_history = ["x"] * 60  # >50 → +2
             context_data = {}
@@ -625,6 +731,7 @@ class TestUsageHighImpact:
 
     async def test_clear_all_with_audit_events(self):
         """Clear all path hits audit events section."""
+
         class _Session:
             conversation_history = ["m"]
             context_data = {}

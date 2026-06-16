@@ -1,4 +1,5 @@
 """Factory for the post-merge episodic memory callback."""
+
 from __future__ import annotations
 
 import logging
@@ -7,7 +8,9 @@ from typing import Awaitable, Callable, Optional
 logger = logging.getLogger(__name__)
 
 
-def make_post_merge_callback(agent) -> Optional[Callable[[int, str, str], Awaitable[None]]]:
+def make_post_merge_callback(
+    agent,
+) -> Optional[Callable[[int, str, str], Awaitable[None]]]:
     """Return an async callback that stores a PR-merged episode in the agent's episodic memory.
 
     Returns None when agent is None (e.g. CLI one-shot mode) so callers can guard
@@ -32,6 +35,10 @@ def make_post_merge_callback(agent) -> Optional[Callable[[int, str, str], Awaita
             )
             logger.debug("post-merge episodic memory stored for PR #%d", pr_number)
         except Exception as exc:  # noqa: BLE001 — best-effort
-            logger.warning("post_merge_callback: episodic store failed for PR #%d: %s", pr_number, exc)
+            logger.warning(
+                "post_merge_callback: episodic store failed for PR #%d: %s",
+                pr_number,
+                exc,
+            )
 
     return _cb

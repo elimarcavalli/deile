@@ -18,13 +18,20 @@ Ver issue #303 e ``docs/system_design/DECISOES.md`` #35 (state file + heartbeat)
 #36 (status server + registry).
 """
 
-from deile.runtime.instance_state import (InstanceState, get_instance_state,
-                                          peek_instance_state, pid_alive,
-                                          reset_instance_state)
-from deile.runtime.registry import (REGISTRY_SCHEMA_VERSION, Registry,
-                                    RegistryEntry)
-from deile.runtime.status_server import (MAX_LINE_BYTES, StatusClient,
-                                         StatusServer, format_metrics)
+from deile.runtime.instance_state import (
+    InstanceState,
+    get_instance_state,
+    peek_instance_state,
+    pid_alive,
+    reset_instance_state,
+)
+from deile.runtime.registry import REGISTRY_SCHEMA_VERSION, Registry, RegistryEntry
+from deile.runtime.status_server import (
+    MAX_LINE_BYTES,
+    StatusClient,
+    StatusServer,
+    format_metrics,
+)
 
 __all__ = [
     # instance_state

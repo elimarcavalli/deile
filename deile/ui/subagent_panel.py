@@ -59,7 +59,6 @@ from .spinner import BRAILLE_SPINNER_FRAMES as _SPINNER
 logger = logging.getLogger(__name__)
 
 
-
 _REFRESH_HZ = 6.0
 # Timeout (segundos) após receber ``\x1b`` ISOLADO no buffer para decidir se
 # é ESC genuíno ou prefixo de seta. 200ms é a recomendação clássica de
@@ -137,7 +136,7 @@ def parse_key_buffer(buf: str) -> Tuple[List[str], str]:
             if i + 2 >= n:
                 # Sequência SS3 incompleta — guarda no remainder.
                 return seqs, buf[i:]
-            seqs.append(buf[i:i + 3])
+            seqs.append(buf[i : i + 3])
             i += 3
             continue
 
@@ -145,13 +144,13 @@ def parse_key_buffer(buf: str) -> Tuple[List[str], str]:
         end = i + 2
         while end < n:
             b = buf[end]
-            if 0x40 <= ord(b) <= 0x7e:
+            if 0x40 <= ord(b) <= 0x7E:
                 break
             end += 1
         if end >= n:
             # CSI incompleta — guarda no remainder.
             return seqs, buf[i:]
-        seqs.append(buf[i:end + 1])
+        seqs.append(buf[i : end + 1])
         i = end + 1
 
     return seqs, ""
@@ -265,8 +264,11 @@ class SubAgentPanelRenderer:
                 items.append(Text(""))
         items.append(Text(""))
         hint = Text(
-            "(toque 1-9 para focar · ESC: fecha painel)" if self._enable_keyboard
-            else "(painel multipanel)",
+            (
+                "(toque 1-9 para focar · ESC: fecha painel)"
+                if self._enable_keyboard
+                else "(painel multipanel)"
+            ),
             style="dim",
         )
         items.append(hint)
@@ -293,7 +295,9 @@ class SubAgentPanelRenderer:
         ok = sum(1 for s in self._states if s.status == "ok")
         err = sum(1 for s in self._states if s.status in ("error", "cancelled"))
         spinner = _SPINNER[self._frame % len(_SPINNER)] if running else "🧩"
-        elapsed = _fmt_mmss(time.monotonic() - self._start_t) if self._start_t else "00:00"
+        elapsed = (
+            _fmt_mmss(time.monotonic() - self._start_t) if self._start_t else "00:00"
+        )
         return Text.from_markup(
             f"[bold cyan]{spinner}[/bold cyan] "
             f"[bold]Decomposto em {n} frentes paralelas[/bold] · "
@@ -360,11 +364,14 @@ class SubAgentPanelRenderer:
         t.add_column(style="dim", no_wrap=True)
         t.add_column()
         t.add_row("description", _escape_markup(_truncate(st.task.description, 80)))
-        t.add_row("subagent_type", _escape_markup(st.task.persona or "developer (default)"))
+        t.add_row(
+            "subagent_type", _escape_markup(st.task.persona or "developer (default)")
+        )
         t.add_row(
             "model",
             Text.from_markup(
-                "[dim](herdado da sessão)[/dim]" if not st.task.model
+                "[dim](herdado da sessão)[/dim]"
+                if not st.task.model
                 else _escape_markup(st.task.model)
             ),
         )
@@ -434,8 +441,7 @@ class SubAgentPanelRenderer:
         # Reivindica stdin com exclusividade — o watcher do CLI principal
         # consulta esta flag e pausa enquanto estamos ativos (sem isso, ambos
         # competem pelos mesmos bytes e metade das teclas se perde).
-        from deile.ui._stdin_owner import (claim_stdin_for_panel,
-                                           release_stdin_for_panel)
+        from deile.ui._stdin_owner import claim_stdin_for_panel, release_stdin_for_panel
 
         kb_stop = threading.Event()
         kb_thread: Optional[threading.Thread] = None
@@ -550,7 +556,9 @@ class SubAgentPanelRenderer:
 
     # ----- Keyboard (cbreak via thread daemon) -------------------------------
 
-    def _start_keyboard_watcher(self, stop_event: threading.Event) -> Optional[threading.Thread]:
+    def _start_keyboard_watcher(
+        self, stop_event: threading.Event
+    ) -> Optional[threading.Thread]:
         try:
             import select as _select
             import termios
@@ -584,7 +592,9 @@ class SubAgentPanelRenderer:
                 tty.setcbreak(sys.stdin.fileno())
                 we_set_cbreak = True
             except Exception:
-                logger.debug("setcbreak failed; keyboard watcher disabled", exc_info=True)
+                logger.debug(
+                    "setcbreak failed; keyboard watcher disabled", exc_info=True
+                )
                 return None
 
         loop = asyncio.get_running_loop()
@@ -650,7 +660,7 @@ class SubAgentPanelRenderer:
                 # ``fd`` já foi capturado no escopo externo (mesmo fd usado
                 # pra detectar cbreak). Reutilizamos para evitar diferenças
                 # de file descriptor entre threads.
-                pending = ""        # bytes não-parseáveis (CSI incompleta)
+                pending = ""  # bytes não-parseáveis (CSI incompleta)
                 esc_deadline = 0.0  # > 0 quando ESC isolado está aguardando
                 while not stop_event.is_set():
                     # Timeout do select: curto pra reagir a stop_event e

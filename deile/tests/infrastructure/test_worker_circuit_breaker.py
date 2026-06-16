@@ -14,6 +14,7 @@ Inclui um teste de FIAÇÃO no cliente (``DeileWorkerClient.dispatch``): após
 abrir o breaker, o próximo dispatch falha com ``CIRCUIT_OPEN`` SEM tocar a
 rede (o MockTransport não é chamado).
 """
+
 from __future__ import annotations
 
 import httpx
@@ -21,9 +22,11 @@ import pytest
 
 from deile.infrastructure import deile_worker_client as wc
 from deile.infrastructure.circuit_breaker import CircuitBreaker, CircuitState
-from deile.infrastructure.deile_worker_client import (DeileWorkerClient,
-                                                      WorkerDispatchError,
-                                                      reset_circuit_breaker)
+from deile.infrastructure.deile_worker_client import (
+    DeileWorkerClient,
+    WorkerDispatchError,
+    reset_circuit_breaker,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -43,7 +46,9 @@ class _FakeClock:
 
 def _breaker(clock: _FakeClock) -> CircuitBreaker:
     return CircuitBreaker(
-        failure_threshold=5, reset_timeout_s=30.0, time_source=clock,
+        failure_threshold=5,
+        reset_timeout_s=30.0,
+        time_source=clock,
     )
 
 

@@ -15,8 +15,7 @@ from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import GhCommandError, PrRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.labels import REVIEW_PENDING
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
 
 def _pr(number: int, labels: tuple = (), head_ref: str | None = None) -> PrRef:
@@ -60,19 +59,35 @@ def _make_monitor(
 
     notifier = MagicMock()
     for attr in (
-        "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "implementation_parked", "pr_picked_up", "pr_reviewed",
-        "issue_auto_classified", "error", "pr_auto_classified", "mention_processed",
+        "issue_picked_up",
+        "issue_reviewed",
+        "implementation_started",
+        "implementation_finished",
+        "implementation_parked",
+        "pr_picked_up",
+        "pr_reviewed",
+        "issue_auto_classified",
+        "error",
+        "pr_auto_classified",
+        "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
 
     worktrees = MagicMock()
     claude = MagicMock()
-    claude.run = AsyncMock(return_value=ClaudeRunResult(
-        returncode=0, stdout="", stderr="", duration_seconds=0.1, cmd=("claude", "-p", "x")
-    ))
+    claude.run = AsyncMock(
+        return_value=ClaudeRunResult(
+            returncode=0,
+            stdout="",
+            stderr="",
+            duration_seconds=0.1,
+            cmd=("claude", "-p", "x"),
+        )
+    )
 
-    monitor = PipelineMonitor(cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier)
+    monitor = PipelineMonitor(
+        cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier
+    )
     # Inject a multi-monitor identity when requested (so the ~batch: claim path
     # runs); enable_review_human_prs decouples ownership from branch prefix so
     # the claim tests don't depend on per-monitor branch naming.
@@ -164,7 +179,9 @@ class TestClassifyNewPrs:
                 raise GhCommandError(["gh"], 1, "", "network")
             return "abc"
 
-        monitor, github, notifier = _make_monitor(unclassified_prs=[pr1, pr2], shard_count=2)
+        monitor, github, notifier = _make_monitor(
+            unclassified_prs=[pr1, pr2], shard_count=2
+        )
         github.claim_with_batch = AsyncMock(side_effect=_claim)
         await monitor._classify_new_prs()
         assert monitor.stats.errors == 1
@@ -176,7 +193,9 @@ class TestClassifyNewPrs:
         """GhCommandError in add_labels increments error counter and calls notifier.error."""
         pr = _pr(47)
         monitor, github, notifier = _make_monitor(unclassified_prs=[pr])
-        github.add_labels = AsyncMock(side_effect=GhCommandError(["gh"], 1, "", "label error"))
+        github.add_labels = AsyncMock(
+            side_effect=GhCommandError(["gh"], 1, "", "label error")
+        )
         await monitor._classify_new_prs()
         assert monitor.stats.errors == 1
         assert monitor.stats.gh_errors == 1

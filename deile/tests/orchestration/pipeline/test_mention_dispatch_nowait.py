@@ -10,6 +10,7 @@ Garante que:
 2. O modo "comment" (issue mention) não é afetado.
 3. O guard de concorrência (CONCURRENT_DISPATCH_BLOCKED) é preservado.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -17,16 +18,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
-from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
-                                                        PrRef)
-from deile.orchestration.pipeline.implementer import (WorkerImplementer,
-                                                      WorkOutcome)
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.github_client import CommentRef, IssueRef, PrRef
+from deile.orchestration.pipeline.implementer import WorkerImplementer, WorkOutcome
+from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 class _CapturingClient:
     """Cliente fake que captura os kwargs do dispatch."""
@@ -74,17 +73,26 @@ def _make_monitor(implementer=None):
     github.remove_labels = AsyncMock()
     github.get_issue = AsyncMock(
         return_value=IssueRef(
-            number=1, title="t",
-            url="https://github.com/o/r/issues/1", labels=(),
+            number=1,
+            title="t",
+            url="https://github.com/o/r/issues/1",
+            labels=(),
         )
     )
     github.get_pr = AsyncMock(return_value=None)
 
     notifier = MagicMock()
     for attr in (
-        "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "implementation_parked", "pr_picked_up",
-        "pr_reviewed", "issue_auto_classified", "error", "pr_auto_classified",
+        "issue_picked_up",
+        "issue_reviewed",
+        "implementation_started",
+        "implementation_finished",
+        "implementation_parked",
+        "pr_picked_up",
+        "pr_reviewed",
+        "issue_auto_classified",
+        "error",
+        "pr_auto_classified",
         "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
@@ -94,15 +102,20 @@ def _make_monitor(implementer=None):
         impl.mention = AsyncMock(return_value=WorkOutcome(ok=True, text="done"))
 
     monitor = PipelineMonitor(
-        cfg, github=github, worktrees=MagicMock(),
-        claude=MagicMock(), notifier=notifier, implementer=impl,
+        cfg,
+        github=github,
+        worktrees=MagicMock(),
+        claude=MagicMock(),
+        notifier=notifier,
+        implementer=impl,
     )
     return monitor, github
 
 
 def _pr_ref(number=200, labels=()):
     return PrRef(
-        number=number, title="pr",
+        number=number,
+        title="pr",
         url=f"https://github.com/o/r/pull/{number}",
         labels=tuple(labels),
         head_ref=f"auto/issue-{number}",
@@ -112,6 +125,7 @@ def _pr_ref(number=200, labels=()):
 def _make_pr_mention_ref():
     """Constrói um MentionTrigger de PR-assignee."""
     from deile.orchestration.pipeline.stages import MentionTrigger
+
     pr = _pr_ref(99)
     return MentionTrigger(trigger_type="assignee", pr=pr)
 
@@ -119,6 +133,7 @@ def _make_pr_mention_ref():
 # ---------------------------------------------------------------------------
 # FIX #5: WorkerImplementer.mention(mode="pr_unified") deve ser nowait
 # ---------------------------------------------------------------------------
+
 
 class TestMentionPrUnifiedIsNowait:
     """Garante que o dispatch de mention PR-unified é não-bloqueante."""
@@ -135,7 +150,9 @@ class TestMentionPrUnifiedIsNowait:
         ref = _make_pr_mention_ref()
         await impl.mention(monitor, ref, trigger_types=["assignee"], mode="pr_unified")
 
-        assert len(client.calls) == 1, "dispatch deve ter sido chamado exatamente uma vez"
+        assert (
+            len(client.calls) == 1
+        ), "dispatch deve ter sido chamado exatamente uma vez"
         call = client.calls[0]
         # FIX #5: deve ser wait=False (fire-and-forget), não wait=True (bloqueante).
         assert call["wait"] is False, (
@@ -150,7 +167,9 @@ class TestMentionPrUnifiedIsNowait:
         monitor, github = _make_monitor(implementer=impl)
 
         ref = _make_pr_mention_ref()
-        outcome = await impl.mention(monitor, ref, trigger_types=["assignee"], mode="pr_unified")
+        outcome = await impl.mention(
+            monitor, ref, trigger_types=["assignee"], mode="pr_unified"
+        )
 
         assert outcome.ok is True
         assert outcome.task_id, "task_id deve estar preenchido no caminho nowait"
@@ -168,13 +187,18 @@ class TestMentionPrUnifiedIsNowait:
         from deile.orchestration.pipeline.stages import MentionTrigger
 
         comment = CommentRef(
-            comment_id=1, body="@deile-one help",
+            comment_id=1,
+            body="@deile-one help",
             html_url="https://github.com/o/r/issues/1#issuecomment-1",
             issue_url="https://api.github.com/repos/o/r/issues/1",
-            author="user", kind="issue",
+            author="user",
+            kind="issue",
         )
         issue_ref = IssueRef(
-            number=1, title="t", url="https://github.com/o/r/issues/1", labels=(),
+            number=1,
+            title="t",
+            url="https://github.com/o/r/issues/1",
+            labels=(),
         )
         ref = MentionTrigger(trigger_type="comment", comment=comment, issue=issue_ref)
         await impl.mention(monitor, ref, trigger_types=["comment"], mode="comment")
@@ -195,11 +219,12 @@ class TestMentionPrConcurrencyGuardPreserved:
 
     async def test_concurrent_dispatch_blocked_returns_not_ok(self):
         """409 CONCURRENT_DISPATCH_BLOCKED deve retornar outcome com ok=False."""
-        from deile.infrastructure.deile_worker_client import \
-            WorkerDispatchError
+        from deile.infrastructure.deile_worker_client import WorkerDispatchError
 
         async def _dispatch_409(payload, *, wait, endpoint_url=None):
-            raise WorkerDispatchError("blocked", error_code="CONCURRENT_DISPATCH_BLOCKED")
+            raise WorkerDispatchError(
+                "blocked", error_code="CONCURRENT_DISPATCH_BLOCKED"
+            )
 
         client = MagicMock()
         client.dispatch = _dispatch_409
@@ -207,7 +232,9 @@ class TestMentionPrConcurrencyGuardPreserved:
         monitor, github = _make_monitor(implementer=impl)
 
         ref = _make_pr_mention_ref()
-        outcome = await impl.mention(monitor, ref, trigger_types=["assignee"], mode="pr_unified")
+        outcome = await impl.mention(
+            monitor, ref, trigger_types=["assignee"], mode="pr_unified"
+        )
 
         assert not outcome.ok
         # O guard retorna DISPATCH_SKIPPED_CONCURRENT (ou similar) — basta ok=False.
@@ -217,6 +244,7 @@ class TestMentionPrConcurrencyGuardPreserved:
 # ---------------------------------------------------------------------------
 # Regressão #713: DISPATCH_SKIPPED_STILL_RUNNING não deve consumir tentativa
 # ---------------------------------------------------------------------------
+
 
 class TestMentionSkipStillRunningGuard:
     """Guard: DISPATCH_SKIPPED_STILL_RUNNING não consome tentativa de resume.
@@ -236,17 +264,19 @@ class TestMentionSkipStillRunningGuard:
           → próximo tick: ceiling dispara → PR abandonada.
         Com o guard: attempt permanece em resume_max - 1 enquanto o worker vive.
         """
-        from deile.orchestration.pipeline.stages import (
-            MentionTrigger, _dispatch_mention_group,
-        )
         from deile.orchestration.pipeline.labels import MENTION_DONE
+        from deile.orchestration.pipeline.stages import (
+            MentionTrigger,
+            _dispatch_mention_group,
+        )
 
         # _make_monitor sobrescreve impl.mention quando impl é MagicMock —
         # por isso configuramos o outcome DEPOIS de criar o monitor.
         monitor, github = _make_monitor()
         monitor.implementer.mention = AsyncMock(
             return_value=WorkOutcome(
-                ok=False, text="",
+                ok=False,
+                text="",
                 error="DISPATCH_SKIPPED_STILL_RUNNING: dispatch #123 still alive",
             )
         )
@@ -272,7 +302,11 @@ class TestMentionSkipStillRunningGuard:
 
         # (b) ~mention:processado NÃO deve ter sido aplicado.
         for call_args in github.add_labels.call_args_list:
-            labels = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("labels", [])
+            labels = (
+                call_args.args[2]
+                if len(call_args.args) > 2
+                else call_args.kwargs.get("labels", [])
+            )
             assert MENTION_DONE not in labels, (
                 f"~mention:processado não deve ser aplicado em DISPATCH_SKIPPED_STILL_RUNNING; "
                 f"encontrado em add_labels({call_args})"
@@ -285,15 +319,17 @@ class TestMentionSkipStillRunningGuard:
         (attempt sobe de resume_max-1 para resume_max, depois dispara o ceiling)
         a PR seria abandonada. Com o guard, 2 ticks são inofensivos.
         """
-        from deile.orchestration.pipeline.stages import (
-            MentionTrigger, _dispatch_mention_group,
-        )
         from deile.orchestration.pipeline.labels import MENTION_DONE
+        from deile.orchestration.pipeline.stages import (
+            MentionTrigger,
+            _dispatch_mention_group,
+        )
 
         monitor, github = _make_monitor()
         monitor.implementer.mention = AsyncMock(
             return_value=WorkOutcome(
-                ok=False, text="",
+                ok=False,
+                text="",
                 error="DISPATCH_SKIPPED_STILL_RUNNING: dispatch #456 still alive",
             )
         )
@@ -320,7 +356,11 @@ class TestMentionSkipStillRunningGuard:
 
         # ~mention:processado nunca deve ter sido aplicado.
         for call_args in github.add_labels.call_args_list:
-            labels = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("labels", [])
-            assert MENTION_DONE not in labels, (
-                "~mention:processado não deve ser aplicado em DISPATCH_SKIPPED_STILL_RUNNING"
+            labels = (
+                call_args.args[2]
+                if len(call_args.args) > 2
+                else call_args.kwargs.get("labels", [])
             )
+            assert (
+                MENTION_DONE not in labels
+            ), "~mention:processado não deve ser aplicado em DISPATCH_SKIPPED_STILL_RUNNING"

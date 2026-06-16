@@ -23,7 +23,9 @@ from deile.tools.messaging import DiscordSendDMTool, DiscordSendMessageTool
 
 # Reuse the messaging conftest's fakes without inheriting its autouse
 # fixtures (cross-package test imports aren't supported by pytest).
-_conftest_path = _P(__file__).resolve().parent.parent / "tools" / "messaging" / "conftest.py"
+_conftest_path = (
+    _P(__file__).resolve().parent.parent / "tools" / "messaging" / "conftest.py"
+)
 _spec = importlib.util.spec_from_file_location("_msg_conftest", str(_conftest_path))
 _module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_module)  # type: ignore[union-attr]

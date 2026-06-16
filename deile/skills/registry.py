@@ -35,7 +35,9 @@ class SkillRegistry:
         if previous is not None:
             logger.info(
                 "Skill '%s' replaced: %s → %s",
-                skill.name, previous.source_path, skill.source_path,
+                skill.name,
+                previous.source_path,
+                skill.source_path,
             )
 
     def unregister(self, name: str) -> bool:

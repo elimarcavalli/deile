@@ -29,7 +29,9 @@ class InstructionLoader:
         self._cache: Dict[str, str] = {}
         self._file_mtimes: Dict[str, float] = {}
 
-        logger.info(f"InstructionLoader inicializado. Diretório: {self.instructions_dir}")
+        logger.info(
+            f"InstructionLoader inicializado. Diretório: {self.instructions_dir}"
+        )
 
     def load_instruction(self, instruction_name: str) -> Optional[str]:
         """Carrega uma instrução específica de arquivo MD
@@ -52,15 +54,17 @@ class InstructionLoader:
             current_mtime = file_path.stat().st_mtime
             cache_key = str(file_path)
 
-            if (cache_key in self._cache and
-                cache_key in self._file_mtimes and
-                self._file_mtimes[cache_key] == current_mtime):
+            if (
+                cache_key in self._cache
+                and cache_key in self._file_mtimes
+                and self._file_mtimes[cache_key] == current_mtime
+            ):
                 # Retorna do cache
                 logger.debug(f"Instrução '{instruction_name}' carregada do cache")
                 return self._cache[cache_key]
 
             # Carrega do arquivo
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read().strip()
 
             # Atualiza cache
@@ -91,7 +95,9 @@ class InstructionLoader:
             return default_content
 
         # Fallback final mínimo (apenas se arquivos MD não existem)
-        logger.error("Nenhum arquivo de instrução encontrado! Usando fallback de emergência.")
+        logger.error(
+            "Nenhum arquivo de instrução encontrado! Usando fallback de emergência."
+        )
         return self._get_emergency_fallback()
 
     def _get_emergency_fallback(self) -> str:
@@ -123,5 +129,5 @@ class InstructionLoader:
             "instructions_dir": str(self.instructions_dir),
             "cached_instructions": len(self._cache),
             "available_instructions": len(self.get_available_instructions()),
-            "instruction_files": self.get_available_instructions()
+            "instruction_files": self.get_available_instructions(),
         }

@@ -4,6 +4,7 @@ Capturamos a saída via ``Console.capture()`` em ambiente sem TTY (sem teclado),
 verificando que cada layout (compacto + foco) inclui os elementos esperados.
 Não validamos pixel-por-pixel — Rich evolui; checamos estrutura semântica.
 """
+
 from __future__ import annotations
 
 from io import StringIO
@@ -18,11 +19,14 @@ pytestmark = pytest.mark.unit
 
 
 def _mk_state(index=1, description="task", status="pending", **kw) -> SubAgentState:
-    st = SubAgentState(task=SubAgentTask(
-        index=index, description=description,
-        prompt="prompt placeholder com tamanho suficiente",
-        **kw,
-    ))
+    st = SubAgentState(
+        task=SubAgentTask(
+            index=index,
+            description=description,
+            prompt="prompt placeholder com tamanho suficiente",
+            **kw,
+        )
+    )
     st.status = status
     return st
 
@@ -84,16 +88,21 @@ def test_compact_layout_has_blank_lines_between_panels():
     grp = renderer._compose_compact()
     # Group.renderables tem Texts(""), Panels, etc. Conte os Text("") vazios.
     from rich.text import Text as _T
-    blanks = sum(1 for r in grp.renderables
-                 if isinstance(r, _T) and not str(r).strip())
+
+    blanks = sum(1 for r in grp.renderables if isinstance(r, _T) and not str(r).strip())
     # Header + 2 separadores entre 3 painéis + 1 antes da hint = ≥3 blanks
     assert blanks >= 3
 
 
 def test_focus_layout_renders_ficha_with_description_and_prompt():
     states = [
-        _mk_state(1, "refator complexo do módulo X", status="running",
-                  persona="architect", model="claude-opus"),
+        _mk_state(
+            1,
+            "refator complexo do módulo X",
+            status="running",
+            persona="architect",
+            model="claude-opus",
+        ),
         _mk_state(2, "outra frente", status="pending"),
     ]
     states[0].push_progress("⚙ bash: pytest -q")
@@ -142,6 +151,7 @@ def test_markup_escape_prevents_injection_from_progress_lines():
 
 def test_truncate_helper_inside_renderer_limits_long_titles():
     from deile.ui.subagent_panel import _truncate
+
     assert _truncate("x" * 200, 50).endswith("…")
     assert len(_truncate("x" * 200, 50)) == 50
     assert _truncate("short", 50) == "short"
@@ -283,7 +293,7 @@ def test_parse_key_buffer_no_false_esc_under_30_arrow_burst():
     """
     from deile.ui.subagent_panel import parse_key_buffer
 
-    burst = ("\x1b[C\x1b[D" * 15)  # 30 setas alternando
+    burst = "\x1b[C\x1b[D" * 15  # 30 setas alternando
     seqs, rem = parse_key_buffer(burst)
     assert len(seqs) == 30
     assert all(s in ("\x1b[C", "\x1b[D") for s in seqs)
@@ -312,6 +322,7 @@ def test_arrow_burst_does_not_set_cancel_or_change_focus_past_end():
     # Simula o que o watcher faria depois de parsear a rajada:
     # despacha 10 setas direitas em sequência.
     from deile.ui.subagent_panel import parse_key_buffer
+
     seqs, _ = parse_key_buffer("\x1b[C" * 10)
     assert len(seqs) == 10
 
@@ -352,6 +363,7 @@ async def test_run_completes_when_all_states_terminal(tmp_path):
     renderer, console, buf = _make_renderer(states, refresh_hz=10.0)
     # Não deve travar — todos já estão em terminal.
     import asyncio
+
     await asyncio.wait_for(renderer.run(), timeout=2.0)
 
     # O Live escreve no buf (real_stdout). Lemos diretamente.

@@ -20,16 +20,17 @@ from ._shared import split_args, truncate, wrap_command_errors
 
 class RunCommand(DirectCommand):
     """Execute execution plans autonomously"""
-    
+
     def __init__(self):
         from ...config.manager import CommandConfig
+
         config = CommandConfig(
             name="run",
             description="Execute execution plans autonomously.",
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
-    
+
     @wrap_command_errors("run")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute run command"""
@@ -53,71 +54,83 @@ class RunCommand(DirectCommand):
         if dry_run:
             return await self._dry_run_plan(plan_id)
         return await self._execute_plan(plan_id, auto_approve_low_risk)
-    
+
     async def _show_running_plans(self) -> CommandResult:
         """Show currently running plans"""
-        
+
         plans = await self.plan_manager.list_plans(PlanStatus.RUNNING)
-        
+
         if not plans:
             return CommandResult.success_result(
                 Panel(
-                    Text("No plans are currently running.\n\nUse '/plan list' to see all plans or '/plan create <objective>' to create a new plan.", 
-                         style="yellow"),
+                    Text(
+                        "No plans are currently running.\n\nUse '/plan list' to see all plans or '/plan create <objective>' to create a new plan.",
+                        style="yellow",
+                    ),
                     title="🔄 Running Plans",
-                    border_style="yellow"
+                    border_style="yellow",
                 ),
-                "rich"
+                "rich",
             )
-        
+
         # Create table of running plans
-        table = Table(title="🔄 Currently Running Plans", show_header=True, header_style="bold cyan")
+        table = Table(
+            title="🔄 Currently Running Plans",
+            show_header=True,
+            header_style="bold cyan",
+        )
         table.add_column("Plan ID", style="cyan")
         table.add_column("Title", style="white")
         table.add_column("Progress", style="green")
         table.add_column("Current Step", style="yellow")
         table.add_column("Started", style="dim")
-        
+
         for plan in plans:
             # Get detailed status
             status = await self.plan_manager.get_plan_status(plan["id"])
             if not status:
                 continue
-            
-            progress = status['progress']
+
+            progress = status["progress"]
             progress_text = f"{progress['completed']}/{progress['total']} ({progress['percentage']:.0f}%)"
-            
+
             # Current step info
-            current_steps = status.get('current_steps', [])
+            current_steps = status.get("current_steps", [])
             if current_steps:
-                current_step = current_steps[0]['description'][:25]
-                if len(current_steps[0]['description']) > 25:
+                current_step = current_steps[0]["description"][:25]
+                if len(current_steps[0]["description"]) > 25:
                     current_step += "..."
             else:
                 current_step = "No active step"
-            
-            started_at = status['timing']['started_at'][:16].replace("T", " ") if status['timing']['started_at'] else "Unknown"
-            
+
+            started_at = (
+                status["timing"]["started_at"][:16].replace("T", " ")
+                if status["timing"]["started_at"]
+                else "Unknown"
+            )
+
             table.add_row(
                 plan["id"],
                 truncate(plan["title"], 30),
                 progress_text,
                 current_step,
-                started_at
+                started_at,
             )
-        
+
         return CommandResult.success_result(table, "rich")
-    
+
     async def _dry_run_plan(self, plan_id: str) -> CommandResult:
         """Show what would be executed without running"""
-        
+
         plan = await self.plan_manager.load_plan(plan_id)
         if not plan:
             raise CommandError(f"Plan '{plan_id}' not found")
-        
+
         if plan.status not in [PlanStatus.DRAFT, PlanStatus.READY]:
-            raise CommandError(f"Plan '{plan_id}' cannot be dry-run (status: {plan.status.value})")
-        
+            raise CommandError(
+                f"Plan '{plan_id}' cannot be dry-run (status: {plan.status.value})"
+            )
+
         # Create dry run analysis
         content_lines = [
             f"🔍 **Dry Run Analysis for Plan: {plan.title}**",
@@ -126,90 +139,114 @@ class RunCommand(DirectCommand):
             f"**Total Steps:** {plan.total_steps}",
             f"**Estimated Duration:** {plan.estimated_duration.total_seconds():.0f}s",
             "",
-            "**Execution Order:**"
+            "**Execution Order:**",
         ]
-        
+
         # Analyze execution order and dependencies
         ready_steps = plan.get_next_steps()
         step_queue = ready_steps.copy()
         executed_steps = []
         step_order = 1
-        
+
         while step_queue:
-            current_steps = step_queue[:plan.max_concurrent_steps]
-            step_queue = step_queue[plan.max_concurrent_steps:]
-            
+            current_steps = step_queue[: plan.max_concurrent_steps]
+            step_queue = step_queue[plan.max_concurrent_steps :]
+
             for step in current_steps:
                 risk_emoji = _risk_emoji(step.risk_level.value)
                 approval_text = " ⚠️ (needs approval)" if step.requires_approval else ""
-                deps_text = f" (depends on: {', '.join(step.depends_on)})" if step.depends_on else ""
-                
+                deps_text = (
+                    f" (depends on: {', '.join(step.depends_on)})"
+                    if step.depends_on
+                    else ""
+                )
+
                 content_lines.append(
                     f"  {step_order}. {risk_emoji} **{step.tool_name}** - {step.description}{approval_text}{deps_text}"
                 )
                 content_lines.append(f"     Timeout: {step.timeout}s")
-                
+
                 executed_steps.append(step.id)
                 step_order += 1
-            
+
             # Find next ready steps
             for step in plan.steps:
                 if step.id in executed_steps or step in step_queue:
                     continue
-                
+
                 # Check if dependencies are met
-                deps_met = all(dep_id in [s.id for s in executed_steps] for dep_id in step.depends_on)
+                deps_met = all(
+                    dep_id in [s.id for s in executed_steps]
+                    for dep_id in step.depends_on
+                )
                 if deps_met:
                     step_queue.append(step)
-        
+
         # Warnings and recommendations
-        content_lines.extend([
-            "",
-            "**Analysis:**"
-        ])
-        
-        high_risk_steps = [s for s in plan.steps if s.risk_level.value in ["high", "critical"]]
+        content_lines.extend(["", "**Analysis:**"])
+
+        high_risk_steps = [
+            s for s in plan.steps if s.risk_level.value in ["high", "critical"]
+        ]
         approval_steps = [s for s in plan.steps if s.requires_approval]
-        
+
         if high_risk_steps:
-            content_lines.append(f"  ⚠️ {len(high_risk_steps)} high-risk steps require attention")
-        
+            content_lines.append(
+                f"  ⚠️ {len(high_risk_steps)} high-risk steps require attention"
+            )
+
         if approval_steps:
-            content_lines.append(f"  🔐 {len(approval_steps)} steps require manual approval")
-        
-        estimated_approvals = len([s for s in plan.steps if s.requires_approval and s.risk_level.value != "low"])
+            content_lines.append(
+                f"  🔐 {len(approval_steps)} steps require manual approval"
+            )
+
+        estimated_approvals = len(
+            [
+                s
+                for s in plan.steps
+                if s.requires_approval and s.risk_level.value != "low"
+            ]
+        )
         if estimated_approvals > 0:
-            content_lines.append(f"  ⏸️ Execution may pause {estimated_approvals} times for approvals")
-        
-        content_lines.extend([
-            "",
-            "**To execute this plan:**",
-            f"  `/run {plan_id}` - Execute with auto-approval for low-risk steps",
-            f"  `/run {plan_id} --no-auto-approve` - Require approval for all steps"
-        ])
-        
+            content_lines.append(
+                f"  ⏸️ Execution may pause {estimated_approvals} times for approvals"
+            )
+
+        content_lines.extend(
+            [
+                "",
+                "**To execute this plan:**",
+                f"  `/run {plan_id}` - Execute with auto-approval for low-risk steps",
+                f"  `/run {plan_id} --no-auto-approve` - Require approval for all steps",
+            ]
+        )
+
         content = "\n".join(content_lines)
-        
+
         result_panel = Panel(
             Text(content, style="white"),
             title="🔍 Dry Run Analysis",
             border_style="blue",
-            padding=(1, 2)
+            padding=(1, 2),
         )
-        
+
         return CommandResult.success_result(result_panel, "rich")
-    
-    async def _execute_plan(self, plan_id: str, auto_approve_low_risk: bool) -> CommandResult:
+
+    async def _execute_plan(
+        self, plan_id: str, auto_approve_low_risk: bool
+    ) -> CommandResult:
         """Execute a plan with progress tracking"""
-        
+
         # Validate plan
         plan = await self.plan_manager.load_plan(plan_id)
         if not plan:
             raise CommandError(f"Plan '{plan_id}' not found")
-        
+
         if plan.status not in [PlanStatus.DRAFT, PlanStatus.READY, PlanStatus.PAUSED]:
-            raise CommandError(f"Plan '{plan_id}' cannot be executed (status: {plan.status.value})")
-        
+            raise CommandError(
+                f"Plan '{plan_id}' cannot be executed (status: {plan.status.value})"
+            )
+
         # Create progress display
         progress = Progress(
             TextColumn("[bold blue]Executando plano:", justify="right"),
@@ -224,92 +261,98 @@ class RunCommand(DirectCommand):
         # Start execution with live progress
         try:
             with Live(progress, refresh_per_second=2) as _live:
-                task = progress.add_task(f"[cyan]Iniciando {plan.title}...", total=plan.total_steps)
-                
+                task = progress.add_task(
+                    f"[cyan]Iniciando {plan.title}...", total=plan.total_steps
+                )
+
                 # Execute plan asynchronously and update progress
                 execution_result = await self._execute_with_progress(
                     plan_id, auto_approve_low_risk, progress, task
                 )
-            
+
             # Show final results
             return await self._format_execution_result(execution_result)
-            
+
         except KeyboardInterrupt:
             # User interrupted execution
             await self.plan_manager.stop_plan(plan_id)
-            
+
             return CommandResult.success_result(
                 Panel(
-                    Text(f"⏹️ Plan execution stopped by user.\n\nPlan '{plan_id}' has been cancelled.", style="yellow"),
+                    Text(
+                        f"⏹️ Plan execution stopped by user.\n\nPlan '{plan_id}' has been cancelled.",
+                        style="yellow",
+                    ),
                     title="Execution Interrupted",
-                    border_style="yellow"
+                    border_style="yellow",
                 ),
-                "rich"
+                "rich",
             )
-        
+
         except Exception as e:
             raise CommandError(f"Failed to execute plan '{plan_id}': {str(e)}")
-    
-    async def _execute_with_progress(self, plan_id: str, auto_approve_low_risk: bool,
-                                   progress: Progress, task) -> dict[str, Any]:
+
+    async def _execute_with_progress(
+        self, plan_id: str, auto_approve_low_risk: bool, progress: Progress, task
+    ) -> dict[str, Any]:
         """Execute plan with progress updates"""
-        
+
         # Start execution task
         execution_task = asyncio.create_task(
             self.plan_manager.execute_plan(plan_id, auto_approve_low_risk)
         )
-        
+
         # Monitor progress
         while not execution_task.done():
             # Get current plan status
             status = await self.plan_manager.get_plan_status(plan_id)
             if status:
-                completed = status['progress']['completed']
-                total = status['progress']['total']
-                
+                completed = status["progress"]["completed"]
+                total = status["progress"]["total"]
+
                 # Update progress
                 progress.update(task, completed=completed, total=total)
-                
+
                 # Update description with current step
-                current_steps = status.get('current_steps', [])
+                current_steps = status.get("current_steps", [])
                 if current_steps:
-                    desc = current_steps[0]['description'][:30]
-                    if len(current_steps[0]['description']) > 30:
+                    desc = current_steps[0]["description"][:30]
+                    if len(current_steps[0]["description"]) > 30:
                         desc += "..."
-                    
-                    if current_steps[0]['status'] == 'requires_approval':
+
+                    if current_steps[0]["status"] == "requires_approval":
                         desc = f"⚠️ {desc} (precisa aprovação)"
 
                     progress.update(task, description=f"[cyan]{desc}")
                 else:
                     progress.update(task, description="[cyan]Processando...")
-            
+
             await asyncio.sleep(0.5)
-        
+
         # Get final result
         return await execution_task
-    
+
     async def _format_execution_result(self, result: dict[str, Any]) -> CommandResult:
         """Format the execution result"""
-        
-        plan_summary = result.get('plan_summary', {})
-        execution_log = result.get('execution_log', [])
-        final_stats = result.get('final_stats', {})
-        
+
+        plan_summary = result.get("plan_summary", {})
+        execution_log = result.get("execution_log", [])
+        final_stats = result.get("final_stats", {})
+
         # Determine overall status
-        status = plan_summary.get('status', 'unknown')
-        success = status == 'completed'
-        
+        status = plan_summary.get("status", "unknown")
+        success = status == "completed"
+
         # Status emoji and color
         if success:
             status_emoji = "✅"
             border_color = "green"
             status_style = "green"
-        elif status == 'failed':
+        elif status == "failed":
             status_emoji = "❌"
             border_color = "red"
             status_style = "red"
-        elif status == 'cancelled':
+        elif status == "cancelled":
             status_emoji = "🚫"
             border_color = "yellow"
             status_style = "yellow"
@@ -317,7 +360,7 @@ class RunCommand(DirectCommand):
             status_emoji = "❓"
             border_color = "blue"
             status_style = "blue"
-        
+
         # Create result content
         content_lines = [
             f"{status_emoji} **Plan Execution {status.title()}**",
@@ -330,69 +373,76 @@ class RunCommand(DirectCommand):
             f"  • Total Steps: {plan_summary.get('total_steps', 0)}",
             f"  • Completed: {final_stats.get('completed', 0)} ✅",
             f"  • Failed: {final_stats.get('failed', 0)} ❌",
-            f"  • Skipped: {final_stats.get('skipped', 0)} ⏭️"
+            f"  • Skipped: {final_stats.get('skipped', 0)} ⏭️",
         ]
-        
+
         # Add execution summary
         if execution_log:
-            content_lines.extend([
-                "",
-                "**Execution Log (last 5 events):**"
-            ])
-            
+            content_lines.extend(["", "**Execution Log (last 5 events):**"])
+
             # Show last 5 events
-            recent_events = execution_log[-5:] if len(execution_log) > 5 else execution_log
-            
+            recent_events = (
+                execution_log[-5:] if len(execution_log) > 5 else execution_log
+            )
+
             for event in recent_events:
-                action = event.get('action', 'unknown')
-                
-                if action == 'completed':
-                    duration = event.get('duration', 0)
+                action = event.get("action", "unknown")
+
+                if action == "completed":
+                    duration = event.get("duration", 0)
                     content_lines.append(f"  ✅ Step completed in {duration:.1f}s")
-                elif action == 'failed':
-                    error = event.get('error', 'Unknown error')[:50]
+                elif action == "failed":
+                    error = event.get("error", "Unknown error")[:50]
                     content_lines.append(f"  ❌ Step failed: {error}")
-                elif action == 'waiting_approval':
-                    steps = event.get('steps', [])
-                    content_lines.append(f"  ⚠️ Waited for approval of {len(steps)} steps")
-                elif action == 'error':
-                    error = event.get('error', 'Unknown error')[:50]
+                elif action == "waiting_approval":
+                    steps = event.get("steps", [])
+                    content_lines.append(
+                        f"  ⚠️ Waited for approval of {len(steps)} steps"
+                    )
+                elif action == "error":
+                    error = event.get("error", "Unknown error")[:50]
                     content_lines.append(f"  💥 Execution error: {error}")
-        
+
         # Add recommendations
         content_lines.append("")
-        
+
         if success:
-            content_lines.extend([
-                "🎉 **Plan completed successfully!**",
-                "",
-                "Check the ARTIFACTS/ directory for any generated files."
-            ])
-        elif status == 'failed':
-            content_lines.extend([
-                "**Next Steps:**",
-                f"• Use `/plan show {plan_summary.get('id')}` to see detailed failure information",
-                "• Fix any issues and create a new plan",
-                "• Check logs in RUNS/ directory for detailed execution data"
-            ])
-        elif status == 'cancelled':
-            content_lines.extend([
-                "**Plan was cancelled.**",
-                f"• Use `/plan show {plan_summary.get('id')}` to see progress made",
-                f"• You can delete this plan with `/plan delete {plan_summary.get('id')}`"
-            ])
-        
+            content_lines.extend(
+                [
+                    "🎉 **Plan completed successfully!**",
+                    "",
+                    "Check the ARTIFACTS/ directory for any generated files.",
+                ]
+            )
+        elif status == "failed":
+            content_lines.extend(
+                [
+                    "**Next Steps:**",
+                    f"• Use `/plan show {plan_summary.get('id')}` to see detailed failure information",
+                    "• Fix any issues and create a new plan",
+                    "• Check logs in RUNS/ directory for detailed execution data",
+                ]
+            )
+        elif status == "cancelled":
+            content_lines.extend(
+                [
+                    "**Plan was cancelled.**",
+                    f"• Use `/plan show {plan_summary.get('id')}` to see progress made",
+                    f"• You can delete this plan with `/plan delete {plan_summary.get('id')}`",
+                ]
+            )
+
         content = "\n".join(content_lines)
-        
+
         result_panel = Panel(
             Text(content, style=status_style),
             title="🚀 Execution Result",
             border_style=border_color,
-            padding=(1, 2)
+            padding=(1, 2),
         )
-        
+
         return CommandResult.success_result(result_panel, "rich")
-    
+
     def get_help(self) -> str:
         """Get command help"""
         return """Execute execution plans autonomously

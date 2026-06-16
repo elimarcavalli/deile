@@ -8,13 +8,17 @@ from typing import AsyncIterator, List
 import pytest
 from rich.console import Console
 
-from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                             StreamEventType,
-                                             UnifiedStreamEvent)
+from deile.core.models.stream_events import (
+    ModelUsageSnapshot,
+    StreamEventType,
+    UnifiedStreamEvent,
+)
 from deile.ui.streaming_renderer import StreamingRenderer
 
 
-async def _replay(events: List[UnifiedStreamEvent]) -> AsyncIterator[UnifiedStreamEvent]:
+async def _replay(
+    events: List[UnifiedStreamEvent],
+) -> AsyncIterator[UnifiedStreamEvent]:
     for e in events:
         yield e
 
@@ -137,21 +141,51 @@ async def test_interleaved_text_and_bash_preserves_visual_order():
     console = _capture_console()
     renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
     events = [
-        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Passo 1: criar arquivo."),
-        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_START, tool_call_id="t1", tool_name="bash_execute"),
-        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_END, tool_call_id="t1", tool_name="bash_execute",
-                           arguments={"command": "echo hi"}),
-        UnifiedStreamEvent(type=StreamEventType.TOOL_RESULT, tool_call_id="t1", tool_name="bash_execute",
-                           tool_status="success", tool_result_summary="ok1"),
+        UnifiedStreamEvent(
+            type=StreamEventType.TEXT_DELTA, text="Passo 1: criar arquivo."
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="t1",
+            tool_name="bash_execute",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t1",
+            tool_name="bash_execute",
+            arguments={"command": "echo hi"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t1",
+            tool_name="bash_execute",
+            tool_status="success",
+            tool_result_summary="ok1",
+        ),
         UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Passo 2: validar."),
-        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_START, tool_call_id="t2", tool_name="bash_execute"),
-        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_END, tool_call_id="t2", tool_name="bash_execute",
-                           arguments={"command": "cat x"}),
-        UnifiedStreamEvent(type=StreamEventType.TOOL_RESULT, tool_call_id="t2", tool_name="bash_execute",
-                           tool_status="success", tool_result_summary="ok2"),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="t2",
+            tool_name="bash_execute",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t2",
+            tool_name="bash_execute",
+            arguments={"command": "cat x"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t2",
+            tool_name="bash_execute",
+            tool_status="success",
+            tool_result_summary="ok2",
+        ),
         UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Pronto."),
-        UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL,
-                           usage=ModelUsageSnapshot(input_tokens=10, output_tokens=4)),
+        UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=10, output_tokens=4),
+        ),
     ]
     await renderer.render(_replay(events))
     output = console.file.getvalue()
@@ -159,9 +193,9 @@ async def test_interleaved_text_and_bash_preserves_visual_order():
     # mesma ordem que os eventos foram emitidos.
     markers = ["Passo 1", "echo hi", "ok1", "Passo 2", "cat x", "ok2", "Pronto"]
     positions = [output.index(m) for m in markers]
-    assert positions == sorted(positions), (
-        f"Ordem incorreta. Markers em ordem de aparecer: {sorted(zip(positions, markers))}"
-    )
+    assert positions == sorted(
+        positions
+    ), f"Ordem incorreta. Markers em ordem de aparecer: {sorted(zip(positions, markers))}"
 
 
 @pytest.mark.asyncio
@@ -172,15 +206,30 @@ async def test_bash_header_not_duplicated_when_block_commits_later():
     console = _capture_console()
     renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
     events = [
-        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_START, tool_call_id="t1", tool_name="bash_execute"),
-        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_END, tool_call_id="t1", tool_name="bash_execute",
-                           arguments={"command": "echo unique-marker-xyz"}),
-        UnifiedStreamEvent(type=StreamEventType.TOOL_RESULT, tool_call_id="t1", tool_name="bash_execute",
-                           tool_status="success", tool_result_summary="ok"),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="t1",
+            tool_name="bash_execute",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t1",
+            tool_name="bash_execute",
+            arguments={"command": "echo unique-marker-xyz"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t1",
+            tool_name="bash_execute",
+            tool_status="success",
+            tool_result_summary="ok",
+        ),
         # Texto subsequente força o tool block para "committed" via active_idx.
         UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="depois"),
-        UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL,
-                           usage=ModelUsageSnapshot(input_tokens=5, output_tokens=2)),
+        UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=5, output_tokens=2),
+        ),
     ]
     await renderer.render(_replay(events))
     output = console.file.getvalue()
@@ -366,7 +415,7 @@ async def test_edit_file_truncates_long_path():
     await renderer.render(_replay(events))
     output = console.file.getvalue()
     assert "module.py" in output  # filename always preserved
-    assert "…" in output           # ellipsis present
+    assert "…" in output  # ellipsis present
 
 
 @pytest.mark.asyncio
@@ -379,55 +428,75 @@ async def test_file_tools_render_primary_path_not_kwarg():
     events = [
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_START,
-            tool_call_id="r1", tool_name="read_file",
+            tool_call_id="r1",
+            tool_name="read_file",
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_END,
-            tool_call_id="r1", tool_name="read_file",
+            tool_call_id="r1",
+            tool_name="read_file",
             arguments={"file_path": "deile/foo.py"},
         ),
         UnifiedStreamEvent(
-            type=StreamEventType.TOOL_RESULT, tool_call_id="r1", tool_name="read_file",
-            tool_status="success", tool_result_summary="ok",
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="r1",
+            tool_name="read_file",
+            tool_status="success",
+            tool_result_summary="ok",
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_START,
-            tool_call_id="w1", tool_name="write_file",
+            tool_call_id="w1",
+            tool_name="write_file",
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_END,
-            tool_call_id="w1", tool_name="write_file",
+            tool_call_id="w1",
+            tool_name="write_file",
             arguments={"file_path": "deile/bar.py", "content": "print('hi-42')"},
         ),
         UnifiedStreamEvent(
-            type=StreamEventType.TOOL_RESULT, tool_call_id="w1", tool_name="write_file",
-            tool_status="success", tool_result_summary="ok",
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="w1",
+            tool_name="write_file",
+            tool_status="success",
+            tool_result_summary="ok",
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_START,
-            tool_call_id="l1", tool_name="list_files",
+            tool_call_id="l1",
+            tool_name="list_files",
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_END,
-            tool_call_id="l1", tool_name="list_files",
+            tool_call_id="l1",
+            tool_name="list_files",
             arguments={"path": "deile/"},
         ),
         UnifiedStreamEvent(
-            type=StreamEventType.TOOL_RESULT, tool_call_id="l1", tool_name="list_files",
-            tool_status="success", tool_result_summary="ok",
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="l1",
+            tool_name="list_files",
+            tool_status="success",
+            tool_result_summary="ok",
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_START,
-            tool_call_id="d1", tool_name="delete_file",
+            tool_call_id="d1",
+            tool_name="delete_file",
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_END,
-            tool_call_id="d1", tool_name="delete_file",
+            tool_call_id="d1",
+            tool_name="delete_file",
             arguments={"file_path": "deile/old.py", "force": True},
         ),
         UnifiedStreamEvent(
-            type=StreamEventType.TOOL_RESULT, tool_call_id="d1", tool_name="delete_file",
-            tool_status="success", tool_result_summary="ok",
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="d1",
+            tool_name="delete_file",
+            tool_status="success",
+            tool_result_summary="ok",
         ),
     ]
     await renderer.render(_replay(events))
@@ -451,16 +520,21 @@ async def test_python_execute_collapses_multiline_in_header():
     events = [
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_START,
-            tool_call_id="p1", tool_name="python_execute",
+            tool_call_id="p1",
+            tool_name="python_execute",
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_END,
-            tool_call_id="p1", tool_name="python_execute",
+            tool_call_id="p1",
+            tool_name="python_execute",
             arguments={"code": "x = 1\ny = 2\nprint(x + y)"},
         ),
         UnifiedStreamEvent(
-            type=StreamEventType.TOOL_RESULT, tool_call_id="p1", tool_name="python_execute",
-            tool_status="success", tool_result_summary="exit 0 • 23ms",
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="p1",
+            tool_name="python_execute",
+            tool_status="success",
+            tool_result_summary="exit 0 • 23ms",
         ),
     ]
     await renderer.render(_replay(events))
@@ -808,9 +882,9 @@ async def test_live_path_refresh_is_driven_from_async_loop():
         "Live must be opened with auto_refresh=False so the async loop "
         "controls redraws — otherwise output is buffered until stream end."
     )
-    assert "live.refresh()" in src, (
-        "Renderer must call live.refresh() explicitly from the async loop."
-    )
+    assert (
+        "live.refresh()" in src
+    ), "Renderer must call live.refresh() explicitly from the async loop."
 
 
 @pytest.mark.asyncio
@@ -943,9 +1017,9 @@ async def test_completed_blocks_commit_to_scrollback_in_order():
     # exit time these ordering checks would be subject to render layout
     # but not to commit-to-scrollback timing; the assertion still holds
     # for the correct implementation.
-    assert pre_idx < alpha_idx < beta_idx, (
-        f"out-of-order render: preamble@{pre_idx} alpha@{alpha_idx} beta@{beta_idx}"
-    )
+    assert (
+        pre_idx < alpha_idx < beta_idx
+    ), f"out-of-order render: preamble@{pre_idx} alpha@{alpha_idx} beta@{beta_idx}"
 
 
 @pytest.mark.asyncio
@@ -1052,20 +1126,32 @@ async def test_blocks_have_visual_separation_in_compose():
 
     blocks = [
         _TextBlock(text="hello"),
-        _ToolBlock(tool_call_id="t1", tool_name="bash_execute", args={"cmd": "ls"}, status="running"),
-        _ToolBlock(tool_call_id="t2", tool_name="read_file", args={"path": "x"}, status="success"),
+        _ToolBlock(
+            tool_call_id="t1",
+            tool_name="bash_execute",
+            args={"cmd": "ls"},
+            status="running",
+        ),
+        _ToolBlock(
+            tool_call_id="t2",
+            tool_name="read_file",
+            args={"path": "x"},
+            status="success",
+        ),
         _TextBlock(text="done"),
     ]
     group = renderer._compose(blocks)
     assert isinstance(group, Group)
     items = list(group.renderables)
     # 4 content items + 3 spacers between them = 7 total
-    assert len(items) == 7, f"expected 7 items (4 content + 3 spacers), got {len(items)}"
+    assert (
+        len(items) == 7
+    ), f"expected 7 items (4 content + 3 spacers), got {len(items)}"
     # Spacers are empty Text — they sit at odd indices (1, 3, 5).
     for i in (1, 3, 5):
-        assert isinstance(items[i], Text) and str(items[i]) == "", (
-            f"item at index {i} should be a blank-line spacer, got {items[i]!r}"
-        )
+        assert (
+            isinstance(items[i], Text) and str(items[i]) == ""
+        ), f"item at index {i} should be a blank-line spacer, got {items[i]!r}"
 
 
 @pytest.mark.asyncio
@@ -1098,7 +1184,10 @@ async def test_error_block_does_not_show_rich_markup_as_literal_text_legacy():
     events = [
         UnifiedStreamEvent(
             type=StreamEventType.ERROR,
-            error_envelope={"message": "budget exceeded", "error_type": "BudgetExceeded"},
+            error_envelope={
+                "message": "budget exceeded",
+                "error_type": "BudgetExceeded",
+            },
         ),
     ]
     result = await renderer.render(_replay(events))
@@ -1181,13 +1270,17 @@ async def test_stage_indicator_visible_mid_turn_between_tool_and_next_text():
         UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="vou listar arquivos"),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_END,
-            tool_call_id="t1", tool_name="list_files", arguments={},
+            tool_call_id="t1",
+            tool_name="list_files",
+            arguments={},
         ),
         UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Executing list_files"),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_RESULT,
-            tool_call_id="t1", tool_name="list_files",
-            tool_status="success", tool_result_summary="3 files",
+            tool_call_id="t1",
+            tool_name="list_files",
+            tool_status="success",
+            tool_result_summary="3 files",
         ),
         UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Awaiting next response"),
         UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="encontrei 3"),
@@ -1389,17 +1482,21 @@ async def test_stream_does_not_stall_on_tool_args_with_brackets():
         UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="começo"),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_START,
-            tool_call_id="t1", tool_name="grep_search",
+            tool_call_id="t1",
+            tool_name="grep_search",
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_USE_END,
-            tool_call_id="t1", tool_name="grep_search",
+            tool_call_id="t1",
+            tool_name="grep_search",
             arguments={"pattern": "[a-z]+", "path": "[abc]"},
         ),
         UnifiedStreamEvent(
             type=StreamEventType.TOOL_RESULT,
-            tool_call_id="t1", tool_name="grep_search",
-            tool_status="success", tool_result_summary="2 hits",
+            tool_call_id="t1",
+            tool_name="grep_search",
+            tool_status="success",
+            tool_result_summary="2 hits",
         ),
         UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="fim"),
         UnifiedStreamEvent(
@@ -1444,7 +1541,9 @@ async def test_render_loop_logs_and_continues_on_apply_event_error(monkeypatch):
 
     events = [
         UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="primeiro "),
-        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="ATAQUE"),  # quebra aqui
+        UnifiedStreamEvent(
+            type=StreamEventType.TEXT_DELTA, text="ATAQUE"
+        ),  # quebra aqui
         UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="terceiro"),
         UnifiedStreamEvent(
             type=StreamEventType.USAGE_FINAL,

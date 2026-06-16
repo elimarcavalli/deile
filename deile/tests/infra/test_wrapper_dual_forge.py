@@ -29,7 +29,8 @@ def wrapper_mod(tmp_path, monkeypatch):
     repo_root = Path(__file__).resolve().parents[3]
     wrapper_path = repo_root / "infra" / "k8s" / "wrapper.py"
     spec = importlib.util.spec_from_file_location(
-        "wrapper_under_test", str(wrapper_path),
+        "wrapper_under_test",
+        str(wrapper_path),
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -39,8 +40,13 @@ def wrapper_mod(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     # Clear leftover tokens so a developer's real env doesn't leak in.
-    for var in ("GITHUB_TOKEN", "GITLAB_TOKEN", "GL_TOKEN",
-                "DEILE_GITHUB_HOST", "DEILE_GITLAB_HOST"):
+    for var in (
+        "GITHUB_TOKEN",
+        "GITLAB_TOKEN",
+        "GL_TOKEN",
+        "DEILE_GITHUB_HOST",
+        "DEILE_GITLAB_HOST",
+    ):
         monkeypatch.delenv(var, raising=False)
     yield mod, home
 
@@ -159,6 +165,7 @@ def test_legacy_shim_still_works(wrapper_mod, monkeypatch):
 def test_setup_gh_auth_emits_deprecation_warning(wrapper_mod, monkeypatch):
     """``_setup_gh_auth`` deve emitir DeprecationWarning na primeira chamada."""
     import warnings
+
     mod, home = wrapper_mod
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_WARN_TOKEN_1234567890abcdefab")
     # Garante que o flag de aviso por processo seja False para este módulo recarregado.
@@ -166,15 +173,16 @@ def test_setup_gh_auth_emits_deprecation_warning(wrapper_mod, monkeypatch):
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         mod._setup_gh_auth()
-    assert any(issubclass(x.category, DeprecationWarning) for x in w), (
-        "_setup_gh_auth deve emitir DeprecationWarning na 1ª chamada"
-    )
+    assert any(
+        issubclass(x.category, DeprecationWarning) for x in w
+    ), "_setup_gh_auth deve emitir DeprecationWarning na 1ª chamada"
     assert any("_setup_forge_credentials" in str(x.message) for x in w)
 
 
 def test_setup_gh_auth_warns_only_once(wrapper_mod, monkeypatch):
     """A segunda chamada de ``_setup_gh_auth`` na mesma sessão NÃO deve re-emitir."""
     import warnings
+
     mod, home = wrapper_mod
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_ONCE_TOKEN_1234567890abcdef12")
     mod._setup_gh_auth_warned = False

@@ -22,9 +22,7 @@ __all__ = ["apply_semconv_attrs"]
 
 # ── URL normalisation ─────────────────────────────────────────────────────
 
-_SSH_RE = re.compile(
-    r"^git@(?P<host>[^:]+):(?P<owner>[^/]+)/(?P<repo>.+?)(?:\.git)?$"
-)
+_SSH_RE = re.compile(r"^git@(?P<host>[^:]+):(?P<owner>[^/]+)/(?P<repo>.+?)(?:\.git)?$")
 _HTTPS_RE = re.compile(
     r"^https?://(?P<host>[^/]+)/(?P<owner>[^/]+)/(?P<repo>.+?)(?:\.git)?$"
 )
@@ -58,6 +56,7 @@ def _normalize_repo_url(raw: str) -> str:
 
 # ── mapping table ─────────────────────────────────────────────────────────
 
+
 def _build_vcs_attrs(attrs: Dict[str, Any]) -> Dict[str, Any]:
     """Deriva attrs ``vcs.*`` a partir do dict de attrs DEILE-local."""
     out: Dict[str, Any] = {}
@@ -86,6 +85,7 @@ def _build_vcs_attrs(attrs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ── public API ────────────────────────────────────────────────────────────
+
 
 def apply_semconv_attrs(span: "Span", attrs: Dict[str, Any]) -> None:
     """Adiciona attrs SemConv ``vcs.*`` ao span já aberto, sem modificar attrs DEILE-local.

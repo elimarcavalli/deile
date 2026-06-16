@@ -28,7 +28,7 @@ FEATURES = {
     "memory": True,
     "personas": True,
     "plugins": True,
-    "config_profiles": True
+    "config_profiles": True,
 }
 
 # Metrics
@@ -47,7 +47,6 @@ METRICS = {
         "memory": "Multi-layer memory system",
         "personas": "Dynamic persona switching",
         "plugins": "Extensible plugin architecture",
-        "orchestration": "Task management & workflows"
-    }
+        "orchestration": "Task management & workflows",
+    },
 }
-

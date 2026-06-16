@@ -35,7 +35,9 @@ class SessionHistoryStore:
                 "history": history,
             }
             tmp = session_dir / "history.tmp"
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             tmp.replace(session_dir / "history.json")
         except Exception:
             pass  # non-fatal
@@ -54,16 +56,22 @@ class SessionHistoryStore:
             try:
                 data = json.loads(history_file.read_text(encoding="utf-8"))
                 user_msgs = [
-                    m for m in data.get("history", [])
-                    if m.get("role") == "user" and not m.get("content", "").startswith("/")
+                    m
+                    for m in data.get("history", [])
+                    if m.get("role") == "user"
+                    and not m.get("content", "").startswith("/")
                 ]
-                sessions.append({
-                    "session_id": data["session_id"],
-                    "conversation_name": data.get("conversation_name", ""),
-                    "last_activity": float(data.get("last_activity", 0.0)),
-                    "first_user_input": user_msgs[0]["content"] if user_msgs else "",
-                    "message_count": len(data.get("history", [])),
-                })
+                sessions.append(
+                    {
+                        "session_id": data["session_id"],
+                        "conversation_name": data.get("conversation_name", ""),
+                        "last_activity": float(data.get("last_activity", 0.0)),
+                        "first_user_input": (
+                            user_msgs[0]["content"] if user_msgs else ""
+                        ),
+                        "message_count": len(data.get("history", [])),
+                    }
+                )
             except Exception:
                 continue
         sessions.sort(key=lambda s: s["last_activity"], reverse=True)

@@ -31,7 +31,9 @@ class TestPersonaManagerMemoryIntegration:
         return manager
 
     @pytest.mark.asyncio
-    async def test_persona_manager_uses_unified_memory(self, persona_manager, mock_memory_manager):
+    async def test_persona_manager_uses_unified_memory(
+        self, persona_manager, mock_memory_manager
+    ):
         """Test that PersonaManager uses unified memory"""
         # Assert
         assert persona_manager.memory_manager is mock_memory_manager
@@ -49,7 +51,9 @@ class TestPersonaManagerMemoryIntegration:
         assert persona_manager.memory_manager is new_memory_manager
 
     @pytest.mark.asyncio
-    async def test_switch_persona_memory_operations(self, persona_manager, mock_memory_manager):
+    async def test_switch_persona_memory_operations(
+        self, persona_manager, mock_memory_manager
+    ):
         """Test persona switching with memory operations"""
         # Arrange
         mock_persona = Mock(spec=BasePersona)
@@ -57,11 +61,11 @@ class TestPersonaManagerMemoryIntegration:
         mock_persona.activate = Mock()
         mock_persona.deactivate = Mock()
 
-        persona_manager._personas = {
-            'test_persona': mock_persona
-        }
+        persona_manager._personas = {"test_persona": mock_persona}
 
-        with patch.object(PersonaContext, 'create', new_callable=AsyncMock) as mock_create:
+        with patch.object(
+            PersonaContext, "create", new_callable=AsyncMock
+        ) as mock_create:
             mock_context = Mock(spec=PersonaContext)
             mock_context.save_state = AsyncMock()
             mock_create.return_value = mock_context
@@ -74,7 +78,9 @@ class TestPersonaManagerMemoryIntegration:
             persona_manager._current_context = old_context
 
             # Act
-            result = await persona_manager.switch_persona('test_persona', 'test_session')
+            result = await persona_manager.switch_persona(
+                "test_persona", "test_session"
+            )
 
             # Assert
             assert result is True
@@ -84,16 +90,16 @@ class TestPersonaManagerMemoryIntegration:
 
             # Assert - new context created with memory manager
             mock_create.assert_called_once_with(
-                persona_id='test_persona',
-                session_id='test_session',
-                memory_manager=mock_memory_manager
+                persona_id="test_persona",
+                session_id="test_session",
+                memory_manager=mock_memory_manager,
             )
 
             # Assert - persona switch event recorded
             mock_memory_manager.episodic_memory.record_event.assert_called_once()
             call_args = mock_memory_manager.episodic_memory.record_event.call_args
-            assert call_args[1]['event_type'] == "persona_switch"
-            assert call_args[1]['session_id'] == "test_session"
+            assert call_args[1]["event_type"] == "persona_switch"
+            assert call_args[1]["session_id"] == "test_session"
 
     @pytest.mark.asyncio
     async def test_switch_persona_without_memory_manager(self, mock_memory_manager):
@@ -105,12 +111,10 @@ class TestPersonaManagerMemoryIntegration:
         mock_persona.activate = Mock()
         mock_persona.deactivate = Mock()
 
-        manager._personas = {
-            'test_persona': mock_persona
-        }
+        manager._personas = {"test_persona": mock_persona}
 
         # Act
-        result = await manager.switch_persona('test_persona', 'test_session')
+        result = await manager.switch_persona("test_persona", "test_session")
 
         # Assert
         assert result is True
@@ -125,15 +129,19 @@ class TestPersonaManagerMemoryIntegration:
 
         # Create mock context with memory layer
         mock_memory_layer = Mock(spec=PersonaMemoryLayer)
-        mock_memory_layer.get_conversation_history = AsyncMock(return_value=[{"msg": "test"}])
-        mock_memory_layer.get_learned_patterns = AsyncMock(return_value=[{"pattern": "learned"}])
+        mock_memory_layer.get_conversation_history = AsyncMock(
+            return_value=[{"msg": "test"}]
+        )
+        mock_memory_layer.get_learned_patterns = AsyncMock(
+            return_value=[{"pattern": "learned"}]
+        )
 
         mock_context = PersonaContext(
             persona_id="test_persona",
             session_id="test_session",
             memory_layer=mock_memory_layer,
             current_state={"state": "current"},
-            preferences={"pref": "value"}
+            preferences={"pref": "value"},
         )
 
         persona_manager._active_persona = "test_persona"
@@ -163,7 +171,9 @@ class TestPersonaManagerMemoryIntegration:
         assert enhanced_context == base_context
 
     @pytest.mark.asyncio
-    async def test_process_interaction_feedback(self, persona_manager, mock_memory_manager):
+    async def test_process_interaction_feedback(
+        self, persona_manager, mock_memory_manager
+    ):
         """Test processing interaction feedback for learning"""
         # Arrange
         interaction_data = {"user_input": "test", "response": "output"}
@@ -180,14 +190,16 @@ class TestPersonaManagerMemoryIntegration:
         persona_manager._current_context = mock_context
 
         # Act
-        await persona_manager.process_interaction_feedback(interaction_data, success_metrics)
+        await persona_manager.process_interaction_feedback(
+            interaction_data, success_metrics
+        )
 
         # Assert
         mock_context.update_from_interaction.assert_called_once_with(interaction_data)
         mock_memory_layer.learn_pattern.assert_called_once_with(
             pattern_type="successful_interaction",
             pattern_data=interaction_data,
-            success_rate=0.8
+            success_rate=0.8,
         )
 
     @pytest.mark.asyncio
@@ -206,7 +218,9 @@ class TestPersonaManagerMemoryIntegration:
         persona_manager._current_context = mock_context
 
         # Act
-        await persona_manager.process_interaction_feedback(interaction_data, success_metrics)
+        await persona_manager.process_interaction_feedback(
+            interaction_data, success_metrics
+        )
 
         # Assert
         mock_context.update_from_interaction.assert_called_once_with(interaction_data)
@@ -219,11 +233,13 @@ class TestPersonaManagerMemoryIntegration:
         # Arrange
         persona_id = "test_persona"
 
-        with patch.object(PersonaMemoryLayer, '__init__', return_value=None):
+        with patch.object(PersonaMemoryLayer, "__init__", return_value=None):
             mock_layer = Mock(spec=PersonaMemoryLayer)
             mock_layer.cleanup_persona_memory = AsyncMock()
 
-            with patch('deile.personas.manager.PersonaMemoryLayer', return_value=mock_layer):
+            with patch(
+                "deile.personas.manager.PersonaMemoryLayer", return_value=mock_layer
+            ):
                 # Act
                 await persona_manager.cleanup_persona_memory(persona_id)
 
@@ -243,14 +259,16 @@ class TestPersonaManagerMemoryIntegration:
         # No assertions needed - test passes if no exception is raised
 
     @pytest.mark.asyncio
-    async def test_get_manager_stats_with_memory_integration(self, persona_manager, mock_memory_manager):
+    async def test_get_manager_stats_with_memory_integration(
+        self, persona_manager, mock_memory_manager
+    ):
         """Test manager stats include memory integration status"""
         # Arrange
         mock_context = PersonaContext(
             persona_id="test_persona",
             session_id="test_session",
             memory_layer=Mock(spec=PersonaMemoryLayer),
-            current_state={"interaction_count": 5}
+            current_state={"interaction_count": 5},
         )
         persona_manager._current_context = mock_context
 
@@ -277,7 +295,9 @@ class TestPersonaManagerMemoryIntegration:
         assert "interaction_count" not in stats
 
     @pytest.mark.asyncio
-    async def test_shutdown_with_memory_cleanup(self, persona_manager, mock_memory_manager):
+    async def test_shutdown_with_memory_cleanup(
+        self, persona_manager, mock_memory_manager
+    ):
         """Test shutdown saves current context"""
         # Arrange
         mock_context = Mock(spec=PersonaContext)

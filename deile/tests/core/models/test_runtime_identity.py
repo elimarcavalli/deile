@@ -15,6 +15,7 @@ ele acrescenta um bloco de identidade runtime que:
   * Cita ``provider_id:model_name`` real
   * Proíbe explicitamente a invenção de outras identidades
 """
+
 from __future__ import annotations
 
 import pytest
@@ -48,7 +49,9 @@ class _DummyProvider(ModelProvider):
     async def generate(self, messages, system_instruction=None, **kwargs):
         raise NotImplementedError
 
-    async def generate_stream(self, messages, system_instruction=None, tools=None, **kwargs):
+    async def generate_stream(
+        self, messages, system_instruction=None, tools=None, **kwargs
+    ):
         if False:
             yield  # pragma: no cover — async generator marker
 
@@ -99,7 +102,9 @@ def test_compose_different_providers_produce_different_blocks():
     a = _DummyProvider("openai", "gpt-5.3")
     b = _DummyProvider("gemini", "gemini-2.5-pro")
     persona = "shared persona"
-    assert a._compose_system_instruction(persona) != b._compose_system_instruction(persona)
+    assert a._compose_system_instruction(persona) != b._compose_system_instruction(
+        persona
+    )
 
 
 @pytest.mark.unit

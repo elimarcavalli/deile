@@ -213,16 +213,19 @@ class InstanceState:
         if enable_status_server and _supports_status_server():
             try:
                 from deile.runtime.status_server import StatusServer
+
                 self._status_server = StatusServer(self)
             except Exception as exc:  # noqa: BLE001 — best-effort observability
                 logger.warning(
                     "Falha ao instanciar StatusServer (id=%s): %s",
-                    self._instance_id, exc,
+                    self._instance_id,
+                    exc,
                 )
                 self._status_server = None
         if enable_registry:
             try:
                 from deile.runtime.registry import Registry
+
                 self._registry = Registry(
                     registry_path=self._runtime_dir / "registry.json"
                 )
@@ -230,15 +233,19 @@ class InstanceState:
             except Exception as exc:  # noqa: BLE001 — best-effort observability
                 logger.warning(
                     "Falha ao registrar no Registry (id=%s): %s",
-                    self._instance_id, exc,
+                    self._instance_id,
+                    exc,
                 )
                 self._registry = None
 
         atexit.register(self.close)
         logger.debug(
             "InstanceState created: id=%s path=%s pid=%s status_server=%s registry=%s",
-            self._instance_id, self._path, os.getpid(),
-            self._status_server is not None, self._registry is not None,
+            self._instance_id,
+            self._path,
+            os.getpid(),
+            self._status_server is not None,
+            self._registry is not None,
         )
 
     # ── identidade ────────────────────────────────────────────────────────
@@ -274,6 +281,7 @@ class InstanceState:
     def _build_registry_entry(self) -> "RegistryEntry":
         """Constrói a entry do registry com a identidade atual."""
         from deile.runtime.registry import RegistryEntry
+
         endpoint = ""
         if self._status_server is not None:
             try:
@@ -292,7 +300,9 @@ class InstanceState:
     # ── async lifecycle ───────────────────────────────────────────────────
 
     async def start_async_tasks(
-        self, *, heartbeat_interval_s: float = 2.0,
+        self,
+        *,
+        heartbeat_interval_s: float = 2.0,
     ) -> List[asyncio.Task]:
         """Inicia heartbeat + status server (se habilitado).
 
@@ -305,21 +315,26 @@ class InstanceState:
         cria as faltantes e devolve a união.
         """
         tasks: List[asyncio.Task] = []
-        tasks.append(asyncio.create_task(
-            self.heartbeat_loop(interval_s=heartbeat_interval_s),
-            name=f"hb-{self._instance_id}",
-        ))
+        tasks.append(
+            asyncio.create_task(
+                self.heartbeat_loop(interval_s=heartbeat_interval_s),
+                name=f"hb-{self._instance_id}",
+            )
+        )
         if self._status_server is not None:
             try:
                 await self._status_server.start()
-                tasks.append(asyncio.create_task(
-                    self._status_server.serve_forever(),
-                    name=f"ss-{self._instance_id}",
-                ))
+                tasks.append(
+                    asyncio.create_task(
+                        self._status_server.serve_forever(),
+                        name=f"ss-{self._instance_id}",
+                    )
+                )
             except Exception as exc:  # noqa: BLE001 — observability best-effort
                 logger.warning(
                     "StatusServer falhou ao iniciar (id=%s): %s",
-                    self._instance_id, exc,
+                    self._instance_id,
+                    exc,
                 )
         return tasks
 
@@ -347,7 +362,8 @@ class InstanceState:
                 except Exception as exc:  # noqa: BLE001 — heartbeat é best-effort
                     logger.warning(
                         "InstanceState heartbeat flush failed (id=%s): %s",
-                        self._instance_id, exc,
+                        self._instance_id,
+                        exc,
                     )
         except asyncio.CancelledError:
             logger.debug("heartbeat_loop cancelled for %s", self._instance_id)
@@ -472,7 +488,8 @@ class InstanceState:
                 except OSError as exc:
                     logger.warning(
                         "InstanceState.close: could not remove %s: %s",
-                        candidate, exc,
+                        candidate,
+                        exc,
                     )
 
         # Fora do lock: chamadas externas (Registry/StatusServer) podem
@@ -484,7 +501,8 @@ class InstanceState:
             except Exception as exc:  # noqa: BLE001 — shutdown não levanta
                 logger.debug(
                     "Registry.deregister(%s) falhou: %s",
-                    self._instance_id, exc,
+                    self._instance_id,
+                    exc,
                 )
         if self._status_server is not None:
             self._shutdown_status_server_best_effort()
@@ -526,7 +544,8 @@ class InstanceState:
         except OSError as exc:
             logger.debug(
                 "InstanceState.close: socket unlink %s falhou: %s",
-                socket_path, exc,
+                socket_path,
+                exc,
             )
 
     # ── internals ─────────────────────────────────────────────────────────
@@ -546,7 +565,9 @@ class InstanceState:
         except OSError as exc:
             logger.warning(
                 "InstanceState flush failed (id=%s, path=%s): %s",
-                self._instance_id, self._path, exc,
+                self._instance_id,
+                self._path,
+                exc,
             )
 
 

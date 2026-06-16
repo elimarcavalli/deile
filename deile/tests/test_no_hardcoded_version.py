@@ -9,6 +9,7 @@ cravar o número e crie duplicatas stale (como os ``5.1.0`` que existiam antes).
 
 Espelha o estilo de ``deile/tests/commands/test_table_widths_adaptive.py``.
 """
+
 from __future__ import annotations
 
 import re

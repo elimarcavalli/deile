@@ -29,9 +29,7 @@ def test_is_a_parser_subclass():
 @pytest.mark.unit
 def test_is_currently_abstract_and_inert():
     assert inspect.isabstract(IntelligentFileParser)
-    assert IntelligentFileParser.__abstractmethods__ == frozenset(
-        {"parse", "patterns"}
-    )
+    assert IntelligentFileParser.__abstractmethods__ == frozenset({"parse", "patterns"})
     with pytest.raises(TypeError):
         IntelligentFileParser()  # type: ignore[abstract]
 
@@ -41,8 +39,6 @@ def test_auto_discovery_skips_abstract_parser_without_crashing():
     from deile.parsers.registry import ParserRegistry
 
     registry = ParserRegistry()
-    discovered = registry._discover_in_package(
-        "deile.parsers.intelligent_file_parser"
-    )
+    discovered = registry._discover_in_package("deile.parsers.intelligent_file_parser")
     assert discovered == 0
     assert "intelligent_file_parser" not in registry
