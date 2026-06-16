@@ -14,6 +14,8 @@ import pytest
 from deile.core import context_manager as cm_module
 from deile.core import deile_md_loader as loader_module
 from deile.core.context_manager import ContextManager
+from deile.skills.registry import SkillRegistry
+from deile.skills.router import SkillRouter
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +23,25 @@ def _isolate_loader_cache():
     loader_module.clear_cache()
     yield
     loader_module.clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_bootstrap_skills(monkeypatch):
+    """Patch bootstrap_skills to an empty router so this file never populates
+    the global SkillRegistry with bundled/operator skills.
+
+    Estes testes afirmam apenas camadas DEILE.md — não precisam de skills
+    reais. Sem este patch, ``_build_skills_block`` chama o bootstrap real e
+    popula o singleton com python/typescript/tdd (+ skills do operador),
+    contaminando testes subsequentes que dependem de um registry vazio.
+    """
+    _empty_registry = SkillRegistry()  # isolado — nunca afeta o singleton global
+    _empty_router = SkillRouter(_empty_registry)
+
+    async def _fake_bootstrap(config=None, **kwargs):
+        return _empty_router
+
+    monkeypatch.setattr("deile.core.context_manager.bootstrap_skills", _fake_bootstrap)
 
 
 CORE_MARKER = "CORE_TEST_MARKER_alpha"

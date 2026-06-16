@@ -20,11 +20,36 @@ import pytest
 from deile.core.context_manager import (ContextManager,
                                         _build_preferences_block,
                                         _resolve_user_id)
+from deile.skills.registry import SkillRegistry
+from deile.skills.router import SkillRouter
 
 # PreferenceStore is imported lazily inside _build_preferences_block via
 # ``from deile.preferences.store import PreferenceStore``.  Patch that
 # target so the mock is used instead of the real store.
 _PREF_STORE = "deile.preferences.store.PreferenceStore"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_bootstrap_skills(monkeypatch):
+    """Patch bootstrap_skills para evitar que os testes de preferência
+    populem o singleton global com skills bundled/do operador.
+
+    Estes testes afirmam blocos de preferências — nunca o bloco de skills.
+    Sem este patch, ``_build_skills_block`` popula o singleton com
+    python/typescript/tdd (+ skills do operador) e contamina testes
+    subsequentes que esperam registry vazio.
+
+    Nota: ``test_prefs_after_deile_md_before_skills`` seta
+    ``ctx._skills_bootstrapped = True`` manualmente, então bootstrap não é
+    chamado para ele — este patch é harmless naquele caso.
+    """
+    _empty_registry = SkillRegistry()  # isolado — nunca afeta o singleton global
+    _empty_router = SkillRouter(_empty_registry)
+
+    async def _fake_bootstrap(config=None, **kwargs):
+        return _empty_router
+
+    monkeypatch.setattr("deile.core.context_manager.bootstrap_skills", _fake_bootstrap)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
