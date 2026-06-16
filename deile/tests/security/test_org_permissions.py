@@ -159,16 +159,48 @@ class TestOrgPermissionEnforcement:
 
 @pytest.mark.integration
 class TestOrgPermissionsMonotonicity:
-    """AC: org não pode ampliar permissões — apenas aperta."""
+    """AC: org não pode ampliar permissões — apenas aperta.
 
-    def test_org_cannot_grant_permission_denied_by_baseline(self, tmp_path: Path) -> None:
-        """Org tenta conceder ADMIN para bash; baseline nega; resultado: negado."""
+    Invariante de segurança (issue #741): nenhuma regra de org consegue conceder
+    uma capacidade que o baseline negaria, **independente da prioridade** da regra
+    de org. ``check_permission`` aplica ``baseline AND org`` para o id ``org__*``.
+    """
+
+    def test_org_cannot_grant_permission_denied_by_default_baseline(self, tmp_path: Path) -> None:
+        """Adversarial: org tenta conceder ADMIN p/ bash em /etc/ (que o baseline
+        ``protect_system_dirs`` nega); resultado DEVE permanecer negado."""
         grant_rule = {
             "id": "org_grant_bash_admin",
-            "name": "Org tries to grant bash admin",
+            "name": "Org tries to grant bash admin on /etc",
             "description": "Tentativa adversarial de escalada de privilégio",
             "resource_type": "system",
             "resource_pattern": r"^/etc/.*",
+            "tool_names": ["bash_execute"],
+            "permission_level": "admin",
+            "priority": 1,  # mais prioritária que o default protect_system_dirs (10)
+            "enabled": True,
+        }
+        _write_org_permissions(tmp_path, [grant_rule])
+
+        # Manager com as regras default — protect_system_dirs (priority=10, NONE)
+        # nega qualquer tool em /etc/. A org tenta sobrepor com admin/priority=1.
+        mgr = PermissionManager()
+        mgr.load_org_rules(tmp_path)
+
+        result = mgr.check_permission("bash_execute", "/etc/passwd", "execute")
+        assert result is False, (
+            "Monotonicidade violada: regra de org concedeu acesso que o baseline "
+            "nega. O veredito efetivo deve ser baseline AND org."
+        )
+
+    def test_org_cannot_override_explicit_baseline_deny(self, tmp_path: Path) -> None:
+        """Mesmo invariante com uma negação de baseline explícita (não-default)."""
+        grant_rule = {
+            "id": "grant_bash",
+            "name": "Org grants bash",
+            "description": "",
+            "resource_type": "command",
+            "resource_pattern": r".*",
             "tool_names": ["bash_execute"],
             "permission_level": "admin",
             "priority": 1,
@@ -176,53 +208,45 @@ class TestOrgPermissionsMonotonicity:
         }
         _write_org_permissions(tmp_path, [grant_rule])
 
-        # Manager com regras default (que bloqueiam /etc/)
         mgr = PermissionManager()
-        mgr.load_org_rules(tmp_path)
-
-        # A regra de baseline protect_system_dirs (priority=10) bloqueia /etc/.
-        # A regra de org (priority=1) tenta conceder admin para /etc/ via bash.
-        # Como a regra de org tem priority MENOR (=mais prioritária), ela vence
-        # sobre a default, mas a PermissionLevel.ADMIN em /etc/ ainda significa
-        # que a ação admin seria permitida... mas o invariante de negócio é:
-        # org NÃO pode AMPLIAR além do que o baseline permite via a interseção
-        # no whitelist de tools. Para permissões, o invariante é: org só pode
-        # NEGAR (adicionar regras de `none` / nível menor), nunca conceder além.
-        #
-        # Neste teste verificamos especificamente que a org não consegue
-        # sobrescrever uma NEGAÇÃO do baseline com uma CONCESSÃO. Criamos um
-        # manager com regra de negação baseline explícita e tentamos fazer a
-        # org conceder.
-        mgr2 = PermissionManager()
-        # Adiciona regra baseline explícita que nega bash em /etc/
         baseline_deny = PermissionRule(
-            id="baseline_deny_bash_etc",
-            name="Baseline denies bash on /etc/",
+            id="baseline_deny_bash",
+            name="Baseline denies bash",
             description="",
-            resource_type=ResourceType.SYSTEM,
-            resource_pattern=r"^/etc/.*",
+            resource_type=ResourceType.COMMAND,
+            resource_pattern=r".*",
             tool_names=["bash_execute"],
             permission_level=PermissionLevel.NONE,
             priority=10,
         )
-        mgr2.add_rule(baseline_deny)
-        mgr2.load_org_rules(tmp_path)  # org tenta conceder admin
+        mgr.add_rule(baseline_deny)
+        mgr.load_org_rules(tmp_path)  # org tenta conceder admin com priority menor
 
-        # A org tem priority=1 (mais prioritária que 10), então sua regra admin
-        # vence no check_permission. Isso significa que o invariante de
-        # monotonicidade deve ser garantido pelo operador/configuração correta,
-        # NÃO automaticamente pelo PermissionManager (que é um sistema de regras
-        # genérico). O que este teste verifica é que NÃO houve regressão no
-        # carregamento das regras, e que a ferramenta de auditoria de que
-        # "a org só nega" é responsabilidade da política de org-config, não do
-        # engine. Verificamos o comportamento do engine com regras corretas:
-        result_negation = mgr2.check_permission("bash_execute", "/etc/passwd", "execute")
-        # Com a regra de org (priority=1, admin) vencendo sobre a baseline (priority=10, none),
-        # o resultado seria True — mas isso é esperado dado que a ORG ESCOLHEU conceder.
-        # O invariante real é que o org_config (gerenciado pelo operador) não DEVE
-        # conter regras de concessão. Aqui verificamos que o sistema de regras
-        # funciona deterministicamente.
-        assert isinstance(result_negation, bool)  # engine funciona corretamente
+        result = mgr.check_permission("bash_execute", "/bin/bash", "execute")
+        assert result is False, (
+            "Org com priority=1 (admin) NÃO pode reverter uma negação de baseline "
+            "(priority=10, none) — org é estritamente subtrativa."
+        )
+
+    def test_org_deny_still_tightens_an_allowing_baseline(self, tmp_path: Path) -> None:
+        """O lado complementar: quando o baseline PERMITE, a negação de org aperta."""
+        _write_org_permissions(tmp_path, [_DENY_BASH_RULE])
+        mgr = PermissionManager()
+        allowing_baseline = PermissionRule(
+            id="baseline_allow_bash",
+            name="Baseline allows bash",
+            description="",
+            resource_type=ResourceType.COMMAND,
+            resource_pattern=r".*",
+            tool_names=["bash_execute"],
+            permission_level=PermissionLevel.EXECUTE,
+            priority=10,
+        )
+        mgr.add_rule(allowing_baseline)
+        mgr.load_org_rules(tmp_path)
+
+        # Baseline permitiria (EXECUTE); a org nega (none) → efetivo = negado.
+        assert mgr.check_permission("bash_execute", "/bin/bash", "execute") is False
 
 
 # ---------------------------------------------------------------------------

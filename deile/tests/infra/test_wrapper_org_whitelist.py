@@ -68,139 +68,136 @@ class TestLoadOrgToolAllowList:
 
 # ---------------------------------------------------------------------------
 # Testes de _install_tool_whitelist com interseção
+#
+# NOTA: estes testes EXERCEM `_install_tool_whitelist` de verdade — instalam o
+# hook (que embrulha `DeileAgent.initialize`), aguardam o initialize embrulhado
+# sobre um agente fake e observam quais tools o registry REALMENTE desabilitou.
+# Não recomputam `role & org` inline (isso só testaria o operador `&` da
+# linguagem, dando falsa segurança sobre a interseção de produção).
 # ---------------------------------------------------------------------------
 
-@pytest.mark.unit
-class TestInstallToolWhitelistOrgIntersection:
-    """Verifica que a interseção com org allow-list estreita o whitelist."""
+async def _exercise_install(wrapper_mod, role_whitelist, org_allow, present_tools):
+    """Roda `_install_tool_whitelist` e devolve `(kept, disabled)` REAIS.
 
-    def _run_whitelist_install(
-        self,
-        wrapper_mod,
-        role_whitelist: frozenset,
-        org_allow: frozenset,
-    ) -> list:
-        """Executa _install_tool_whitelist e retorna os nomes de tools mantidos."""
-        # Monta ferramentas simuladas
-        tools = [MagicMock(name=n) for n in role_whitelist | {"bash_execute", "python_execute"}]
-        for t in tools:
-            t.name = t._mock_name
+    Patcha `DeileAgent.initialize` com um stub async, instala o whitelist (que
+    embrulha o stub), aguarda o initialize embrulhado sobre um agente fake cujo
+    registry contém `present_tools`, e captura os `disable_tool` reais. Restaura
+    `DeileAgent.initialize` ao final (isolamento de teste).
+    """
+    import deile.core.agent as agent_mod
 
-        registry = MagicMock()
-        registry.list_all.return_value = tools
-        registry.disable_tool.return_value = True
+    disabled: list = []
+    tools = []
+    for name in present_tools:
+        tool = MagicMock()
+        tool.name = name
+        tools.append(tool)
 
-        agent = MagicMock()
-        agent.tool_registry = registry
+    registry = MagicMock()
+    registry.list_all.return_value = tools
+    registry.disable_tool.side_effect = lambda name: (disabled.append(name) or True)
 
-        kept = []
+    fake_agent = MagicMock()
+    fake_agent.tool_registry = registry
 
-        import asyncio
+    orig_init = agent_mod.DeileAgent.initialize
 
-        async def fake_original_init(self_inner, *args, **kwargs):
-            return None
+    async def _stub_init(self, *args, **kwargs):
+        return "initialized"
 
+    agent_mod.DeileAgent.initialize = _stub_init
+    try:
         with (
             patch.object(wrapper_mod, "_messaging_tool_whitelist", return_value=role_whitelist),
             patch.object(wrapper_mod, "_load_org_tool_allow_list", return_value=org_allow),
         ):
             wrapper_mod._install_tool_whitelist("test_role")
+        # `DeileAgent.initialize` agora é o hook endurecido sobre `_stub_init`.
+        await agent_mod.DeileAgent.initialize(fake_agent)
+    finally:
+        agent_mod.DeileAgent.initialize = orig_init
 
-        import deile.core.agent as agent_mod
+    kept = [t.name for t in tools if t.name not in disabled]
+    return kept, disabled
 
-        # Restaura o método original após o teste
-        original_init = agent_mod.DeileAgent.initialize
 
-        # Simula a execução do hook
-        async def _collect():
-            nonlocal kept
-            result_agent = MagicMock()
-            result_agent.tool_registry = registry
-            # Captura os nomes passados como "kept" via disable_tool
-            kept_names = []
-            dropped_names = []
-            effective_whitelist = role_whitelist & org_allow if org_allow else role_whitelist
-            for tool in tools:
-                if tool.name in effective_whitelist:
-                    kept_names.append(tool.name)
-                else:
-                    dropped_names.append(tool.name)
-            kept = kept_names
-            return kept_names
+@pytest.mark.unit
+class TestInstallToolWhitelistOrgIntersection:
+    """Verifica que a interseção com org allow-list estreita o whitelist REAL."""
 
-        asyncio.get_event_loop().run_until_complete(_collect())
-        return kept
-
-    def test_intersection_removes_tool_absent_from_org_allow(self, wrapper_mod) -> None:
-        """Tool no role_whitelist mas ausente do org allow-list é removida."""
+    async def test_intersection_removes_tool_absent_from_org_allow(self, wrapper_mod) -> None:
+        """Tool no role_whitelist mas ausente do org allow-list é DESABILITADA."""
         role_whitelist = frozenset({
             "discord_send_message",
             "dispatch_deile_task",
             "vision_describe_image",
         })
-        # Org permite apenas dispatch_deile_task
-        org_allow = frozenset({"dispatch_deile_task"})
+        org_allow = frozenset({"dispatch_deile_task"})  # org permite só uma
+        present = list(role_whitelist) + ["bash_execute"]
 
-        effective = role_whitelist & org_allow
-        assert "discord_send_message" not in effective
-        assert "dispatch_deile_task" in effective
+        kept, disabled = await _exercise_install(wrapper_mod, role_whitelist, org_allow, present)
 
-    def test_no_org_allow_list_preserves_full_role_whitelist(self, wrapper_mod) -> None:
+        assert kept == ["dispatch_deile_task"]
+        assert "discord_send_message" in disabled
+        assert "vision_describe_image" in disabled
+
+    async def test_no_org_allow_list_preserves_full_role_whitelist(self, wrapper_mod) -> None:
         """Sem allow-list de org (vazio), role_whitelist é usado integralmente."""
         role_whitelist = frozenset({"discord_send_message", "dispatch_deile_task"})
-        org_allow = frozenset()  # vazio = sem config de org
+        present = list(role_whitelist) + ["bash_execute"]
 
-        effective = role_whitelist & org_allow if org_allow else role_whitelist
-        assert effective == role_whitelist
+        kept, disabled = await _exercise_install(wrapper_mod, role_whitelist, frozenset(), present)
 
-    def test_org_cannot_add_tool_not_in_role_whitelist(self, wrapper_mod) -> None:
+        assert set(kept) == role_whitelist
+        # Só o que está fora do role_whitelist é desabilitado (baseline).
+        assert disabled == ["bash_execute"]
+
+    async def test_org_cannot_add_tool_not_in_role_whitelist(self, wrapper_mod) -> None:
         """Org não pode conceder bash_execute se não está no role_whitelist."""
         role_whitelist = frozenset({"discord_send_message", "dispatch_deile_task"})
         org_allow = frozenset({"discord_send_message", "dispatch_deile_task", "bash_execute"})
+        present = ["discord_send_message", "dispatch_deile_task", "bash_execute"]
 
-        effective = role_whitelist & org_allow
-        assert "bash_execute" not in effective, (
+        kept, disabled = await _exercise_install(wrapper_mod, role_whitelist, org_allow, present)
+
+        assert "bash_execute" not in kept, (
             "Interseção garante que org não pode AMPLIAR o whitelist do papel"
         )
-
-    def test_backward_compat_empty_org_allow_list(self, wrapper_mod) -> None:
-        """AC backward-compat: sem org allow-list, whitelist = baseline do papel."""
-        role_whitelist = frozenset({"a", "b", "c"})
-        org_allow_empty = frozenset()
-
-        effective_no_org = role_whitelist & org_allow_empty if org_allow_empty else role_whitelist
-        assert effective_no_org == role_whitelist
+        assert "bash_execute" in disabled
 
 
 # ---------------------------------------------------------------------------
-# Testes de monotonicidade (invariante de segurança)
+# Testes de monotonicidade (invariante de segurança) — exercem a função real.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.unit
 class TestOrgWhitelistMonotonicity:
     """AC: org só estreita o conjunto de ferramentas, nunca amplia."""
 
-    def test_intersection_is_subset_of_role_whitelist(self) -> None:
-        """effective ⊆ role_whitelist para qualquer org_allow."""
+    async def test_effective_kept_is_subset_of_role_whitelist(self, wrapper_mod) -> None:
+        """`kept` ⊆ role_whitelist para qualquer org_allow — provado pela função."""
         role_whitelist = frozenset({"a", "b", "c", "d"})
+        present = list(role_whitelist) + ["e", "x"]
         for org_allow in [
             frozenset({"a", "b"}),
-            frozenset({"a", "b", "c", "d", "e"}),  # org "generosa" não amplia
+            frozenset({"a", "b", "c", "d", "e"}),  # org "generosa" inclui "e"
             frozenset(),
-            frozenset({"x", "y"}),  # sem sobreposição
+            frozenset({"x", "y"}),  # sem sobreposição com o papel
         ]:
-            effective = role_whitelist & org_allow if org_allow else role_whitelist
-            assert effective <= role_whitelist, (
-                f"effective {effective} não é subconjunto de role_whitelist {role_whitelist}"
+            kept, _ = await _exercise_install(wrapper_mod, role_whitelist, org_allow, present)
+            assert set(kept) <= role_whitelist, (
+                f"kept {kept} não é subconjunto de role_whitelist {role_whitelist} "
+                f"(org_allow={org_allow})"
             )
 
-    def test_org_allow_list_is_never_a_superset_of_effective(self) -> None:
-        """effective ⊆ role_whitelist SEMPRE — org_allow não importa."""
+    async def test_generous_org_does_not_widen_whitelist(self, wrapper_mod) -> None:
+        """Org "generosa" (inclui bash/python) NÃO os adiciona ao whitelist efetivo."""
         role_whitelist = frozenset({"discord_send_message"})
-        org_allow_expansive = frozenset({"discord_send_message", "bash_execute", "python_execute"})
+        org_allow = frozenset({"discord_send_message", "bash_execute", "python_execute"})
+        present = ["discord_send_message", "bash_execute", "python_execute"]
 
-        effective = role_whitelist & org_allow_expansive
-        # bash_execute e python_execute NÃO entram mesmo que org_allow os inclua
-        assert "bash_execute" not in effective
-        assert "python_execute" not in effective
-        assert effective == frozenset({"discord_send_message"})
+        kept, disabled = await _exercise_install(wrapper_mod, role_whitelist, org_allow, present)
+
+        assert kept == ["discord_send_message"]
+        assert "bash_execute" in disabled
+        assert "python_execute" in disabled

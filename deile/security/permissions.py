@@ -65,7 +65,12 @@ class PermissionRule:
 
 class PermissionManager:
     """Central permission management"""
-    
+
+    # Prefixo das regras carregadas da camada ORG (issue #741). É o discriminador
+    # que torna as regras de org estritamente subtrativas em ``check_permission``
+    # (monotonicidade) — ver ``load_org_rules`` e ``check_permission``.
+    _ORG_RULE_PREFIX = "org__"
+
     def __init__(self, config_path: Optional[Path] = None):
         self.rules: List[PermissionRule] = []
         self.default_permission = PermissionLevel.READ
@@ -185,25 +190,47 @@ class PermissionManager:
                         resource: str,
                         action: str,
                         context: Optional[Dict[str, Any]] = None) -> bool:
-        """Check if action is permitted"""
-        
+        """Check if action is permitted.
+
+        Regras da camada ORG (id com prefixo ``org__``, issue #741) são
+        estritamente **subtrativas**: o veredito efetivo é ``baseline AND org``.
+        Uma regra de org só pode **negar** ou exigir aprovação — nunca conceder
+        uma capacidade que o baseline (regras default/non-org) negaria. Vale
+        **independente da prioridade** da regra de org, fechando o vetor de
+        escalada em que uma regra ``admin`` de org com prioridade < 10
+        sobreporia um ``none`` do baseline (monotonicidade — não-negociável).
+        """
+
         context = context or {}
-        
-        # Find applicable rules, sorted by priority
+
+        # Find applicable rules, sorted by priority (lowest number = highest).
         applicable_rules = [
             rule for rule in sorted(self.rules, key=lambda r: r.priority)
             if rule.enabled and rule.applies_to_tool(tool_name) and rule.matches_resource(resource)
         ]
-        
-        if not applicable_rules:
-            # No specific rules, use default permission
-            return self._check_default_permission(action)
-        
-        # Use the highest priority rule (lowest priority number)
-        rule = applicable_rules[0]
-        
-        # Check if the requested action is allowed by the rule
-        return self._action_allowed_by_permission(action, rule.permission_level, context)
+
+        org_rules = [r for r in applicable_rules if r.id.startswith(self._ORG_RULE_PREFIX)]
+        base_rules = [r for r in applicable_rules if not r.id.startswith(self._ORG_RULE_PREFIX)]
+
+        # Veredito baseline — semântica original (regras de org excluídas):
+        # regra de maior prioridade vence, ou o default quando nenhuma casa.
+        if base_rules:
+            base_allowed = self._action_allowed_by_permission(
+                action, base_rules[0].permission_level, context
+            )
+        else:
+            base_allowed = self._check_default_permission(action)
+
+        # Sem regras de org → comportamento byte-idêntico ao baseline.
+        if not org_rules:
+            return base_allowed
+
+        # Monotonicidade (issue #741): org só APERTA. Efetivo = baseline AND org;
+        # se o baseline já nega, nenhuma concessão de org o reverte.
+        org_allowed = self._action_allowed_by_permission(
+            action, org_rules[0].permission_level, context
+        )
+        return base_allowed and org_allowed
     
     def _check_default_permission(self, action: str) -> bool:
         """Check if action is allowed by default permission"""
@@ -327,9 +354,12 @@ class PermissionManager:
     def load_org_rules(self, org_config_root: Path) -> None:
         """Carrega regras de permissão da camada ORG a partir de ``org_config_root/permissions.yaml``.
 
-        Regras de org têm prioridade **maior** que as defaults (priority < 10)
-        e são estritamente monotônicas — só apertem, nunca afrouxam. A org pode
-        negar ou exigir aprovação; não pode conceder além do que o baseline permite.
+        As regras recebem o prefixo ``org__`` no id; esse prefixo é o que
+        ``check_permission`` usa para aplicar a **monotonicidade** (issue #741):
+        o veredito efetivo é ``baseline AND org``, então uma regra de org só pode
+        **apertar** — negar ou exigir aprovação — nunca conceder além do que o
+        baseline permite. A garantia é estrutural (vale qualquer prioridade); a
+        prioridade default ``5`` serve apenas para ordenar regras de org entre si.
         """
         permissions_file = org_config_root / "permissions.yaml"
         if not permissions_file.exists():
@@ -348,7 +378,7 @@ class PermissionManager:
             for rule_data in rules_config:
                 org_priority = rule_data.get("priority", 5)
                 rule = PermissionRule(
-                    id=f"org__{rule_data['id']}",
+                    id=f"{self._ORG_RULE_PREFIX}{rule_data['id']}",
                     name=rule_data["name"],
                     description=rule_data.get("description", ""),
                     resource_type=ResourceType(rule_data["resource_type"]),
