@@ -9,9 +9,93 @@ on:
     # Run tests daily at 2 AM UTC
     - cron: "0 2 * * *"
 
+# Permissões mínimas por padrão (princípio do menor privilégio).
+# Jobs que precisam de mais declaram localmente via permissions:.
+permissions:
+  contents: read
+
 jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # SECRET SCANNING — gating; bloqueia em segredo novo fora da allowlist
+  # ──────────────────────────────────────────────────────────────────────────
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          # Histórico completo para varredura full-history
+          fetch-depth: 0
+
+      - name: Gitleaks — varredura de segredos (GATING)
+        # gitleaks/gitleaks-action v2
+        # SHA do commit apontado pela tag anotada v2 (resolvido em 2026-06-15):
+        #   tag object: dcedce43c6f43de0b836d1fe38946645c9c638dc
+        #   commit:     ff98106e4c7b2bc287b24eaf42907196329070c7
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # .gitleaks.toml na raiz do repo define a allowlist de FPs em arquivos
+          # de teste — veja o arquivo para a lista e justificativa por arquivo.
+          GITLEAKS_CONFIG: .gitleaks.toml
+          # exit-code=1 garante que o job falhe se houver achado fora da allowlist
+          GITLEAKS_EXIT_CODE: 1
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # SECURITY SCAN — gating: bandit HIGH + pip-audit CVE
+  # ──────────────────────────────────────────────────────────────────────────
+  security-scan:
+    name: Security scan (bandit + pip-audit)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set up Python
+        # actions/setup-python v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Install project + security tools
+        run: |
+          python -m pip install --upgrade pip
+          # Instala o projeto para que pip-audit veja as deps reais (pyproject.toml)
+          pip install -e ".[test,otel]"
+          pip install bandit pip-audit
+
+      # BANDIT — SAST gating em severidade HIGH
+      # Resultado da varredura inicial (2026-06-15): zero achados HIGH.
+      # Sem baseline necessário — qualquer HIGH novo bloqueia diretamente.
+      - name: Bandit — SAST HIGH severity (GATING)
+        run: |
+          bandit -r deile/ -lll
+
+      # PIP-AUDIT — CVE gating
+      # Achado legado allowlistado (2026-06-15):
+      #   CVE-2025-71176 / GHSA-6w46-j5rx-g56g — pytest 8.4.2
+      #   Descrição: local DoS/privilege escalation via /tmp/pytest-of-{user}
+      #   Risco prático: nulo em CI (runner descartável, sem usuários concorrentes)
+      #   Fix disponível: pytest >=9.0.3 — allowlistar até atualização planejada
+      - name: pip-audit — CVE check (GATING)
+        run: |
+          pip-audit --ignore-vuln GHSA-6w46-j5rx-g56g
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # TESTES — gating: suíte completa + cobertura ≥85%
+  # ──────────────────────────────────────────────────────────────────────────
   test:
+    name: Tests (Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -19,7 +103,9 @@ jobs:
         python-version: ["3.11"]
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       # Testes de infra (cli_worker_repo_cycle) fazem `git commit` REAL em repos
       # temporários; o runner não tem identidade git global, causando
@@ -30,12 +116,14 @@ jobs:
           git config --global user.name "DEILE CI"
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        # actions/setup-python v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Cache pip dependencies
-        uses: actions/cache@v4
+        # actions/cache v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -65,51 +153,42 @@ jobs:
           mypy deile/ || echo "mypy check completed with issues"
         continue-on-error: true
 
+      # Gate de cobertura: medido 87% em 2026-06-15; gate em 85% com margem.
+      # --cov-fail-under=85 é o gate real — o CI falha se a cobertura cair abaixo.
       - name: Run tests
         run: |
           # -n auto: paraleliza em todos os cores (pytest-xdist instalado acima); pytest-cov combina a cobertura entre workers.
-          pytest deile/tests/ -q -n auto --cov=deile --cov-report=xml --cov-report=term-missing
+          pytest deile/tests/ -q -n auto \
+            --cov=deile \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=85
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        # codecov/codecov-action v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238
         with:
           file: ./coverage.xml
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: false
 
-  security-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install security tools
-        run: |
-          pip install bandit safety
-
-      - name: Run Bandit security scan
-        run: |
-          bandit -r deile/ -f json -o bandit-report.json || true
-          bandit -r deile/ || true
-        continue-on-error: true
-
-      - name: Check for known security vulnerabilities
-        run: |
-          safety check --json || echo "Safety check completed"
-        continue-on-error: true
-
+  # ──────────────────────────────────────────────────────────────────────────
+  # QUALIDADE DE CÓDIGO — advisory (continue-on-error: permanece)
+  # ──────────────────────────────────────────────────────────────────────────
   code-quality:
+    name: Code quality (advisory)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        # actions/setup-python v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
 
@@ -138,14 +217,23 @@ jobs:
           radon mi deile/
         continue-on-error: true
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # TESTES FUNCIONAIS — advisory (continue-on-error: permanece)
+  # ──────────────────────────────────────────────────────────────────────────
   functional-tests:
+    name: Functional tests (advisory)
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        # actions/setup-python v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
 
@@ -178,20 +266,29 @@ jobs:
           "
         continue-on-error: true
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # BENCHMARKS — advisory
+  # ──────────────────────────────────────────────────────────────────────────
   performance-tests:
+    name: Performance benchmarks (advisory)
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        # actions/setup-python v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip  
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest-benchmark
 
@@ -200,14 +297,23 @@ jobs:
           pytest deile/tests/ -k "performance or benchmark" --benchmark-only || echo "Performance tests completed"
         continue-on-error: true
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # BUILD — advisory
+  # ──────────────────────────────────────────────────────────────────────────
   build-and-package:
+    name: Build & package (advisory)
     runs-on: ubuntu-latest
     needs: [test, code-quality]
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        # actions/setup-python v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
 
@@ -227,13 +333,22 @@ jobs:
           twine check dist/* || echo "Package check completed"
         continue-on-error: true
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # DOCUMENTAÇÃO — advisory
+  # ──────────────────────────────────────────────────────────────────────────
   documentation:
+    name: Documentation (advisory)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        # actions/checkout v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        # actions/setup-python v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.11"
 
@@ -252,21 +367,33 @@ jobs:
           test -f README.md && echo "README.md exists" || echo "No README.md found"
           test -f README_NEW_ARCHITECTURE.md && echo "Architecture README exists" || echo "No architecture README"
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # NOTIFICAÇÃO DE FALHA
+  # ──────────────────────────────────────────────────────────────────────────
   notify-on-failure:
+    name: Notify on failure
     runs-on: ubuntu-latest
-    needs: [test, security-scan, code-quality, functional-tests]
+    needs: [test, secret-scan, security-scan, code-quality, functional-tests]
     if: failure()
+    permissions:
+      contents: read
     steps:
       - name: Notify on failure
         run: |
           echo "CI Pipeline failed. Check the logs for details."
           echo "Failed jobs need attention before merging."
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # DEPLOYMENT READY — só em main; requer gates de segurança passando
+  # ──────────────────────────────────────────────────────────────────────────
   deployment-ready:
+    name: Deployment ready
     runs-on: ubuntu-latest
     needs:
-      [test, security-scan, code-quality, functional-tests, build-and-package]
+      [test, secret-scan, security-scan, code-quality, functional-tests, build-and-package]
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
     steps:
       - name: Mark as deployment ready
         run: |
