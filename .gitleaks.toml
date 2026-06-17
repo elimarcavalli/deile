@@ -15,6 +15,7 @@ useDefault = true
 [[allowlists]]
 description = "Strings fake em testes unitários — propositalmente parecidas com segredos para validar o scanner de segredos do projeto"
 paths = [
+  '''deile/tests/common/test_bearer\.py''',
   '''deile/tests/infra/test_dispatch_logger\.py''',
   '''deile/tests/infra/test_claude_install\.py''',
   '''deile/tests/infra/test_k8s_setup\.py''',
