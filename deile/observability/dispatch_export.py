@@ -24,7 +24,6 @@ Regras críticas:
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -45,6 +44,7 @@ from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
                                                  ForgePrReviewAttrs,
                                                  GitCommitAttrs, GitPushAttrs,
                                                  get_pod_metadata)
+from deile.observability._redaction import _redact, _safe_attrs
 from deile.observability.semconv_mapping import apply_semconv_attrs
 from deile.observability.tracer import OtlpTracer, get_tracer, otel_available
 
@@ -64,32 +64,10 @@ __all__ = [
 
 _logger = logging.getLogger(__name__)
 
-# ── redaction ─────────────────────────────────────────────────────────────
-
-_REDACT_RE = re.compile(
-    r"(ghp_[A-Za-z0-9]{36,}|glpat-[A-Za-z0-9_-]{20,}|gldt-[A-Za-z0-9_-]{20,}"
-    r"|sk-[A-Za-z0-9]{20,}|Bearer\s+\S{10,}|xox[baprs]-[A-Za-z0-9-]{10,}"
-    r"|AKIA[A-Z0-9]{16,}|[A-Za-z0-9+/]{40,}={0,2})",
-    re.ASCII,
-)
-
-
-def _redact(value: str) -> str:
-    """Substitui padrões de token/segredo por ``[REDACTED]``."""
-    return _REDACT_RE.sub("[REDACTED]", value)
-
 
 def _safe_str(value: Any) -> str:
     """Converte para str com redact aplicado."""
     return _redact(str(value) if value is not None else "")
-
-
-def _safe_attrs(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Aplica redact em todos os valores string do dict."""
-    out: Dict[str, Any] = {}
-    for k, v in raw.items():
-        out[k] = _redact(str(v)) if isinstance(v, str) else v
-    return out
 
 
 # ── drop counter ──────────────────────────────────────────────────────────
