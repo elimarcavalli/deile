@@ -44,7 +44,7 @@ from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
                                                  ForgePrReviewAttrs,
                                                  GitCommitAttrs, GitPushAttrs,
                                                  get_pod_metadata)
-from deile.observability._redaction import _REDACT_RE, _redact, _safe_attrs
+from deile.observability._redaction import _redact, _safe_attrs
 from deile.observability.semconv_mapping import apply_semconv_attrs
 from deile.observability.tracer import OtlpTracer, get_tracer, otel_available
 

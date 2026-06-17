@@ -50,7 +50,7 @@ import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from deile.observability._redaction import _REDACT_RE, _redact, _safe_attrs
+from deile.observability._redaction import _redact, _safe_attrs
 from deile.observability.config import get_observability_config
 from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
                                                  ATTR_SCHEMA_VERSION,
