@@ -217,7 +217,7 @@ Cluster = **Rancher Desktop (k3s/containerd)**, single image **`deile-stack:loca
 The **clone guard** (`~/bin/git` shadowing real git, reads `git_integration.clonable_repos` from mounted `deilebot.yaml`) is fail-closed in mechanism but **ships `"*"`** — `k8s clone` is **not** repo-restricted by default (any repo the credential reaches).
 
 ### 5.2 Orchestrator: `infra/k8s/deploy.py` (run from repo root)
-Prints a plan before mutating; `--yes` skips the prompt, `--dry-run` shows it only. **Global `-n`/`--namespace <ns>`** for every verb (default `deile`). `infra/k8s/run.sh` = shim execing `deploy.py`.
+Prints a plan before mutating; `--yes` skips the prompt, `--dry-run` shows it only. **Global `-n`/`--namespace <ns>`** for every verb (default `deile`).
 
 **Profiles** (`--profile` or `DEILE_K8S_DEPLOY_PROFILE`, default **`full`**): `pipeline-only` (no bot, **no Discord token**), `full` (incl. bot — needs `DEILE_BOT_DISCORD_TOKEN`), `claude-only` (adds claude-worker manifests). Governs which pods/manifests/secrets `k8s up` applies.
 
