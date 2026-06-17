@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Activity sources configuráveis (#447)** — `settings.panel.activity_sources` permite escolher quais deployments o widget ACTIVITY acompanha (lista/role/cor/ordem) sem editar Python nem re-deployar; valida DNS-1123 e rejeita duplicatas.
 - **Controles destrutivos na LiveSessionView (#462)** — `[k]` kill e `[C]` cleanup com confirmação inline de 2-keypress, defesa TOCTOU no servidor (409) e audit `{allowed, failed, cancelled}`.
 - **Auth do `claude-worker` via `claude setup-token` (#603, Decisão #52)** — verb `deploy.py k8s claude-setup-token` + hotkey `[T]` no painel; token de ~1 ano em `CLAUDE_CODE_OAUTH_TOKEN` injetado por env var via Secret K8s.
+- **Camada ORG de padrões no harness (#741/#743, derivada da intent #613)** — uma organização/grupo personaliza o próprio harness k8s (skills, guardrails, contexto) sem editar cada repo: `org_skills_paths`/`org_tool_allow_list`/`org_paths` na config layered. As regras de permissão de org são estritamente **subtrativas** — veredito efetivo `baseline AND org` (prefixo `org__`, monotonicidade válida em qualquer prioridade), fechando o vetor de escalada onde uma regra de org concederia além do baseline.
 
 ### Changed
 - **CI endurece de teatro para gates reais (hardening em 3 etapas):**
@@ -69,6 +70,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **3 testes defasados em `orchestration/pipeline` (#642, fecha #640)** — alinhados à extensão do reaper (#427); nenhum código de produto alterado.
 - **`fix(docker)`: COPY de `_worker_core.py` para `/app`** (módulo novo da frota faltava na imagem do claude-worker).
 - Cobertura de regressão: gaps de export (#461), timeout em `ensure_gh_authenticated` (#655), skip de testes de kill-switch sem o extra `[otel]`.
+- **Refinement gate acoplado ao executor travava intents (#85, PR #744)** — sob frota all-claude o gate de refino/decomposição era derivado do `dispatch_mode` (`not is_claude_mode`), então toda issue `[INTENT]` ficava presa eternamente em `~workflow:revisada` (nunca decomposta nem implementada). Agora flag própria `pipeline_refinement_gate` (default ON; env `DEILE_PIPELINE_REFINEMENT_GATE` / `pipeline.refinement_gate`), espelhando `enable_resume`; `dispatch_mode` decide só QUEM executa. Provado ao vivo decompondo a #613.
+- **Poluição do `SkillRegistry` entre testes — flake de CI (#745)** — testes não-skills chamavam `bootstrap_skills` real e populavam o singleton global com skills bundled + do operador, vazando para testes-vítima sob `pytest-xdist -n 2` + seed do `pytest-randomly`. Isolamento hermético na fonte (patch de `bootstrap_skills` nos poluidores) + prova determinística de não-vazamento; main passou de vermelha→verde no merge.
+- **Display do painel: `(pod down)` falso + crash `MarkupError` na tela `[t]okens` (#739)** — `_claude_worker_cell` conflava "probe indisponível" com "pod morto" ignorando o status k8s Running; `render_table` quebrava com colchetes em texto livre de sessão. Ambos display-only.
 
 ### Security
 - **Allowlist de repos enforçada por request, antes do clone (#639)** — `_worker_core.check_repo_allowed` retorna 403 `REPO_NOT_ALLOWED` nos **dois** servidores de dispatch, fechando o gap onde só havia fail-fast no startup do `wrapper.py` (vetor de exfiltração por prompt-injection). Egress ainda não é host-whitelisted em L3/L4 — a allowlist é o controle de aplicação.
