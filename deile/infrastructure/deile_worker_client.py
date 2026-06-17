@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import (BaseModel, Field, ValidationError, ValidationInfo,
                       field_validator)
 
+from deile.common.bearer import _TOKEN_SAFE_CHARS, _validate_token_charset
 from deile.core.exceptions import DEILEError
 from deile.infrastructure.circuit_breaker import CircuitBreaker
 from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES
@@ -116,15 +117,6 @@ _TOKEN_FILES = (
     "/run/secrets/worker/AUTH_TOKEN",
     "/run/secrets/bot/WORKER_BEARER_TOKEN",
 )
-
-# Tokens são tratados como bearer values: rejeitamos qualquer caractere
-# que possa quebrar o header HTTP (CR, LF, NUL) — defense-in-depth contra
-# header injection em caso de secret file corrompido. O floor de 16
-# caracteres alinha com ``secrets_scanner`` (``DEILE_BOT_AUTH_TOKEN`` /
-# ``DEILE_WORKER_BEARER_TOKEN`` exigem ``{16,}`` no scanner — ver pilar
-# 08 §"Padrões cobertos"); manter o floor uniforme garante que o scanner
-# e o validador concordem sobre o que é "token plausível".
-_TOKEN_SAFE_CHARS = re.compile(r"^[A-Za-z0-9._\-+/=:~]{16,4096}$")
 
 # Personas suportadas pelo worker — espelha
 # deile/personas/library/*.yaml. Manter sincronizado quando uma persona
@@ -566,11 +558,6 @@ def _read_token() -> str:
             logger.debug("worker token resolved from %s", path)
             return v
     return ""
-
-
-def _validate_token_charset(token: str) -> bool:
-    """True se ``token`` não tem CR/LF/NUL e cabe no charset bearer comum."""
-    return bool(_TOKEN_SAFE_CHARS.match(token))
 
 
 async def _resolve_auth_and_httpx() -> tuple[str, Any]:

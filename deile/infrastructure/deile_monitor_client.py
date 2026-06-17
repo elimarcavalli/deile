@@ -23,10 +23,10 @@ import asyncio
 import json
 import logging
 import os
-import re
 import uuid
 from typing import Any, Dict, Optional
 
+from deile.common.bearer import _TOKEN_SAFE_CHARS, _validate_token_charset
 from deile.core.exceptions import DEILEError
 
 logger = logging.getLogger(__name__)
@@ -54,12 +54,6 @@ _ASK_RESULT_PATH = "/v1/ask/{request_id}"
 _TOTAL_TIMEOUT_S: float = 30.0
 _CONNECT_TIMEOUT_S: float = 30.0
 _POOL_TIMEOUT_S: float = 30.0
-
-# Tokens são tratados como bearer values: rejeitamos qualquer caractere que
-# possa quebrar o header HTTP (CR, LF, NUL) — defense-in-depth contra header
-# injection em caso de secret file corrompido. O floor de 16 caracteres alinha
-# com o ``secrets_scanner`` e com o validador do deile_worker_client.
-_TOKEN_SAFE_CHARS = re.compile(r"^[A-Za-z0-9._\-+/=:~]{16,4096}$")
 
 
 class MonitorClientError(DEILEError):
@@ -112,11 +106,6 @@ def _read_token() -> str:
             logger.debug("monitor token resolved from %s", path)
             return v
     return ""
-
-
-def _validate_token_charset(token: str) -> bool:
-    """True se ``token`` não tem CR/LF/NUL e cabe no charset bearer comum."""
-    return bool(_TOKEN_SAFE_CHARS.match(token))
 
 
 async def _resolve_auth_and_httpx() -> tuple[str, Any]:

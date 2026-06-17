@@ -1334,6 +1334,8 @@ class WorkerImplementer(PipelineImplementer):
             issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
             forge=monitor.forge.config,
         )
+        if len(brief) > 7950:
+            brief = brief[:7950] + "\n…(brief truncado por tamanho)"
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
 
         # A crítica (julgar CLARO/VAGO) é o PRIMEIRO passo LLM e roteia pelo stage
