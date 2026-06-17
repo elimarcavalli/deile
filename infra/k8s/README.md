@@ -13,9 +13,7 @@
 > ferramentas, configurar segredos, build da imagem, deploy, teste e
 > troubleshooting.
 
-> **Orquestrador:** o `run.sh` virou um shim — o orquestrador agora é o
-> `infra/k8s/deploy.py` (Python, colorido, com `help`). `bash run.sh X`
-> equivale a `python3 deploy.py X`. O alvo é explícito no verbo:
+> **Orquestrador:** `infra/k8s/deploy.py` (Python, colorido, com `help`). O alvo é explícito no verbo:
 > `deploy.py k8s <ação>` (stack no Kubernetes) ou `deploy.py local <ação>`
 > (bot como serviço no host); rodar `deploy.py` sem argumentos abre um
 > menu. Veja `python3 deploy.py help`. Para preparar uma máquina do zero
@@ -214,13 +212,13 @@ Sucesso = DM aparece no Discord (no canal direto entre você e o bot)
 e o Job termina `1/1 completions in XXs`. Logs:
 
 ```bash
-bash infra/k8s/run.sh logs    # bot + Job
+python3 infra/k8s/deploy.py k8s logs    # bot + Job
 ```
 
 Quando terminar e quiser limpar tudo:
 
 ```bash
-bash infra/k8s/run.sh down    # kubectl delete ns deile
+python3 infra/k8s/deploy.py k8s down    # kubectl delete ns deile
 ```
 
 ---
@@ -233,7 +231,6 @@ infra/k8s/
 ├── Dockerfile                    ← multi-stage; non-root; tini + git; readonly-friendly
 ├── wrapper.py                    ← entry-point que lê /run/secrets/<role>/, popa env,
 │                                    configura git credentials + clone guard
-├── run.sh                        ← orquestrador build/up/test/logs/clone/down
 ├── README.md                     ← este arquivo
 └── manifests/
     ├── _README.md                              notas operacionais (kubectl patch p/ forge tokens)
@@ -280,7 +277,7 @@ infra/k8s/
    - `role=deile` egress 443 a `0.0.0.0/0 except RFC1918` (Anthropic etc.);
    - `app=deilebot` egress 443/80 a `0.0.0.0/0 except RFC1918`
      (discord.com).
-3. `run.sh up` cria dois Secrets a partir do `.env`:
+3. `deploy.py k8s up` cria dois Secrets a partir do `.env`:
    - `bot-secrets`: Discord token + Bearer auth + chaves LLM (bot
      precisa pra agente embutido responder DMs);
    - `deile-secrets`: chaves LLM + Bearer (deile precisa pra LLM e
@@ -318,7 +315,7 @@ Pod spec.
 ### 3.3 Aceitando outros providers / outros owners
 
 - **Outro provider LLM**: cole a chave no `.env` antes de rodar `up`;
-  o `run.sh` injeta automaticamente tudo que casa `_API_KEY`.
+  o `deploy.py` injeta automaticamente tudo que casa `_API_KEY`.
 - **Outro owner Discord**: edite `15-bot-config.yaml`, adicione mais
   itens em `owners:` no formato `discord:<snowflake>`, `kubectl apply`
   e `kubectl rollout restart deployment/deilebot`.
@@ -331,7 +328,7 @@ Pod spec.
 
 ```bash
 # A) One-shot fechado, prompt fixo no manifest (CI / cron / proof)
-bash infra/k8s/run.sh test
+python3 infra/k8s/deploy.py k8s test
 
 # B) Sandbox interativo com toolset cheio (alvo: kubectl exec)
 kubectl -n deile exec deploy/deile-shell -- python3 /app/wrapper.py deile "seu prompt aqui"
@@ -358,7 +355,7 @@ GITHUB_TOKEN=github_pat_...
 #### Clonar com um comando
 
 ```bash
-bash infra/k8s/run.sh clone elimarcavalli/deile
+python3 infra/k8s/deploy.py k8s clone elimarcavalli/deile
 ```
 
 O que acontece internamente:
@@ -404,7 +401,7 @@ kubectl delete pvc deile-shell-home -n deile
 ```
 
 > **Nota:** O PVC sobrevive a `kubectl rollout restart` mas NÃO a
-> `bash infra/k8s/run.sh down` (que deleta o namespace inteiro).
+> `python3 infra/k8s/deploy.py k8s down` (que deleta o namespace inteiro).
 
 ### 4.3 Painel TUI ao vivo (`deploy.py k8s panel`)
 
@@ -1047,10 +1044,10 @@ done'
 
 | Sintoma | Causa | Fix |
 |---|---|---|
-| `error: failed to solve … no such file` no `nerdctl build` | Você não está rodando da raiz do repo | `cd <repo-root>; bash infra/k8s/run.sh build` |
+| `error: failed to solve … no such file` no `nerdctl build` | Você não está rodando da raiz do repo | `cd <repo-root>; python3 infra/k8s/deploy.py k8s build` |
 | `ContainerCreating` que nunca passa | `imagePullPolicy: Never` exige imagem local | Cheque `nerdctl --namespace k8s.io images deile-stack:local`. Se não estiver lá, refaça o `build` |
-| Bot: `sqlite3.OperationalError: no such table: audit` | `pip install` perdeu os `.sql` (pyproject sem `package-data`) | `bash infra/k8s/run.sh build` busca a injeção manual no Dockerfile; rebuild + `rollout restart` |
-| Job: `BOT_INTEGRATION_DISABLED` | DEILE não vê `DEILE_BOT_ENDPOINT` ou `DEILE_BOT_AUTH_TOKEN` | Cheque o Secret `deile-secrets` e o env do Pod. `run.sh up` recria com bearer fresco |
+| Bot: `sqlite3.OperationalError: no such table: audit` | `pip install` perdeu os `.sql` (pyproject sem `package-data`) | `python3 infra/k8s/deploy.py k8s build` busca a injeção manual no Dockerfile; rebuild + `rollout restart` |
+| Job: `BOT_INTEGRATION_DISABLED` | DEILE não vê `DEILE_BOT_ENDPOINT` ou `DEILE_BOT_AUTH_TOKEN` | Cheque o Secret `deile-secrets` e o env do Pod. `deploy.py k8s up` recria com bearer fresco |
 | Bot: `tool whitelist active — 0 kept` | Esperado quando `DEILE_BOT_ENDPOINT` está ausente no Pod do bot e messaging tools não auto-discoverem ali | Para o agente embutido responder DMs nenhuma tool é necessária (resposta sai pelo egress pipeline). Para alcançar outros canais, configure `DEILE_BOT_ENDPOINT=http://localhost:8765` no bot Pod |
 | Slash commands `/audit`, `/dlq` retornam `owner only` | Seu `provider_user_id` não está em `owners:` | Edite `15-bot-config.yaml` → `owners: ["discord:<seu_user_id>"]` → `kubectl apply -f` + `rollout restart deployment/deilebot` |
 | `host.lima.internal` resolve mas conexão refused | Esperado — DNS está liberado, a conexão é bloqueada pela NetworkPolicy `except: 192.168.0.0/16` | Não é bug; é defesa funcionando |

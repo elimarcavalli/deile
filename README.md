@@ -506,7 +506,7 @@ Além dos 6 pods core, **qualquer CLI de codificação headless** vira um pod-wo
 
 ### 🎛️ Orquestrador: `infra/k8s/deploy.py`
 
-Imprime um plano antes de qualquer ação mutante; `--yes` pula o prompt, `--dry-run` só mostra o plano. **Flag global `-n <ns>`** seleciona o namespace (default `deile`). *(`infra/k8s/run.sh` ainda existe, mas é só um shim que delega ao `deploy.py`.)*
+Imprime um plano antes de qualquer ação mutante; `--yes` pula o prompt, `--dry-run` só mostra o plano. **Flag global `-n <ns>`** seleciona o namespace (default `deile`).
 
 | Objetivo | Comando |
 |---|---|

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Orquestrador do ciclo de vida do deilebot / DEILE.
 
-Substitui o antigo `run.sh`. Dois alvos, **sempre explícitos no verbo**
+Dois alvos, **sempre explícitos no verbo**
 — nunca há adivinhação de qual será atingido:
 
     python3 infra/k8s/deploy.py                 # menu interativo (detecta o estado)
