@@ -8,6 +8,7 @@ import pytest
 
 from deile.orchestration.pipeline.claude_dispatcher import (
     ClaudeDispatcher, render_implement_prompt, render_review_prompt)
+from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
 
 
 @pytest.fixture
@@ -77,10 +78,10 @@ class TestPrompts:
         assert "body" in prompt
 
     def test_implement_prompt_truncates_long_body(self):
-        body = "@" * 10000
+        body = "@" * (ISSUE_BODY_MAX_CHARS + 5000)  # always exceeds the cap
         prompt = render_implement_prompt("foo/bar", 1, "t", body)
         # The '@' marker isolates the body: the template contains none.
-        assert prompt.count("@") == 5000
+        assert prompt.count("@") == ISSUE_BODY_MAX_CHARS
 
     def test_implement_prompt_normal_issue_uses_closes(self):
         prompt = render_implement_prompt("foo/bar", 42, "Add widget", "do it")
