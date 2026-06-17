@@ -148,7 +148,7 @@ class TestFidelity:
         # Simulate a kernel-level corruption between fsync and read-back: the
         # tool re-opens the temp file and gets different bytes. The publish
         # must abort and the original must survive.
-        from deile.tools import file_tools
+        from deile.tools.file_tools import write_tool
 
         real_open = open
 
@@ -169,7 +169,7 @@ class TestFidelity:
                 return _Fake()
             return fh
 
-        monkeypatch.setattr(file_tools, "open", corrupting_open, raising=False)
+        monkeypatch.setattr(write_tool, "open", corrupting_open, raising=False)
 
         result = tool.execute_sync(
             _ctx(tmp_path, file_path="ola.py", content="print('updated')\n")
