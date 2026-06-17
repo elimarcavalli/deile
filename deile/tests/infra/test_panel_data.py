@@ -13,6 +13,7 @@ de rede. O CostsProvider usa um SQLite temporário.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -30,6 +31,27 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import _panel as panel  # noqa: E402
 import _panel_data as pd  # noqa: E402
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _isolate_runtime_dir(tmp_path_factory):
+    """Aponta DEILE_RUNTIME_DIR para um dir temporário em toda a suíte do módulo.
+
+    LocalInstancesProvider() e LocalRegistryProvider() criados via
+    PanelData.from_context() sem runtime_dir explícito caem em
+    os.environ["DEILE_RUNTIME_DIR"] ou RUNTIME_DIR = Path.home()/.deile/run.
+    Sem esta fixture, testes que chamam from_context() com logs_dir.is_dir()
+    lêem do home real do runner (ordering pollution documentado em CLAUDE.md).
+    """
+    rt = tmp_path_factory.mktemp("panel_runtime")
+    prev = os.environ.get("DEILE_RUNTIME_DIR")
+    os.environ["DEILE_RUNTIME_DIR"] = str(rt)
+    yield rt
+    if prev is None:
+        os.environ.pop("DEILE_RUNTIME_DIR", None)
+    else:
+        os.environ["DEILE_RUNTIME_DIR"] = prev
+
 
 # ===== Cache TTL ============================================================
 
