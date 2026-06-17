@@ -31,7 +31,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from deile.orchestration.forge.base import ForgeConfig, ForgeKind
 from deile.orchestration.forge.cli_renderer import render_brief_cmds
-from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
+from deile.orchestration.pipeline.constants import (DISPATCH_BODY_MAX_CHARS,
+                                                     ISSUE_BODY_MAX_CHARS)
 from deile.orchestration.pipeline.labels import title_prefix_for_type
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -753,7 +754,7 @@ Algoritmo:
 
 
 def _refine_body(body: str) -> str:
-    return (body or "").strip()[:ISSUE_BODY_MAX_CHARS] or "(sem corpo — avalie a partir do título)"
+    return (body or "").strip()[:DISPATCH_BODY_MAX_CHARS] or "(sem corpo — avalie a partir do título)"
 
 
 def _view_issue_author_cmd(cfg: ForgeConfig, repo: str, number: int) -> str:

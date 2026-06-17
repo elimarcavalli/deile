@@ -104,4 +104,9 @@ def resolve_pipeline_repo(*, require: bool = True, fallback: str = "") -> str:
 
 # Prompt / message truncation
 ISSUE_BODY_MAX_CHARS: int = 100000 # Max chars of issue body EMBEDDED in a worker brief.
+#: Max chars of issue body embedded em briefs que CRUZAM o wire do deile-worker
+#: (classify/refine/critique). DEVE ficar bem abaixo do cap de 8000 do
+#: ``DispatchPayload.brief`` (issue #257) — distinto de ``ISSUE_BODY_MAX_CHARS``,
+#: usado pelo caminho ``claude -p`` (que não passa por esse cap).
+DISPATCH_BODY_MAX_CHARS: int = 5000
 PIPELINE_MSG_TRUNCATE_CHARS: int = 30000 # Max chars of stderr / error detail shown in Discord notifications.
