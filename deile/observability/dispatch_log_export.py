@@ -46,11 +46,11 @@ Regras críticas:
 from __future__ import annotations
 
 import logging
-import re as _re
 import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from deile.observability._redaction import _REDACT_RE, _redact, _safe_attrs
 from deile.observability.config import get_observability_config
 from deile.observability.dispatch_schema import (ATTR_POD, ATTR_ROLE,
                                                  ATTR_SCHEMA_VERSION,
@@ -68,29 +68,6 @@ __all__ = [
 ]
 
 _logger = logging.getLogger(__name__)
-
-# ── redaction (mirrors dispatch_export._REDACT_RE — same regex) ──────────────
-
-_REDACT_RE = _re.compile(
-    r"(ghp_[A-Za-z0-9]{36,}|glpat-[A-Za-z0-9_-]{20,}|gldt-[A-Za-z0-9_-]{20,}"
-    r"|sk-[A-Za-z0-9]{20,}|Bearer\s+\S{10,}|xox[baprs]-[A-Za-z0-9-]{10,}"
-    r"|AKIA[A-Z0-9]{16,}|[A-Za-z0-9+/]{40,}={0,2})",
-    _re.ASCII,
-)
-
-
-def _redact(value: str) -> str:
-    """Substitui padrões de token/segredo por ``[REDACTED]``."""
-    return _REDACT_RE.sub("[REDACTED]", value)
-
-
-def _safe_attrs(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Aplica redact em todos os valores string do dict."""
-    out: Dict[str, Any] = {}
-    for k, v in raw.items():
-        out[k] = _redact(str(v)) if isinstance(v, str) else v
-    return out
-
 
 # ── severity matrix (D4 — first-match wins) ──────────────────────────────────
 # OTel SeverityNumber: INFO=9, WARN=13, ERROR=17 (per OTLP spec)
