@@ -43,7 +43,8 @@ from deile.orchestration.pipeline.briefs import (
     _render_worker_refine_brief)
 from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
-from deile.orchestration.pipeline.constants import resolve_forge_repo
+from deile.orchestration.pipeline.constants import (ISSUE_BODY_MAX_CHARS,
+                                                     resolve_forge_repo)
 from deile.orchestration.pipeline.dispatch_resolver import (
     BUILTIN_DISPATCHERS, CLAUDE_ALIASES, WORKER_ALIASES, get_endpoint_for,
     resolve_stage_dispatcher, resolve_stage_max_retries,
@@ -758,12 +759,10 @@ class WorkerImplementer(PipelineImplementer):
         from deile.infrastructure.deile_worker_client import (
             WorkerDispatchError, build_dispatch_payload)
 
-        # Defensive clamp under the 8000-char dispatch cap (issue #257): every
-        # body-embedding brief puts the issue/PR body LAST (after the VEREDITO
-        # rules), so truncating the tail only trims body context — never the
-        # instructions. Guarantees the payload never hard-fails on size.
-        if len(brief) > 7950:
-            brief = brief[:7950] + "\n…(brief truncado por tamanho)"
+        # Trunca o brief se for maior que o ISSUE_BODY_MAX_CHARS
+        if len(brief) > ISSUE_BODY_MAX_CHARS:
+            brief = brief[:ISSUE_BODY_MAX_CHARS] + "\n…(brief truncado por tamanho - AVISE SOBRE ISSO AO POSTAR O RESULTADO)"
+        
         # Decisão #46 — defesa contra HTTP 413 (Request Entity Too Large):
         # mesmo com o cap do brief acima, ``resume_block`` é serializado JSON
         # separadamente e pode crescer (ex: ``pr_url_hint`` longo, futuros
