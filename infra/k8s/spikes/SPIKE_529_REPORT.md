@@ -9,13 +9,25 @@
 
 ### AC0 — OAuth × Compaction API (beta `compact-2026-01-12`)
 
-| Campo | Valor (preencher após execução) |
+> **Execução in-pod 2026-06-18** (claude-worker `claude-worker-854cf94b97-28szb`):
+> harness rodado de fato (não pulou) via `python3 infra/k8s/spikes/compaction_oauth_spike.py`.
+> O SDK alcançou `POST https://api.anthropic.com/v1/messages?beta=true` (egress liberado —
+> caminho in-process validado), retornando **401 `authentication_error`** porque o **único
+> token presente no pod é o `accessToken` OAuth EXPIRADO** em `~/.claude/credentials.json`
+> (`expiresAt=1781385313868` ≈ 2026-06-13, ~4.6 dias vencido; `ANTHROPIC_AUTH_TOKEN` não-setado).
+> **Este 401 é artefato de credencial vencida, NÃO refutação de AC0** — não prova que OAuth
+> seja incompatível com a Compaction beta; a request foi rejeitada na autenticação, antes da
+> validação do beta header. O refresh in-pod NÃO rotaciona o refresh_token (trap conhecido,
+> `CLAUDE.md` §5.6) → o operador precisa rodar `python3 infra/k8s/deploy.py k8s claude-renew`
+> no host e re-disparar AC0. **Veredito AC0 = PENDENTE token fresco** (não APROVADO nem REPROVADO).
+
+| Campo | Valor (execução in-pod 2026-06-18) |
 |---|---|
-| Status HTTP | ??? |
-| Beta header aceito | `compact-2026-01-12` ??? |
-| Token OAuth (`ANTHROPIC_AUTH_TOKEN`) | válido/inválido |
-| Erro (se houver) | ??? |
-| Ação de escalação | ??? |
+| Status HTTP | **401** (`authentication_error: Invalid authentication credentials`, `req_011CcAj8QUDFQ4hbjjmxbM81`) |
+| Beta header aceito | indeterminado — rejeitado na autenticação, antes da validação do beta |
+| Token OAuth (`ANTHROPIC_AUTH_TOKEN`) | **inválido (expirado)** — env não-setado; on-disk `accessToken` vencido ~4.6d |
+| Erro (se houver) | 401 authentication_error (token OAuth expirado) |
+| Ação de escalação | operador roda `k8s claude-renew` no host → re-dispara AC0 com token fresco → só então AC0 é avaliável |
 
 **Como rodar:**
 ```bash
@@ -26,7 +38,7 @@ python3 infra/k8s/spikes/compaction_oauth_spike.py
 python3 -m pytest infra/k8s/spikes/test_compaction_oauth.py::test_ac0_compaction_beta_with_oauth_returns_200 -v -m integration -p no:cov
 ```
 
-**Resultado AC0:** [ ] APROVADO / [ ] REPROVADO
+**Resultado AC0:** [ ] APROVADO / [ ] REPROVADO / [x] **PENDENTE — token OAuth expirado no pod (2026-06-18); requer `k8s claude-renew` no host e re-execução**
 
 Se REPROVADO:
 - **401/403** → Escalar ao autor: OAuth não é aceito pela API Compaction beta.
