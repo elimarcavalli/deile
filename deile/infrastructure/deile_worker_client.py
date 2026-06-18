@@ -168,7 +168,7 @@ class DispatchPayload(BaseModel):
     e dá uma mensagem de erro melhor ao LLM.
     """
 
-    brief: str = Field(..., min_length=1, max_length=8000)
+    brief: str = Field(..., min_length=1, max_length=200_000)
     channel_id: str = Field(..., min_length=1, max_length=64)
     persona: WorkerPersona = "developer"
     wait_for_result: bool = True

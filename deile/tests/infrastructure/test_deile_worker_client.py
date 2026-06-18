@@ -151,7 +151,7 @@ def test_payload_strips_brief_whitespace():
 def test_payload_rejects_too_long_brief():
     with pytest.raises(Exception):
         DispatchPayload.model_validate(
-            {"brief": "x" * 8001, "channel_id": "c"}
+            {"brief": "x" * 200_001, "channel_id": "c"}
         )
 
 

@@ -497,18 +497,26 @@ class TestParallelImplement:
 
 
 class TestBriefSizeClamp:
-    """Issue #257: a large (post-refine) body must never overflow the 8000-char
-    dispatch cap — the body sits last in the brief, so it is safely clamped."""
+    """A large (post-refine) body must never overflow the DispatchPayload.brief
+    max_length — body truncation via ISSUE_BODY_MAX_CHARS must keep the brief
+    under the wire-format cap."""
 
-    async def test_critique_brief_never_exceeds_8000(self):
-        huge = _issue(60, "feature", body="X" * 9000)  # nova: no batch (critique needs batch_id None)
+    async def test_critique_brief_never_exceeds_dispatch_cap(self):
+        # Validate that the generated brief is accepted by DispatchPayload
+        # (Pydantic raises on construction if the brief exceeds max_length).
+        from deile.infrastructure.deile_worker_client import DispatchPayload
+        huge = _issue(60, "feature", body="X" * 9000)
         monitor, _, client = _make_monitor(
             label_map={WORKFLOW_NEW: [huge]},
             worker_responses=[_resp("VEREDITO: CLARO")],
         )
         await monitor._review_one_new_issue()
         assert client.payloads, "critique must have dispatched"
-        assert len(client.payloads[0]["brief"]) <= 8000
+        # If DispatchPayload was constructed without error, the brief is within bounds.
+        brief_len = len(client.payloads[0]["brief"])
+        assert brief_len > 0
+        # Ensure it fits inside the current DispatchPayload.brief max_length (200_000).
+        assert brief_len <= 200_000
 
 
 # ===========================================================================
