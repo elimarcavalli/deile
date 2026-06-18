@@ -820,7 +820,7 @@ async def _dispatch_mention_group(
     # liberar o slot de in_flight. Sem isso, a issue fica em `em_arquitetura` e
     # a próxima passagem do refino re-decompõe gerando duplicatas.
     if kind == "issue" and mode == "comment":
-        derived_from_mention = parse_decompose_result(outcome.text)
+        derived_from_mention = parse_decompose_result(outcome.text, parent_number=number)
         if derived_from_mention:
             await _apply_decompose_handshake_from_mention(monitor, number, derived_from_mention)
 
@@ -1547,7 +1547,7 @@ async def _apply_refine_verdict(
     # refinar o escopo, aplica o handshake de decomposição em vez de tratar como
     # veredito de refino. Isso garante idempotência (issue vira terminal) e libera
     # o slot de in_flight que `em_arquitetura` consumia indevidamente.
-    derived_from_refine = parse_decompose_result(verdict_text)
+    derived_from_refine = parse_decompose_result(verdict_text, parent_number=target.number)
     if derived_from_refine:
         refine_state_for_decompose = next(
             (s for s in REFINE_WORKFLOW_STATES if s in target.labels),
@@ -1866,7 +1866,7 @@ async def decompose_one_reviewed_intent(
     # The decompose dispatch is wait=True, so it blocks this (sequential) tick —
     # no concurrent re-pick. On success the intent leaves the revisada queue.
     outcome = await monitor.implementer.decompose(monitor, target)
-    derived = parse_decompose_result(outcome.text)
+    derived = parse_decompose_result(outcome.text, parent_number=target.number)
     log_decomposition_fanout(
         intent=target.number,
         derivadas=derived,

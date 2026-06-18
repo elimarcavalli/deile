@@ -453,3 +453,64 @@ class TestMentionOneShot_DecomposeHandshake:
         assert WORKFLOW_DECOMPOSED not in all_added, (
             "Outcome com ok=False não deve acionar o handshake de decomposição"
         )
+
+
+# ---------------------------------------------------------------------------
+# AC5: refine path — auto-referência NÃO aciona WORKFLOW_DECOMPOSED
+# ---------------------------------------------------------------------------
+
+class TestRefinePathRejectsAutoReference:
+    """AC5: _apply_refine_verdict com parent_number correto — auto-ref não vira decomposta."""
+
+    async def test_ac5_refine_autoref_does_not_trigger_decomposed(self):
+        """Issue #768 em em_arquitetura; output contém REFINO: OK + auto-referência #768.
+        Sem DECOMPOSTO: — deve seguir o caminho normal de refino, NÃO ir para decomposta.
+        """
+        issue = _issue(768, "feature", WORKFLOW_ARCHITECTURE, REFINAR)
+        monitor, github, _ = _make_refine_monitor(
+            label_map={WORKFLOW_ARCHITECTURE: [issue], REFINAR: [issue]},
+            worker_responses=[{
+                "ok": True,
+                "summary": (
+                    "Refinei a issue conforme solicitado.\n"
+                    "REFINO: OK\n"
+                    "Originada de #768 — ver histórico para detalhes."
+                ),
+            }],
+        )
+        await _refine_then_reconcile(monitor)
+        t = _transitions(github)
+        assert (768, WORKFLOW_ARCHITECTURE, WORKFLOW_DECOMPOSED) not in t, (
+            "Auto-referência #768 nas últimas linhas NÃO deve disparar WORKFLOW_DECOMPOSED "
+            f"(transições reais: {t})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# AC6: mention path — auto-referência NÃO adiciona WORKFLOW_DECOMPOSED
+# ---------------------------------------------------------------------------
+
+class TestMentionPathRejectsAutoReference:
+    """AC6: _dispatch_mention_group com parent_number correto — auto-ref não vira decomposta."""
+
+    async def test_ac6_mention_autoref_does_not_add_decomposed(self):
+        """Mention one-shot sobre issue #1 (number=1); outcome menciona apenas #1.
+        Sem DECOMPOSTO: — WORKFLOW_DECOMPOSED NÃO deve ser adicionado à issue.
+        """
+        monitor, github = _make_mention_monitor(
+            mention_outcome_text=(
+                "Analisei a issue #1 conforme solicitado.\n"
+                "Ver #1 para o contexto completo."
+            ),
+            issue_labels=(),
+        )
+        await monitor._process_mentions()
+        added_calls = [
+            list(c.args[2]) for c in github.add_labels.await_args_list
+            if len(c.args) >= 3 and c.args[1] == 1
+        ]
+        all_added = {lb for labels in added_calls for lb in labels}
+        assert WORKFLOW_DECOMPOSED not in all_added, (
+            "Auto-referência #1 no mention outcome NÃO deve adicionar WORKFLOW_DECOMPOSED "
+            f"(labels adicionados: {all_added})"
+        )
