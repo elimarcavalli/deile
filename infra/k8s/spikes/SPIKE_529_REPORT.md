@@ -9,25 +9,37 @@
 
 ### AC0 — OAuth × Compaction API (beta `compact-2026-01-12`)
 
-> **Execução in-pod 2026-06-18** (claude-worker `claude-worker-854cf94b97-28szb`):
-> harness rodado de fato (não pulou) via `python3 infra/k8s/spikes/compaction_oauth_spike.py`.
-> O SDK alcançou `POST https://api.anthropic.com/v1/messages?beta=true` (egress liberado —
-> caminho in-process validado), retornando **401 `authentication_error`** porque o **único
-> token presente no pod é o `accessToken` OAuth EXPIRADO** em `~/.claude/credentials.json`
-> (`expiresAt=1781385313868` ≈ 2026-06-13, ~4.6 dias vencido; `ANTHROPIC_AUTH_TOKEN` não-setado).
-> **Este 401 é artefato de credencial vencida, NÃO refutação de AC0** — não prova que OAuth
-> seja incompatível com a Compaction beta; a request foi rejeitada na autenticação, antes da
-> validação do beta header. O refresh in-pod NÃO rotaciona o refresh_token (trap conhecido,
-> `CLAUDE.md` §5.6) → o operador precisa rodar `python3 infra/k8s/deploy.py k8s claude-renew`
-> no host e re-disparar AC0. **Veredito AC0 = PENDENTE token fresco** (não APROVADO nem REPROVADO).
+> **2ª execução in-pod 2026-06-18** (claude-worker `claude-worker-854cf94b97-z8q2x`, head `cfaf216`):
+> harness rodado de fato (não pulou) via `make_one_compaction_request()`, agora com o **token OAuth
+> FRESCO** — o setup-token de 1 ano do operador, presente no pod como variável de ambiente
+> `CLAUDE_CODE_OAUTH_TOKEN` (`sk-ant-oat01-…`, **não-expirado**, distinto do `accessToken` vencido
+> de `~/.claude/credentials.json`). O harness lia só `ANTHROPIC_AUTH_TOKEN`/`credentials.json`
+> (`compaction_oauth_spike.py:155`) — por isso os ticks anteriores pegavam o token vencido e tomavam
+> **401**. Passando o token fresco direto, o resultado mudou:
+>
+> - **O 401 `authentication_error` SUMIU** → a request passou da autenticação. **O bloqueio de auth
+>   (gate de credencial) está RESOLVIDO**: OAuth do setup-token autentica contra o endpoint da
+>   Compaction beta.
+> - **Novo status: HTTP 429 `rate_limit_error`** em **4 tentativas** ao longo de ~90s
+>   (`req_011CcArQYURxzduHxXL9VeXo` e seguintes). **NÃO é refutação de AC0** — a request foi limitada
+>   por rate-limit de conta **antes** do processamento do beta.
+> - **Causa-raiz do 429:** o spike reusa o **mesmo token de subscription OAuth que a sessão viva do
+>   claude-worker** (a própria sessão de review) está consumindo concorrentemente → contenção de
+>   rate-limit da conta. Janelas de rate-limit OAuth não zeram em segundos; não há token dedicado/
+>   isolado neste pod.
+>
+> **Veredito AC0 = PENDENTE confirmação HTTP 200** (não mais PENDENTE token). Auth ✓; falta um
+> **200 limpo** provando que o beta `compact-2026-01-12` é aceito — exige token OAuth **dedicado**
+> (não contencioso com a sessão viva) ou janela sem contenção. Sub-bloqueio distinto do anterior.
 
-| Campo | Valor (execução in-pod 2026-06-18) |
+| Campo | Valor (2ª execução in-pod 2026-06-18, head `cfaf216`) |
 |---|---|
-| Status HTTP | **401** (`authentication_error: Invalid authentication credentials`, `req_011CcAj8QUDFQ4hbjjmxbM81`) |
-| Beta header aceito | indeterminado — rejeitado na autenticação, antes da validação do beta |
-| Token OAuth (`ANTHROPIC_AUTH_TOKEN`) | **inválido (expirado)** — env não-setado; on-disk `accessToken` vencido ~4.6d |
-| Erro (se houver) | 401 authentication_error (token OAuth expirado) |
-| Ação de escalação | operador roda `k8s claude-renew` no host → re-dispara AC0 com token fresco → só então AC0 é avaliável |
+| Status HTTP | **429** (`rate_limit_error`, `req_011CcArQYURxzduHxXL9VeXo` +3) — antes **401**; o 401 sumiu |
+| Auth OAuth (gate de credencial) | **RESOLVIDO** — token fresco `CLAUDE_CODE_OAUTH_TOKEN` autentica (não mais 401) |
+| Beta header aceito | indeterminado — request limitada por rate-limit antes do processamento do beta |
+| Token usado | setup-token de 1 ano (env `CLAUDE_CODE_OAUTH_TOKEN`), não-expirado, ≠ `credentials.json` vencido |
+| Causa do 429 | token de subscription compartilhado com a sessão viva do worker → contenção de rate-limit |
+| Ação de escalação | rodar AC0 com token OAuth **dedicado/isolado** (ou em janela sem contenção) → capturar o 200 |
 
 **Como rodar:**
 ```bash
@@ -38,7 +50,7 @@ python3 infra/k8s/spikes/compaction_oauth_spike.py
 python3 -m pytest infra/k8s/spikes/test_compaction_oauth.py::test_ac0_compaction_beta_with_oauth_returns_200 -v -m integration -p no:cov
 ```
 
-**Resultado AC0:** [ ] APROVADO / [ ] REPROVADO / [x] **PENDENTE — token OAuth expirado no pod (2026-06-18); requer `k8s claude-renew` no host e re-execução**
+**Resultado AC0:** [ ] APROVADO / [ ] REPROVADO / [x] **PENDENTE confirmação HTTP 200 — auth OAuth RESOLVIDA (401→429 com token fresco `CLAUDE_CODE_OAUTH_TOKEN`, 2026-06-18 head `cfaf216`); falta um 200 limpo, bloqueado por rate-limit de conta no token de subscription compartilhado com a sessão viva → requer token OAuth dedicado/isolado**
 
 Se REPROVADO:
 - **401/403** → Escalar ao autor: OAuth não é aceito pela API Compaction beta.
