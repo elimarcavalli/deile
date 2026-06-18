@@ -132,6 +132,7 @@ def _make_monitor(
     )
     github.list_open_prs = AsyncMock(return_value=list(prs or []))
     github.has_open_pr_for_issue = AsyncMock(return_value=False)
+    github.has_merged_pr_for_issue = AsyncMock(return_value=False)
     github.claim_with_batch = AsyncMock(return_value="abc12345")
     github.transition_issue = AsyncMock()
     github.transition_pr = AsyncMock()
@@ -810,3 +811,59 @@ class TestSkipStillRunningDoesNotBurnAttempt:
         after = monitor._resume_tracker.get(2).attempt
         assert after == before == 1, "skip-still-running NÃO pode bumpar attempt"
         notifier.implementation_blocked.assert_not_called()
+
+
+# ===========================================================================
+# Fix 1: _finalize_implement_outcome não deve marcar em_pr para PR mergeada
+# ===========================================================================
+
+class TestFinalizeWithMergedPR:
+    """Verifica que o path de extração de URL (not ended) valida se a PR está
+    aberta antes de transicionar para em_pr. Evita o orphan em_pr do issue #763."""
+
+    async def test_merged_pr_url_in_text_does_not_mark_em_pr(self):
+        from deile.orchestration.pipeline import stages
+        from deile.orchestration.pipeline.implementer import WorkOutcome
+        monitor, notifier, _ = _make_monitor(issues_in_progress=[_in_progress()])
+        # Worker reportou "PR mergeada" em texto livre, sem ENDED_CONCLUIDO.
+        outcome = WorkOutcome(
+            ok=True,
+            text="The task is already done. PR was merged: https://github.com/owner/name/pull/764",
+            ended="",
+            pr_url="",
+            fingerprint="f1",
+        )
+        # Nenhuma PR aberta encontrada (foi mergeada)
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=False)
+
+        await stages._finalize_implement_outcome(monitor, 2, outcome, resume=True)
+
+        # NÃO deve ter transitado para em_pr
+        transitions = [
+            (c.kwargs.get("from_label") or (c.args[1] if len(c.args) > 1 else None),
+             c.kwargs.get("to_label") or (c.args[2] if len(c.args) > 2 else None))
+            for c in monitor.github.transition_issue.await_args_list
+        ]
+        assert (WORKFLOW_IMPLEMENTING, WORKFLOW_PR) not in transitions, (
+            "PR mergeada no texto não deve causar em_pr"
+        )
+        notifier.implementation_finished.assert_not_called()
+
+    async def test_open_pr_url_in_text_marks_em_pr(self):
+        """Controle: URL de PR aberta no texto deve prosseguir para em_pr."""
+        from deile.orchestration.pipeline import stages
+        from deile.orchestration.pipeline.implementer import WorkOutcome
+        monitor, notifier, _ = _make_monitor(issues_in_progress=[_in_progress()])
+        outcome = WorkOutcome(
+            ok=True,
+            text="Opened PR: https://github.com/owner/name/pull/770",
+            ended="",
+            pr_url="",
+            fingerprint="f1",
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+
+        await stages._finalize_implement_outcome(monitor, 2, outcome, resume=True)
+
+        monitor.github.transition_issue.assert_awaited()
+        notifier.implementation_finished.assert_awaited_once()

@@ -418,6 +418,13 @@ class ForgeClient(ABC):
     @abstractmethod
     async def has_open_pr_for_issue(self, number: int) -> bool: ...
 
+    async def has_merged_pr_for_issue(self, number: int) -> bool:
+        """True if a MERGED PR/MR was opened for issue *number*.
+
+        Default returns False. Forge adapters override to check merge history.
+        """
+        return False
+
     @abstractmethod
     async def list_open_prs(self, *, limit: int = 50) -> List[PrRef]: ...
 

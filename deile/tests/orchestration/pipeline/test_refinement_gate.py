@@ -162,6 +162,7 @@ def _make_monitor(
     )
     github.list_open_prs = AsyncMock(return_value=[])
     github.has_open_pr_for_issue = AsyncMock(return_value=False)
+    github.has_merged_pr_for_issue = AsyncMock(return_value=False)
     github.claim_with_batch = AsyncMock(return_value="abc12345")
     github.clear_batch_label = AsyncMock()
     github.transition_issue = AsyncMock()
@@ -494,6 +495,23 @@ class TestParallelImplement:
         await monitor._implement_one_reviewed_issue()
         assert client.payloads == []  # no implementation dispatched
         assert (50, WORKFLOW_REVIEWED, WORKFLOW_PR) in _transitions(monitor.github)
+
+    async def test_blocks_when_merged_pr_already_exists(self):
+        # Fix 2: se uma PR já foi mergeada para a issue, bloquear em vez de
+        # re-implementar (evita work duplicado e o orphan em_pr).
+        monitor, notifier, client = _make_monitor(
+            label_map={WORKFLOW_REVIEWED: [_issue(55, "feature", "~batch:abc12345")]},
+        )
+        monitor.github.has_merged_pr_for_issue = AsyncMock(return_value=True)
+        await monitor._implement_one_reviewed_issue()
+        assert client.payloads == []  # sem despacho
+        # WORKFLOW_BLOCKED deve ter sido adicionado
+        blocked = any(
+            WORKFLOW_BLOCKED in (args[2] if len(args) > 2 else [])
+            for args in [c.args for c in monitor.github.add_labels.await_args_list]
+        )
+        assert blocked, "issue com PR mergeada deve receber ~workflow:bloqueada"
+        notifier.implementation_blocked.assert_awaited_once()
 
 
 class TestBriefSizeClamp:

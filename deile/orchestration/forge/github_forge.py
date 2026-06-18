@@ -409,6 +409,24 @@ class GitHubForge(ForgeClient):
                 return True
         return False
 
+    async def has_merged_pr_for_issue(self, number: int) -> bool:
+        try:
+            out = await self._run_checked(
+                "pr", "list", "--repo", self.repo, "--state", "merged",
+                "--search", str(number), "--limit", "10",
+                "--json", "number,headRefName",
+            )
+            prs = json.loads(out)
+        except (ForgeCommandError, json.JSONDecodeError) as exc:
+            logger.warning("has_merged_pr_for_issue #%d failed: %s", number, exc)
+            return False
+        needle = f"issue-{number}"
+        for pr in prs:
+            head = (pr.get("headRefName") or "")
+            if needle in head or head.endswith(f"-{number}"):
+                return True
+        return False
+
     async def list_open_prs(self, *, limit: int = 50) -> List[PrRef]:
         return await self._list_refs(
             "pr", "list",

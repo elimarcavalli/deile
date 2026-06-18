@@ -2278,6 +2278,25 @@ async def implement_one_reviewed_issue(
             )
             monitor._resume_tracker.clear(target.number)
             continue
+        # Merged PR guard: if work was already done and merged (e.g. externally
+        # before the pipeline processed the issue), block instead of re-implementing.
+        try:
+            if await monitor.forge.has_merged_pr_for_issue(target.number):
+                logger.info(
+                    "implement #%d: PR mergeada detectada — bloqueando (sem re-implementar)",
+                    target.number,
+                )
+                await _block_issue(
+                    monitor, target.number,
+                    "PR mergeada antes do pipeline implementar; "
+                    "verifique se a issue pode ser fechada.",
+                )
+                continue
+        except Exception:  # noqa: BLE001 — best-effort; prosseguir com dispatch normal
+            logger.warning(
+                "implement #%d: has_merged_pr_for_issue falhou — prosseguindo",
+                target.number,
+            )
         # Best-effort claim (sequential-tick lock): revisada → em_implementacao.
         # transition_issue is remove-then-add (not atomic); multi-monitor safety
         # relies on the PID lock + single-replica Recreate + hash sharding.
@@ -2564,6 +2583,25 @@ async def _finalize_implement_outcome(
 
     # 3. CONCLUÍDO — a real PR exists (and, when expected, was merged).
     if ended == _ENDED_CONCLUIDO or (not ended and outcome.ok and pr_url):
+        # Guard for the text-extraction path (not a structured ENDED_CONCLUIDO):
+        # a worker that finds work already done may report a merged PR URL in
+        # free text. Trust the ground-truth check instead of the URL alone.
+        if not ended and pr_url:
+            try:
+                open_pr_found = await monitor.forge.has_open_pr_for_issue(number)
+            except Exception:  # noqa: BLE001 — best-effort; fall through on error
+                open_pr_found = True
+                logger.warning(
+                    "implement #%d: has_open_pr_for_issue falhou — prosseguindo",
+                    number,
+                )
+            if not open_pr_found:
+                logger.warning(
+                    "implement #%d: pr_url extraída do texto (%s) mas sem PR "
+                    "aberta detectada — mantendo em_implementacao (reaper tratará)",
+                    number, pr_url,
+                )
+                return
         try:
             await monitor.forge.transition_issue(
                 number, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR

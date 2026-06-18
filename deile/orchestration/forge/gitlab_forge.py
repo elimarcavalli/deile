@@ -542,6 +542,20 @@ class GitLabForge(ForgeClient):
                 return True
         return False
 
+    async def has_merged_pr_for_issue(self, number: int) -> bool:
+        try:
+            payload = await self._api_get_json(
+                f"projects/{self._project_ref}/issues/{number}/related_merge_requests",
+            )
+        except ForgeCommandError as exc:
+            logger.warning("has_merged_pr_for_issue #%d failed: %s", number, exc)
+            return False
+        if isinstance(payload, list):
+            for mr in payload:
+                if isinstance(mr, dict) and str(mr.get("state")).lower() == "merged":
+                    return True
+        return False
+
     async def list_open_prs(self, *, limit: int = 50) -> List[PrRef]:
         items = await self._api_paginated(
             f"projects/{self._project_ref}/merge_requests",
