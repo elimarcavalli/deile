@@ -104,16 +104,17 @@ class TestVerdictParserToleratesMarkdown:
         )
         assert parse_refine_verdict(text) == "waiting"
 
-    def test_decompose_fallback_collects_hash_refs_from_tail(self):
-        # When the strict DECOMPOSTO: line is missing, scrape #NN from the
-        # last 8 lines as a best-effort.
+    def test_decompose_requires_keyword_no_fallback(self):
+        # Without DECOMPOSTO: keyword, return [] even if #NN refs are present.
+        # Fallback removed (bug 2b639f8f / issue #770): captured self-references,
+        # causing decomposta without real derived issues.
         text = (
             "Criei as derivadas:\n"
             "- #401 — split A\n"
             "- #402 — split B\n"
             "- #403 — split C\n"
         )
-        assert parse_decompose_result(text) == [401, 402, 403]
+        assert parse_decompose_result(text) == []
 
 
 class TestClassifyOutcomeError:

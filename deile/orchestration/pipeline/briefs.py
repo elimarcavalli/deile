@@ -721,6 +721,7 @@ REFINE a issue #{number} (tipo: {type}) de {repo}. Reescreva título + body. NÃ
 ÚLTIMA LINHA (somente uma):
   REFINO: OK
   REFINO: AGUARDA_STAKEHOLDER
+  DECOMPOSTO: #<n1> #<n2> ...   ← somente se decidir decompor em vez de refinar
 
 === Issue #{number} (tipo: {type}): {title} ===
 {body}

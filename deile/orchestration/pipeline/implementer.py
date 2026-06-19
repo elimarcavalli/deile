@@ -199,33 +199,18 @@ def parse_refine_verdict(text: str) -> str:
 def parse_decompose_result(text: str, parent_number: int = 0) -> List[int]:
     """Return the derived issue numbers reported by a decompose outcome.
 
-    Two-stage: strict ``DECOMPOSTO: …`` regex first; fallback collects ``#NN``
-    references from the last 8 lines (architect frequently lists the created
-    issues right above the verdict). Returns an empty list on ambiguity.
+    Requires the explicit ``DECOMPOSTO: #N1 #N2 …`` keyword — the only
+    reliable signal that derived issues were created. The brief instructs the
+    worker to write this as the last line; without it, no decomposition occurred.
 
-    *parent_number* (optional, default 0 = disabled) is the number of the
-    parent issue being decomposed. In the strict path, the parent's own number
-    is excluded (self-reference in DECOMPOSTO: line). In the fallback path,
-    only numbers strictly greater than the parent are kept — GitHub issue
-    numbers are monotonically increasing, so a derived issue always has a
-    higher number than its parent.
+    *parent_number* (optional) excludes the parent's own number from the result
+    to guard against ``DECOMPOSTO: #768 #769`` where 768 is the parent itself.
     """
     matches = list(_DECOMPOSE_RE.finditer(text or ""))
-    if matches:
-        nums = [int(n) for n in re.findall(r"#(\d+)", matches[-1].group(1))]
-        return [n for n in nums if n != parent_number]
-    tail = _tail_text(text, n_lines=8)
-    found = [int(n) for n in re.findall(r"#(\d+)", tail)]
-    if parent_number:
-        filtered = [n for n in found if n > parent_number]
-        discarded = [n for n in found if n <= parent_number]
-        if discarded:
-            logger.warning(
-                "parse_decompose_result: descartou %s (<= pai #%d) no fallback",
-                discarded, parent_number,
-            )
-        return filtered
-    return found
+    if not matches:
+        return []
+    nums = [int(n) for n in re.findall(r"#(\d+)", matches[-1].group(1))]
+    return [n for n in nums if n != parent_number]
 
 
 class PipelineImplementer(ABC):
