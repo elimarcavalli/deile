@@ -742,7 +742,7 @@ class AgentStreamingMixin:
                         yield StreamChunk(
                             "text", {"text": text, "incremental": True}
                         )
-                elif name in ("TOOL_INVOKED", "tool_invoked"):
+                elif name in ("TOOL_USE_START", "tool_use_start"):
                     yield StreamChunk(
                         "tool_call_started",
                         {
@@ -763,9 +763,23 @@ class AgentStreamingMixin:
                     usage = getattr(evt, "usage", None)
                     last_model = getattr(usage, "model", "") if usage else ""
                 elif name in ("ERROR", "error"):
+                    # error_envelope chega em DUAS formas:
+                    #   - dict, montado em process_input_stream (err_meta) p/
+                    #     erros capturados aqui (BudgetExceeded, FORCED_MODEL…);
+                    #   - ProviderErrorEnvelope (dataclass), emitido pelos
+                    #     providers mid-stream e repassado verbatim pelo
+                    #     ToolLoopExecutor (rate_limit, context_length, server…).
+                    # O objeto NÃO tem .get() — normaliza via to_display_dict()
+                    # antes de extrair, senão estoura AttributeError e o erro
+                    # real do provider é mascarado.
+                    _envelope = getattr(evt, "error_envelope", None)
+                    if hasattr(_envelope, "to_display_dict"):
+                        _envelope = _envelope.to_display_dict()
+                    if not isinstance(_envelope, dict):
+                        _envelope = {}
                     last_error = {
-                        "type": getattr(evt, "error_type", "") or "Error",
-                        "message": getattr(evt, "error_message", "") or "",
+                        "type": _envelope.get("error_type", "") or "Error",
+                        "message": _envelope.get("message", "") or "",
                     }
         except Exception as e:  # noqa: BLE001
             last_error = {"type": type(e).__name__, "message": str(e)}

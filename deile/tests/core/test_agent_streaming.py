@@ -749,3 +749,148 @@ async def test_real_proactive_stream_imports_resolve_when_invoked(configured_age
     # Generator must yield exactly the results sentinel — empty list because
     # the analyzer is None.
     assert items == [("results", [])]
+
+
+# ---------------------------------------------------------------------------
+# Fix #8 — ERROR chunk carrega error_envelope (bug #779)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+async def test_error_chunk_carries_envelope_fields(configured_agent, tmp_path: Path):
+    """StreamChunk de error carrega type e message do error_envelope — não vazios."""
+    from unittest.mock import patch
+
+    from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+
+    error_event = UnifiedStreamEvent(
+        type=StreamEventType.ERROR,
+        error_envelope={"error_type": "BudgetExceeded", "message": "Limite atingido"},
+    )
+
+    async def _fake_stream(*args, **kwargs):
+        yield error_event
+
+    session = configured_agent.create_session("s_err8", working_directory=str(tmp_path))
+    chunks = []
+
+    with patch.object(configured_agent, "process_input_stream", _fake_stream):
+        async for chunk in configured_agent.process_input_stream_chunks(
+            "input", session_id=session.session_id
+        ):
+            chunks.append(chunk)
+
+    error_chunks = [c for c in chunks if c.kind == "error"]
+    assert len(error_chunks) == 1, f"expected 1 error chunk, got {chunks}"
+    assert error_chunks[0].payload["type"] == "BudgetExceeded"
+    assert error_chunks[0].payload["message"] == "Limite atingido"
+
+
+@pytest.mark.unit
+async def test_error_chunk_with_none_envelope(configured_agent, tmp_path: Path):
+    """Com error_envelope=None, type=='Error' e message=='' — sem AttributeError."""
+    from unittest.mock import patch
+
+    from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+
+    error_event = UnifiedStreamEvent(
+        type=StreamEventType.ERROR,
+        error_envelope=None,
+    )
+
+    async def _fake_stream(*args, **kwargs):
+        yield error_event
+
+    session = configured_agent.create_session("s_err8b", working_directory=str(tmp_path))
+    chunks = []
+
+    with patch.object(configured_agent, "process_input_stream", _fake_stream):
+        async for chunk in configured_agent.process_input_stream_chunks(
+            "input", session_id=session.session_id
+        ):
+            chunks.append(chunk)
+
+    error_chunks = [c for c in chunks if c.kind == "error"]
+    assert len(error_chunks) == 1
+    assert error_chunks[0].payload["type"] == "Error"
+    assert error_chunks[0].payload["message"] == ""
+
+
+@pytest.mark.unit
+async def test_error_chunk_handles_provider_error_envelope_object(
+    configured_agent, tmp_path: Path
+):
+    """error_envelope objeto (ProviderErrorEnvelope) — caminho REAL dos providers.
+
+    Os providers (anthropic/openai/gemini) emitem ERROR mid-stream com um
+    ``ProviderErrorEnvelope`` (dataclass, sem ``.get()``), repassado verbatim
+    pelo ToolLoopExecutor. O chunk de error deve extrair type/message via
+    ``to_display_dict()`` — não estourar AttributeError nem mascarar o erro.
+    """
+    from unittest.mock import patch
+
+    from deile.core.models.errors import ProviderErrorEnvelope
+    from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+
+    envelope = ProviderErrorEnvelope(
+        provider_id="anthropic",
+        model_id="claude-opus-4-8",
+        error_type="rate_limit",
+        message="429 Too Many Requests",
+    )
+    error_event = UnifiedStreamEvent(
+        type=StreamEventType.ERROR,
+        error_envelope=envelope,
+    )
+
+    async def _fake_stream(*args, **kwargs):
+        yield error_event
+
+    session = configured_agent.create_session("s_err8c", working_directory=str(tmp_path))
+    chunks = []
+
+    with patch.object(configured_agent, "process_input_stream", _fake_stream):
+        async for chunk in configured_agent.process_input_stream_chunks(
+            "input", session_id=session.session_id
+        ):
+            chunks.append(chunk)
+
+    error_chunks = [c for c in chunks if c.kind == "error"]
+    assert len(error_chunks) == 1, f"expected 1 error chunk, got {chunks}"
+    assert error_chunks[0].payload["type"] == "rate_limit"
+    assert error_chunks[0].payload["message"] == "429 Too Many Requests"
+
+
+@pytest.mark.unit
+async def test_tool_use_start_emits_tool_call_started_chunk(
+    configured_agent, tmp_path: Path
+):
+    """TOOL_USE_START → chunk tool_call_started.
+
+    Guarda o nome de evento: o enum é ``TOOL_USE_START``/``tool_use_start``
+    (o que os providers emitem), não ``TOOL_INVOKED``. Se alguém reverter
+    para o nome errado, nenhum tool_call_started é emitido e este teste falha.
+    """
+    from unittest.mock import patch
+
+    from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+
+    tool_event = UnifiedStreamEvent(
+        type=StreamEventType.TOOL_USE_START,
+        tool_name="read_file",
+    )
+
+    async def _fake_stream(*args, **kwargs):
+        yield tool_event
+
+    session = configured_agent.create_session("s_tool_start", working_directory=str(tmp_path))
+    chunks = []
+
+    with patch.object(configured_agent, "process_input_stream", _fake_stream):
+        async for chunk in configured_agent.process_input_stream_chunks(
+            "input", session_id=session.session_id
+        ):
+            chunks.append(chunk)
+
+    started = [c for c in chunks if c.kind == "tool_call_started"]
+    assert len(started) == 1, f"expected 1 tool_call_started chunk, got {chunks}"
+    assert started[0].payload["tool_name"] == "read_file"

@@ -171,6 +171,10 @@ async def apply_validation_gate(
             "until the action is actually taken."
         )
 
+    # Checkpoint antes de adicionar entradas [INTERNAL_VALIDATION_GATE] ao
+    # histórico, para poder fazer rollback se o retry falhar com Exception.
+    _history_checkpoint = len(session.conversation_history)
+
     # Persist the pre-gate assistant turn so the model sees the gap
     session.add_to_history("assistant", content, {"validation_gate_pre": True})
     session.add_to_history("user", gate_prompt, {"validation_gate": True})
@@ -189,11 +193,13 @@ async def apply_validation_gate(
         except Exception as exc:
             # Item 13: if the retry fails, we must not let the failure
             # discard the pre-gate content/tool_results — that work was
-            # already executed and shown to the user.
+            # already executed and shown to the user. Rollback das entradas
+            # fantasma do gate para não vazar histórico residual.
             logger.warning(
                 "validation_gate retry failed (%s); returning pre-gate result",
                 exc,
             )
+            del session.conversation_history[_history_checkpoint:]
             return content, tool_results
     finally:
         session.context_data.pop("_validation_gate_active", None)

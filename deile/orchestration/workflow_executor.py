@@ -113,6 +113,8 @@ class WorkflowExecutor:
         """Inicia execução completa de workflow baseado em objetivo."""
         task_list = await self.create_workflow_from_objective(objective, context)
         await self.task_manager.activate_task_list(task_list.id)
+        # Reload para capturar total_tasks real após persistência dos steps.
+        task_list = await self.task_manager.load_task_list(task_list.id) or task_list
         loop_task = asyncio.create_task(self._execute_task_list_loop(task_list.id))
         self._running_loops.add(loop_task)
         loop_task.add_done_callback(self._running_loops.discard)
@@ -155,6 +157,27 @@ class WorkflowExecutor:
                         break
         except Exception as exc:
             logger.error("Workflow loop %s aborted due to infrastructure error: %s", list_id, exc)
+            # Marcar tasks pendentes como falhas para que wait_for_workflow_completion
+            # detecte o término em vez de aguardar o timeout de 1h.
+            try:
+                pending = await self.task_manager.get_next_tasks(list_id)
+                for t in pending:
+                    try:
+                        await self.task_manager.mark_task_completed(
+                            list_id=list_id,
+                            task_id=t.id,
+                            success=False,
+                            error_message=f"infrastructure error: {exc}",
+                        )
+                    except Exception as mark_exc:  # noqa: BLE001
+                        logger.error(
+                            "Failed to mark task %s as failed: %s", t.id, mark_exc
+                        )
+            except Exception as list_exc:  # noqa: BLE001
+                logger.error(
+                    "Failed to fetch pending tasks for cleanup of workflow %s: %s",
+                    list_id, list_exc,
+                )
 
     async def monitor_workflow_progress(self, workflow_id: str) -> Dict[str, Any]:
         """Monitora progresso de um workflow."""

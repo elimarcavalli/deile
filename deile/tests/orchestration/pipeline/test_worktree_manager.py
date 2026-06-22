@@ -147,3 +147,79 @@ class TestForgeHostHints:
         url = "https://gitlab.empresa.com/group/project"
         hints = WorktreeManager._FORGE_HOST_HINTS
         assert any(h in url for h in hints)
+
+
+
+# ---------------------------------------------------------------------------
+# Fix #7 — Git helpers raise WorktreeError on timeout (bug #779)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestGitHelperTimeout:
+    """_git e _git_in_capture lançam WorktreeError no timeout sem deixar órfão."""
+
+    async def test_git_helper_raises_on_timeout(self, monkeypatch):
+        """_git com subprocess que nunca retorna lança WorktreeError."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        never_done = asyncio.Event()
+
+        async def _blocking_communicate():
+            await never_done.wait()
+            return (b"", b"")
+
+        mock_proc = MagicMock()
+        mock_proc.communicate = _blocking_communicate
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=None)
+        mock_proc.returncode = None
+
+        original = WorktreeManager._GIT_CLONE_TIMEOUT_S
+        WorktreeManager._GIT_CLONE_TIMEOUT_S = 0.1
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+            try:
+                with pytest.raises(WorktreeError, match="timed out"):
+                    await WorktreeManager._git("clone", "http://example.com/repo.git", "/tmp/x")
+            finally:
+                WorktreeManager._GIT_CLONE_TIMEOUT_S = original
+                never_done.set()
+
+        mock_proc.kill.assert_called_once()
+
+    async def test_git_in_capture_raises_on_timeout(self, tmp_path, monkeypatch):
+        """_git_in_capture com subprocess que nunca retorna lança WorktreeError."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        never_done = asyncio.Event()
+
+        async def _blocking_communicate():
+            await never_done.wait()
+            return (b"", b"")
+
+        mock_proc = MagicMock()
+        mock_proc.communicate = _blocking_communicate
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=None)
+        mock_proc.returncode = None
+
+        original = WorktreeManager._GIT_DEFAULT_TIMEOUT_S
+        WorktreeManager._GIT_DEFAULT_TIMEOUT_S = 0.1
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+            try:
+                with pytest.raises(WorktreeError, match="timed out"):
+                    await WorktreeManager._git_in_capture(tmp_path, "fetch", "origin")
+            finally:
+                WorktreeManager._GIT_DEFAULT_TIMEOUT_S = original
+                never_done.set()
+
+        mock_proc.kill.assert_called_once()
+
+    def test_clone_timeout_larger_than_default(self):
+        """clone usa 120s, outros ops usam 30s."""
+        assert WorktreeManager._GIT_CLONE_TIMEOUT_S == 120.0
+        assert WorktreeManager._GIT_DEFAULT_TIMEOUT_S == 30.0
+        assert WorktreeManager._GIT_CLONE_TIMEOUT_S > WorktreeManager._GIT_DEFAULT_TIMEOUT_S

@@ -1112,6 +1112,12 @@ def harvest_progress_to_ledger(
             result["sessions_harvested"] += 1
             harvested.add(task_id)
 
+        # Deleção gateada em ``task_id in harvested``: só remove o log quando
+        # o custo já está contabilizado no ledger (este ciclo ou anterior).
+        # has_tokens=False + nunca colhido → preserva o log.
+        # has_tokens=False + já em harvested → deleção legítima (já contabilizado).
+        if task_id not in harvested:
+            continue
         freed = 0
         for sibling in (log, log.with_name(task_id + ".stderr.log")):
             try:

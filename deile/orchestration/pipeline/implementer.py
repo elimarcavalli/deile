@@ -910,7 +910,11 @@ class WorkerImplementer(PipelineImplementer):
                 # (1 token ≈ 4 chars is a conservative heuristic).
                 _payload_tokens = max(0, len(brief) // 4)
                 _model_for_guard = preferred_model or ""
-                _guard.check_stage_run(
+                # V1: encapsula em to_thread para não bloquear o event loop com
+                # I/O síncrono (open/sqlite3.connect em check_stage_run). Exceções
+                # como StageCostCapExceeded propagam normalmente pelo await.
+                await asyncio.to_thread(
+                    _guard.check_stage_run,
                     stage=stage,
                     model_slug=_model_for_guard,
                     payload_size_tokens=_payload_tokens,
