@@ -1,5 +1,6 @@
 """Model Router para seleção inteligente de modelos"""
 
+import asyncio
 import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -236,27 +237,42 @@ class ModelRouter:
             session_data=session.context_data if session and hasattr(session, 'context_data') else {}
         )
     
+    # V1 fixed timeout — wiring to provider_config.timeout_seconds is out-of-scope
+    _HEALTH_CHECK_TIMEOUT_S: float = 30.0
+
     async def _health_check_if_needed(self) -> None:
         """Executa health check se necessário"""
         current_time = time.time()
         if current_time - self._last_health_check < self.health_check_interval:
             return
-        
+
         self._last_health_check = current_time
-        
-        # Health check de todos os provedores
+
+        # Health check de todos os provedores com timeout por provider.
+        # TimeoutError é tratado distintamente — provider marcado unhealthy mas
+        # os demais continuam (não derruba select_provider).
         for key, provider in self.providers.items():
             try:
-                is_healthy = await provider.health_check()
+                is_healthy = await asyncio.wait_for(
+                    provider.health_check(),
+                    timeout=self._HEALTH_CHECK_TIMEOUT_S,
+                )
                 if is_healthy:
                     # Reseta circuit breaker se estava aberto
                     if self._circuit_breaker_status.get(key, False):
                         self._circuit_breaker_status[key] = False
-                        # (f"Circuit breaker reset for {key}")
                 else:
-                    logger.warning(f"Health check failed for {key}")
+                    logger.warning("Health check failed for %s", key)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Health check timed out after %.0fs for %s — marking unhealthy",
+                    self._HEALTH_CHECK_TIMEOUT_S,
+                    key,
+                )
+                self._circuit_breaker_status[key] = True
             except Exception as e:
-                logger.error(f"Health check error for {key}: {e}")
+                logger.error("Health check error for %s: %s", key, e)
+                self._circuit_breaker_status[key] = True
 
 
 # Singleton instance

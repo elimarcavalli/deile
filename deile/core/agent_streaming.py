@@ -742,7 +742,7 @@ class AgentStreamingMixin:
                         yield StreamChunk(
                             "text", {"text": text, "incremental": True}
                         )
-                elif name in ("TOOL_INVOKED", "tool_invoked"):
+                elif name in ("TOOL_USE_START", "tool_use_start"):
                     yield StreamChunk(
                         "tool_call_started",
                         {
@@ -763,9 +763,12 @@ class AgentStreamingMixin:
                     usage = getattr(evt, "usage", None)
                     last_model = getattr(usage, "model", "") if usage else ""
                 elif name in ("ERROR", "error"):
+                    # Dado real em error_envelope (montado em process_input_stream).
+                    # getattr(evt, "error_type"/"error_message") não existem na dataclass.
+                    _envelope = (getattr(evt, "error_envelope", None) or {})
                     last_error = {
-                        "type": getattr(evt, "error_type", "") or "Error",
-                        "message": getattr(evt, "error_message", "") or "",
+                        "type": _envelope.get("error_type", "") or "Error",
+                        "message": _envelope.get("message", "") or "",
                     }
         except Exception as e:  # noqa: BLE001
             last_error = {"type": type(e).__name__, "message": str(e)}

@@ -749,3 +749,67 @@ async def test_real_proactive_stream_imports_resolve_when_invoked(configured_age
     # Generator must yield exactly the results sentinel — empty list because
     # the analyzer is None.
     assert items == [("results", [])]
+
+
+# ---------------------------------------------------------------------------
+# Fix #8 — ERROR chunk carrega error_envelope (bug #779)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+async def test_error_chunk_carries_envelope_fields(configured_agent, tmp_path: Path):
+    """StreamChunk de error carrega type e message do error_envelope — não vazios."""
+    from unittest.mock import patch
+
+    from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+
+    error_event = UnifiedStreamEvent(
+        type=StreamEventType.ERROR,
+        error_envelope={"error_type": "BudgetExceeded", "message": "Limite atingido"},
+    )
+
+    async def _fake_stream(*args, **kwargs):
+        yield error_event
+
+    session = configured_agent.create_session("s_err8", working_directory=str(tmp_path))
+    chunks = []
+
+    with patch.object(configured_agent, "process_input_stream", _fake_stream):
+        async for chunk in configured_agent.process_input_stream_chunks(
+            "input", session_id=session.session_id
+        ):
+            chunks.append(chunk)
+
+    error_chunks = [c for c in chunks if c.kind == "error"]
+    assert len(error_chunks) == 1, f"expected 1 error chunk, got {chunks}"
+    assert error_chunks[0].payload["type"] == "BudgetExceeded"
+    assert error_chunks[0].payload["message"] == "Limite atingido"
+
+
+@pytest.mark.unit
+async def test_error_chunk_with_none_envelope(configured_agent, tmp_path: Path):
+    """Com error_envelope=None, type=='Error' e message=='' — sem AttributeError."""
+    from unittest.mock import patch
+
+    from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+
+    error_event = UnifiedStreamEvent(
+        type=StreamEventType.ERROR,
+        error_envelope=None,
+    )
+
+    async def _fake_stream(*args, **kwargs):
+        yield error_event
+
+    session = configured_agent.create_session("s_err8b", working_directory=str(tmp_path))
+    chunks = []
+
+    with patch.object(configured_agent, "process_input_stream", _fake_stream):
+        async for chunk in configured_agent.process_input_stream_chunks(
+            "input", session_id=session.session_id
+        ):
+            chunks.append(chunk)
+
+    error_chunks = [c for c in chunks if c.kind == "error"]
+    assert len(error_chunks) == 1
+    assert error_chunks[0].payload["type"] == "Error"
+    assert error_chunks[0].payload["message"] == ""

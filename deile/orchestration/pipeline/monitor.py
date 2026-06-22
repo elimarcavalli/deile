@@ -439,6 +439,9 @@ class PipelineMonitor:
         self.schedule_store = schedule_store or ScheduleStore(
             config.base_repo_path, monitor_id=self.identity.monitor_id
         )
+        # Guard anti-double-dispatch para force-tick: impede que o callback
+        # agende um novo tick() enquanto o anterior ainda está em andamento.
+        self._tick_in_flight: bool = False
 
     def spawn_background(self, coro) -> None:
         """Roda *coro* detached (fire-and-forget interno) sem bloquear o tick.
@@ -691,6 +694,16 @@ class PipelineMonitor:
         tick_started = _time.monotonic()
         self._stats.ticks += 1
         logger.debug("pipeline tick #%d", self._stats.ticks)
+        # Guard anti-double-dispatch: sinaliza que tick está em andamento.
+        # Resetado em finally para que um erro em tick() não trave o flag.
+        self._tick_in_flight = True
+        try:
+            await self._tick_body(tick_started)
+        finally:
+            self._tick_in_flight = False
+
+    async def _tick_body(self, tick_started: float) -> None:
+        import time as _time
 
         # Issue #347 — publica state pro pipeline_status_server (best-effort).
         # ``_status_state`` é injetado pelo runner.py quando o server sobe.

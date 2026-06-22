@@ -340,11 +340,15 @@ class ForgeClient(ABC):
     # Subprocess plumbing — shared by every concrete forge
     # ------------------------------------------------------------------
 
+    _RUN_TIMEOUT_S: float = 60.0
+
     async def _run(self, *args: str) -> Tuple[int, str, str]:
         """Run the forge CLI (``gh`` or ``glab``) and capture rc/stdout/stderr.
 
         Never raises on non-zero exit — the caller decides via
         :meth:`_run_checked` whether to convert to :class:`ForgeCommandError`.
+        Raises ``asyncio.TimeoutError`` when the subprocess exceeds
+        ``_RUN_TIMEOUT_S`` (default 60 s); the child is killed before raising.
         """
         cmd = [self._config.cli_path, *args]
         proc = await asyncio.create_subprocess_exec(
@@ -352,7 +356,17 @@ class ForgeClient(ABC):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_b, stderr_b = await proc.communicate()
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=self._RUN_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass  # SIGKILL fallback — best-effort
+            raise
         return (
             proc.returncode or 0,
             (stdout_b or b"").decode("utf-8", errors="replace"),

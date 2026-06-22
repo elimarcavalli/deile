@@ -162,3 +162,87 @@ class TestImplementerCostCapGating:
         assert out.ok is False
         assert "7.50" in out.motivo_bloqueio
         assert "3.00" in out.motivo_bloqueio
+
+
+# ---------------------------------------------------------------------------
+# Fix #9 — check_stage_run em asyncio.to_thread (bug #779)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestCheckStageRunNonBlocking:
+    """check_stage_run não bloqueia o event loop — executado via asyncio.to_thread."""
+
+    async def test_dispatch_does_not_block_event_loop(self, monkeypatch):
+        """AC-9b: event loop permanece responsivo durante a estimativa de custo."""
+        import asyncio
+        import time as _time
+
+        from deile.storage.usage_repository import StageCostCapExceeded
+
+        # Simula StageBudgetGuard.check_stage_run com I/O bloqueante curto (50ms)
+        def _slow_check_stage_run(**kwargs):
+            _time.sleep(0.05)  # simula sqlite read — deve rodar em thread, não no loop
+
+        client = _FakeClient()
+        impl = WorkerImplementer(client=client)
+        monitor = _make_monitor()
+
+        with patch(
+            "deile.storage.usage_repository.StageBudgetGuard.check_stage_run",
+            side_effect=_slow_check_stage_run,
+        ), patch(
+            "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
+            return_value=MagicMock(),
+        ), patch(
+            "deile.storage.usage_repository.get_usage_repository",
+            return_value=MagicMock(),
+        ):
+            t0 = _time.monotonic()
+
+            # Segunda coroutine que mede latência de resposta do loop
+            latencies = []
+            async def _measure():
+                start = _time.monotonic()
+                await asyncio.sleep(0)  # yield ao event loop
+                latencies.append(_time.monotonic() - start)
+
+            # Roda dispatch e _measure concorrentemente
+            await asyncio.gather(
+                impl.implement(monitor, _issue()),
+                _measure(),
+            )
+
+            # Se o loop estivesse bloqueado, _measure demoraria >> 50ms
+            assert len(latencies) == 1
+            # Verifica que o loop respondeu: sem blocking, o yield é quase instantâneo
+            # Tolerância generosa (200ms) para ambientes lentos de CI
+            assert latencies[0] < 0.2, (
+                f"event loop bloqueado durante check_stage_run: {latencies[0]:.3f}s"
+            )
+
+    async def test_cost_cap_exceeded_still_propagates(self, monkeypatch):
+        """AC-9a: StageCostCapExceeded continua propagando após o wrap em to_thread."""
+        from deile.storage.usage_repository import StageCostCapExceeded
+
+        exc = StageCostCapExceeded("implement", estimated_usd=5.0, cap_usd=3.0)
+
+        client = _FakeClient()
+        impl = WorkerImplementer(client=client)
+        monitor = _make_monitor()
+
+        with patch(
+            "deile.storage.usage_repository.StageBudgetGuard.check_stage_run",
+            side_effect=exc,
+        ), patch(
+            "deile.orchestration.pipeline.cost_estimator.StageCostEstimator",
+            return_value=MagicMock(),
+        ), patch(
+            "deile.storage.usage_repository.get_usage_repository",
+            return_value=MagicMock(),
+        ):
+            result = await impl.implement(monitor, _issue())
+
+        # Deve retornar blocked WorkOutcome, não propagar a exceção
+        assert result.ok is False
+        assert "cost-cap-exceeded" in (result.error or "").lower() or \
+               "cost-cap-exceeded" in (result.motivo_bloqueio or "").lower()

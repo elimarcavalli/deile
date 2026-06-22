@@ -121,7 +121,8 @@ async def _start_status_server(monitor) -> "tuple|None":
         # bloquear o handler HTTP — o tick rola no loop principal do monitor.
         if hasattr(state, "set_force_tick_callback"):
             def _force_tick_cb():
-                asyncio.ensure_future(monitor.tick())
+                if not monitor._tick_in_flight:  # noqa: SLF001
+                    asyncio.ensure_future(monitor.tick())
             state.set_force_tick_callback(_force_tick_cb)
         # Injeta o state no monitor pra ele publicar em cada tick.
         try:

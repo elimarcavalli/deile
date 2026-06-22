@@ -318,14 +318,32 @@ class WorktreeManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    _GIT_CLONE_TIMEOUT_S: float = 120.0
+    _GIT_DEFAULT_TIMEOUT_S: float = 30.0
+
     @staticmethod
     async def _git(*args: str) -> None:
+        timeout = (
+            WorktreeManager._GIT_CLONE_TIMEOUT_S
+            if args and args[0] == "clone"
+            else WorktreeManager._GIT_DEFAULT_TIMEOUT_S
+        )
         proc = await asyncio.create_subprocess_exec(
             "git", *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr_b = await proc.communicate()
+        try:
+            _, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            raise WorktreeError(
+                f"git {' '.join(args)} timed out after {timeout:.0f}s"
+            )
         if (proc.returncode or 0) != 0:
             raise WorktreeError(
                 f"git {' '.join(args)} failed: {stderr_b.decode('utf-8', 'replace').strip()[:300]}"
@@ -346,7 +364,21 @@ class WorktreeManager:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_b, stderr_b = await proc.communicate()
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=WorktreeManager._GIT_DEFAULT_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            raise WorktreeError(
+                f"git -C {cwd} {' '.join(args)} timed out after "
+                f"{WorktreeManager._GIT_DEFAULT_TIMEOUT_S:.0f}s"
+            )
         return (
             proc.returncode or 0,
             stdout_b.decode("utf-8", "replace"),

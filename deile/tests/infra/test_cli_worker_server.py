@@ -902,3 +902,69 @@ def _async_return(value):
     async def _coro(*_a, **_kw):
         return value
     return _coro
+
+
+# ---------------------------------------------------------------------------
+# Fix #3 — log NÃO deletado quando has_tokens=False e not in harvested (bug #779)
+# ---------------------------------------------------------------------------
+
+def test_harvest_preserves_log_when_no_tokens(mock_adapter, monkeypatch, tmp_path):
+    """AC-3a: log permanece quando has_tokens=False e task_id nunca colhido."""
+    import json as _json
+    import os as _os
+    import time as _time
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
+    root = cws._worker_root()
+
+    # Log sem tokens (tudo zerado)
+    task_id = "deadbeef00000001"
+    log = _write_progress_log(root, task_id, [
+        _json.dumps({"type": "step_finish", "modelID": "openrouter/qwen/qwen3-coder",
+                     "part": {"tokens": {"input": 0, "output": 0}, "cost": 0.0}}),
+    ])
+    old = _time.time() - 60 * 86400
+    _os.utime(log, (old, old))
+
+    res = cws.harvest_progress_to_ledger(root, "opencode")
+
+    # AC-3a: log deve permanecer
+    assert log.exists(), "log deve ser preservado quando has_tokens=False e não colhido"
+    # AC-3a: ledger não deve ter entrada
+    ledger = cws._cost_ledger_path()
+    if ledger.exists():
+        recs = [_json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
+        assert all(r["task_id"] != task_id for r in recs), (
+            "ledger não deve ter entrada para task sem tokens"
+        )
+
+
+def test_harvest_removes_log_when_already_harvested(mock_adapter, monkeypatch):
+    """AC-3b: log é removido quando task_id já está no harvested (ciclo anterior)."""
+    import json as _json
+    import os as _os
+    import time as _time
+    monkeypatch.setenv("DEILE_CLI_WORKER_KIND", "opencode")
+    root = cws._worker_root()
+
+    task_id = "deadbeef00000002"
+
+    # Primeiro ciclo: colhe com tokens reais
+    log1 = _write_progress_log(root, task_id, [
+        _json.dumps({"type": "step_finish", "modelID": "deepseek/deepseek-v4-pro",
+                     "part": {"tokens": {"input": 100, "output": 10}, "cost": 0.001}}),
+    ])
+    old = _time.time() - 60 * 86400
+    _os.utime(log1, (old, old))
+    cws.harvest_progress_to_ledger(root, "opencode")
+    assert not log1.exists(), "log deve ter sido removido no primeiro ciclo"
+
+    # Segundo ciclo: mesmo task_id sem tokens — mas já está no harvested via ledger
+    log2 = _write_progress_log(root, task_id, [
+        _json.dumps({"type": "step_finish", "modelID": "deepseek/deepseek-v4-pro",
+                     "part": {"tokens": {"input": 0, "output": 0}, "cost": 0.0}}),
+    ])
+    _os.utime(log2, (old, old))
+    res2 = cws.harvest_progress_to_ledger(root, "opencode")
+
+    # AC-3b: como o task_id já estava no harvested (ledger), o log deve ser removido
+    assert not log2.exists(), "log deve ser removido quando task_id já contabilizado"

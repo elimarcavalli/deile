@@ -283,3 +283,96 @@ async def test_unknown_action_type_raises():
 
     assert result['success'] is False
     assert "Unknown action type" in result['error']
+
+
+# ---------------------------------------------------------------------------
+# Fix #4 — wait_for_workflow_completion sai rapidamente em infra error (bug #779)
+# Fix #10 — start_workflow_execution retorna total_steps correto (bug #779)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@pytest.mark.orchestration
+async def test_wait_exits_promptly_on_infrastructure_error():
+    """AC-4a/4b: Exception no loop → wait retorna em < 5s com has_failures=True."""
+    import asyncio
+    from datetime import timedelta
+
+    infra_error = RuntimeError("db disk full")
+
+    task = _make_task(task_id="t1", status=TaskStatus.TODO)
+    task_list = _make_task_list(list_id="wf1", total=1)
+
+    # Status cycle: primeiro TODO (loop pega a task), depois FAILED (loop termina)
+    call_count = [0]
+
+    async def _get_status(wf_id):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return {"is_completed": False, "has_failures": False}
+        return {"is_completed": False, "has_failures": True}
+
+    mgr = MagicMock()
+    mgr.create_task_list = AsyncMock(return_value=task_list)
+    mgr.add_task_to_list = AsyncMock(side_effect=lambda **kw: _make_task(
+        task_id="t1", title=kw.get("title", "step"), metadata=kw.get("metadata", {}),
+    ))
+    mgr.activate_task_list = AsyncMock()
+    mgr.load_task_list = AsyncMock(return_value=task_list)
+    mgr.get_task_list_status = AsyncMock(side_effect=_get_status)
+    mgr.get_next_tasks = AsyncMock(side_effect=[[task], infra_error])
+    mgr.mark_task_completed = AsyncMock()
+
+    executor = WorkflowExecutor(task_manager=mgr)
+
+    # Inicia workflow sem esperar — apenas cria o loop em background
+    info = await executor.start_workflow_execution("do stuff")
+    wf_id = info["workflow_id"]
+
+    # Aguarda o loop interno propagar o erro
+    await asyncio.sleep(0.1)
+
+    result = await executor.wait_for_workflow_completion(wf_id, timeout=timedelta(seconds=5))
+    assert result.get("success") is False
+
+
+@pytest.mark.unit
+@pytest.mark.orchestration
+async def test_start_workflow_returns_correct_total_steps():
+    """AC-10a: start_workflow_execution retorna total_steps == N, não 0."""
+    steps_count = 5
+    task_list = _make_task_list(list_id="wf2", total=steps_count)
+
+    mgr = MagicMock()
+    mgr.create_task_list = AsyncMock(return_value=task_list)
+    mgr.add_task_to_list = AsyncMock(side_effect=lambda **kw: _make_task(
+        task_id="t-x", title=kw.get("title", "step"), metadata=kw.get("metadata", {}),
+    ))
+    mgr.activate_task_list = AsyncMock()
+    mgr.load_task_list = AsyncMock(return_value=task_list)
+    mgr.get_next_tasks = AsyncMock(return_value=[])
+    mgr.mark_task_completed = AsyncMock()
+
+    executor = WorkflowExecutor(task_manager=mgr)
+    info = await executor.start_workflow_execution("5 step workflow")
+
+    assert info["total_steps"] == steps_count
+    assert info["execution_info"]["total_tasks"] == steps_count
+
+
+@pytest.mark.unit
+@pytest.mark.orchestration
+async def test_start_workflow_empty_steps_returns_zero():
+    """AC-10b: lista vazia → total_steps == 0 (não regride)."""
+    empty_list = _make_task_list(list_id="wf3", total=0)
+
+    mgr = MagicMock()
+    mgr.create_task_list = AsyncMock(return_value=empty_list)
+    mgr.add_task_to_list = AsyncMock()
+    mgr.activate_task_list = AsyncMock()
+    mgr.load_task_list = AsyncMock(return_value=empty_list)
+    mgr.get_next_tasks = AsyncMock(return_value=[])
+
+    executor = WorkflowExecutor(task_manager=mgr)
+    info = await executor.start_workflow_execution("empty")
+
+    assert info["total_steps"] == 0

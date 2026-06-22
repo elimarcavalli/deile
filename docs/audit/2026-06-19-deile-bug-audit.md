@@ -699,58 +699,68 @@ except Exception as exc:
 
 | # | Bug | Arquivo | Severidade | Gatilho | Blast | Justif. Blast | Fix proposto | Arquivos impactados | Testes impactados | Docs impactados |
 |---|-----|---------|-----------|---------|-------|----------------|--------------|--------------------|--------------------|-----------------|
-| 1 | force-tick double-dispatch via ensure_future | `runner.py:123-124` | 🔴 crítico | Dois ticks paralelos double-dispatching mesmo issue — resultado errado silencioso, corrupção de estado do pipeline | L | Fix toca caminho concorrente/distribuído com risco de deadlock se lock mal-escoped; alternativa (wake flag) toca múltiplos arquivos | Adicionar `_tick_in_flight: bool` em `PipelineMonitor.__init__`; guardar em `tick()` com finally; checar em `_force_tick_cb` | `runner.py`, `monitor.py` | `test_runner.py`, `test_monitor_tick.py` | `docs/decisoes/pipeline.md` |
-| 2 | Validation gate vaza histórico fantasma no except | `validation_gate.py:175-176,197` | 🔴 crítico | Retry falha → duas entradas `[INTERNAL_VALIDATION_GATE]` ficam em `conversation_history` → LLM recebe contexto corrompido em toda turn subsequente | S | 1 arquivo, ~5 linhas: checkpoint + del slice no except | `_history_checkpoint = len(session.conversation_history)` antes de linha 175; no `except`: `del session.conversation_history[_history_checkpoint:]` | `validation_gate.py` | `test_validation_gate.py` | — |
-| 3 | Log deletado sem ledger quando `has_tokens=False` | `cli_worker_server.py:1115-1125` | 🔴 crítico | CLI crashou sem emitir usage → log apagado sem ledger — perda silenciosa de audit trail | S | 1 arquivo, ≤5 linhas: mover deleção para dentro do bloco `has_tokens` | Mover bloco de deleção (linhas 1115-1120) para dentro do `if has_tokens and ...` após ledger write; `continue` no else | `cli_worker_server.py` | `test_harvest_log.py` | docstring linha 1013 |
-| 4 | `_execute_task_list_loop` trava `wait_for_workflow_completion` por 1h | `workflow_executor.py:156-157` | 🔴 crítico | Erro de infra aborta loop → tasks em TODO → poll sem saída por 1h | S | 1 arquivo, ~5 linhas no except handler | No `except`: `await self.task_manager.mark_task_completed(..., success=False, error_message=str(exc))` | `workflow_executor.py` | `test_workflow_executor.py` | — |
-| 5 | Router health-check sem timeout — trava select_provider() | `router.py:239-259` | 🔴 crítico | Provider inacessível → health_check() trava forever → toda seleção de LLM bloqueada | M | Toca `router.py` e `base.py`, novo teste de timeout | `asyncio.wait_for(provider.health_check(), timeout=30.0)` em `_health_check_if_needed:250` | `router.py`, `base.py` | `test_router.py`, `test_health_check_timeout.py` | — |
-| 6 | `ForgeClient._run()` sem timeout — forge CLI trava forever | `base.py:350-355` | 🔴 crítico | gh/glab lento → `proc.communicate()` bloqueia event loop indefinidamente | S | 1 arquivo, ~6 linhas: wrap + kill | `asyncio.wait_for(proc.communicate(), timeout=60)` + `proc.kill()` no `TimeoutError` | `base.py` | `test_forge_client.py` | — |
-| 7 | Git `_run()` sem timeout — clone/fetch/pull trava forever | `worktree_manager.py:322-354` | 🔴 crítico | GitHub inacessível → `ensure_main()` trava event loop | S | 1 arquivo, ~6 linhas nos dois helpers | `asyncio.wait_for(proc.communicate(), timeout=60)` em `_git` e `_git_in_capture` | `worktree_manager.py` | `test_worktree_manager.py` | — |
-| 8 | ERROR chunk no bot streaming — `error_type`/`error_message` sempre vazios | `agent_streaming.py:765-769` | 🔴 crítico | Bot recebe ERROR → type="" message="" — toda informação diagnóstica silenciosamente suprimida | S | 1 arquivo, 2 linhas: troca de `getattr(evt, ...)` por `evt.error_envelope.get(...)` | `envelope = (evt.error_envelope or {}); "type": envelope.get("error_type","") or "Error"; "message": envelope.get("message","")` | `agent_streaming.py` | `test_agent_streaming.py` | — |
-| 9 | `cost_estimator.py` — sync I/O bloqueante em `async def _dispatch()` | `cost_estimator.py:72` | 🔴 crítico | Cada dispatch executa `open()` + `sqlite3.connect()` síncronos no event loop | M | Toca múltiplos arquivos (cost_estimator.py, usage_repository.py, implementer.py) com mudança de assinatura | Encapsular `check_stage_run()` em `await asyncio.to_thread(lambda: guard.check_stage_run())` no call site de `implementer.py:913` | `implementer.py`, `cost_estimator.py`, `usage_repository.py` | `test_cost_estimator.py`, `test_implementer.py` | — |
-| 10 | `start_workflow_execution` retorna `total_steps: 0` | `workflow_executor.py:119-127` | 🟡 médio | Caller usa `total_steps` para progress — sempre vê 0, misleading para toda integração | S | 1 arquivo, 1 linha: reload ou `len(steps)` | Após loop de steps: `task_list = await self.task_manager.load_task_list(task_list.id) or task_list` | `workflow_executor.py` | `test_workflow_executor.py` | — |
+| 1 ✅ | force-tick double-dispatch via ensure_future | `runner.py:123-124` | 🔴 crítico | Dois ticks paralelos double-dispatching mesmo issue — resultado errado silencioso, corrupção de estado do pipeline | L | Fix toca caminho concorrente/distribuído com risco de deadlock se lock mal-escoped; alternativa (wake flag) toca múltiplos arquivos | Adicionar `_tick_in_flight: bool` em `PipelineMonitor.__init__`; guardar em `tick()` com finally; checar em `_force_tick_cb` | `runner.py`, `monitor.py` | `test_runner.py`, `test_monitor_tick.py` | `docs/decisoes/pipeline.md` |
+| 2 ✅ | Validation gate vaza histórico fantasma no except | `validation_gate.py:175-176,197` | 🔴 crítico | Retry falha → duas entradas `[INTERNAL_VALIDATION_GATE]` ficam em `conversation_history` → LLM recebe contexto corrompido em toda turn subsequente | S | 1 arquivo, ~5 linhas: checkpoint + del slice no except | `_history_checkpoint = len(session.conversation_history)` antes de linha 175; no `except`: `del session.conversation_history[_history_checkpoint:]` | `validation_gate.py` | `test_validation_gate.py` | — |
+| 3 ✅ | Log deletado sem ledger quando `has_tokens=False` | `cli_worker_server.py:1115-1125` | 🔴 crítico | CLI crashou sem emitir usage → log apagado sem ledger — perda silenciosa de audit trail | S | 1 arquivo, ≤5 linhas: mover deleção para dentro do bloco `has_tokens` | Mover bloco de deleção (linhas 1115-1120) para dentro do `if has_tokens and ...` após ledger write; `continue` no else | `cli_worker_server.py` | `test_harvest_log.py` | docstring linha 1013 |
+| 4 ✅ | `_execute_task_list_loop` trava `wait_for_workflow_completion` por 1h | `workflow_executor.py:156-157` | 🔴 crítico | Erro de infra aborta loop → tasks em TODO → poll sem saída por 1h | S | 1 arquivo, ~5 linhas no except handler | No `except`: `await self.task_manager.mark_task_completed(..., success=False, error_message=str(exc))` | `workflow_executor.py` | `test_workflow_executor.py` | — |
+| 5 ✅ | Router health-check sem timeout — trava select_provider() | `router.py:239-259` | 🔴 crítico | Provider inacessível → health_check() trava forever → toda seleção de LLM bloqueada | M | Toca `router.py` e `base.py`, novo teste de timeout | `asyncio.wait_for(provider.health_check(), timeout=30.0)` em `_health_check_if_needed:250` | `router.py`, `base.py` | `test_router.py`, `test_health_check_timeout.py` | — |
+| 6 ✅ | `ForgeClient._run()` sem timeout — forge CLI trava forever | `base.py:350-355` | 🔴 crítico | gh/glab lento → `proc.communicate()` bloqueia event loop indefinidamente | S | 1 arquivo, ~6 linhas: wrap + kill | `asyncio.wait_for(proc.communicate(), timeout=60)` + `proc.kill()` no `TimeoutError` | `base.py` | `test_forge_client.py` | — |
+| 7 ✅ | Git `_run()` sem timeout — clone/fetch/pull trava forever | `worktree_manager.py:322-354` | 🔴 crítico | GitHub inacessível → `ensure_main()` trava event loop | S | 1 arquivo, ~6 linhas nos dois helpers | `asyncio.wait_for(proc.communicate(), timeout=60)` em `_git` e `_git_in_capture` | `worktree_manager.py` | `test_worktree_manager.py` | — |
+| 8 ✅ | ERROR chunk no bot streaming — `error_type`/`error_message` sempre vazios | `agent_streaming.py:765-769` | 🔴 crítico | Bot recebe ERROR → type="" message="" — toda informação diagnóstica silenciosamente suprimida | S | 1 arquivo, 2 linhas: troca de `getattr(evt, ...)` por `evt.error_envelope.get(...)` | `envelope = (evt.error_envelope or {}); "type": envelope.get("error_type","") or "Error"; "message": envelope.get("message","")` | `agent_streaming.py` | `test_agent_streaming.py` | — |
+| 9 ✅ | `cost_estimator.py` — sync I/O bloqueante em `async def _dispatch()` | `cost_estimator.py:72` | 🔴 crítico | Cada dispatch executa `open()` + `sqlite3.connect()` síncronos no event loop | M | Toca múltiplos arquivos (cost_estimator.py, usage_repository.py, implementer.py) com mudança de assinatura | Encapsular `check_stage_run()` em `await asyncio.to_thread(lambda: guard.check_stage_run())` no call site de `implementer.py:913` | `implementer.py`, `cost_estimator.py`, `usage_repository.py` | `test_cost_estimator.py`, `test_implementer.py` | — |
+| 10 ✅ | `start_workflow_execution` retorna `total_steps: 0` | `workflow_executor.py:119-127` | 🟡 médio | Caller usa `total_steps` para progress — sempre vê 0, misleading para toda integração | S | 1 arquivo, 1 linha: reload ou `len(steps)` | Após loop de steps: `task_list = await self.task_manager.load_task_list(task_list.id) or task_list` | `workflow_executor.py` | `test_workflow_executor.py` | — |
 
 ---
 
 ## Plano de testes (top-10)
 
-### Fix #1 — force-tick double-dispatch
+### Fix #1 — force-tick double-dispatch ✅
+- **Corrigido em**: PR #779 — `runner.py:123`, `monitor.py:__init__`, `monitor.py:tick()`
 - **Path**: `deile/tests/orchestration/pipeline/test_runner.py::test_force_tick_skips_when_in_flight`
 - **O que prova**: `_force_tick_cb` chamado enquanto `_tick_in_flight=True` não cria nova Task — `asyncio.ensure_future` não é chamado. Também: `_force_tick_cb` chamado quando `_tick_in_flight=False` cria exatamente uma Task.
 
-### Fix #2 — Validation gate history leak
+### Fix #2 — Validation gate history leak ✅
+- **Corrigido em**: PR #779 — `validation_gate.py:174`
 - **Path**: `deile/tests/core/test_validation_gate.py::test_history_rollback_on_retry_exception`
 - **O que prova**: Quando o retry provider lança `Exception`, `session.conversation_history` após `apply_validation_gate` tem exatamente o mesmo comprimento que antes da chamada — as duas entradas fantasma (assistant pré-gate + user gate_prompt) foram removidas.
 
-### Fix #3 — Log deletado sem ledger
+### Fix #3 — Log deletado sem ledger ✅
+- **Corrigido em**: PR #779 — `cli_worker_server.py:1115`
 - **Path**: `deile/tests/infra/test_cli_worker_server.py::test_harvest_preserves_log_when_no_tokens`
 - **O que prova**: Quando `has_tokens=False` e `task_id not in harvested`, o arquivo `.stdout.log` permanece no filesystem após o ciclo de harvest. O ledger não contém nenhuma entrada para o task_id.
 
-### Fix #4 — Workflow loop trava
+### Fix #4 — Workflow loop trava ✅
+- **Corrigido em**: PR #779 — `workflow_executor.py:156`
 - **Path**: `deile/tests/orchestration/test_workflow_executor.py::test_wait_exits_promptly_on_infrastructure_error`
 - **O que prova**: Quando `_execute_task_list_loop` lança `Exception` de infra, `wait_for_workflow_completion` retorna em menos de 5s com `has_failures=True` e `is_completed=False` — não espera o timeout de 1h.
 
-### Fix #5 — Router health-check timeout
+### Fix #5 — Router health-check timeout ✅
+- **Corrigido em**: PR #779 — `router.py:_health_check_if_needed`
 - **Path**: `deile/tests/core/models/test_router.py::test_health_check_timeout_does_not_block_provider_selection`
 - **O que prova**: Um provider mock cujo `health_check()` nunca retorna faz `_health_check_if_needed()` completar dentro de 35s (timeout de 30s + margem), e o provider é marcado como unhealthy — `select_provider()` continua funcionando com os demais providers.
 
-### Fix #6 — ForgeClient timeout
+### Fix #6 — ForgeClient timeout ✅
+- **Corrigido em**: PR #779 — `forge/base.py:_run`
 - **Path**: `deile/tests/orchestration/forge/test_forge_client.py::test_run_kills_subprocess_on_timeout`
 - **O que prova**: `ForgeClient._run()` com subprocesso que bloqueia indefinidamente lança `asyncio.TimeoutError` dentro do tempo configurado e o processo filho é terminado (`proc.returncode` não é None após o kill).
 
-### Fix #7 — WorktreeManager timeout
+### Fix #7 — WorktreeManager timeout ✅
+- **Corrigido em**: PR #779 — `worktree_manager.py:_git`, `worktree_manager.py:_git_in_capture`
 - **Path**: `deile/tests/orchestration/pipeline/test_worktree_manager.py::test_git_helper_raises_on_timeout`
 - **O que prova**: `_git('clone', ...)` com subprocesso que bloqueia além do timeout lança `WorktreeError` com mensagem clara e o processo filho é terminado — `ensure_main()` propaga a exceção em vez de travar.
 
-### Fix #8 — ERROR chunk envelope
+### Fix #8 — ERROR chunk envelope ✅
+- **Corrigido em**: PR #779 — `agent_streaming.py:765`
 - **Path**: `deile/tests/core/test_agent_streaming.py::test_error_chunk_carries_envelope_fields`
 - **O que prova**: Quando o stream emite `UnifiedStreamEvent(type=ERROR, error_envelope={"error_type": "BudgetExceeded", "message": "Limite atingido"})`, o `StreamChunk` resultante tem `payload["type"] == "BudgetExceeded"` e `payload["message"] == "Limite atingido"` — não strings vazias.
 
-### Fix #9 — cost_estimator sync I/O
+### Fix #9 — cost_estimator sync I/O ✅
+- **Corrigido em**: PR #779 — `implementer.py:913`
 - **Path**: `deile/tests/orchestration/pipeline/test_implementer.py::test_dispatch_does_not_block_event_loop`
 - **O que prova**: `_dispatch()` com `asyncio.to_thread` correto libera o event loop durante a estimativa de custo — um segundo coroutine de alta prioridade completando ao mesmo tempo demonstra que o loop não ficou bloqueado (medindo latência de segunda task < 50ms durante a estimativa).
 
-### Fix #10 — total_steps zero
+### Fix #10 — total_steps zero ✅
+- **Corrigido em**: PR #779 — `workflow_executor.py:start_workflow_execution`
 - **Path**: `deile/tests/orchestration/test_workflow_executor.py::test_start_workflow_returns_correct_total_steps`
 - **O que prova**: `start_workflow_execution(objective="...", steps=[...5 steps...])` retorna dict com `total_steps == 5` e `execution_info["total_tasks"] == 5` — não zero.
 
