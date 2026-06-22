@@ -271,8 +271,12 @@ class ModelRouter:
                 )
                 self._circuit_breaker_status[key] = True
             except Exception as e:
+                # NÃO abre o circuit breaker num erro genérico de health-check:
+                # o objetivo do fix é o caminho de TIMEOUT (acima). Um erro
+                # transitório de introspecção não significa provider
+                # indisponível — abrir o breaker aqui derruba provider saudável
+                # e quebra o fallback legacy (test_routing_wire_up). Só loga.
                 logger.error("Health check error for %s: %s", key, e)
-                self._circuit_breaker_status[key] = True
 
 
 # Singleton instance
