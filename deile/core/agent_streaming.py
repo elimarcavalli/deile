@@ -763,9 +763,20 @@ class AgentStreamingMixin:
                     usage = getattr(evt, "usage", None)
                     last_model = getattr(usage, "model", "") if usage else ""
                 elif name in ("ERROR", "error"):
-                    # Dado real em error_envelope (montado em process_input_stream).
-                    # getattr(evt, "error_type"/"error_message") não existem na dataclass.
-                    _envelope = (getattr(evt, "error_envelope", None) or {})
+                    # error_envelope chega em DUAS formas:
+                    #   - dict, montado em process_input_stream (err_meta) p/
+                    #     erros capturados aqui (BudgetExceeded, FORCED_MODEL…);
+                    #   - ProviderErrorEnvelope (dataclass), emitido pelos
+                    #     providers mid-stream e repassado verbatim pelo
+                    #     ToolLoopExecutor (rate_limit, context_length, server…).
+                    # O objeto NÃO tem .get() — normaliza via to_display_dict()
+                    # antes de extrair, senão estoura AttributeError e o erro
+                    # real do provider é mascarado.
+                    _envelope = getattr(evt, "error_envelope", None)
+                    if hasattr(_envelope, "to_display_dict"):
+                        _envelope = _envelope.to_display_dict()
+                    if not isinstance(_envelope, dict):
+                        _envelope = {}
                     last_error = {
                         "type": _envelope.get("error_type", "") or "Error",
                         "message": _envelope.get("message", "") or "",
