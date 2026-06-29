@@ -6,7 +6,7 @@ tenacity>=8.0.0
 python-json-logger>=2.0.0
 pydantic-settings>=2.0.0
 annotated-types==0.7.0
-cachetools==5.5.2
+cachetools==7.1.4
 certifi==2026.5.20
 charset-normalizer==3.4.7
 colorama==0.4.6
