@@ -7,6 +7,6 @@ pytest-benchmark==5.2.3
 safety==3.8.1
 bandit==1.9.3
 coverage==7.11.0
-isort==6.1.0
+isort==8.0.1
 radon==6.0.1
 black==25.11.0
