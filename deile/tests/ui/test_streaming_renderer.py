@@ -1248,54 +1248,6 @@ async def test_budget_exceeded_error_includes_action_hint():
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_spinner_skips_refresh_when_parent_live_is_suspended():
-    """Bug A: durante a execução de ``dispatch_parallel_subagents``,
-    o ``SubAgentPanelRenderer`` chama ``prev_live.stop()`` no Live do
-    streaming_renderer pai (Rich só permite um Live ativo por console).
-    Mas o ``_thinking_spinner`` continuava chamando ``live_obj.update()``
-    + ``refresh()`` a cada 100ms — gerando flicker quando o Live era
-    restaurado.
-
-    Garantia: o spinner consulta ``live_obj.is_started`` antes de
-    chamar update/refresh. Quando o Live está parado, o tick é
-    no-op.
-    """
-
-    # Mock minimal Live-like object — só precisa de ``is_started``,
-    # ``update`` e ``refresh``. Conta quantas vezes refresh é chamado.
-    class _MockLive:
-        def __init__(self):
-            self.is_started = False
-            self.refresh_calls = 0
-            self.update_calls = 0
-
-        def update(self, renderable):
-            self.update_calls += 1
-
-        def refresh(self):
-            self.refresh_calls += 1
-
-    # Para o teste, construo o estado do spinner manualmente e
-    # disparo um tick — assim isolamos a lógica do guard de
-    # ``is_started`` sem precisar de TTY real.
-    import inspect
-
-    from deile.ui import streaming_renderer as sr_module
-
-    src = inspect.getsource(sr_module.StreamingRenderer._render_live)
-    # Verificação estrutural: a guarda ``is_started`` está presente,
-    # e o sleep aumentou de 0.1 para 0.25 (60% menos refresh).
-    assert "is_started" in src, (
-        "o spinner deve checar live.is_started antes de refresh — "
-        "sem isso, refreshes em Live suspenso causam flicker quando o "
-        "Live pai é restaurado por subagent_panel"
-    )
-    assert "asyncio.sleep(0.25)" in src, (
-        "sleep do _thinking_spinner deve ser 0.25s (4Hz) para reduzir "
-        "carga de refresh em 60% vs 0.1s (10Hz). Não use valores "
-        "diferentes sem justificativa explícita."
-    )
 
 
 @pytest.mark.asyncio

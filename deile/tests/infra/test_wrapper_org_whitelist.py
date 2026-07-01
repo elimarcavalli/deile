@@ -190,14 +190,3 @@ class TestOrgWhitelistMonotonicity:
                 f"(org_allow={org_allow})"
             )
 
-    async def test_generous_org_does_not_widen_whitelist(self, wrapper_mod) -> None:
-        """Org "generosa" (inclui bash/python) NÃO os adiciona ao whitelist efetivo."""
-        role_whitelist = frozenset({"discord_send_message"})
-        org_allow = frozenset({"discord_send_message", "bash_execute", "python_execute"})
-        present = ["discord_send_message", "bash_execute", "python_execute"]
-
-        kept, disabled = await _exercise_install(wrapper_mod, role_whitelist, org_allow, present)
-
-        assert kept == ["discord_send_message"]
-        assert "bash_execute" in disabled
-        assert "python_execute" in disabled

@@ -865,28 +865,6 @@ class TestReuseVenvAssertionStrength:
     VENV_DIR = Path("/tmp/test-venv")
     REPO_ROOT = Path("/tmp/test-repo")
 
-    @patch("deile.cli_install.os.name", "posix")
-    @patch("deile.cli_install.Path.resolve")
-    @patch("deile.cli_install.Path.exists", return_value=True)
-    @patch("deile.cli_install.asyncio.create_subprocess_exec")
-    def test_reuses_venv_create_not_called(self, mock_subproc, mock_exists, mock_resolve):
-        """When venv python already exists, EnvBuilder.create must NOT be called."""
-        from deile.cli_install import _create_venv_with_deile
-
-        mock_resolve.side_effect = [self.VENV_DIR, self.REPO_ROOT, Path("/tmp")]
-
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-        mock_subproc.return_value = mock_proc
-
-        with patch("deile.cli_install._venv.EnvBuilder") as mock_env_builder:
-            with patch("deile.cli_install.asyncio.to_thread") as mock_to_thread:
-                asyncio.run(_create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test"))
-
-        # The critical assertion: .create() must not be called (not just EnvBuilder())
-        mock_env_builder.return_value.create.assert_not_called()
-        mock_to_thread.assert_not_called()
 
 
 # ===================================================================

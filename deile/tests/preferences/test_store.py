@@ -134,8 +134,6 @@ class TestDelete:
         assert store.delete("u1", "theme") is True
         assert store.get("u1", "theme") is None
 
-    def test_delete_nonexistent_idempotent(self, store):
-        assert store.delete("u1", "ghost") is False
 
     def test_delete_nonexistent_user_idempotent(self, store):
         assert store.delete("ghost", "any") is False

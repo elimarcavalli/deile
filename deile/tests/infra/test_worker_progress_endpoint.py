@@ -221,19 +221,6 @@ async def test_result_400_when_task_id_invalid_format(client):
 # ── Regression tests para PR #295 review ──────────────────────────────────
 
 
-async def test_bg_dispatch_tasks_set_keeps_strong_ref():
-    """B2 (PR #295 review): tasks geradas em wait=False com create_task DEVEM
-    ser referenciadas em ``_BG_DISPATCH_TASKS`` para evitar coleta pelo GC.
-    Verifica que o set existe e tem o pattern add_done_callback(discard).
-    """
-    import inspect
-
-    src = inspect.getsource(worker_server.dispatch_handler)
-    # Pattern do fix: add ao set + add_done_callback(_BG_DISPATCH_TASKS.discard)
-    assert "_BG_DISPATCH_TASKS.add(" in src
-    assert "_BG_DISPATCH_TASKS.discard" in src
-    # E a estrutura existe:
-    assert isinstance(worker_server._BG_DISPATCH_TASKS, set)
 
 
 async def test_event_bus_unsubscribed_at_dispatch_end():

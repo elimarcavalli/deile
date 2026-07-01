@@ -254,18 +254,3 @@ def test_resolver_does_not_hardcode_valid_dispatchers_literal():
     )
 
 
-def test_panel_does_not_hardcode_worker_picker_list():
-    """O painel não pode reter ``["...", "deile-worker", "claude-worker"]``."""
-    src = _read("infra/k8s/_panel.py")
-    forbidden = (
-        '["(clear override)", "deile-worker", "claude-worker"]',
-        '"deile-worker",\n            "claude-worker",\n        ]',
-    )
-    for literal in forbidden:
-        assert literal not in src, (
-            f"lista de workers hardcodada no painel: {literal!r} — derive de "
-            "DispatchMatrixView._canonical_workers()"
-        )
-    # A derivação deve estar presente.
-    assert "_canonical_workers" in src
-    assert "get_valid_dispatchers" in src

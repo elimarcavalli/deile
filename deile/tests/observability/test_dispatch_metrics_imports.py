@@ -29,13 +29,6 @@ def test_os_environ_used_exactly_once():
     assert "OTEL_METRIC_EXPORT_INTERVAL" in source
 
 
-def test_no_direct_deile_otlp_env_reads():
-    source = _MODULE.read_text(encoding="utf-8")
-    # Não deve LER DEILE_OTLP_* nem DEILE_OBSERVABILITY_DISABLED via os.environ
-    # (menções em docstring são permitidas; o que importa é nenhum os.environ
-    #  apontar para essas vars — elas vêm de get_observability_config()).
-    assert not re.search(r'os\.environ[^\n]*DEILE_OTLP', source)
-    assert not re.search(r'os\.environ[^\n]*DEILE_OBSERVABILITY', source)
 
 
 

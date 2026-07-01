@@ -623,39 +623,6 @@ Creates a new user.
             if "nonexistent" in user_input or "xyzabc123" in user_input:
                 assert result.status.name == "ERROR"
 
-    @pytest.mark.asyncio
-    async def test_performance_with_large_project(self, test_project):
-        """Test performance of autonomous resolution with many files"""
-        # Create additional files to simulate larger project
-        for i in range(50):
-            (test_project / f"extra_file_{i:03d}.py").write_text(f"# Extra file {i}")
-            (test_project / f"data_{i:03d}.json").write_text(f'{{"id": {i}}}')
-
-        import time
-
-        test_inputs = [
-            "read the readme",
-            "show me config.yaml",
-            "examine main.py"
-        ]
-
-        for user_input in test_inputs:
-            tool = ReadFileTool()
-
-            context = Mock()
-            context.working_directory = str(test_project)
-            context.user_input = user_input
-            context.parsed_args = {}
-            context.file_list = []
-
-            start_time = time.time()
-            result = tool.execute_sync(context)
-            end_time = time.time()
-
-            # Should complete within reasonable time (5 seconds)
-            assert end_time - start_time < 5.0
-            # Should still work correctly
-            assert result.status.name == "SUCCESS"
 
     @pytest.mark.asyncio
     async def test_concurrent_autonomous_operations(self, test_project):

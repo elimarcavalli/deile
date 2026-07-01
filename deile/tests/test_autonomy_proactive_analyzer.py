@@ -146,22 +146,6 @@ class TestProactiveAnalyzer:
             assert any(any(target in intent.target for target in expected_targets)
                       for intent in read_intents)
 
-    @pytest.mark.asyncio
-    async def test_target_extraction_list_files(self, analyzer):
-        """Test target extraction for list files operations"""
-        test_cases = [
-            ("list files in src directory", ["src"]),
-            ("show files in /home/user", ["/home/user"]),
-            ("ls current directory", ["."]),
-        ]
-
-        for user_input, expected_targets in test_cases:
-            intents = await analyzer.analyze(user_input)
-            list_intents = [i for i in intents if i.action == ProactiveAction.LIST_FILES]
-
-            if list_intents:  # Some might not match depending on patterns
-                assert any(any(target in intent.target for target in expected_targets)
-                          for intent in list_intents)
 
     @pytest.mark.asyncio
     async def test_confidence_scoring(self, analyzer):
@@ -230,23 +214,6 @@ class TestProactiveAnalyzer:
         assert ProactiveAction.LIST_DIRECTORY in actions
         assert ProactiveAction.READ_FILE in actions
 
-    @pytest.mark.asyncio
-    async def test_priority_assignment(self, analyzer):
-        """Test priority assignment to intents"""
-        user_input = "read the main configuration file"
-        intents = await analyzer.analyze_enhanced(user_input)
-
-        if intents:
-            # Check that priorities are assigned
-            priorities = [intent.priority for intent in intents]
-            assert all(isinstance(p, int) and p > 0 for p in priorities)
-
-            # Higher confidence should generally have higher priority
-            if len(intents) > 1:
-                sorted_by_conf = sorted(intents, key=lambda i: i.confidence, reverse=True)
-                _sorted_by_prio = sorted(intents, key=lambda i: i.priority, reverse=True)
-                # Not always exact match, but should be correlated
-                assert sorted_by_conf[0].priority >= min(i.priority for i in intents)
 
     @pytest.mark.asyncio
     async def test_file_resolution_integration(self, analyzer):

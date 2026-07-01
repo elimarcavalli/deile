@@ -164,15 +164,11 @@ class TestStoreVar:
         data = _read_settings(tmp_path)
         assert data["debug"] is True
 
-    def test_empty_key_raises(self, tmp_path):
+    @pytest.mark.parametrize("key", ["", "   "])
+    def test_empty_or_whitespace_key_raises(self, tmp_path, key):
         from deile.config.env_store import store_var
         with pytest.raises(ValueError):
-            store_var("", "value", home=tmp_path)
-
-    def test_whitespace_only_key_raises(self, tmp_path):
-        from deile.config.env_store import store_var
-        with pytest.raises(ValueError):
-            store_var("   ", "value", home=tmp_path)
+            store_var(key, "value", home=tmp_path)
 
     def test_invalid_char_in_key_raises(self, tmp_path):
         from deile.config.env_store import store_var
@@ -252,10 +248,8 @@ class TestUnsetVar:
         with pytest.raises(ValueError):
             unset_var("", home=tmp_path)
 
-    def test_missing_file_returns_false(self, tmp_path):
-        from deile.config.env_store import unset_var
-        result = unset_var("GHOST", home=tmp_path)
-        assert result is False
+    # test_missing_file_returns_false removido: duplicata de
+    # test_returns_false_when_not_found (mesmo caminho: sem settings.json -> False).
 
     def test_disk_failure_preserves_environ(self, tmp_path, monkeypatch):
         # Bug A: when _save_raw returns False, the key must NOT be removed from

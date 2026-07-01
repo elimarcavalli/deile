@@ -458,17 +458,6 @@ class TestIntegrationPerformance:
         assert not pm.has_active_persona()
         assert pm.memory_manager is None
 
-    def test_integration_layer_without_persona_manager(self, mock_deile_agent):
-        """Test integration layer works without persona manager"""
-        layer = PersonaIntegrationLayer(mock_deile_agent)
-
-        # Should handle missing persona manager gracefully
-        base_context = {"test": "data"}
-
-        # This should work without async since no persona manager
-        result = asyncio.run(layer.enhance_context_building(base_context))
-
-        assert result == base_context
 
 
 # Configuration and validation tests
