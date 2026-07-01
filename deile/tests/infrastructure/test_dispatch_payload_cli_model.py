@@ -83,9 +83,6 @@ class TestBuildDispatchPayloadCliModel:
         p = build_dispatch_payload(brief="x", channel_id="c", cli_model=None)
         assert "cli_model" not in p
 
-    def test_omits_cli_model_when_default(self):
-        p = build_dispatch_payload(brief="x", channel_id="c")
-        assert "cli_model" not in p
 
     def test_omits_when_empty_string(self):
         p = build_dispatch_payload(brief="x", channel_id="c", cli_model="")

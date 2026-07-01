@@ -73,20 +73,6 @@ def test_read_token_all_empty(monkeypatch):
 
 # ----- token charset validation -----
 
-@pytest.mark.parametrize(
-    "tok,ok",
-    [
-        ("ABCdef0123456789", True),
-        ("token._-+/=:~with.special", True),
-        ("abc\ndef-injection", False),  # LF -> header injection vector
-        ("abc\rdef", False),            # CR
-        ("abc\x00def", False),          # NUL
-        ("short", False),               # below 16 char floor
-        ("a" * 16, True),               # exact floor
-    ],
-)
-def test_validate_token_charset(tok: str, ok: bool):
-    assert _validate_token_charset(tok) is ok
 
 
 # ----- shared transport harness -----

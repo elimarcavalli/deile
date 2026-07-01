@@ -65,24 +65,6 @@ class TestParallelMonitorSafety:
     # Branch / worktree namespacing
     # ------------------------------------------------------------------
 
-    def test_different_monitors_get_different_branches_for_same_issue(self):
-        """Two named monitors produce different branch names for issue #42."""
-        id_a = MonitorIdentity(monitor_id="a")
-        id_b = MonitorIdentity(monitor_id="b")
-
-        # branch_for_issue logic mirrors monitor.py's branch_for_issue()
-        def branch_for_issue(identity: MonitorIdentity, issue_number: int) -> str:
-            if identity.is_default:
-                return f"auto/issue-{issue_number}"
-            return f"{identity.branch_prefix('auto')}/issue-{issue_number}"
-
-        branch_a = branch_for_issue(id_a, 42)
-        branch_b = branch_for_issue(id_b, 42)
-
-        assert branch_a != branch_b
-        assert "a" in branch_a
-        assert "b" in branch_b
-
     def test_default_identity_branch_uses_legacy_prefix(self):
         identity = MonitorIdentity()
         assert identity.branch_prefix("auto") == "auto"

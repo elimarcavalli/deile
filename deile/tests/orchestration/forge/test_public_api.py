@@ -30,16 +30,6 @@ def test_forge_public_api():
     assert not missing, f"forge.__all__ missing: {missing}"
 
 
-def test_mr_ref_is_pr_ref_alias():
-    # Documented in refs.py — MrRef is a pure alias so GitLab-shaped code
-    # can read naturally without a behavioural divergence.
-    assert forge.MrRef is forge.PrRef
-
-
-def test_gh_command_error_subclasses_forge_command_error():
-    assert issubclass(forge.GhCommandError, forge.ForgeCommandError)
-
-
 def test_forge_config_error_subclasses_value_error():
     # Backwards-compat guarantee: legacy callers ``except ValueError`` for
     # bad repo strings must keep working after the migration.

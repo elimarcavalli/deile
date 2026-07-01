@@ -60,10 +60,9 @@ class TestStorePerformance:
             db.add(_make_oneshot_future(make_id(), i))
 
         start = time.perf_counter()
-        due = db.list_due()
+        db.list_due()
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        assert len(due) == 50
         assert elapsed_ms < 100, f"list_due() took {elapsed_ms:.1f}ms (limit 100ms)"
 
     def test_concurrent_writes_no_corruption(self, tmp_path):

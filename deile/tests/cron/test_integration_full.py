@@ -1,5 +1,4 @@
 """End-to-end test: CronStore → CronRunner → make_fire_callback → MockAgent."""
-import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -50,23 +49,14 @@ class TestCronEndToEnd:
         agent = MagicMock()
         agent.process_input = AsyncMock(return_value=MagicMock(content="ok"))
 
-        _runner = CronRunner(store, fire_callback=make_fire_callback(lambda: asyncio.coroutine(lambda: agent)()))
-
-        # Use a direct callback to capture kwargs
-        captured: dict = {}
-
         async def provider():
             return agent
 
-        async def recording_cb(entry: CronEntry) -> str:
-            result = await make_fire_callback(provider)(entry)
-            captured["session_id"] = agent.process_input.await_args.kwargs.get("session_id")
-            return result
+        runner = CronRunner(store, fire_callback=make_fire_callback(provider))
+        await runner.tick()
 
-        runner2 = CronRunner(store, fire_callback=recording_cb)
-        await runner2.tick()
-
-        assert captured.get("session_id") == "cron-abc123"
+        agent.process_input.assert_awaited_once()
+        assert agent.process_input.await_args.kwargs["session_id"] == "cron-abc123"
 
     async def test_agent_provider_error_does_not_crash_runner(self, tmp_path):
         """If the agent provider raises, the runner marks the entry fired with error."""

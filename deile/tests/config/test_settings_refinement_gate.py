@@ -57,16 +57,6 @@ class TestRefinementGateDecoupling:
 
         assert cfg.enable_refinement_gate is True
 
-    def test_gate_on_by_default_under_deile_worker_dispatch_mode(self, monkeypatch, tmp_path):
-        """dispatch_mode=deile_worker também não altera o gate — default ON."""
-        s = _make_settings(pipeline_dispatch_mode="deile_worker")
-        _patch_build_deps(monkeypatch, s, tmp_path)
-
-        from deile.orchestration.pipeline.monitor import build_default_pipeline_config
-        cfg = build_default_pipeline_config()
-
-        assert cfg.enable_refinement_gate is True
-
     def test_gate_off_when_env_var_is_zero(self, monkeypatch, tmp_path):
         """DEILE_PIPELINE_REFINEMENT_GATE=0 desliga o gate, independente de dispatch_mode."""
         s = _make_settings(pipeline_dispatch_mode="claude", pipeline_refinement_gate=False)
@@ -139,6 +129,3 @@ class TestRefinementGateSettingsJson:
         s = Settings()
         s.apply_overrides({"pipeline": {"refinement_gate": "false"}})
         assert s.pipeline_refinement_gate is False
-
-    def test_default_is_on(self):
-        assert Settings().pipeline_refinement_gate is True

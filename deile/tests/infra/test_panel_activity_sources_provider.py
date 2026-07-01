@@ -48,22 +48,12 @@ class TestActivitySourceDataclass:
         with pytest.raises(Exception):  # frozen=True → FrozenInstanceError
             src.deployment = "other"  # type: ignore[misc]
 
-    def test_fields(self):
-        src = pd.ActivitySource(deployment="deile-worker", role="worker", color="cyan")
-        assert src.deployment == "deile-worker"
-        assert src.role == "worker"
-        assert src.color == "cyan"
-
 
 # ---------------------------------------------------------------------------
 # 2–6: MultiSourceActivityProvider construction
 # ---------------------------------------------------------------------------
 
 class TestProviderConstruction:
-    def test_default_sources_is_five(self):
-        prov = pd.MultiSourceActivityProvider(enabled=False)
-        assert len(prov._sources) == 5
-
     def test_default_source_names_match_defs(self):
         prov = pd.MultiSourceActivityProvider(enabled=False)
         expected = {d for d, _, _ in pd._MULTI_SOURCE_DEFS}
@@ -83,15 +73,6 @@ class TestProviderConstruction:
         prov = pd.MultiSourceActivityProvider(enabled=False, sources=[])
         assert len(prov._sources) == 5
 
-    def test_seven_sources_accepted(self):
-        """AC: 7 fontes incluindo nome novo → provider stores all 7."""
-        sources = [
-            _make_source(f"my-pod-{i}", f"role-{i}", "cyan")
-            for i in range(7)
-        ]
-        prov = pd.MultiSourceActivityProvider(enabled=False, sources=sources)
-        assert len(prov._sources) == 7
-
 
 # ---------------------------------------------------------------------------
 # 7: Color map update
@@ -104,11 +85,6 @@ class TestColorMapUpdate:
         ]
         pd.MultiSourceActivityProvider(enabled=False, sources=sources)
         assert pd._ROLE_COLOR_MAP.get("special-role") == "yellow"
-
-    def test_default_colors_preserved(self):
-        prov = pd.MultiSourceActivityProvider(enabled=False)
-        for _, role, color in pd._MULTI_SOURCE_DEFS:
-            assert pd._ROLE_COLOR_MAP.get(role) == color
 
 
 # ---------------------------------------------------------------------------

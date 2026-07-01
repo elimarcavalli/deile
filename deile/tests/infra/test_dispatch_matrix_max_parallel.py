@@ -101,8 +101,8 @@ def test_render_max_parallel_shows_default(view_demo, app_stub):
     with console.capture() as cap:
         console.print(renderable)
     out = cap.get()
-    # Em modo demo sem cluster, a linha deve mostrar o valor default
-    assert "default" in out.lower() or "DEILE_PIPELINE_MAX_PARALLEL" in out
+    # Em modo demo sem cluster, a linha deve mostrar o valor default "(default: 2)"
+    assert "(default: 2)" in out
 
 
 # ---------------------------------------------------------------------------

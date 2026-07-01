@@ -145,14 +145,23 @@ class TestAcquireLease:
         # Dispara as duas coroutines de forma concorrente.
         await asyncio.gather(_try_acquire("pod-1"), _try_acquire("pod-2"))
 
-        # Exatamente uma deve ter ganho (O lease é exclusivo).
-        # Em ambiente de teste single-threaded, a atomicidade de rename+re-read
-        # garante que o segundo a ler vê o pod do primeiro e retorna None.
+        # Pelo menos um pod ganha um workspace vazio (protocolo nunca trava).
         assert len(winners) >= 1, "pelo menos um pod deve ganhar o lease"
-        assert len(winners) <= 2, "no máximo dois ganham (sem corrida real em asyncio)"
-        # O arquivo de lease deve ser consistente (pertencer a um único pod).
+
+        # Invariante de exclusividade/consistência: o arquivo de lease pertence
+        # a um único pod, e esse dono em disco DEVE ter recebido confirmação de
+        # vitória (estado em disco == retorno do acquire). Em asyncio o write é
+        # via to_thread, então a corrida real não é simulada e ambos os pods
+        # podem confirmar — mas o dono final do arquivo é sempre o último a fazer
+        # rename, que re-lê o próprio pod e portanto está em ``winners``. Se o
+        # protocolo divergisse (arquivo de um pod, mas esse pod recebeu None), a
+        # asserção abaixo pega a inconsistência.
         final = json.loads((workspace / ".lease.json").read_text())
         assert final["pod"] in ("pod-1", "pod-2")
+        assert final["pod"] in winners, (
+            "o pod dono do lease em disco deve ter sido reportado como vencedor "
+            "(consistência entre estado persistido e retorno de _acquire_lease)"
+        )
 
 
 class TestReleaseLease:
@@ -170,17 +179,6 @@ class TestReleaseLease:
         assert not lease_path.exists()
         # Remove de novo — ainda deve ser silencioso.
         await cws._release_lease(lease_path)
-
-    @pytest.mark.unit
-    async def test_release_removes_file(self, tmp_path: Path):
-        """Release remove o arquivo de lease."""
-        workspace = tmp_path / "ws-rel-exists"
-        workspace.mkdir()
-        _make_lease(workspace)
-        lease_path = workspace / ".lease.json"
-        assert lease_path.exists()
-        await cws._release_lease(lease_path)
-        assert not lease_path.exists()
 
 
 class TestHeartbeatLoop:
@@ -343,11 +341,6 @@ class TestAuthSetupToken:
             "--output-format", "json",
             "do something",
         ])
-
-    @pytest.mark.unit
-    def test_empty_argv_passes(self):
-        """argv vazio → sem exceção (defensivo)."""
-        cws._assert_no_bare_in_argv([])
 
     @pytest.mark.unit
     def test_no_refresh_oauth_function(self):

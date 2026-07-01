@@ -24,7 +24,3 @@ def test_bucket_boundaries(count, expected):
     assert dm._tool_burst_bucket(count) == expected
 
 
-def test_bucket_note_documents_500_offset():
-    """_BUCKET_NOTE documenta que '500+' inicia em 100, não 500."""
-    assert "500+" in dm._BUCKET_NOTE
-    assert "100" in dm._BUCKET_NOTE

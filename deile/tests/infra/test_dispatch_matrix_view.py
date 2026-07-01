@@ -768,12 +768,24 @@ def test_handle_uninstall_confirm_no_cancels(mock_data_with_claude):
 # ============================================================================
 
 def test_deploy_py_inserts_repo_root_in_syspath():
-    """``deploy.py`` insere o repo root no ``sys.path`` para que imports
-    ``from deile.<x>`` resolvam quando o script é executado direto
+    """``deploy.py`` insere o repo root no ``sys.path`` ao ser importado, para
+    que imports ``from deile.<x>`` resolvam quando o script roda direto
     (``python3 infra/k8s/deploy.py``). Sem isso, ``set_pipeline_dispatch_stage``
     quebra com 'No module named deile.orchestration.pipeline.dispatch_resolver'."""
-    deploy_py = Path(__file__).resolve().parents[3] / "infra" / "k8s" / "deploy.py"
-    source = deploy_py.read_text()
-    # O fix usa ``_REPO_ROOT = _INFRA.parent`` + ``sys.path.insert(0, str(_REPO_ROOT))``.
-    assert "_REPO_ROOT" in source
-    assert "sys.path.insert(0, str(_REPO_ROOT))" in source
+    import importlib
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parents[3]
+    # Importar o módulo executa o setup de ``sys.path`` no topo de deploy.py;
+    # se ele não inserisse ``infra/`` + repo root, este import já falharia
+    # (``import _cli_ui`` não resolveria) — prova comportamental, não de fonte.
+    deploy = importlib.import_module("deploy")
+
+    # Efeito real (não texto-fonte): o repo root está no sys.path e bate com
+    # o valor computado pelo módulo.
+    assert str(repo_root) in sys.path
+    assert Path(deploy._REPO_ROOT).resolve() == repo_root
+    # Consequência verificável: o pacote outrora invisível agora resolve.
+    assert importlib.util.find_spec(
+        "deile.orchestration.pipeline.dispatch_resolver"
+    ) is not None

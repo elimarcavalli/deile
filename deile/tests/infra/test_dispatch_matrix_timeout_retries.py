@@ -14,7 +14,7 @@ import sys
 import types
 from dataclasses import dataclass
 from typing import Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -208,34 +208,58 @@ def test_numeric_prompt_esc_cancels():
     assert view.last_ok is None
 
 
-def test_numeric_prompt_enter_empty_sets_none(monkeypatch):
-    """Enter with empty buffer → call set_stage_timeout(None) = clear override."""
+def test_numeric_prompt_enter_empty_sets_none():
+    """Enter with empty buffer → call pd_set_stage_timeout(stage, None) = clear override.
+
+    Patcha o símbolo que a produção REALMENTE invoca
+    (``_panel.pd_set_stage_timeout``, importado no nível do módulo) e afere a
+    chamada — não ``_panel_data.set_stage_timeout``, que a produção nunca usa.
+    """
     view = _make_view()
     view.mode = ("timeout", "implement", [""])
     view.data = MagicMock()
     view.data.context.namespace = "deile"
+    panel_mod = sys.modules.get("_panel")
     mock_set = MagicMock(return_value=(True, "unset ok"))
-    with patch.dict(sys.modules, {"_panel": sys.modules.get("_panel")}):
-        import _panel_data as _pd
-        _pd.set_stage_timeout = mock_set
-    view._handle_numeric_prompt_key("\r")
+    orig = panel_mod.pd_set_stage_timeout
+    panel_mod.pd_set_stage_timeout = mock_set
+    try:
+        view._handle_numeric_prompt_key("\r")
+    finally:
+        panel_mod.pd_set_stage_timeout = orig
     assert view.mode is None
+    mock_set.assert_called_once()
+    args = mock_set.call_args
+    assert args[0][0] == "implement"
+    assert args[0][1] is None
 
 
-def test_numeric_prompt_enter_with_value_calls_helper(monkeypatch):
-    """Enter with '600' → call set_stage_timeout(600)."""
+def test_numeric_prompt_enter_with_value_calls_helper():
+    """Enter with '600' → call pd_set_stage_timeout(stage, 600).
+
+    Patcha ``_panel.pd_set_stage_timeout`` (o símbolo realmente chamado) e
+    afere os argumentos da chamada ``(stage, 600)`` — o nome do teste agora
+    corresponde ao que ele realmente verifica.
+    """
     view = _make_view()
     view.mode = ("timeout", "implement", ["600"])
     view.data = MagicMock()
     view.data.context.namespace = "deile"
-    mock_set = MagicMock(return_value=(True, "DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT=600 (rollout)"))
-    with patch.dict(sys.modules, {"_panel": sys.modules.get("_panel")}):
-        import _panel_data as _pd
-        orig = _pd.set_stage_timeout
-        _pd.set_stage_timeout = mock_set
-    view._handle_numeric_prompt_key("\n")
-    _pd.set_stage_timeout = orig
+    panel_mod = sys.modules.get("_panel")
+    mock_set = MagicMock(
+        return_value=(True, "DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT=600 (rollout)")
+    )
+    orig = panel_mod.pd_set_stage_timeout
+    panel_mod.pd_set_stage_timeout = mock_set
+    try:
+        view._handle_numeric_prompt_key("\n")
+    finally:
+        panel_mod.pd_set_stage_timeout = orig
     assert view.mode is None
+    mock_set.assert_called_once()
+    args = mock_set.call_args
+    assert args[0][0] == "implement"
+    assert args[0][1] == 600
 
 
 def test_numeric_prompt_retries_zero_calls_with_allow_zero_false(monkeypatch):
@@ -344,14 +368,6 @@ def test_reset_col2_calls_set_stage_timeout_none():
     view.cursor_col = 2
     view.cursor_row = 0
     # Demo mode (data=None) → just show demo msg
-    view._reset_current_cell()
-    assert view.last_ok is False  # demo mode
-
-
-def test_reset_col3_calls_set_stage_retries_none():
-    view = _make_view()
-    view.cursor_col = 3
-    view.cursor_row = 0
     view._reset_current_cell()
     assert view.last_ok is False  # demo mode
 

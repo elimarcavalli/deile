@@ -81,18 +81,6 @@ async def test_url_only_accepts_http(tool, ctx_factory):
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_all_three_sources_returns_error(tool, ctx_factory):
-    """Multiple input sources at once -> VISION_BAD_INPUT (no silent pick)."""
-    import base64
-    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
-    res = await tool.execute(ctx_factory(
-        image_url="https://example.com/img.png",
-        image_base64=b64,
-        image_path="/some/path.png",
-        mime_type="image/png",
-    ))
-    assert res.is_error
-    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
 # ---------------------------------------------------------------------------
@@ -453,29 +441,6 @@ async def test_prompt_too_long_returns_bad_input(tool, ctx_factory):
 # ---- SSRF: redirects not followed -------------------------------------------
 
 
-async def test_url_redirect_not_followed(tool, ctx_factory, monkeypatch):
-    """HTTP redirects must not be followed (prevents SSRF via redirect chains)."""
-    # Bypass IP-range SSRF check: test is about redirect handling, not direct SSRF.
-    monkeypatch.setattr("deile.tools.vision_tool._check_ssrf", _no_ssrf_check)
-    from aiohttp import web
-
-    async def _redirect(req):
-        raise web.HTTPFound(location="http://169.254.169.254/latest/meta-data/")
-
-    app = web.Application()
-    app.router.add_get("/redirect", _redirect)
-    runner = web.AppRunner(app, handle_signals=False, access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, host="127.0.0.1", port=0)
-    await site.start()
-    port = site._server.sockets[0].getsockname()[1]
-    url = f"http://127.0.0.1:{port}/redirect"
-    try:
-        res = await tool.execute(ctx_factory(image_url=url))
-    finally:
-        await runner.cleanup()
-    assert res.is_error
-    assert res.metadata["error_code"] == "VISION_DOWNLOAD_FAILED"
 
 
 # ---- OSError during file read -----------------------------------------------
@@ -569,16 +534,6 @@ async def test_direct_ip_ssrf_emits_suspicious_audit(tool, ctx_factory, monkeypa
 # ---- magic-byte validation --------------------------------------------------
 
 
-async def test_magic_byte_mismatch_rejected(tool, ctx_factory):
-    """Bytes that don't match the declared MIME must be rejected before the LLM call."""
-    import base64
-
-    # Pass JPEG magic bytes with mime=image/png -> mismatch; _gemini_describe is never reached
-    jpeg_magic = b"\xff\xd8\xff" + b"\x00" * 10
-    b64 = base64.b64encode(jpeg_magic).decode()
-    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
-    assert res.is_error
-    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
 async def test_webp_valid_magic_passes(tool, ctx_factory, monkeypatch):

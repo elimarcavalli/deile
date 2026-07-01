@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import List
 from unittest.mock import patch
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
@@ -127,17 +129,17 @@ class TestColumnWorkflow:
 
 
 class TestColumnReview:
-    def test_review_pendente(self):
-        pr = _make_issue(10, is_pr=True, labels=["~review:pendente"])
-        assert pr.review == "pendente"
-
-    def test_review_concluida(self):
-        pr = _make_issue(11, is_pr=True, labels=["~review:concluida"])
-        assert pr.review == "concluida"
-
-    def test_review_absent(self):
-        pr = _make_issue(12, is_pr=True, labels=[])
-        assert pr.review == ""
+    @pytest.mark.parametrize(
+        "labels,expected",
+        [
+            (["~review:pendente"], "pendente"),
+            (["~review:concluida"], "concluida"),
+            ([], ""),
+        ],
+    )
+    def test_review_label_extracted(self, labels, expected):
+        pr = _make_issue(10, is_pr=True, labels=labels)
+        assert pr.review == expected
 
 
 # ---------------------------------------------------------------------------
@@ -176,18 +178,6 @@ class TestColumnUpdated:
 
 
 class TestColumnAssignees:
-    def test_github_assignees_parsed_from_login(self):
-        # Replica o parsing em ``_fetch_github``: ``a.get("login", "")``.
-        raw = [{"login": "alice"}, {"login": "bob"}]
-        parsed = [a.get("login", "") for a in raw]
-        assert parsed == ["alice", "bob"]
-
-    def test_gitlab_assignees_parsed_from_username(self):
-        # Replica o parsing em ``_fetch_gitlab``: ``a.get("username", "")``.
-        raw = [{"username": "carol"}, {"username": "dave"}]
-        parsed = [a.get("username", "") for a in raw]
-        assert parsed == ["carol", "dave"]
-
     def test_empty_assignees_displays_dash(self):
         # No render: ``", ".join(it.assignees) or "—"`` — array vazio cai
         # em "—" (o que o usuário viu na captura). Garante que isso é

@@ -38,15 +38,6 @@ def test_no_direct_deile_otlp_env_reads():
     assert not re.search(r'os\.environ[^\n]*DEILE_OBSERVABILITY', source)
 
 
-def test_sdk_imports_resolve():
-    """D6: imports do SDK de métricas resolvem (skip se SDK ausente)."""
-    try:
-        from opentelemetry.sdk.metrics import MeterProvider  # noqa: F401
-    except ImportError:
-        pytest.skip("opentelemetry SDK não instalado")
-    # API de métricas e reader periódico disponíveis.
-    from opentelemetry.sdk.metrics.export import \
-        PeriodicExportingMetricReader  # noqa: F401
 
 
 def test_module_exports():

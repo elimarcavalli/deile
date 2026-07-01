@@ -33,13 +33,7 @@ def _make_provider(provider_id: str) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 class TestRoutingPolicy:
-    def test_from_yaml_loads_task_optimized(self):
-        policy = RoutingPolicy.from_yaml(_YAML_PATH, "task_optimized")
-        assert policy.name == "task_optimized"
 
-    def test_from_yaml_loads_cost_optimized(self):
-        policy = RoutingPolicy.from_yaml(_YAML_PATH, "cost_optimized")
-        assert policy.name == "cost_optimized"
 
     def test_task_optimized_has_four_tiers(self):
         policy = RoutingPolicy.from_yaml(_YAML_PATH, "task_optimized")

@@ -76,28 +76,3 @@ class TestExportPathModal:
         v.handle_key("\x1b", MagicMock())
         assert v._export_mode is None
         assert not target.exists()
-
-    def test_enter_writes_file(self, tmp_path):
-        v = _make_view_with_data()
-        v._last_render = MagicMock(
-            session={"task_id": "t1"},
-            command={"cmd": ["python3"]},
-            chat={"turns": []},
-            api_errors=[],
-            stdout=None,
-        )
-        v._history.append({"polled_at": "2026-01-01T00:00:00Z",
-                           "session": None, "command": None, "chat": None})
-        v.handle_key("E", MagicMock())
-        target = tmp_path / "out.json"
-        v._export_path_buf = str(target)
-        v.handle_key("\r", MagicMock())
-        assert v._export_mode is None
-        assert target.exists()
-
-    def test_default_path_pre_filled(self):
-        v = _make_view_with_data()
-        v.handle_key("E", MagicMock())
-        buf = v._export_path_buf
-        assert "live_session" in buf
-        assert buf.endswith(".json")

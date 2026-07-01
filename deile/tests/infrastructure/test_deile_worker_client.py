@@ -382,8 +382,6 @@ async def test_dispatch_timeout_value_changes_with_wait(monkeypatch):
     assert wait_t.pool == 30.0
 
 
-def test_default_timeout_is_float():
-    assert isinstance(DEFAULT_TIMEOUT_S, float)
 
 
 # ----- get_progress / get_result (issue #257) -----

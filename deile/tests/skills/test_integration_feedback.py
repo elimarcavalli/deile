@@ -141,11 +141,6 @@ class TestActiveSkillsStashOnSession:
 
 @pytest.mark.unit
 class TestSkillsActiveStageMessage:
-    def test_message_key_exists(self) -> None:
-        # The agent at agent.py uses ``get_stage_message("skills_active",
-        # "initial", names=...)`` to format the spinner label; the key
-        # must be registered or the lookup falls back to a generic.
-        assert "skills_active" in STAGE_MESSAGES
 
     def test_message_formats_names_argument(self) -> None:
         msg = get_stage_message("skills_active", "initial", names="python, tdd")

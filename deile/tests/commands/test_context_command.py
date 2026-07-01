@@ -81,38 +81,18 @@ def _render_rich(obj) -> str:
 
 
 @pytest.mark.unit
-async def test_summary_shows_real_persona_name():
-    agent = _make_agent(persona_name="architect")
-    ctx = _make_context(agent=agent)
-    cmd = ContextCommand()
-    result = await cmd.execute(ctx)
-    assert result.success
-    rendered = _render_rich(result.content)
-    assert "architect" in rendered
-
-
-@pytest.mark.unit
-async def test_summary_shows_real_message_count():
+async def test_summary_render_shows_persona_message_and_tool_counts():
+    """O summary renderiza persona, contagem de mensagens e tools reais num único painel."""
     history = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
-    agent = _make_agent()
+    agent = _make_agent(persona_name="architect", tools=8, enabled=6)
     ctx = _make_context(args="", history=history, agent=agent)
     cmd = ContextCommand()
     result = await cmd.execute(ctx)
     assert result.success
     rendered = _render_rich(result.content)
-    assert "2" in rendered
-
-
-@pytest.mark.unit
-async def test_summary_shows_real_tool_counts():
-    agent = _make_agent(tools=8, enabled=6)
-    ctx = _make_context(agent=agent)
-    cmd = ContextCommand()
-    result = await cmd.execute(ctx)
-    assert result.success
-    rendered = _render_rich(result.content)
-    assert "6" in rendered
-    assert "8" in rendered
+    assert "architect" in rendered
+    assert "**Mensagens**: 2" in rendered
+    assert "**Tools**: 6/8 habilitadas" in rendered
 
 
 @pytest.mark.unit

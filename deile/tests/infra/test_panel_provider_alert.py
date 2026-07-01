@@ -259,18 +259,6 @@ def test_banner_absent_when_provider_missing():
     assert panel._provider_alert_banner(data) is None
 
 
-def test_banner_resolves_after_error_clears():
-    err = pd.WorkerProviderError(
-        pod_name="opencode-worker-a", role="opencode-worker",
-        code="INSUFFICIENT_CREDIT",
-    )
-    data_err = _FakeData(provider_health={"opencode-worker-a": err})
-    assert panel._provider_alert_banner(data_err) is not None
-    # Recarga de crédito → próxima leitura vem vazia → banner some.
-    data_ok = _FakeData(provider_health={})
-    assert panel._provider_alert_banner(data_ok) is None
-
-
 # --------------------------------------------------------------------------- #
 # Feed de ALERTS
 # --------------------------------------------------------------------------- #

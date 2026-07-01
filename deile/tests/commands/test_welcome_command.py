@@ -170,8 +170,17 @@ class TestQuickStartColumnOrder:
         {"nome": "status", "acao": "Checar status do sistema", "descricao": "Visão geral do DEILE"},
     ]
 
-    async def test_command_column_contains_slash_prefix(self):
-        """Verifica que a coluna Comando exibe /help e não o texto de descrição."""
+    @pytest.mark.parametrize(
+        "command_str, description_str",
+        [
+            ("/help", "Ajuda completa"),
+            ("/status", "Visão geral do DEILE"),
+        ],
+    )
+    async def test_command_column_not_swapped_with_description(
+        self, command_str, description_str
+    ):
+        """Comando aparece como /nome (coluna Comando) e a descrição na sua coluna, sem troca."""
         with patch(
             "deile.commands.builtin.welcome_command._get_quick_start_verified",
             return_value=self._SAMPLE_ENTRIES,
@@ -179,31 +188,13 @@ class TestQuickStartColumnOrder:
             result = await _cmd().execute(_ctx())
         assert result.success
         rendered = _render(result.content)
-        # /help deve aparecer como comando — não "Ajuda completa" na coluna Comando
-        assert "/help" in rendered
+        # /nome deve aparecer como comando — não a descrição na coluna Comando
+        assert command_str in rendered
         # A string de descrição deve existir separadamente — não como nome de comando
-        assert "Ajuda completa" in rendered
-
-    async def test_command_column_not_swapped_with_description(self):
-        """Garante que descrições não aparecem onde os comandos devem estar."""
-        with patch(
-            "deile.commands.builtin.welcome_command._get_quick_start_verified",
-            return_value=self._SAMPLE_ENTRIES,
-        ):
-            result = await _cmd().execute(_ctx())
-        assert result.success
-        rendered = _render(result.content)
-        # Coluna Ação deve mostrar a descrição de ação, Comando deve mostrar /nome
-        # Verifica que /status aparece (coluna Comando) e "Visão geral" aparece (coluna Ação)
-        assert "/status" in rendered
-        assert "Visão geral do DEILE" in rendered
+        assert description_str in rendered
 
 
 class TestContentType:
-    async def test_success(self):
-        result = await _cmd().execute(_ctx())
-        assert result.success
-
     async def test_content_type_is_rich(self):
         result = await _cmd().execute(_ctx())
         assert result.content_type == "rich"

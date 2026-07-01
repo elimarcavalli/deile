@@ -23,14 +23,6 @@ class TestRedactForExport:
     def test_none_redactor_none_value(self):
         assert panel._redact_for_export(None, None) is None
 
-    def test_none_redactor_dict(self):
-        d = {"a": "val", "b": 42}
-        assert panel._redact_for_export(d, None) == d
-
-    def test_none_redactor_list(self):
-        lst = ["x", "y"]
-        assert panel._redact_for_export(lst, None) == lst
-
     def test_string_redacted(self):
         from deile.security.secrets_scanner import SecretsScanner
         redactor = SecretsScanner()
@@ -130,11 +122,6 @@ class TestBuildLiveSessionJsonExactKeys:
         assert set(obj["payload"].keys()) == {
             "session", "command", "chat", "api_errors", "stdout"
         }
-
-    def test_v1_no_history_key(self):
-        data = LiveSessionData(session=None, command=None, chat=None, api_errors=[])
-        obj = panel._build_live_session_json(data, [], redactor=None)
-        assert "history" not in obj
 
     def test_v1_schema_version(self):
         data = LiveSessionData(session=None, command=None, chat=None, api_errors=[])

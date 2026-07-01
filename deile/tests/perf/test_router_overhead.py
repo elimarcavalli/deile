@@ -26,25 +26,6 @@ def _reset():
     reset_tier_router()
 
 
-def test_router_select_1000_calls_under_50ms():
-    """1000 calls to TierRouter.select(TIER_2) must complete in < 50ms total."""
-    policy = RoutingPolicy(
-        "perf_test",
-        {ModelTier.TIER_2: ["openai:gpt-4o", "anthropic:claude-haiku"]},
-    )
-    cb = CircuitBreaker()
-    router = TierRouter(MagicMock(), policy, cb)
-    router.register_provider(_make_mock_provider("openai"))
-    router.register_provider(_make_mock_provider("anthropic"))
-
-    N = 1000
-    start = time.perf_counter()
-    for _ in range(N):
-        router.select(ModelTier.TIER_2)
-    elapsed = time.perf_counter() - start
-
-    per_call_ms = (elapsed / N) * 1000
-    assert per_call_ms < 50, f"Router overhead {per_call_ms:.2f}ms/call exceeds 50ms limit"
 
 
 def test_router_select_average_under_1ms():

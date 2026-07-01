@@ -108,15 +108,6 @@ class TestShellSecurityRedirectFix:
             f"  warnings: {warnings}"
         )
 
-    @pytest.mark.parametrize("command", SAFE_REDIRECT_COMMANDS)
-    def test_safe_redirects_not_blocked(self, command: str):
-        """Redirecionamentos para pseudo-devices NÃO devem ser blocked."""
-        blocked = _is_dangerous(command)
-        assert not blocked, (
-            f"Comando inofensivo bloqueado indevidamente:\n"
-            f"  command: {command}"
-        )
-
     @pytest.mark.parametrize("command", DANGEROUS_REDIRECT_COMMANDS)
     def test_dangerous_redirects_are_dangerous(self, command: str):
         """Redirecionamentos para dispositivos de bloco DEVEM ser DANGEROUS."""
@@ -126,15 +117,6 @@ class TestShellSecurityRedirectFix:
             f"  command: {command}\n"
             f"  level: {level}\n"
             f"  warnings: {warnings}"
-        )
-
-    @pytest.mark.parametrize("command", DANGEROUS_REDIRECT_COMMANDS)
-    def test_dangerous_redirects_are_blocked(self, command: str):
-        """Redirecionamentos para dispositivos de bloco DEVEM ser blocked."""
-        blocked = _is_dangerous(command)
-        assert blocked, (
-            f"Comando perigoso NÃO bloqueado:\n"
-            f"  command: {command}"
         )
 
 

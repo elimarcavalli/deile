@@ -120,17 +120,17 @@ class _FakeGitHubClient:
 
 
 class TestParseSince:
-    def test_hours(self):
-        assert parse_since("24h") == timedelta(hours=24)
-
-    def test_hours_single_digit(self):
-        assert parse_since("1h") == timedelta(hours=1)
-
-    def test_days(self):
-        assert parse_since("3d") == timedelta(days=3)
-
-    def test_weeks(self):
-        assert parse_since("1w") == timedelta(weeks=1)
+    @pytest.mark.parametrize(
+        "spec, expected",
+        [
+            ("24h", timedelta(hours=24)),
+            ("1h", timedelta(hours=1)),
+            ("3d", timedelta(days=3)),
+            ("1w", timedelta(weeks=1)),
+        ],
+    )
+    def test_valid_formats(self, spec, expected):
+        assert parse_since(spec) == expected
 
     def test_uppercase_unit(self):
         assert parse_since("24H") == timedelta(hours=24)

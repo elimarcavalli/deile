@@ -39,8 +39,6 @@ def fallback_md_content() -> str:
 class TestPreferencesSection:
     """Snapshot checks for the 'Preferências do Usuário' block (REGRA #15)."""
 
-    def test_section_heading_present(self, core_md_content):
-        assert "Preferências do Usuário" in core_md_content
 
     def test_regra_number_present(self, core_md_content):
         assert "REGRA #15" in core_md_content

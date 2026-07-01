@@ -220,10 +220,6 @@ def test_main_routes_monitor_qa(wrapper, monkeypatch):
     assert seen["rest"] == ["como tá o cluster?"]
 
 
-def test_main_unknown_role(wrapper):
-    assert wrapper.main(["wrapper.py", "bogus"]) == 64
-
-
 def test_main_usage_when_no_role(wrapper):
     assert wrapper.main(["wrapper.py"]) == 64
 

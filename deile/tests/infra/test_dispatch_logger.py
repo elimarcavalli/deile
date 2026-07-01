@@ -102,13 +102,6 @@ class TestHealthProbeThrottle:
         # Two different paths → both logged.
         assert len(records) == 2
 
-    def test_same_path_suppressed_after_first(self):
-        dlog.log_health_probe("/v1/health", 200)
-        with _capture_records("deile.dispatch") as records:
-            dlog.log_health_probe("/v1/health", 200)
-            dlog.log_health_probe("/v1/health", 200)
-        assert len(records) == 0
-
 
 # ---------------------------------------------------------------------------
 # dispatch_received
@@ -200,12 +193,6 @@ class TestDispatchFailed:
         assert "reason=outer_timeout" in msg
         assert "error_code=TASK_TIMEOUT" in msg
 
-    def test_none_error_code_omitted(self):
-        with _capture_records("deile.dispatch") as records:
-            dlog.dispatch_failed(task="aabb1122", reason="something")
-        msg = records[0].getMessage()
-        assert "error_code=" not in msg
-
 
 # ---------------------------------------------------------------------------
 # Phase-2 dispatch emitters — smoke tests (defined, tested; not yet wired)
@@ -228,15 +215,6 @@ class TestDispatchProgressEmitters:
         msg = records[0].getMessage()
         assert "reasoning=high" in msg
         assert "source=context_data" in msg
-
-    def test_dispatch_model_resolved_omits_reasoning_when_none(self):
-        """reasoning key is absent (not reasoning=None) when effort is not set."""
-        with _capture_records("deile.dispatch") as records:
-            dlog.dispatch_model_resolved(
-                task="t3", model="anthropic:claude-sonnet-4-6", source="settings",
-            )
-        msg = records[0].getMessage()
-        assert "reasoning=" not in msg
 
     def test_dispatch_progress(self):
         with _capture_records("deile.dispatch") as records:

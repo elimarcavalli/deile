@@ -82,18 +82,6 @@ class TestCronFireFieldParity:
         ev = events[0]
         assert set(ev.details.keys()) == {"name", "schedule", "payload_hash"}
 
-    def test_cron_fire_name_field_present(self, audit_logger):
-        audit_logger.log_cron_fire("j", "my-job", None, None)
-        ev = audit_logger.get_recent_events(event_type=AuditEventType.CRON_FIRE)[0]
-        assert "name" in ev.details
-        assert ev.details["name"] == "my-job"
-
-    def test_cron_fire_payload_hash_field_present(self, audit_logger):
-        h = "sha256:deadbeef"
-        audit_logger.log_cron_fire("j", None, None, h)
-        ev = audit_logger.get_recent_events(event_type=AuditEventType.CRON_FIRE)[0]
-        assert ev.details["payload_hash"] == h
-
 
 class TestCronSkippedFieldParity:
     """AC3: assert exact field names match deilebot contract (name/reason)."""

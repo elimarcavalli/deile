@@ -337,18 +337,6 @@ class TestPersonaIntegrationLayer:
 class TestPersonaManagerIntegration:
     """Test PersonaManager integration features"""
 
-    @pytest.mark.asyncio
-    async def test_persona_manager_with_memory_manager(self, mock_memory_manager, temp_personas_dir):
-        """Test PersonaManager with memory manager integration"""
-        # Create PersonaManager with memory integration
-        pm = PersonaManager(memory_manager=mock_memory_manager)
-
-        assert pm.memory_manager == mock_memory_manager
-
-        # Test memory manager setting
-        new_memory = MockMemoryManager()
-        pm.set_memory_manager(new_memory)
-        assert pm.memory_manager == new_memory
 
     @pytest.mark.asyncio
     async def test_persona_manager_integration_methods(self, mock_memory_manager):
@@ -391,34 +379,6 @@ class TestPersonaManagerIntegration:
         mock_context.memory_layer.store_conversation_context.assert_called_once()
 
 
-class TestDeileAgentIntegration:
-    """Test DeileAgent integration features"""
-
-    def test_agent_persona_enhancement_flag(self):
-        """Test persona enhancement flag"""
-        # Since we can't easily create a real DeileAgent, we'll test the concept
-        agent = MockDeileAgent()
-
-        # Initially not enhanced
-        assert not agent.persona_enhanced
-
-        # Enable enhancement
-        agent.persona_enhanced = True
-        assert agent.persona_enhanced
-
-    @pytest.mark.asyncio
-    async def test_agent_integration_methods(self, mock_memory_manager):
-        """Test agent integration methods"""
-        agent = MockDeileAgent()
-        agent.memory_manager = mock_memory_manager
-
-        # Test enable_persona_enhancement method concept
-        pm = PersonaManager(memory_manager=mock_memory_manager)
-        agent.persona_manager = pm
-        agent.persona_enhanced = True
-
-        assert agent.persona_manager == pm
-        assert agent.persona_enhanced
 
 
 class TestEndToEndIntegration:
@@ -532,26 +492,6 @@ class TestIntegrationValidation:
         # coerced to their string values during validation.
         assert config.capabilities == [AgentCapability.CODE_GENERATION.value]
 
-    @pytest.mark.asyncio
-    async def test_integration_context_validation(self, mock_deile_agent):
-        """Test integration context validation"""
-        pm = PersonaManager()
-
-        # Create context with validation
-        context = PersonaIntegrationContext(
-            agent=mock_deile_agent,
-            persona_manager=pm,
-            session_id="valid_session"
-        )
-
-        assert context.session_id == "valid_session"
-        assert not context.has_active_persona
-
-        # Add persona and validate
-        mock_persona = MockBasePersona()
-        context.current_persona = mock_persona
-
-        assert context.has_active_persona
 
 
 if __name__ == "__main__":

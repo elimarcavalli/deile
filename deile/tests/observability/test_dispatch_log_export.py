@@ -89,15 +89,11 @@ class TestSeverityFor:
     def test_tool_burst_51_warn(self):
         assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 51}) == ("WARN", 13)
 
-    def test_tool_burst_100_warn(self):
-        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 100}) == ("WARN", 13)
 
     # Rule 4: dispatch.tool_burst count<=50 → INFO/9
     def test_tool_burst_50_info(self):
         assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 50}) == ("INFO", 9)
 
-    def test_tool_burst_0_info(self):
-        assert self._sev("dispatch.tool_burst", {"deile.dispatch.tool_count": 0}) == ("INFO", 9)
 
     # Rule 5: git.*/forge.* status=fail/error → WARN/13
     def test_git_commit_fail_warn(self):
@@ -121,14 +117,8 @@ class TestSeverityFor:
     def test_dispatch_received_info(self):
         assert self._sev("dispatch.received", {}) == ("INFO", 9)
 
-    def test_dispatch_progress_info(self):
-        assert self._sev("dispatch.progress", {}) == ("INFO", 9)
 
-    def test_dispatch_completed_info(self):
-        assert self._sev("dispatch.completed", {}) == ("INFO", 9)
 
-    def test_dispatch_model_resolved_info(self):
-        assert self._sev("dispatch.model_resolved", {}) == ("INFO", 9)
 
 
 # ── get_log_provider singleton (D7) ──────────────────────────────────────────

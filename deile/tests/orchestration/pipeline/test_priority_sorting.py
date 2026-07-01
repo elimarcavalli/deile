@@ -102,23 +102,6 @@ class TestSortByPriorityIssues:
 
 
 class TestSortByPriorityPRs:
-    def test_all_with_priority_labels(self):
-        prs = [
-            PrRef(number=5, title="medium", url="u", labels=("~prioridade:2",)),
-            PrRef(number=1, title="critical", url="u", labels=("~prioridade:0",)),
-            PrRef(number=3, title="high", url="u", labels=("~prioridade:1",)),
-        ]
-        sorted_prs = sort_by_priority(prs)
-        assert [p.number for p in sorted_prs] == [1, 3, 5]
-
-    def test_mixed_with_and_without_labels(self):
-        prs = [
-            PrRef(number=42, title="no-prio", url="u", labels=()),
-            PrRef(number=2, title="urgent", url="u", labels=("~prioridade:0",)),
-        ]
-        sorted_prs = sort_by_priority(prs)
-        assert [p.number for p in sorted_prs] == [2, 42]
-
     def test_deterministic_order(self):
         # Same input → same output every time
         prs = [

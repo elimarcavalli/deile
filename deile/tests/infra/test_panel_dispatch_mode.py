@@ -800,20 +800,3 @@ class TestBuildImplementerClaudeWarning:
                     "claude" in text
                     and ("não encontrado" in text or "not found" in text)
                 ), f"mode={mode!r} emitiu warning inesperado: {text}"
-
-    def test_empty_dispatch_mode_returns_worker_implementer(self):
-        """Empty/None dispatch_mode → WorkerImplementer (sem warning)."""
-        from deile.orchestration.pipeline import implementer as impl_mod
-        with patch.object(impl_mod, "shutil") as mock_shutil, \
-             patch.object(impl_mod.logger, "warning") as mock_warn:
-            mock_shutil.which.return_value = None
-            implementer = impl_mod.build_implementer("")
-        assert isinstance(implementer, impl_mod.WorkerImplementer)
-        # Nenhum warning sobre claude ausente — build_implementer não
-        # constrói mais ClaudeImplementer.
-        for call in mock_warn.call_args_list:
-            text = (call[0][0] if call[0] else "").lower()
-            assert not (
-                "claude" in text
-                and ("não encontrado" in text or "not found" in text)
-            )

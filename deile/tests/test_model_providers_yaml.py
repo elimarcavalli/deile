@@ -14,8 +14,6 @@ def cfg():
         return yaml.safe_load(f)
 
 
-def test_yaml_loads(cfg):
-    assert cfg is not None
 
 
 def test_version(cfg):

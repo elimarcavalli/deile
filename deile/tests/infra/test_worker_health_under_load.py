@@ -67,24 +67,6 @@ def test_dispatch_handler_uses_to_thread_for_save_meta():
 # run_subprocess_with_progress: write_text via asyncio.to_thread
 # ---------------------------------------------------------------------------
 
-def test_run_subprocess_source_uses_to_thread_for_write_text():
-    """run_subprocess_with_progress deve usar asyncio.to_thread para write_text."""
-    src = inspect.getsource(cws.run_subprocess_with_progress)
-    assert "asyncio.to_thread" in src and "write_text" in src, (
-        "run_subprocess_with_progress deve usar asyncio.to_thread + write_text"
-    )
-    lines = src.splitlines()
-    direct_write = [
-        line.strip() for line in lines
-        if "write_text(" in line
-        and "asyncio.to_thread" not in line
-        and "tmp.write_text" not in line  # writes inside sync nested funcs são OK
-        and not line.strip().startswith("#")
-    ]
-    assert not direct_write, (
-        "write_text chamado diretamente (sem to_thread) em run_subprocess_with_progress:\n"
-        + "\n".join(direct_write)
-    )
 
 
 async def test_progress_write_text_uses_to_thread(tmp_path: Path):

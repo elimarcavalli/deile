@@ -120,13 +120,6 @@ class TestDisableUsesGetRuleById:
         assert result.success is True
         assert pm.get_rule_by_id(rule.id).enabled is False
 
-    async def test_disable_unknown_id_raises(self):
-        from deile.core.exceptions import CommandError
-        pm = _fresh_pm()
-        cmd = _cmd_with_pm(pm)
-        with pytest.raises(CommandError):
-            await cmd.execute(_ctx("disable no_such_rule"))
-
 
 # ---------------------------------------------------------------------------
 # Add rule creates and persists

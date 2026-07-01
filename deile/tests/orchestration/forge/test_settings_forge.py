@@ -5,17 +5,6 @@ from __future__ import annotations
 from deile.config.settings import Settings
 
 
-def test_forge_kind_default_is_auto():
-    s = Settings()
-    assert s.forge_kind == "auto"
-
-
-def test_forge_hosts_defaults():
-    s = Settings()
-    assert s.forge_github_host == "github.com"
-    assert s.forge_gitlab_host == "gitlab.com"
-
-
 def test_forge_probe_disabled_by_default():
     s = Settings()
     assert s.forge_probe_enabled is False

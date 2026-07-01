@@ -67,15 +67,6 @@ class TestActivityEventNewFields:
         ev = pd.ActivityEvent(ts=_ts(), actor="p", action="a", target="t", detail="d")
         assert ev.task_id is None
 
-    def test_fields_settable(self):
-        ev = pd.ActivityEvent(
-            ts=_ts(), actor="claude-worker", action="dispatch",
-            target="#5", detail="x", source_pod="claude-worker-abc-xyz",
-            task_id="task-123",
-        )
-        assert ev.source_pod == "claude-worker-abc-xyz"
-        assert ev.task_id == "task-123"
-
 
 # ---------------------------------------------------------------------------
 # 4: Initial state
@@ -145,16 +136,6 @@ class TestDashboardViewCursorNavigation:
         v.handle_key("DOWN", _mock_app())
         assert v._activity_cursor == 1
 
-    def test_up_arrow_raw_token_also_wraps(self):
-        v = self._view_with_events(3)
-        v.handle_key("\x1b[A", _mock_app())
-        assert v._activity_cursor == 2
-
-    def test_down_arrow_raw_token_also_advances(self):
-        v = self._view_with_events(3)
-        v.handle_key("\x1b[B", _mock_app())
-        assert v._activity_cursor == 1
-
     def test_k_moves_up(self):
         v = self._view_with_events(3)
         v._activity_cursor = 2
@@ -220,13 +201,6 @@ class TestDashboardViewDrillDown:
         result = v.handle_key("\r", _mock_app())
         assert result.kind == panel.Action.REFRESH
 
-    def test_enter_newline_also_works(self):
-        ev = _event(actor="claude-worker", source_pod="pod-x", task_id="t-1")
-        v = self._view_with(ev)
-        result = v.handle_key("\n", _mock_app())
-        assert result.kind == panel.Action.NAV
-        assert result.target == "live-session"
-
 
 # ---------------------------------------------------------------------------
 # 14-16: intercepts_key
@@ -236,13 +210,10 @@ class TestDashboardViewInterceptsKey:
     def test_intercepts_esc_when_focused(self):
         # Token de produção do KeyReader é "ESC" — interceptar é o que evita
         # o focus-trap (sem isto o ESC cai no _handle_global → pop() no-op).
+        # Retrocompat: o token raw "\x1b" também é interceptado.
         v = panel.DashboardView()
         v._activity_focused = True
         assert v.intercepts_key("ESC") is True
-
-    def test_intercepts_esc_raw_token_when_focused(self):
-        v = panel.DashboardView()
-        v._activity_focused = True
         assert v.intercepts_key("\x1b") is True
 
     def test_intercepts_up_arrow_when_focused(self):
@@ -316,13 +287,6 @@ class TestActionsViewHotkey:
         v = panel.DashboardView()
         v.handle_key("A", _mock_app())
         assert v._activity_focused is False
-
-    def test_lowercase_a_enters_activity_not_actions(self):
-        # [a] minúsculo continua sendo a Activity (não navega para actions).
-        v = panel.DashboardView()
-        result = v.handle_key("a", _mock_app())
-        assert v._activity_focused is True
-        assert result.kind == panel.Action.REFRESH
 
     def test_actions_view_registered(self):
         views = panel._build_views()
@@ -400,16 +364,6 @@ class TestActivityFocusCycle:
         v.handle_key("UP", _mock_app())
         # cursor permanece em 0 (len_rows=1, % 1 == 0)
         assert v._activity_cursor == 0
-
-    def test_enter_canonical_token_drilldown(self):
-        ev = _event(actor="claude-worker", source_pod="pod-x", task_id="t-1")
-        v = panel.DashboardView()
-        v._activity_focused = True
-        v._activity_cursor = 0
-        v._last_activity_events = [ev]
-        result = v.handle_key("\r", _mock_app())
-        assert result.kind == panel.Action.NAV
-        assert result.target == "live-session"
 
 
 # ---------------------------------------------------------------------------

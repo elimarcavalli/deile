@@ -15,8 +15,6 @@ import pytest
 from deile.tools._hash_utils import sha8
 
 
-def test_sha8_length():
-    assert len(sha8("hello")) == 8
 
 
 def test_sha8_str_equals_utf8_bytes():

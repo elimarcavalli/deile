@@ -36,29 +36,12 @@ class TestBriefAlwaysExecutesRequest:
     quando a PR está merged/closed. Garante que pedidos legítimos do humano
     nunca caem no chão."""
 
-    def test_brief_executes_request_independently_of_author(self):
-        out = _render()
-        assert "execute o pedido SEMPRE" in out
-
-    def test_brief_pushes_when_pr_is_open(self):
-        out = _render()
-        assert "está OPEN" in out
-        assert "push direto na própria branch" in out
-
     def test_brief_opens_followup_branch_when_pr_is_merged(self):
         out = _render()
         assert "MERGED" in out
         assert "branch nova derivada" in out
         assert "followup" in out
         assert "NOVA" in out and "mencionando a anterior" in out
-
-    def test_brief_does_not_contain_old_human_author_clause(self):
-        """Regressão: a cláusula "autor é HUMANO → NUNCA dou push" foi
-        removida na Decisão #46. Sua reintrodução acidental faria DEILE
-        voltar a ignorar pedidos legítimos."""
-        out = _render()
-        assert "NUNCA dou push" not in out
-        assert "autor é HUMANO" not in out
 
 
 class TestBriefExecutesFullWorkListWhenAuthorIsSelf:
@@ -84,10 +67,8 @@ class TestBriefExecutesFullWorkListWhenAuthorIsSelf:
     def test_brief_has_merge_branch_with_all_preconditions(self):
         out = _render()
         # "sou assignee + meu_review_atual.state == APPROVED + threads ok + CI verde → MERGEAR"
-        assert "MERGEAR" in out
-        assert "APPROVED" in out
-        assert "threads ok" in out
-        assert "CI verde" in out
+        missing = [kw for kw in ("MERGEAR", "APPROVED", "threads ok", "CI verde") if kw not in out]
+        assert not missing, f"cláusulas de merge ausentes: {missing}"
 
 
 class TestNoSelfHandleInPostedComments:

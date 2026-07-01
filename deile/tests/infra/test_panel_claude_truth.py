@@ -13,6 +13,7 @@ demais testes de infra (ver ``test_claude_worker_lease.py``).
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -59,7 +60,11 @@ def _probe_output(*, running_pod: str, this_pod: str, claude_pid: int,
 # ClaudeWorkerTruthProvider — parsing
 # ---------------------------------------------------------------------------
 
-def _make_provider(pods, probe_for):
+@contextmanager
+def _patched_provider(pods, probe_for):
+    """Provider com ``_capture_text``/``_capture_text_lossy`` mockados ativos
+    no escopo do ``with`` — reusado por quem chama ``_fetch`` e por quem precisa
+    do provider vivo (``get``/``active_dispatch_count``)."""
     prov = pd.ClaudeWorkerTruthProvider(namespace="deile", enabled=True)
     prov._kubectl = "/fake/kubectl"  # noqa: SLF001 (skip resolve)
     names = " ".join(pods)
@@ -74,6 +79,11 @@ def _make_provider(pods, probe_for):
 
     with patch.object(pd, "_capture_text", fake_text), \
          patch.object(pd, "_capture_text_lossy", fake_lossy):
+        yield prov
+
+
+def _make_provider(pods, probe_for):
+    with _patched_provider(pods, probe_for) as prov:
         return prov._fetch()  # noqa: SLF001
 
 
@@ -130,20 +140,10 @@ def test_provider_ignores_sh_self_match_via_executable_anchor():
 def test_active_dispatch_count():
     now = pd.time.time()
     pods = ["claude-worker-aaa", "claude-worker-bbb"]
-    prov = pd.ClaudeWorkerTruthProvider(namespace="deile", enabled=True)
-    prov._kubectl = "/fake/kubectl"
-    names = " ".join(pods)
-
-    def fake_text(cmd, timeout=5.0):
-        return names
-
-    def fake_lossy(cmd, timeout=5.0):
-        pod = cmd[cmd.index("exec") + 1]
-        return _probe_output(running_pod="claude-worker-aaa", this_pod=pod,
-                             claude_pid=6903, heartbeat_at=now)
-
-    with patch.object(pd, "_capture_text", fake_text), \
-         patch.object(pd, "_capture_text_lossy", fake_lossy):
+    probe = lambda pod: _probe_output(  # noqa: E731
+        running_pod="claude-worker-aaa", this_pod=pod,
+        claude_pid=6903, heartbeat_at=now)
+    with _patched_provider(pods, probe) as prov:
         prov.get(force=True)
         assert prov.active_dispatch_count() == 1
 

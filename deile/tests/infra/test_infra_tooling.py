@@ -126,13 +126,6 @@ def test_ns_helper_falls_back_to_default(monkeypatch):
     assert deploy._ns(args) == "deile"
 
 
-def test_ns_helper_respects_env_default(monkeypatch):
-    # NS_DEFAULT é lido do env no import; simula env custom.
-    monkeypatch.setattr(deploy, "NS_DEFAULT", "deile-test")
-    args = deploy.parse_args(["k8s", "status"])
-    assert deploy._ns(args) == "deile-test"
-
-
 def test_announce_plan_dry_run_short_circuits():
     # dry-run → False (chamador não executa); normal → True (segue).
     assert deploy.announce_plan({"dry_run": True}, "t", "alvo", ["passo"]) is False

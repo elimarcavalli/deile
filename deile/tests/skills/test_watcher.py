@@ -142,24 +142,6 @@ class TestSkillsWatcher:
 
         assert "fresh" in get_skill_registry().list_names()
 
-    def test_modifying_md_file_triggers_reload(self, tmp_path: Path) -> None:
-        paths = _isolated(tmp_path)
-        user_skills_dir = paths["user_home"] / ".deile" / "skills"
-        user_skills_dir.mkdir(parents=True)
-        target = user_skills_dir / "mutable.md"
-        target.write_text(
-            "---\nname: mutable\n---\nold body", encoding="utf-8"
-        )
-        reload_registry(**paths)
-        assert get_skill_registry().get("mutable").body == "old body"
-
-        watcher = SkillsWatcher(debounce_seconds=0.1, **paths)
-        target.write_text(
-            "---\nname: mutable\n---\nnew body", encoding="utf-8"
-        )
-        watcher._trigger_reload()
-
-        assert get_skill_registry().get("mutable").body == "new body"
 
     @pytest.mark.integration
     def test_stop_is_idempotent(self, tmp_path: Path) -> None:

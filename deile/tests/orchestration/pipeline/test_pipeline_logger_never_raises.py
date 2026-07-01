@@ -52,10 +52,3 @@ def test_all_functions_do_not_raise_when_formatting_fails(monkeypatch):
     for func, kwargs in _ALL_CALLS:
         result = func(**kwargs)
         assert result is None, f"{func.__name__} should return None on fmt error"
-
-
-def test_return_value_is_none():
-    """Normal operation: all functions return None."""
-    for func, kwargs in _ALL_CALLS:
-        result = func(**kwargs)
-        assert result is None, f"{func.__name__} returned {result!r}"

@@ -105,7 +105,7 @@ class TestComputePending:
         ))
         pending = s.compute_pending()
         # 4 missed slots in 20 minutes (5, 10, 15, 20)
-        assert len(pending) >= 3
+        assert len(pending) == 4
 
     def test_disabled_recurring_skipped(self):
         long_ago = datetime.now(timezone.utc) - timedelta(hours=1)

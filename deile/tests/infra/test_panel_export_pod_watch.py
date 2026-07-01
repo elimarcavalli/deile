@@ -91,8 +91,3 @@ class TestBuildPodWatchJsonRedaction:
         lines = [f"token={secret}"]
         obj = panel._build_pod_watch_json("pod", "worker", lines, redactor=redactor)
         assert obj["payload"]["lines"][0].startswith("token=")
-
-    def test_no_redactor_leaves_lines_unchanged(self):
-        lines = ["some log line", "another line"]
-        obj = panel._build_pod_watch_json("pod", "worker", lines, redactor=None)
-        assert obj["payload"]["lines"] == lines

@@ -146,7 +146,7 @@ def test_do_scale_no_targets_returns_0_with_warning(kubectl_present, capsys):
     rc = deploy.do_scale(cfg)
     assert rc == 0
     out = capsys.readouterr().out
-    assert "nenhum" in out or "target" in out.lower() or True
+    assert "nenhum" in out  # ui.warn("nenhum alvo de escala...") vai p/ stdout
 
 
 def test_do_scale_worker_only_success(kubectl_present):
@@ -215,13 +215,12 @@ def test_do_scale_deployment_absent_warns_not_errors(kubectl_present, capsys):
     """Deployment inexistente gera aviso mas não retorna 1."""
     cfg = deploy.ScaleConfig(namespace="deile", worker_replicas=2, auto=True)
 
-    call_count = [0]
+    run_calls = []
 
     def fake_run(cmd, **kw):
-        call_count[0] += 1
+        run_calls.append(cmd)
         m = MagicMock()
-        # Primeira chamada: `get deployment` falha (não existe)
-        # Segunda seria o scale — mas não deve acontecer se o get falhou.
+        # `get deployment` falha (não existe) → o scale deve ser pulado.
         if "get" in cmd:
             m.returncode = 1
         else:
@@ -233,7 +232,10 @@ def test_do_scale_deployment_absent_warns_not_errors(kubectl_present, capsys):
 
     assert rc == 0  # aviso, não erro
     out = capsys.readouterr().out
-    assert "não encontrado" in out or "ausent" in out or "ignore" in out.lower() or True
+    assert "não encontrado" in out
+    # Só o `get` rodou; o `scale` foi pulado porque o deployment não existe.
+    assert any("get" in c for c in run_calls)
+    assert not any("scale" in c for c in run_calls)
 
 
 def test_do_scale_dry_run_returns_0_without_kubectl_call(kubectl_present):

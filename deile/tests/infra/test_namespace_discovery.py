@@ -108,7 +108,7 @@ class TestDiscoverDeileNamespaces:
         })
         with patch("subprocess.run", side_effect=run):
             result = pd.discover_deile_namespaces()
-        assert result == sorted(result)
+        assert result == ["deile-a", "deile-m", "deile-z"]
 
 
 # ===== _read_forge_kind =====================================================

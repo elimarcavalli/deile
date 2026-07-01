@@ -16,7 +16,6 @@ Cobre os 8 cenários listados na issue:
   - test_resolver_settings_global_wins_over_default
   - test_resolver_default_when_nothing_set
   - test_resolver_handles_all_5_stages_consistently
-  - test_resolver_invalid_dispatcher_value_falls_through_with_warning
   - test_resolver_does_not_call_kubectl_or_settings_io_per_call
 """
 from __future__ import annotations
@@ -188,16 +187,6 @@ def test_resolver_invalid_settings_global_falls_through_with_warning(caplog):
     assert any("totally-unknown" in r.message for r in caplog.records), (
         "expected a warning log mentioning the invalid global value"
     )
-
-
-def test_resolver_invalid_dispatcher_value_falls_through_with_warning(caplog):
-    """Combined test: invalid per-stage → falls to global default."""
-    with caplog.at_level(logging.WARNING, logger="deile.orchestration.pipeline.dispatch_resolver"):
-        get_settings().pipeline_dispatcher_classify = "not-a-worker"
-        result = resolve_stage_dispatcher("classify")
-
-    assert result == "deile-worker"
-    assert caplog.records, "expected at least one warning"
 
 
 # ---------------------------------------------------------------------------

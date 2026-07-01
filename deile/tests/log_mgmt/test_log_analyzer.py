@@ -180,10 +180,6 @@ class TestDetectFlooding:
         result = _detect_flooding("pod1", lines, threshold=10)
         assert result == []
 
-    def test_below_threshold(self):
-        lines = ["2026-05-28T14:00:00 ERROR repeated error"] * 5
-        result = _detect_flooding("pod1", lines, threshold=10)
-        assert result == []
 
     def test_flooding_detected(self):
         lines = ["2026-05-28T14:00:00 ERROR flood"] * 250

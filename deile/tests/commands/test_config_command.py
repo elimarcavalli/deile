@@ -66,9 +66,6 @@ class TestConfigCommandResult:
     async def test_returns_success(self):
         result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         assert result.success is True
-
-    async def test_content_type_is_rich(self):
-        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         assert result.content_type == "rich"
 
     async def test_content_is_single_renderable_not_list(self):
@@ -97,15 +94,10 @@ class TestConfigCommandResult:
 class TestConfigCommandContent:
     async def test_rendered_output_mentions_system(self):
         result = await ConfigCommand().execute(_ctx(_make_config_manager()))
-        assert "system" in _render(result.content).lower()
-
-    async def test_rendered_output_mentions_gemini(self):
-        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
-        assert "gemini" in _render(result.content).lower()
-
-    async def test_rendered_output_mentions_commands(self):
-        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
-        assert "command" in _render(result.content).lower()
+        rendered = _render(result.content).lower()
+        assert "system" in rendered
+        assert "gemini" in rendered
+        assert "command" in rendered
 
     async def test_debug_mode_reflected_in_output(self):
         cfg = _make_config()

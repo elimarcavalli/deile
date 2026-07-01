@@ -56,11 +56,6 @@ def _event_names(span) -> List[str]:
 # ── AC: endpoint vazio → 0 spans ─────────────────────────────────────────
 
 
-def test_no_spans_when_endpoint_empty(in_memory_exporter):
-    """DEILE_OTLP_ENDPOINT vazio → InMemorySpanExporter registra 0 spans."""
-    # Nota: in_memory_exporter fixture LIGA o endpoint. Para testar sem endpoint,
-    # precisamos de um cenário sem a fixture. Usamos o estado padrão do conftest.
-    pass  # test abaixo usa estado padrão (sem in_memory_exporter)
 
 
 def test_no_spans_without_endpoint():

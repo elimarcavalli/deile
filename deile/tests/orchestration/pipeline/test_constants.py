@@ -39,17 +39,26 @@ class TestClaudeTimeoutSeconds:
         reset_settings()
         assert claude_timeout_seconds() == 1998
 
-    def test_each_call_re_reads_settings(self):
-        """Two calls in a row with different settings return different values."""
+    def test_each_call_re_reads_settings(self, tmp_path, monkeypatch):
+        """Each call re-reads settings: changing the persisted value + reset_settings()
+        makes the very next call return the new value (no module re-import)."""
+        settings_file = tmp_path / "settings.json"
+        monkeypatch.setenv("DEILE_SETTINGS_FILE", str(settings_file))
+
+        settings_file.write_text(json.dumps({
+            "pipeline": {"claude_timeout": 111}
+        }))
         reset_settings()
         first = claude_timeout_seconds()
+        assert first == 111
 
-        settings = get_settings()
-        settings.pipeline_claude_timeout = first + 500
-        # No reset_settings() here — just mutate the singleton
+        settings_file.write_text(json.dumps({
+            "pipeline": {"claude_timeout": 611}
+        }))
+        reset_settings()
         second = claude_timeout_seconds()
 
-        assert second == first + 500
+        assert second == 611
         assert second != first
 
 
@@ -79,15 +88,26 @@ class TestPipelinePollIntervalSeconds:
         reset_settings()
         assert pipeline_poll_interval_seconds() == 345
 
-    def test_each_call_re_reads_settings(self):
+    def test_each_call_re_reads_settings(self, tmp_path, monkeypatch):
+        """Each call re-reads settings: changing the persisted value + reset_settings()
+        makes the very next call return the new value (no module re-import)."""
+        settings_file = tmp_path / "settings.json"
+        monkeypatch.setenv("DEILE_SETTINGS_FILE", str(settings_file))
+
+        settings_file.write_text(json.dumps({
+            "pipeline": {"poll_interval": 30}
+        }))
         reset_settings()
         first = pipeline_poll_interval_seconds()
+        assert first == 30
 
-        settings = get_settings()
-        settings.pipeline_poll_interval = first + 100
+        settings_file.write_text(json.dumps({
+            "pipeline": {"poll_interval": 130}
+        }))
+        reset_settings()
         second = pipeline_poll_interval_seconds()
 
-        assert second == first + 100
+        assert second == 130
         assert second != first
 
 

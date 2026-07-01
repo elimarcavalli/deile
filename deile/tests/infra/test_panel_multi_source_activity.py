@@ -33,6 +33,8 @@ from subprocess import CompletedProcess
 from typing import List
 from unittest.mock import MagicMock, patch
 
+import pytest  # noqa: E402
+
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
@@ -202,11 +204,6 @@ class TestMultiSourceActivityState:
     def test_top_empty_returns_empty(self):
         state = pd.MultiSourceActivityState()
         assert state.top(10) == []
-
-    def test_top_respects_n_cap(self):
-        state = pd.MultiSourceActivityState()
-        state.events = [_make_event(age_s=float(i)) for i in range(20)]
-        assert len(state.top(5)) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -495,13 +492,6 @@ class TestAC18IntermediateState:
         assert "deile-worker" in actors  # canonical
         assert "bot" in actors           # canonical
 
-    def test_each_source_color_is_defined(self):
-        """All 5 canonical sources have a color in _SOURCE_COLOR_MAP."""
-        for deploy, role, _ in pd._MULTI_SOURCE_DEFS:
-            assert deploy in pd._SOURCE_COLOR_MAP, (
-                f"{deploy} missing from _SOURCE_COLOR_MAP"
-            )
-
 
 # ---------------------------------------------------------------------------
 # AC1–AC5: _action_row_style predicate + _activity_panel action cell styles
@@ -516,14 +506,13 @@ class TestActivityPanelActionStyle:
     def test_ac1_dropped_returns_dim(self):
         assert panel._action_row_style("routing.dropped") == "dim"
 
-    def test_ac1_real_action_mention_returns_none(self):
-        assert panel._action_row_style("routing.mention") is None
-
-    def test_ac1_real_action_pr_unified_returns_none(self):
-        assert panel._action_row_style("routing.pr_unified") is None
-
-    def test_ac1_unknown_action_returns_none(self):
-        assert panel._action_row_style("dispatch.started") is None
+    @pytest.mark.parametrize("action", [
+        "routing.mention",     # real routing action
+        "routing.pr_unified",  # real routing action
+        "dispatch.started",    # unknown (non-routing) action
+    ])
+    def test_ac1_real_or_unknown_action_returns_none(self, action):
+        assert panel._action_row_style(action) is None
 
     # helpers ----------------------------------------------------------------
 
@@ -561,17 +550,6 @@ class TestActivityPanelActionStyle:
         cell = cells[0]
         assert hasattr(cell, "style"), "action cell must be a Text object"
         assert cell.style in (None, "")
-
-    def test_ac2_styles_are_distinct(self):
-        ev_drop = _make_event(age_s=2, actor="pipeline", action="routing.dropped")
-        ev_real = _make_event(age_s=1, actor="pipeline", action="routing.mention")
-        cells = self._render_activity_panel([ev_drop, ev_real])
-        assert len(cells) == 2
-        # Most recent first: ev_real (age_s=1) is index 0
-        real_style = str(cells[0].style) if cells[0].style else ""
-        drop_style = str(cells[1].style) if cells[1].style else ""
-        assert drop_style == "dim"
-        assert real_style != "dim"
 
     # AC3 — baseline: actor and detail cells of real actions unchanged
     def test_ac3_actor_cell_unchanged_for_real_action(self):
@@ -612,15 +590,4 @@ class TestActivityPanelActionStyle:
         )
         assert str(detail_cell.style) == "bold red", (
             "detail cell must be bold red when detail matches error pattern"
-        )
-
-    # AC5 — remover o predicado quebra a suite
-    def test_ac5_nonactionable_set_is_nonempty(self):
-        assert len(panel._NONACTIONABLE_ACTIONS) > 0, (
-            "Removing _NONACTIONABLE_ACTIONS would break AC1/AC2/AC4"
-        )
-
-    def test_ac5_action_row_style_exists_and_is_callable(self):
-        assert callable(panel._action_row_style), (
-            "Removing _action_row_style would break AC1 and the render"
         )

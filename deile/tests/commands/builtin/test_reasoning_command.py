@@ -103,9 +103,10 @@ async def test_use_set_invalid_rejected():
 
 
 @pytest.mark.unit
-async def test_use_clear_removes_forced():
+@pytest.mark.parametrize("keyword", ["clear", "reset"])
+async def test_use_clear_removes_forced(keyword):
     cmd = ReasoningCommand()
-    ctx = _ctx("use clear", context_data={"forced_reasoning_effort": "high", "reasoning_effort": "low"})
+    ctx = _ctx(f"use {keyword}", context_data={"forced_reasoning_effort": "high", "reasoning_effort": "low"})
     res = await cmd.execute(ctx)
     assert res.success is True
     assert "forced_reasoning_effort" not in ctx.session.context_data
@@ -117,15 +118,6 @@ async def test_use_clear_removes_forced():
 async def test_use_clear_idempotent():
     cmd = ReasoningCommand()
     ctx = _ctx("use clear", context_data={})
-    res = await cmd.execute(ctx)
-    assert res.success is True
-    assert "forced_reasoning_effort" not in ctx.session.context_data
-
-
-@pytest.mark.unit
-async def test_use_reset_clears_forced():
-    cmd = ReasoningCommand()
-    ctx = _ctx("use reset", context_data={"forced_reasoning_effort": "max"})
     res = await cmd.execute(ctx)
     assert res.success is True
     assert "forced_reasoning_effort" not in ctx.session.context_data

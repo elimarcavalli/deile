@@ -153,11 +153,6 @@ def test_bucket_issue_no_workflow_labels():
 
 
 @pytest.mark.unit
-def test_bucket_issue_nova():
-    assert _bucket_issue(("~workflow:nova",)) == "nova"
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize("state", list(ISSUE_BUCKETS))
 def test_bucket_issue_each_canonical_bucket(state: str):
     assert _bucket_issue((f"~workflow:{state}",)) == state
@@ -166,11 +161,6 @@ def test_bucket_issue_each_canonical_bucket(state: str):
 @pytest.mark.unit
 def test_bucket_issue_bloqueada_wins_over_any_other():
     assert _bucket_issue(("~workflow:em_implementacao", "~workflow:bloqueada")) == "bloqueada"
-
-
-@pytest.mark.unit
-def test_bucket_issue_bloqueada_alone():
-    assert _bucket_issue(("~workflow:bloqueada",)) == "bloqueada"
 
 
 @pytest.mark.unit
@@ -221,21 +211,6 @@ def test_bucket_pr_each_review_bucket(state: str):
 @pytest.mark.unit
 def test_bucket_pr_bloqueada_wins_over_review():
     assert _bucket_pr(("~review:pendente", "~workflow:bloqueada")) == "bloqueada"
-
-
-@pytest.mark.unit
-def test_bucket_pr_first_review_wins():
-    assert _bucket_pr(("~review:pendente",)) == "pendente"
-
-
-@pytest.mark.unit
-def test_bucket_pr_em_andamento():
-    assert _bucket_pr(("~review:em_andamento",)) == "em_andamento"
-
-
-@pytest.mark.unit
-def test_bucket_pr_concluida():
-    assert _bucket_pr(("~review:concluida",)) == "concluida"
 
 
 # ---------------------------------------------------------------------------
@@ -339,18 +314,6 @@ async def test_collect_backlog_data_basic_counts():
 
 
 @pytest.mark.asyncio
-async def test_collect_backlog_data_sem_workflow():
-    forge = _fake_forge([_issue(1, "~type:feature")], [])
-    router = MagicMock(route=MagicMock(return_value=forge))
-    with patch(
-        "deile.commands.builtin._backlog_collectors.get_forge_router",
-        return_value=router,
-    ):
-        data = await collect_backlog_data("owner/repo")
-    assert data.issue_counts.get(_SEM_WORKFLOW, 0) == 1
-
-
-@pytest.mark.asyncio
 async def test_collect_backlog_data_sem_review():
     forge = _fake_forge([], [_pr(1, "~workflow:em_pr")])
     router = MagicMock(route=MagicMock(return_value=forge))
@@ -441,8 +404,13 @@ def test_build_tables_shows_totals():
         pr_total=2,
     )
     rendered = _render(_build_tables(data))
-    assert "3" in rendered
-    assert "2" in rendered
+    # Assert the exact totals on their own "Total aberto" row (not merely
+    # present somewhere in the render — the bucket rows also carry 3/2).
+    total_lines = [ln for ln in rendered.splitlines() if "Total aberto" in ln]
+    assert len(total_lines) == 2  # one row per table (issues, PRs)
+    issue_total_line, pr_total_line = total_lines
+    assert "3" in issue_total_line  # issue_total
+    assert "2" in pr_total_line     # pr_total
 
 
 @pytest.mark.unit

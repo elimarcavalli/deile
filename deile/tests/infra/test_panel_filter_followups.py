@@ -180,13 +180,6 @@ class TestPersistWritesEntryAtomically:
         assert data["schema_version"] == 1
         assert data["entries"]["pod:ns/pod-a"]["text"] == "error"
 
-    def test_atomic_write_no_partial_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(panel, "_PANEL_FILTERS_PATH", tmp_path / "panel_filters.json")
-        # Simulate: if write succeeds, file is valid JSON
-        panel._save_panel_filter("pod:ns/pod-x", "timeout")
-        content = (tmp_path / "panel_filters.json").read_text()
-        json.loads(content)  # must not raise
-
 
 class TestPersistRestoresOnRemount:
     """AC-B2: remounting same key restores filter; unknown key → empty."""
@@ -453,28 +446,16 @@ class TestRegexDepDeclared:
     """AC-D1: pyproject.toml declares regex>=2024.0."""
 
     def test_regex_dep_declared(self):
-        import tomllib  # Python 3.11+; fallback below
-        import importlib
-        try:
-            import tomllib
-        except ImportError:
-            import tomli as tomllib  # noqa: F811 — optional fallback
+        import tomllib
 
         pyproject = _REPO / "pyproject.toml"
-        try:
-            with open(pyproject, "rb") as f:
-                data = tomllib.load(f)
-        except Exception:
-            import configparser, re as _re
-            text = pyproject.read_text()
-            deps = _re.findall(r'"(regex[^"]*)"', text)
-            assert any("regex" in d for d in deps), "regex not found in pyproject.toml"
-            return
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
 
         deps = data.get("project", {}).get("dependencies", [])
-        regex_deps = [d for d in deps if d.startswith("regex")]
-        assert regex_deps, "regex dependency not found in [project].dependencies"
-        assert any("2024" in d or ">=" in d for d in regex_deps)
+        assert any(d.startswith("regex") and "2024" in d for d in deps), (
+            "regex>=2024.0 dependency not found in [project].dependencies"
+        )
 
 
 class TestRegexTimeoutAbortsUnder100ms:
@@ -556,10 +537,3 @@ class TestAllItemsOffOutputIdentical:
         assert not hasattr(p1.renderable, "_spans") or not any(
             "reverse" in str(s.style) for s in p1.renderable._spans
         )
-
-    def test_defaults_falsy(self):
-        view = _make_pod_view()
-        assert view._filter_terms == []
-        assert view._filter_op == ""
-        assert view._filter_re is None
-        assert view._filter_text == ""

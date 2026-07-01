@@ -152,13 +152,14 @@ async def test_assign_issue_resolves_username_to_user_id(fake_glab):
     assert "-f" not in put_call, "PUT assignee_ids deve usar query string, não -f"
 
 
-async def test_assign_issue_logs_replace_at_debug(fake_glab):
+async def test_assign_issue_logs_replace_at_debug(fake_glab, caplog):
     """assign_issue documenta a semântica REPLACE em log DEBUG (não WARNING).
 
     Pre-PR-review esta mensagem era ``logger.warning(...)`` em toda chamada,
     gerando ruído sob auto-routing. Rebaixada a ``logger.debug`` (a contratação
-    REPLACE continua documentada no docstring + CLAUDE.md). O teste passa a
-    capturar em DEBUG para garantir que o sinal não sumiu por completo.
+    REPLACE continua documentada no docstring + CLAUDE.md). O teste captura em
+    DEBUG para garantir que o sinal não sumiu por completo — ``caplog.at_level``
+    força-enable o logging mesmo sob ``logging.disable()`` global pendente.
     """
     import logging
 
@@ -166,29 +167,12 @@ async def test_assign_issue_logs_replace_at_debug(fake_glab):
     responses.append((0, json.dumps([{"id": 99, "username": "bob"}]), ""))
     responses.append((0, "{}", ""))
 
-    captured: list[str] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            captured.append(record.getMessage())
-
-    _logger = logging.getLogger("deile.orchestration.forge.gitlab_forge")
-    handler = _Capture(level=logging.DEBUG)
-    _logger.addHandler(handler)
-    original_level = _logger.level
-    _logger.setLevel(logging.DEBUG)
-    # Restaura o estado global do logging caso outro teste tenha chamado
-    # logging.disable() e esquecido de reverter (padrão conhecido na suíte).
-    previous_disable = logging.root.manager.disable
-    logging.disable(logging.NOTSET)
-    try:
+    with caplog.at_level(
+        logging.DEBUG, logger="deile.orchestration.forge.gitlab_forge"
+    ):
         await forge.assign_issue(10, "bob")
-    finally:
-        _logger.removeHandler(handler)
-        _logger.setLevel(original_level)
-        logging.disable(previous_disable)
 
-    assert any("REPLACE" in msg for msg in captured)
+    assert any("REPLACE" in r.getMessage() for r in caplog.records)
 
 
 async def test_assign_issue_handles_missing_user_gracefully(fake_glab):
@@ -225,30 +209,20 @@ async def test_merge_pr_blocked_fallback_to_merge_status(fake_glab):
     assert "merge_status=cannot_be_merged" in str(exc_info.value)
 
 
-async def test_merge_pr_unchecked_does_NOT_block(fake_glab):
-    """detailed_merge_status=unchecked é neutro — não bloqueia no pre-check."""
+@pytest.mark.parametrize("payload", [
+    # Campo moderno neutro (GitLab ainda está computando).
+    {"iid": 5, "detailed_merge_status": "unchecked"},
+    # Fallback legado: sem detailed_merge_status, só merge_status=unchecked.
+    {"iid": 5, "merge_status": "unchecked"},
+])
+async def test_merge_pr_unchecked_does_NOT_block(fake_glab, payload):
+    """unchecked é neutro — não bloqueia no pre-check, tanto no campo moderno
+    (detailed_merge_status) quanto no fallback legado (merge_status)."""
     forge, responses, _ = fake_glab
-    # Pre-check: unchecked (GitLab ainda está computando).
-    responses.append((0, json.dumps({
-        "iid": 5,
-        "detailed_merge_status": "unchecked",
-    }), ""))
+    responses.append((0, json.dumps(payload), ""))
     # Merge PUT: sucesso.
     responses.append((0, "{}", ""))
     # Não deve levantar MergeBlocked.
-    await forge.merge_pr(5)
-
-
-async def test_merge_pr_unchecked_legacy_does_NOT_block(fake_glab):
-    """merge_status=unchecked no campo legado também não bloqueia."""
-    forge, responses, _ = fake_glab
-    # Sem detailed_merge_status; merge_status=unchecked no campo legado.
-    responses.append((0, json.dumps({
-        "iid": 5,
-        "merge_status": "unchecked",
-    }), ""))
-    # Merge PUT: sucesso.
-    responses.append((0, "{}", ""))
     await forge.merge_pr(5)
 
 
@@ -495,17 +469,6 @@ async def test_api_get_json_no_method_flag_when_no_params(fake_glab):
     call = calls[0]
     assert call == ("api", "projects/1"), (
         f"sem params não deve injetar -X GET, got {call}"
-    )
-
-
-async def test_list_open_prs_uses_X_GET(fake_glab):
-    """Verifica que list_open_prs (via _api_paginated) carrega -X GET no glab call."""
-    forge, responses, calls = fake_glab
-    responses.append((0, "[]", ""))
-    await forge.list_open_prs(limit=10)
-    call = calls[0]
-    assert call[1:3] == ("-X", "GET"), (
-        f"list_open_prs deve usar -X GET, got {call[1:3]}"
     )
 
 

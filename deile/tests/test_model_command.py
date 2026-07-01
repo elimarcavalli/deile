@@ -33,11 +33,6 @@ def _make_context(args: str = "", session_id: str = "sess-test") -> MagicMock:
 # ---------------------------------------------------------------------------
 
 class TestModelList:
-    @pytest.mark.asyncio
-    async def test_list_returns_success(self):
-        cmd = ModelCommand()
-        result = await cmd.execute(_make_context("list"))
-        assert result.success is True
 
     @pytest.mark.asyncio
     async def test_list_no_args_also_succeeds(self):
@@ -65,12 +60,6 @@ class TestModelList:
         result = await cmd.execute(_make_context("list"))
         assert isinstance(result.content, Table)
 
-    @pytest.mark.asyncio
-    async def test_list_shows_pricing_data(self):
-        """Providers have $input / $output columns — metadata count > 0 means table built."""
-        cmd = ModelCommand()
-        result = await cmd.execute(_make_context("list"))
-        assert result.metadata["count"] >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -78,11 +67,6 @@ class TestModelList:
 # ---------------------------------------------------------------------------
 
 class TestModelCurrent:
-    @pytest.mark.asyncio
-    async def test_current_returns_success(self):
-        cmd = ModelCommand()
-        result = await cmd.execute(_make_context("current"))
-        assert result.success is True
 
     @pytest.mark.asyncio
     async def test_current_shows_auto_when_no_forced(self):

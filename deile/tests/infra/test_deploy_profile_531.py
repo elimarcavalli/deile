@@ -89,11 +89,6 @@ class TestD3ClaudeOnlyDeployments:
         p = deploy.DeploymentProfile("claude-only")
         assert set(p.deployments) == {"deile-pipeline", "deile-worker", "claude-worker"}
 
-    def test_claude_only_no_deilebot(self):
-        p = deploy.DeploymentProfile("claude-only")
-        assert "deilebot" not in p.deployments
-        assert "deile-shell" not in p.deployments
-
 
 # ---------------------------------------------------------------------------
 # AC4 — implicit full + no token → fallback to claude-only with warn + exit 0
@@ -152,19 +147,9 @@ class TestAC4ImplicitFullFallback:
 
         assert result == 0, "deve terminar com exit 0 (fallback, não erro)"
         assert not err_calls, f"nenhum erro esperado, mas houve: {err_calls}"
-        # must warn about fallback
+        # must warn about fallback e nomear o token Discord ausente
         full_warn = " ".join(warn_calls)
         assert "claude-only" in full_warn, "warn deve mencionar perfil claude-only"
-
-    def test_implicit_full_no_token_warn_mentions_discord(self, monkeypatch, tmp_path):
-        args, warn_calls, _ = _minimal_k8s_up_mocks(
-            monkeypatch, tmp_path, discord_token=""
-        )
-        monkeypatch.delenv("DEILE_K8S_DEPLOY_PROFILE", raising=False)
-
-        deploy.k8s_up(args)
-
-        full_warn = " ".join(warn_calls)
         assert "DEILE_BOT_DISCORD_TOKEN" in full_warn
 
     def test_implicit_full_with_token_keeps_full(self, monkeypatch, tmp_path):
@@ -185,12 +170,17 @@ class TestAC4ImplicitFullFallback:
 # ---------------------------------------------------------------------------
 
 class TestAC6ExplicitFullError:
-    def test_explicit_full_no_token_returns_error(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("source", ["cli", "env"])
+    def test_explicit_full_no_token_returns_error(self, monkeypatch, tmp_path, source):
+        extra_args = ["--profile", "full"] if source == "cli" else None
         args, warn_calls, err_calls = _minimal_k8s_up_mocks(
             monkeypatch, tmp_path, discord_token="",
-            extra_args=["--profile", "full"],
+            extra_args=extra_args,
         )
-        monkeypatch.delenv("DEILE_K8S_DEPLOY_PROFILE", raising=False)
+        if source == "env":
+            monkeypatch.setenv("DEILE_K8S_DEPLOY_PROFILE", "full")
+        else:
+            monkeypatch.delenv("DEILE_K8S_DEPLOY_PROFILE", raising=False)
 
         result = deploy.k8s_up(args)
 
@@ -198,15 +188,3 @@ class TestAC6ExplicitFullError:
         assert err_calls, "deve emitir mensagem de erro"
         assert not any("claude-only" in w for w in warn_calls), \
             "não deve fazer fallback silencioso quando full é explícito"
-
-    def test_explicit_full_via_env_no_token_returns_error(self, monkeypatch, tmp_path):
-        args, warn_calls, err_calls = _minimal_k8s_up_mocks(
-            monkeypatch, tmp_path, discord_token=""
-        )
-        monkeypatch.setenv("DEILE_K8S_DEPLOY_PROFILE", "full")
-
-        result = deploy.k8s_up(args)
-
-        assert result == 1
-        assert err_calls
-        assert not any("claude-only" in w for w in warn_calls)

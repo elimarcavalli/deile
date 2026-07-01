@@ -343,46 +343,38 @@ class TestPodWatchViewLastCompletedLine:
             issue_number=issue_number,
         )
 
-    def test_last_completed_shows_approve_green(self):
-        lc = self._make_lc("APPROVE", cost_usd=0.32)
+    @pytest.mark.parametrize("outcome, cost_usd, cost_str", [
+        ("APPROVE", 0.32, "$0.32"),
+        ("DONE", 0.10, "$0.10"),
+    ])
+    def test_last_completed_shows_green_outcome(self, outcome, cost_usd, cost_str):
+        """Outcomes green (APPROVE/DONE) renderizam LAST_COMPLETED com custo."""
+        lc = self._make_lc(outcome, cost_usd=cost_usd)
         view = _worker_view(last_completed=lc)
         out = _render(view)
         assert "LAST_COMPLETED:" in out
-        assert "APPROVE" in out
-        assert "$0.32" in out
+        assert outcome in out
+        assert cost_str in out
         # Timestamp with Z suffix
         assert "2026-05-29T05:23:59Z" in out
 
-    def test_last_completed_shows_done_green(self):
-        lc = self._make_lc("DONE", cost_usd=0.10)
-        view = _worker_view(last_completed=lc)
-        out = _render(view)
-        assert "DONE" in out
-        assert "$0.10" in out
-
-    def test_last_completed_shows_fail_red(self):
-        lc = self._make_lc("FAIL", cost_usd=0.05)
+    @pytest.mark.parametrize("outcome, cost_usd", [
+        ("FAIL", 0.05),
+        ("REJECT", None),
+    ])
+    def test_last_completed_shows_red_outcome(self, outcome, cost_usd):
+        """Outcomes red (FAIL/REJECT) renderizam LAST_COMPLETED."""
+        lc = self._make_lc(outcome, cost_usd=cost_usd)
         view = _worker_view(last_completed=lc)
         out = _render(view)
         assert "LAST_COMPLETED:" in out
-        assert "FAIL" in out
-
-    def test_last_completed_shows_reject(self):
-        lc = self._make_lc("REJECT", cost_usd=None)
-        view = _worker_view(last_completed=lc)
-        out = _render(view)
-        assert "REJECT" in out
+        assert outcome in out
 
     def test_last_completed_cost_unavailable_shows_placeholder(self):
         lc = self._make_lc("DONE", cost_usd=None)
         view = _worker_view(last_completed=lc)
         out = _render(view)
         assert "ledger unavailable" in out or "$?" in out
-
-    def test_last_completed_omitted_when_none(self):
-        view = _worker_view(current_task=None, last_completed=None)
-        out = _render(view)
-        assert "LAST_COMPLETED" not in out
 
     def test_timestamp_uses_z_suffix(self):
         lc = self._make_lc("DONE", cost_usd=0.01)

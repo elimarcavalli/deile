@@ -282,6 +282,14 @@ class TestRewindCommand:
 
     @pytest.mark.unit
     async def test_rewind_cancel_returns_no_switch(self):
+        """ESC no seletor cancela sem trocar de sessão e sem poluir o scrollback.
+
+        Além de ``cancelled`` e nenhum ``SWITCH_SESSION_KEY``, o
+        ``CommandResult`` carrega ``suppress_response_display=True`` e
+        ``content == ""`` para o ``cli.py`` pular o ``ui.display_response``
+        (sem isso, cada ESC empilhava um ``Panel('Rewind cancelado.')``
+        amarelo no histórico).
+        """
         from deile.commands.builtin import rewind_command as rw_mod
 
         ctx = _make_context("rewind", history=_HISTORY)
@@ -296,27 +304,6 @@ class TestRewindCommand:
         assert result.success
         assert result.metadata.get("cancelled")
         assert SWITCH_SESSION_KEY not in ctx.session.context_data
-
-    @pytest.mark.unit
-    async def test_rewind_cancel_suppresses_response_display(self):
-        """ESC no seletor de rewind não deve printar nada novo.
-
-        O ``CommandResult`` precisa carregar ``suppress_response_display=True``
-        para o ``cli.py`` pular o ``ui.display_response`` (evita o eco
-        ``Panel('Rewind cancelado.')`` no scrollback que poluía o histórico).
-        Sem isso, cada ESC empilhava um painel amarelo na UI.
-        """
-        from deile.commands.builtin import rewind_command as rw_mod
-
-        ctx = _make_context("rewind", history=_HISTORY)
-        mock_selector = MagicMock()
-        mock_selector.is_supported.return_value = True
-        mock_selector.select = AsyncMock(return_value=None)
-
-        with patch.object(rw_mod, "get_default_selector", return_value=mock_selector):
-            cmd = RewindCommand()
-            result = await cmd.execute(ctx)
-
         assert result.metadata.get("suppress_response_display") is True
         assert result.content == ""
 
@@ -365,10 +352,17 @@ class TestRewindCommand:
 
     @pytest.mark.unit
     async def test_rewind_first_message_clears_all_history(self):
-        """Selecionar a primeira mensagem (#1) zera o histórico inteiro.
+        """Selecionar a primeira mensagem (#1) zera o histórico e dispara o replay.
 
         Comportamento intencional: rewind para "antes da primeira" =
         conversa nova. Equivalente a /clear, mas preserva session_id.
+
+        O rewind aceito também solicita replay (limpa tela + redesenha
+        histórico). Sem ``POST_SWITCH_ACTION_KEY == "replay"`` o CLI cairia
+        no branch default ("Sessão alternada para …") e o scrollback
+        seguiria mostrando TODO o histórico anterior — impressão de que
+        nada mudou. E ``suppress_response_display=True`` + ``content == ""``
+        evitam flash visual de qualquer Panel/Text antes do clear do replay.
         """
         from deile.commands.builtin import rewind_command as rw_mod
         from deile.core.interfaces.selector import SelectorOption
@@ -387,37 +381,7 @@ class TestRewindCommand:
 
         assert result.success
         assert ctx.session.conversation_history == []
-
-    @pytest.mark.unit
-    async def test_rewind_choice_triggers_replay(self):
-        """Rewind aceito deve solicitar replay (limpa tela + redesenha histórico).
-
-        Sem essa flag, o CLI cairia no branch default ("Sessão alternada
-        para …") e o scrollback continuaria mostrando TODO o histórico
-        anterior — dando a impressão visual de que nada mudou. O usuário
-        espera ver a conversa "voltar atrás", então o efeito tem que ser
-        explícito: limpar e re-renderizar só até o ponto escolhido.
-        """
-        from deile.commands._sentinels import POST_SWITCH_ACTION_KEY
-        from deile.commands.builtin import rewind_command as rw_mod
-        from deile.core.interfaces.selector import SelectorOption
-
-        ctx = _make_context("rewind", history=_HISTORY)
-        mock_selector = MagicMock()
-        mock_selector.is_supported.return_value = True
-        mock_selector.select = AsyncMock(
-            return_value=SelectorOption(label="#1 olá mundo", value=0)
-        )
-
-        with patch.object(rw_mod, "get_default_selector", return_value=mock_selector):
-            cmd = RewindCommand()
-            result = await cmd.execute(ctx)
-
-        assert result.success
         assert ctx.session.context_data.get(POST_SWITCH_ACTION_KEY) == "replay"
-        # E o display do resultado deve ser suprimido — o replay logo
-        # depois (no CLI loop) já comunica a mudança visualmente, então
-        # qualquer Panel/Text aqui seria flash visual antes do clear.
         assert result.metadata.get("suppress_response_display") is True
         assert result.content == ""
 

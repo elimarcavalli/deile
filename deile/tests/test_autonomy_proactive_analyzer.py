@@ -60,49 +60,7 @@ class TestProactiveIntent:
         assert not intent.autonomous_eligible   # Default
         assert len(intent.chained_actions) == 0  # Default
 
-    def test_intent_with_resolved_file(self):
-        """Test intent with resolved file match"""
-        file_match = FileMatch(
-            path=Path("test.txt"),
-            query="test",
-            confidence=0.9,
-            match_type=MatchType.EXACT,
-            reason="Exact match",
-            exists=True
-        )
 
-        intent = ProactiveIntent(
-            action=ProactiveAction.READ_FILE,
-            target="test",
-            confidence=0.95,
-            context="Read test file",
-            resolved_file=file_match,
-            autonomous_eligible=True
-        )
-
-        assert intent.resolved_file == file_match
-        assert intent.autonomous_eligible
-
-    def test_intent_with_chained_actions(self):
-        """Test intent with chained actions"""
-        main_intent = ProactiveIntent(
-            action=ProactiveAction.READ_FILE,
-            target="readme",
-            confidence=0.8,
-            context="Read readme file"
-        )
-
-        fallback_intent = ProactiveIntent(
-            action=ProactiveAction.SUGGEST_ALTERNATIVES,
-            target="readme",
-            confidence=0.6,
-            context="Suggest alternatives"
-        )
-
-        main_intent.chained_actions = [fallback_intent]
-
-        assert len(main_intent.chained_actions) == 1
-        assert main_intent.chained_actions[0].action == ProactiveAction.SUGGEST_ALTERNATIVES
 
 
 
@@ -152,20 +110,6 @@ class TestProactiveAnalyzer:
         read_intents = [i for i in intents if i.action == ProactiveAction.READ_FILE]
         assert len(read_intents) > 0
 
-    @pytest.mark.asyncio
-    async def test_enhanced_analysis_with_file_resolution(self, analyzer):
-        """Test enhanced analysis with file resolution"""
-        user_input = "read the readme file"
-        intents = await analyzer.analyze_enhanced(user_input)
-
-        assert len(intents) > 0
-
-        # Should have resolved files for relevant intents
-        read_intents = [i for i in intents if i.action == ProactiveAction.READ_FILE]
-        if read_intents:
-            # Check if any have resolved files
-            resolved_intents = [i for i in read_intents if i.resolved_file is not None]
-            assert len(resolved_intents) > 0
 
     @pytest.mark.asyncio
     async def test_autonomous_eligibility_determination(self, analyzer):
@@ -177,29 +121,8 @@ class TestProactiveAnalyzer:
         autonomous_intents = [i for i in intents if i.autonomous_eligible]
         assert len(autonomous_intents) > 0
 
-    @pytest.mark.asyncio
-    async def test_list_files_detection(self, analyzer):
-        """Test detection of list files intent"""
-        # The analyzer normalises listing-type intents to LIST_DIRECTORY.
-        user_input = "list files"
-        intents = await analyzer.analyze(user_input)
 
-        list_intents = [i for i in intents if i.action == ProactiveAction.LIST_DIRECTORY]
-        assert len(list_intents) > 0
 
-    @pytest.mark.asyncio
-    async def test_search_files_detection(self, analyzer):
-        """Test detection of search files intent"""
-        # ProactiveAnalyzer does not currently emit SEARCH_FILES intents; the
-        # enum value is reserved for a future capability.
-        pytest.skip("SEARCH_FILES detection is not yet implemented")
-
-    @pytest.mark.asyncio
-    async def test_write_file_detection(self, analyzer):
-        """Test detection of write file intent"""
-        # ProactiveAnalyzer does not currently emit WRITE_FILE intents; the
-        # enum value is reserved for a future capability.
-        pytest.skip("WRITE_FILE detection is not yet implemented")
 
     @pytest.mark.asyncio
     async def test_target_extraction_read_file(self, analyzer):

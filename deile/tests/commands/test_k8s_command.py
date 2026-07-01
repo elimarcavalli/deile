@@ -307,8 +307,6 @@ class TestCmdRestart:
             assert dep in called_deployments
 
     async def test_restart_all_partial_failure(self):
-        fail_deps = {"deilebot"}
-
         async def fake_run(args, timeout=30.0):
             for arg in args:
                 if "deployment/deilebot" in arg and "restart" in args:
@@ -318,8 +316,8 @@ class TestCmdRestart:
         with patch("deile.commands.builtin.k8s_command._run_kubectl", side_effect=fake_run):
             result = await _cmd_restart("deile", "all")
 
-        # Result depends on outcomes — just confirm it runs without crashing
-        assert result is not None
+        # Uma falha parcial (deilebot) deve reprovar o resultado inteiro.
+        assert result.success is False
 
     async def test_restart_unknown_deployment_rejected(self):
         with patch("deile.commands.builtin.k8s_command._run_kubectl") as mock_kubectl:
@@ -626,22 +624,28 @@ class TestK8sCommandMetadata:
         assert "restart" in help_text.lower()
         assert "logs" in help_text.lower()
 
-    def test_no_fixed_width_in_add_column(self):
-        """k8s_command.py must not use width=<int> in add_column calls."""
-        import re
-        from pathlib import Path
+    async def test_table_reflows_to_narrow_width(self):
+        """Comportamento (não regex no source): a tabela do painel /k8s deve
+        refluir para caber em um terminal estreito.
 
-        path = (
-            Path(__file__).resolve().parents[3]
-            / "deile"
-            / "commands"
-            / "builtin"
-            / "k8s_command.py"
-        )
-        text = path.read_text(encoding="utf-8")
-        width_literal = re.compile(r"\.add_column\s*\([^)]*width\s*=\s*\d+")
-        matches = width_literal.findall(text)
-        assert not matches, f"Fixed width in add_column: {matches}"
+        Renderiza o painel real produzido por _cmd_discovery numa largura
+        estreita; se alguma coluna tivesse ``width=<int>`` fixo, o conteúdo
+        estouraria a largura do console. Testa o render, não o texto-fonte.
+        """
+        result = await _cmd_discovery("deile")
+        narrow = 50
+        buf = StringIO()
+        console = Console(file=buf, no_color=True, width=narrow)
+        console.print(result.content)
+        rendered = buf.getvalue()
+
+        # A tabela efetivamente renderizou (verbos presentes)…
+        assert "restart" in rendered
+        # …e cada linha coube na largura estreita (refluiu).
+        for line in rendered.splitlines():
+            assert len(line) <= narrow, (
+                f"linha excede {narrow} cols (não refluiu): {line!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -670,12 +674,6 @@ class TestRunningInPod:
         with patch.dict("os.environ", {"KUBERNETES_SERVICE_HOST": "10.0.0.1"}):
             assert _running_in_pod() is True
 
-    def test_not_in_pod_when_env_absent(self):
-        env = {k: v for k, v in __import__("os").environ.items()
-               if k != "KUBERNETES_SERVICE_HOST"}
-        with patch.dict("os.environ", env, clear=True):
-            assert _running_in_pod() is False
-
     def test_empty_string_is_falsy(self):
         with patch.dict("os.environ", {"KUBERNETES_SERVICE_HOST": ""}):
             assert _running_in_pod() is False
@@ -688,10 +686,25 @@ class TestRunningInPod:
 
 @pytest.mark.unit
 class TestFindDeployPy:
-    def test_returns_path_or_none(self):
-        result = _find_deploy_py()
-        # In CI the file may or may not exist — just verify the return type
-        assert result is None or result.name == "deploy.py"
+    def test_returns_path_when_deploy_py_present(self, tmp_path):
+        """Com infra/k8s/deploy.py presente acima de __file__, retorna esse Path."""
+        import deile.commands.builtin.k8s_command as mod
+
+        deploy = tmp_path / "infra" / "k8s" / "deploy.py"
+        deploy.parent.mkdir(parents=True)
+        deploy.write_text("# fake deploy.py")
+        fake_file = tmp_path / "deile" / "commands" / "builtin" / "k8s_command.py"
+        fake_file.parent.mkdir(parents=True)
+
+        original = mod.__file__
+        try:
+            mod.__file__ = str(fake_file)
+            result = _find_deploy_py()
+            assert result is not None
+            assert result.name == "deploy.py"
+            assert result.samefile(deploy)
+        finally:
+            mod.__file__ = original
 
     def test_returns_none_when_not_found(self, tmp_path):
         """When __file__ is in a temp dir with no infra/k8s/deploy.py, returns None."""
@@ -1084,23 +1097,6 @@ class TestK8sCommandV2Routing:
             await _cmd().execute(_ctx("up"))
 
         mock_v2.assert_called_once_with("up", "", "deile", confirmed=False)
-
-    async def test_down_verb_dispatched_to_v2_delegate(self):
-        with (
-            patch(
-                "deile.commands.builtin.k8s_command._detect_namespace",
-                new_callable=AsyncMock,
-                return_value="deile",
-            ),
-            patch(
-                "deile.commands.builtin.k8s_command._cmd_v2_delegate",
-                new_callable=AsyncMock,
-                return_value=MagicMock(success=True, content="ok", content_type="text"),
-            ) as mock_v2,
-        ):
-            await _cmd().execute(_ctx("down"))
-
-        mock_v2.assert_called_once_with("down", "", "deile", confirmed=False)
 
     async def test_panel_verb_dispatched_to_cmd_panel(self):
         with (

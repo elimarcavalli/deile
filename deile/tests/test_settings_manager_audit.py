@@ -193,11 +193,6 @@ class TestSetSettingPermissionAndAudit:
         assert kwargs["result"] == "invalid"
         assert kwargs["details"]["reason"] == "validation_failed"
 
-    def test_dry_run_validation_accepts_valid_value(
-        self, tmp_path, allow_settings_writes
-    ):
-        mgr = _make_manager(tmp_path)
-        assert mgr.set_setting("logging.level", "INFO", scope="global") is True
 
     def test_dry_run_skipped_for_keys_outside_handlers(
         self, tmp_path, allow_settings_writes

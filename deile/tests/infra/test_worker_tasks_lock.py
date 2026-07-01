@@ -110,15 +110,42 @@ async def test_burst_keeps_tasks_within_bound(client, monkeypatch):
     await asyncio.sleep(0.05)
 
 
-async def test_evict_runs_under_lock_in_source():
-    """A seção evict+insert deve estar sob ``_TASKS_LOCK`` (AC3)."""
-    import inspect
+async def test_evict_runs_under_lock(client, monkeypatch):
+    """O evict da seção crítica DEVE rodar com ``_TASKS_LOCK`` adquirido (AC3).
 
-    src = inspect.getsource(worker_server.dispatch_handler)
-    assert "async with _TASKS_LOCK:" in src
-    # O evict e o insert do task_id vivem dentro do bloco do lock.
-    lock_idx = src.index("async with _TASKS_LOCK:")
-    evict_idx = src.index("_evict_old_tasks_if_needed()")
-    assert evict_idx > lock_idx, (
-        "_evict_old_tasks_if_needed deve ser chamado DENTRO do _TASKS_LOCK"
+    Comportamental (não texto-fonte): espiona ``_evict_old_tasks_if_needed`` e
+    captura ``_TASKS_LOCK.locked()`` no exato instante da chamada dentro do
+    ``dispatch_handler`` — deve ser True. Robusto a rename/refactor do handler.
+    """
+    monkeypatch.setattr(worker_server, "_TASKS_MAX", 10)
+
+    locked_during_evict: list[bool] = []
+    _orig_evict = worker_server._evict_old_tasks_if_needed
+
+    def _spy_evict(*a, **kw):
+        locked_during_evict.append(worker_server._TASKS_LOCK.locked())
+        return _orig_evict(*a, **kw)
+
+    monkeypatch.setattr(worker_server, "_evict_old_tasks_if_needed", _spy_evict)
+
+    async def _noop(task_id, brief, channel_id, *a, **kw):
+        return {"schema_version": worker_server.RESULT_SCHEMA_VERSION,
+                "task_id": task_id, "ok": True, "elapsed_s": 0.0,
+                "finished_at": "2026-01-01T00:00:00+00:00",
+                "brief": brief, "summary": "ok", "files": []}
+
+    monkeypatch.setattr(worker_server, "_run_task", _noop)
+
+    resp = await client.post(
+        "/v1/dispatch",
+        json={"brief": "task", "channel_id": "chan", "wait_for_result": False},
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+    )
+    assert resp.status == 202
+    await asyncio.sleep(0.05)
+
+    # O evict foi chamado e, em TODA chamada, o lock estava adquirido.
+    assert locked_during_evict, "_evict_old_tasks_if_needed não foi chamado"
+    assert all(locked_during_evict), (
+        "_evict_old_tasks_if_needed rodou SEM _TASKS_LOCK adquirido"
     )

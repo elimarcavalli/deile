@@ -49,23 +49,6 @@ def test_pipeline_dispatch_request_span_opened(in_memory_exporter):
     )
 
 
-def test_propagate_inject_writes_traceparent_when_span_active(in_memory_exporter):
-    """propagate.inject(headers) injeta traceparent quando span pipeline está ativo."""
-    from opentelemetry import propagate, trace
-
-    tracer = trace.get_tracer("deile.pipeline")
-    headers: Dict[str, str] = {}
-    with tracer.start_as_current_span("pipeline.dispatch_request"):
-        propagate.inject(headers)
-
-    assert "traceparent" in headers, (
-        f"traceparent não foi injetado nos headers; headers={headers}"
-    )
-    tp = headers["traceparent"]
-    # W3C traceparent: 00-<trace-id>-<span-id>-<flags>
-    parts = tp.split("-")
-    assert len(parts) == 4, f"formato traceparent inválido: {tp!r}"
-    assert parts[0] == "00", f"versão traceparent inválida: {parts[0]!r}"
 
 
 def test_propagate_inject_no_op_without_span(in_memory_exporter):

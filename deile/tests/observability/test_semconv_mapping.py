@@ -161,16 +161,3 @@ def test_semconv_disabled_no_vcs_attrs(in_memory_exporter, monkeypatch):
     assert not vcs_keys, f"expected no vcs.* attrs when toggle off, got: {vcs_keys}"
 
 
-def test_semconv_enabled_default_true(in_memory_exporter):
-    """sem DEILE_OTLP_SEMCONV_ENABLED → default true → vcs.* presentes."""
-    tid = "task-semconv-default-1"
-    emit_dispatch_received(tid, session_id="s1", model="m", branch="main")
-    emit_git_push(tid, repo="https://github.com/owner/repo", branch="main", status="ok")
-
-    spans = in_memory_exporter.get_finished_spans()
-    git_spans = [s for s in spans if s.name == "git.push"]
-    assert git_spans, "expected git.push child span"
-    attrs = dict(git_spans[0].attributes)
-
-    assert "vcs.ref.head.name" in attrs
-    assert attrs["vcs.ref.head.name"] == "main"

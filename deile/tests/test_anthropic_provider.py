@@ -310,6 +310,3 @@ def test_tier(provider, handle):
     assert provider.tier == ModelTier.TIER_1
 
 
-def test_pricing(provider, handle):
-    assert provider.pricing.input_per_1m_usd == 5.00
-    assert provider.pricing.output_per_1m_usd == 25.00

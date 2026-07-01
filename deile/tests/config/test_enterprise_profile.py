@@ -104,51 +104,28 @@ class TestBashToolSandboxEnforcement:
         )
 
     @pytest.mark.unit
-    def test_sandbox_forced_when_setting_true(self):
+    @pytest.mark.parametrize("setting_value", [True, False])
+    def test_sandbox_follows_profile_setting(self, setting_value):
+        """sandbox_code_execution forces sandbox mode (issue #138).
+
+        With the tool's own ``sandbox`` arg left False, the result's
+        ``sandbox_used`` must mirror the profile setting: forced True when the
+        setting is enabled, left False when disabled. Exercises the real
+        execute_sync flow (no subprocess/PTY mocks) so the assertion reflects
+        actual behavior rather than mock plumbing.
+        """
         from deile.tools.bash_tool import BashExecuteTool
+
+        settings = Settings()
+        settings.sandbox_code_execution = setting_value
 
         tool = BashExecuteTool()
         ctx = self._make_ctx(sandbox_arg=False)
 
-        mock_settings = MagicMock()
-        mock_settings.sandbox_code_execution = True
+        with patch("deile.tools.bash_tool.get_settings", return_value=settings):
+            result = tool.execute_sync(ctx)
 
-        subprocess_calls = []
-
-        def fake_subprocess(command, working_dir, env, timeout):
-            subprocess_calls.append(True)
-            return ("hello\n", "", 0, False)
-
-        # When sandbox_code_execution=True the tool must use subprocess (not PTY)
-        with patch("deile.tools.bash_tool.get_settings", return_value=mock_settings):
-            with patch.object(tool, "_execute_with_subprocess", side_effect=fake_subprocess):
-                with patch.object(tool, "_should_use_pty", return_value=False):
-                    tool.execute_sync(ctx)
-
-        assert subprocess_calls, "subprocess should have been called"
-
-    @pytest.mark.unit
-    def test_sandbox_not_forced_when_setting_false(self):
-        from deile.tools.bash_tool import BashExecuteTool
-
-        tool = BashExecuteTool()
-        ctx = self._make_ctx(sandbox_arg=False)
-
-        mock_settings = MagicMock()
-        mock_settings.sandbox_code_execution = False
-
-        subprocess_calls = []
-
-        def fake_subprocess(command, working_dir, env, timeout):
-            subprocess_calls.append(True)
-            return ("hello\n", "", 0, False)
-
-        with patch("deile.tools.bash_tool.get_settings", return_value=mock_settings):
-            with patch.object(tool, "_execute_with_subprocess", side_effect=fake_subprocess):
-                with patch.object(tool, "_should_use_pty", return_value=False):
-                    tool.execute_sync(ctx)
-
-        assert subprocess_calls
+        assert result.data["sandbox_used"] is setting_value
 
 
 # ---------------------------------------------------------------------------
@@ -204,32 +181,24 @@ class TestEncryptLogsWarning:
     def test_encrypt_logs_warning_emitted(self):
         import deile.storage.logs as logs_mod
 
-        # Reset module state so _ensure_initialized runs fresh.
-        # Also save/restore logger propagation: _ensure_initialized sets
-        # `deile.propagate = False` as a side effect, which would break
-        # subsequent tests that rely on caplog capturing from child loggers.
-        logs_mod._initialized = False
-        logs_mod._encrypt_logs_warned = False
-
         deile_logger = logging.getLogger("deile")
+        # _ensure_initialized may set `deile.propagate = False` as a side
+        # effect (only when the logger has no handlers); guard against it
+        # leaking into other tests that rely on caplog capturing.
         saved_propagate = deile_logger.propagate
-        saved_handlers = list(deile_logger.handlers)
 
         try:
-            # Patch `warning` directly on the logger instance so the test is
-            # immune to logger-level / handler-configuration state.
-            with patch.object(deile_logger, "warning") as mock_warn:
-                with patch("deile.storage.logs._is_encrypt_logs_enabled", return_value=True):
-                    logs_mod._ensure_initialized()
+            # patch.object auto-restores the module flags, so init runs fresh
+            # here and the global state is returned to its real value on exit
+            # (no manual juggling). _is_encrypt_logs_enabled is the documented
+            # seam for forcing the warning branch.
+            with patch.object(logs_mod, "_initialized", False), \
+                 patch.object(logs_mod, "_encrypt_logs_warned", False), \
+                 patch("deile.storage.logs._is_encrypt_logs_enabled", return_value=True), \
+                 patch.object(deile_logger, "warning") as mock_warn:
+                logs_mod._ensure_initialized()
         finally:
-            # Restore the "deile" logger to the state it was in before we
-            # called _ensure_initialized (prevents propagation=False leaking).
             deile_logger.propagate = saved_propagate
-            for h in list(deile_logger.handlers):
-                if h not in saved_handlers:
-                    deile_logger.removeHandler(h)
-            logs_mod._initialized = False
-            logs_mod._encrypt_logs_warned = False
 
         mock_warn.assert_called_once()
         msg = mock_warn.call_args[0][0]

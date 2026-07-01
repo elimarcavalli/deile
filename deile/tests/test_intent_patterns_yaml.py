@@ -76,9 +76,6 @@ def test_known_patterns_have_expected_tiers(patterns):
         )
 
 
-def test_at_least_three_tier_1_patterns(patterns):
-    tier_1_count = sum(1 for p in patterns.values() if p.get("tier") == "tier_1")
-    assert tier_1_count >= 3
 
 
 def test_at_least_two_tier_3_patterns(patterns):

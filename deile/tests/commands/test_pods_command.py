@@ -131,10 +131,6 @@ class TestParseK8sTs:
 
 @pytest.mark.unit
 class TestResolveNamespace:
-    def test_default_is_deile(self):
-        with patch("deile.commands.builtin.pods_command._resolve_namespace", return_value="deile"):
-            assert _resolve_namespace() == "deile" or True  # baseline
-
     def test_reads_from_settings(self, monkeypatch):
         monkeypatch.setenv("DEILE_K8S_NAMESPACE", "my-ns")
         # Call indirectly through fresh get_settings loading
@@ -142,18 +138,6 @@ class TestResolveNamespace:
         ns = _resolve_namespace()
         assert isinstance(ns, str)
         assert len(ns) > 0
-
-    def test_fallback_on_exception(self):
-        with patch(
-            "deile.commands.builtin.pods_command._resolve_namespace",
-            side_effect=Exception("boom"),
-        ):
-            # Real function — must not raise
-            try:
-                result = _resolve_namespace()
-                assert result == "deile"
-            except Exception:
-                pass  # already patched above, test the real func separately
 
     def test_real_function_fallback(self):
         """Direct test: when get_settings raises, fallback to 'deile'."""
@@ -310,28 +294,22 @@ class TestFetchPods:
         proc_mock.returncode = 1
         proc_mock.communicate = AsyncMock(return_value=(b"", b"Forbidden"))
 
+        async def _passthrough(coro, timeout=None):
+            return await coro
+
         with (
             patch(
                 "deile.commands.builtin.pods_command.asyncio.create_subprocess_exec",
                 return_value=proc_mock,
             ),
-            patch(
-                "deile.commands.builtin.pods_command.asyncio.wait_for",
-                side_effect=lambda coro, timeout=None: coro
-                if not asyncio.iscoroutine(coro)
-                else coro,
-            ),
+            patch("deile.commands.builtin.pods_command.asyncio.wait_for", side_effect=_passthrough),
         ):
-            # Patch wait_for to just await the coroutine
+            data, err = await _fetch_pods("/usr/bin/kubectl", "deile")
 
-            async def _passthrough(coro, timeout=None):
-                return await coro
-
-            with patch("deile.commands.builtin.pods_command.asyncio.wait_for", side_effect=_passthrough):
-                data, err = await _fetch_pods("/usr/bin/kubectl", "deile")
-
-        # Either we get an error (non-zero rc) or the mock wasn't set up perfectly — just ensure no crash
-        # This is a structural test; subprocess mock integration is best-effort in unit context
+        assert data is None
+        assert err is not None
+        assert "código 1" in err
+        assert "Forbidden" in err
 
     async def test_invalid_json_returns_error(self):
         from deile.commands.builtin.pods_command import _fetch_pods
@@ -365,15 +343,33 @@ class TestFetchPods:
 
 @pytest.mark.unit
 def test_table_no_fixed_width_in_pods_command():
-    """pods_command.py must not use width=<int> in add_column calls."""
-    import re
-    from pathlib import Path
+    """Columns must adapt to content width (no hardcoded width=<int>)."""
 
-    path = Path(__file__).resolve().parents[3] / "deile" / "commands" / "builtin" / "pods_command.py"
-    text = path.read_text(encoding="utf-8")
-    WIDTH_LITERAL = re.compile(r"\.add_column\s*\([^)]*width\s*=\s*\d+")
-    matches = WIDTH_LITERAL.findall(text)
-    assert not matches, f"Fixed width in add_column: {matches}"
+    def _make(name: str) -> list:
+        return [
+            {
+                "metadata": {"name": name},
+                "status": {
+                    "phase": "Running",
+                    "startTime": "2024-01-13T10:00:00Z",
+                    "containerStatuses": [{"ready": True, "restartCount": 0}],
+                },
+            }
+        ]
+
+    def _rendered_width(items) -> int:
+        table, _ = _build_pods_table(items, "deile")
+        buf = StringIO()
+        # Generous console width so the table sizes itself to its content.
+        Console(file=buf, no_color=True, width=200).print(table)
+        return max((len(line) for line in buf.getvalue().splitlines()), default=0)
+
+    short_width = _rendered_width(_make("p1"))
+    long_width = _rendered_width(_make("claude-worker-with-a-very-long-name-0001"))
+
+    # A longer pod name must widen the table; a hardcoded width=N would crop
+    # the long name and yield identical totals.
+    assert long_width > short_width
 
 
 # ---------------------------------------------------------------------------
@@ -391,9 +387,3 @@ def test_pods_command_has_help():
     help_text = _cmd().get_help()
     assert "pods" in help_text.lower()
     assert "claude-worker" in help_text.lower()
-
-
-@pytest.mark.unit
-def test_pods_command_is_direct_command():
-    from deile.commands.base import DirectCommand
-    assert isinstance(_cmd(), DirectCommand)

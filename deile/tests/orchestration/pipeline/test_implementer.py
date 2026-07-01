@@ -19,7 +19,6 @@ from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
                                                         MentionTrigger)
 from deile.orchestration.pipeline.implementer import (ClaudeImplementer,
                                                       WorkerImplementer,
-                                                      WorkOutcome,
                                                       build_implementer)
 
 
@@ -130,11 +129,6 @@ class TestFactory:
         impl = build_implementer("")
         assert isinstance(impl, WorkerImplementer)
 
-    def test_none_mode_returns_worker_implementer(self):
-        # Sem argumento — mesmo comportamento de vazio.
-        impl = build_implementer()
-        assert isinstance(impl, WorkerImplementer)
-
     def test_get_local_claude_implementer_returns_claude(self):
         """Factory exclusiva para uso local fora do cluster (CLI). Continua
         construindo :class:`ClaudeImplementer` (subprocess ``claude -p``)."""
@@ -228,14 +222,6 @@ class TestWorkerImplementer:
     async def test_implement_worker_failure_returns_not_ok(self):
         # Issue #373: fire-and-forget dispatch — transport errors still
         # propagate (the _post_dispatch call itself can fail).
-        from deile.infrastructure.deile_worker_client import \
-            WorkerDispatchError
-        client = _FakeClient(WorkerDispatchError("nope", error_code="WORKER_TIMEOUT"))
-        out = await WorkerImplementer(client=client).implement(_make_monitor(), _issue())
-        assert out.ok is False
-        assert "WORKER_TIMEOUT" in out.error
-
-    async def test_dispatch_error_is_caught(self):
         from deile.infrastructure.deile_worker_client import \
             WorkerDispatchError
         client = _FakeClient(WorkerDispatchError("nope", error_code="WORKER_TIMEOUT"))
@@ -367,12 +353,6 @@ class TestTickWatchdog:
             await task
 
 
-class TestWorkOutcome:
-    def test_defaults(self):
-        o = WorkOutcome(ok=True, text="x")
-        assert o.error == ""
-
-
 # ---------------------------------------------------------------------------
 # Testes de nowait para critique / refine / review (issue #373 extensão)
 # ---------------------------------------------------------------------------
@@ -409,11 +389,7 @@ class TestCritiqueRefineNowait:
         assert out.text == ""
         # Transport-level wait=False confirma nowait.
         assert client.last_wait is False
-
-    async def test_critique_payload_has_wait_for_result_false(self):
-        client = _FakeClient({"task_id": "crit-t2", "status": "running"})
-        impl = WorkerImplementer(client=client)
-        await impl.critique(_make_monitor_with_forge(), _issue_with_labels(number=10))
+        # ...e o payload carrega wait_for_result=False (nowait ponta a ponta).
         assert client.last_payload["wait_for_result"] is False
 
     async def test_critique_gravar_ledger_com_task_id(self):
@@ -436,11 +412,7 @@ class TestCritiqueRefineNowait:
         assert out.task_id == "ref-t1"
         assert out.text == ""
         assert client.last_wait is False
-
-    async def test_refine_payload_has_wait_for_result_false(self):
-        client = _FakeClient({"task_id": "ref-t2", "status": "running"})
-        impl = WorkerImplementer(client=client)
-        await impl.refine(_make_monitor_with_forge(), _issue_with_labels(number=11))
+        # ...e o payload carrega wait_for_result=False (nowait ponta a ponta).
         assert client.last_payload["wait_for_result"] is False
 
     async def test_refine_grava_ledger_com_task_id(self):

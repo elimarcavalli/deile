@@ -75,22 +75,3 @@ def test_erase_empty_prompt_echo_writes_nothing_when_not_tty() -> None:
     assert fake_stdout.getvalue() == "", (
         f"deveria ser silencioso sem TTY: {fake_stdout.getvalue()!r}"
     )
-
-
-@pytest.mark.unit
-def test_erase_ansi_constant_pair_count_matches_lines_emitted_per_prompt() -> None:
-    """A constante ``_ERASE_PROMPT_ECHO_ANSI`` espelha o número de
-    linhas emitidas por iteração de ``get_user_input``.
-
-    ``get_user_input`` emite:
-      1. ``self.console.rule(style="dim")`` → 1 linha
-      2. prompt_toolkit commita ``> `` → 1 linha
-    Total = 2 linhas. Apagamos 2 (pair ``\\033[A\\033[2K`` aparece 2x).
-
-    Esse teste prende o invariante: se algum dia ``get_user_input``
-    passar a emitir mais (ou menos) linhas, esse contador precisa
-    casar — daí a inflação de prompts em branco que motivou a fix.
-    """
-    ansi = _DeileCLI._ERASE_PROMPT_ECHO_ANSI
-    assert ansi.count("\033[A") == 2
-    assert ansi.count("\033[2K") == 2

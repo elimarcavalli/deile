@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from deile.orchestration.pipeline.labels import (
-    BATCH_LABEL_PREFIX, LABEL_COLORS, LABEL_DESCRIPTIONS, MENTION_DONE,
+    LABEL_COLORS, LABEL_DESCRIPTIONS, MENTION_DONE,
     MENTION_LABELS, REVIEW_LABELS, REVIEW_PENDING, WORKFLOW_BLOCKED,
     WORKFLOW_LABELS, WORKFLOW_NEW, batch_id_from_label,
     current_refine_attempt_from_labels, is_batch_label,
@@ -14,16 +14,16 @@ from deile.orchestration.pipeline.labels import (
 
 
 class TestLabelConstants:
-    def test_workflow_labels_use_tilde_prefix(self):
-        for label in WORKFLOW_LABELS:
-            assert label.startswith("~workflow:")
-
-    def test_review_labels_use_tilde_prefix(self):
-        for label in REVIEW_LABELS:
-            assert label.startswith("~review:")
-
-    def test_batch_prefix(self):
-        assert BATCH_LABEL_PREFIX == "~batch:"
+    @pytest.mark.parametrize(
+        "labels, prefix",
+        [
+            (WORKFLOW_LABELS, "~workflow:"),
+            (REVIEW_LABELS, "~review:"),
+        ],
+    )
+    def test_label_sets_use_tilde_prefix(self, labels, prefix):
+        for label in labels:
+            assert label.startswith(prefix)
 
     def test_every_label_has_color_and_description(self):
         for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS):
@@ -52,18 +52,16 @@ class TestLabelConstants:
 
 
 class TestBatchHelpers:
-    def test_make_batch_label_uses_prefix(self):
-        assert make_batch_label("abc12345") == "~batch:abc12345"
-
-    def test_is_batch_label_true_for_prefixed(self):
-        assert is_batch_label("~batch:abc12345")
+    @pytest.mark.parametrize("batch_id", ["abc12345", "f00dcafe"])
+    def test_batch_label_make_is_parse_roundtrip(self, batch_id):
+        label = make_batch_label(batch_id)
+        assert label == f"~batch:{batch_id}"
+        assert is_batch_label(label)
+        assert batch_id_from_label(label) == batch_id
 
     def test_is_batch_label_false_for_workflow(self):
         assert not is_batch_label(WORKFLOW_NEW)
         assert not is_batch_label(REVIEW_PENDING)
-
-    def test_batch_id_from_label_extracts_id(self):
-        assert batch_id_from_label("~batch:f00dcafe") == "f00dcafe"
 
     def test_batch_id_from_label_rejects_non_batch(self):
         with pytest.raises(ValueError):
@@ -74,14 +72,11 @@ class TestRefineAttemptHelpers:
     """Testa os helpers de label ~refine:N (issue R1 — contador durável de
     passes de refino)."""
 
-    def test_make_refine_label_usa_prefixo(self):
-        assert make_refine_attempt_label(0) == "~refine:0"
-        assert make_refine_attempt_label(5) == "~refine:5"
-
-    def test_is_refine_attempt_label_verdadeiro(self):
-        assert is_refine_attempt_label("~refine:0")
-        assert is_refine_attempt_label("~refine:5")
-        assert is_refine_attempt_label("~refine:99")
+    @pytest.mark.parametrize("n", [0, 5, 99])
+    def test_make_refine_label_e_is_refine_attempt(self, n):
+        label = make_refine_attempt_label(n)
+        assert label == f"~refine:{n}"
+        assert is_refine_attempt_label(label)
 
     def test_is_refine_attempt_label_falso_para_outros(self):
         assert not is_refine_attempt_label(WORKFLOW_NEW)

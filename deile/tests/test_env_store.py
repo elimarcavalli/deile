@@ -317,8 +317,3 @@ class TestListVars:
         assert result["A_KEY"] == "<masked>"
         assert result["B_VAR"] == "public"
 
-    def test_non_string_key_skipped(self, tmp_path):
-        from deile.config.env_store import list_vars
-        _write_settings(tmp_path, {"env": {"exports": {"VALID": "ok"}}})
-        result = list_vars(home=tmp_path)
-        assert "VALID" in result

@@ -51,35 +51,19 @@ class TestForceTickGuard:
     async def test_force_tick_schedules_when_not_in_flight(self):
         """AC-1b: com _tick_in_flight=False, _force_tick_cb agenda exatamente uma task."""
         monitor = self._make_monitor_with_state()
-        monitor._tick_in_flight = False
-
-        coro = MagicMock()
-
-        async def _tick_coro():
-            return None
-
-        monitor.tick = lambda: _tick_coro()
+        monitor._tick_in_flight = False  # tick já é AsyncMock (via _make_monitor_with_state)
 
         def _force_tick_cb():
             if not monitor._tick_in_flight:
                 asyncio.ensure_future(monitor.tick())
 
-        loop = asyncio.get_event_loop()
-        created = []
-        original = asyncio.ensure_future
-
-        with patch("asyncio.ensure_future", side_effect=lambda c: created.append(c) or original(c)):
+        with patch("asyncio.ensure_future") as ensure_future:
             _force_tick_cb()
 
-        assert len(created) == 1, "exatamente uma future deve ser criada quando não em flight"
-        # Cleanup — cancela a task para não sujar o event loop
-        for item in created:
-            if asyncio.isfuture(item) or asyncio.iscoroutine(item):
-                try:
-                    if hasattr(item, "cancel"):
-                        item.cancel()
-                except Exception:
-                    pass
+        ensure_future.assert_called_once()
+        monitor.tick.assert_called_once()
+        # coro capturada não foi agendada (ensure_future mockado) → fecha p/ não vazar
+        ensure_future.call_args.args[0].close()
 
     async def test_tick_resets_flag_on_exception(self):
         """AC-1c: _tick_in_flight volta a False mesmo que _tick_body lance exceção."""

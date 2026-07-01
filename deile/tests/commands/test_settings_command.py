@@ -104,14 +104,13 @@ class TestSet:
         assert result.success, result.content
         assert mgr.get_setting("ui.streaming_enabled") is True
 
-    async def test_set_missing_value_returns_error(self):
-        result = await _run(SettingsCommand(), "set pipeline.poll_interval")
+    @pytest.mark.parametrize("rest", ["", "pipeline.poll_interval"])
+    async def test_set_missing_value_returns_error(self, rest):
+        # Both "set" (no key+value) and "set <key>" (no value) hit the same
+        # missing-args branch in _cmd_set, returning the Usage error.
+        result = await _run(SettingsCommand(), f"set {rest}".strip())
         assert not result.success
         assert "Usage" in result.content
-
-    async def test_set_missing_key_and_value_returns_error(self):
-        result = await _run(SettingsCommand(), "set")
-        assert not result.success
 
     async def test_set_blocked_secret_key(self, tmp_path):
         mgr = _make_manager(tmp_path)
@@ -202,24 +201,6 @@ class TestList:
         ):
             result = await _run(cmd, "list")
         assert result.success
-
-    async def test_list_pipeline_prefix_filters(self, tmp_path):
-        mgr = _make_manager(tmp_path)
-        cmd = SettingsCommand()
-        with patch(
-            "deile.commands.builtin.settings_command.SettingsManager",
-            return_value=mgr,
-        ):
-            result = await _run(cmd, "list pipeline")
-        assert result.success
-        from io import StringIO
-
-        from rich.console import Console
-        buf = StringIO()
-        c = Console(file=buf, width=200)
-        c.print(result.content)
-        text = buf.getvalue()
-        assert "pipeline" in text
 
     async def test_list_alias_ls(self, tmp_path):
         mgr = _make_manager(tmp_path)

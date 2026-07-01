@@ -108,14 +108,6 @@ async def test_no_hardcoded_session_id():
     assert data["export_metadata"]["session_id"] != "session_20250906_184500"
 
 
-@pytest.mark.unit
-async def test_no_hardcoded_version():
-    ctx = _make_context()
-    cmd = ExportCommand()
-    data = await cmd._get_export_data(ctx, include_artifacts=False, include_plans=False, include_session=False)
-    assert data["export_metadata"]["deile_version"] != "4.0.0"
-
-
 # ---------------------------------------------------------------------------
 # Integridade do arquivo
 # ---------------------------------------------------------------------------

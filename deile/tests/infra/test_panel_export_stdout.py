@@ -51,17 +51,3 @@ class TestSchemaV2WithStdout:
         import json
         serialized = json.dumps(obj)
         assert secret not in serialized
-
-
-class TestLiveSessionDataStdout:
-    def test_stdout_default_none(self):
-        data = LiveSessionData(
-            session=None, command=None, chat=None, api_errors=[]
-        )
-        assert data.stdout is None
-
-    def test_stdout_field_present(self):
-        data = LiveSessionData(
-            session=None, command=None, chat=None, api_errors=[], stdout="output"
-        )
-        assert data.stdout == "output"

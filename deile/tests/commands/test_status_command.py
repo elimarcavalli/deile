@@ -48,23 +48,14 @@ class TestStatusComplete:
     async def test_returns_success(self):
         result = await _cmd().execute(_ctx())
         assert result.success is True
-
-    async def test_content_type_is_rich(self):
-        result = await _cmd().execute(_ctx())
         assert result.content_type == "rich"
-
-    async def test_content_not_string(self):
-        result = await _cmd().execute(_ctx())
-        assert not isinstance(result.content, str)
 
     async def test_renders_without_repr_artifacts(self):
         result = await _cmd().execute(_ctx())
+        assert not isinstance(result.content, str)
         rendered = _render(result.content)
+        assert rendered.strip()
         assert "<rich." not in rendered
-
-    async def test_renders_non_empty(self):
-        result = await _cmd().execute(_ctx())
-        assert _render(result.content).strip()
 
     async def test_mentions_system(self):
         result = await _cmd().execute(_ctx())
@@ -73,7 +64,7 @@ class TestStatusComplete:
     async def test_mentions_health(self):
         result = await _cmd().execute(_ctx())
         rendered = _render(result.content).lower()
-        assert "health" in rendered or "saúde" in rendered or "status" in rendered
+        assert "saúde" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -105,9 +96,6 @@ class TestStatusModels:
     async def test_models_returns_success(self):
         result = await _cmd().execute(_ctx("models"))
         assert result.success is True
-
-    async def test_models_renders_without_error(self):
-        result = await _cmd().execute(_ctx("models"))
         assert _render(result.content).strip()
 
     async def test_model_reflects_active_router(self):
@@ -167,7 +155,7 @@ class TestStatusMemory:
         """Without an agent, memory status shows INDISPONÍVEL."""
         result = await _cmd().execute(_ctx("memory"))
         rendered = _render(result.content)
-        assert "INDISPONÍVEL" in rendered or result.success is True
+        assert "INDISPONÍVEL" in rendered
 
     async def test_memory_returns_real_usage_stats(self):
         """With a MemoryManager attached, /status memory must succeed."""
@@ -201,7 +189,7 @@ class TestStatusMemory:
 
         result = await _cmd().execute(_ctx("memory", agent=_Agent()))
         rendered = _render(result.content)
-        assert "DB offline" in rendered or "Erro" in rendered or result.success is True
+        assert "DB offline" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +198,6 @@ class TestStatusMemory:
 
 
 class TestStatusPlans:
-    async def test_plans_returns_success(self):
-        result = await _cmd().execute(_ctx("plans"))
-        assert result.success is True
-
     async def test_plans_empty_state_is_honest(self):
         """With no active plans, the status must show 0, not fake data."""
         with patch("deile.orchestration.plan_manager.get_plan_manager") as mock_gpm:
@@ -245,19 +229,33 @@ class TestStatusConnectivity:
         assert any(pid in rendered for pid in ("openai", "anthropic", "google", "deepseek"))
 
     async def test_connectivity_parallel_execution(self):
-        """Probing multiple providers must complete faster than sequential sum."""
-        async def _slow_probe(host, port=443, timeout=5.0):
-            await asyncio.sleep(0.05)
+        """Probes must run concurrently — proven by the peak in-flight count.
+
+        A sequential implementation would await each probe to completion before
+        starting the next, so at most one probe would ever be in flight (peak 1).
+        ``asyncio.gather`` overlaps them, so the peak equals the probe count.
+        """
+        in_flight = 0
+        peak = 0
+
+        async def _counting_probe(host, port=443, timeout=5.0):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            # Yield so every gathered coroutine reaches this point before any returns.
+            await asyncio.sleep(0)
+            in_flight -= 1
             return False, 50.0
 
-        with patch("deile.commands.builtin.status_command._probe_host", side_effect=_slow_probe):
-            start = time.monotonic()
+        # Empty router → fallback probes every known provider host, so >1 probe
+        # is in flight regardless of which API keys the environment registers.
+        empty_router = MagicMock()
+        empty_router.providers = {}
+        with patch("deile.core.models.router.get_model_router", return_value=empty_router), \
+             patch("deile.commands.builtin.status_command._probe_host", side_effect=_counting_probe):
             result = await _cmd().execute(_ctx("connectivity"))
-            elapsed = time.monotonic() - start
-            # With 4 providers each at 50ms, sequential = 200ms+.
-            # Parallel should be < 100ms. Allow generous 500ms for CI overhead.
-            assert elapsed < 0.5
             assert result.success is True
+            assert peak > 1, f"Expected concurrent probes, peak in-flight was {peak}"
 
 
 # ---------------------------------------------------------------------------
@@ -287,17 +285,11 @@ class TestStatusSystem:
         result = await _cmd().execute(_ctx("system"))
         assert result.success is True
 
-    async def test_content_not_string(self):
-        result = await _cmd().execute(_ctx("system"))
-        assert not isinstance(result.content, str)
-
-    async def test_renders_non_empty(self):
-        result = await _cmd().execute(_ctx("system"))
-        assert _render(result.content).strip()
-
     async def test_version_in_system(self):
         result = await _cmd().execute(_ctx("system"))
+        assert not isinstance(result.content, str)
         rendered = _render(result.content)
+        assert rendered.strip()
         assert __version__ in rendered
 
 

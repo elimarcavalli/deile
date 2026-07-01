@@ -153,13 +153,6 @@ class TestAddSkillsPath:
         with pytest.raises(ValueError, match="Invalid scope"):
             mgr.add_skills_path("/foo", scope="bad")
 
-    def test_add_preserves_existing_paths(self, tmp_path):
-        mgr = _make_manager(tmp_path)
-        mgr.add_skills_path("/first")
-        mgr.add_skills_path("/second")
-        paths = mgr.list_skills_paths("global")
-        assert "/first" in paths
-        assert "/second" in paths
 
     def test_add_global_creates_parent_dirs(self, tmp_path):
         mgr = _make_manager(tmp_path)

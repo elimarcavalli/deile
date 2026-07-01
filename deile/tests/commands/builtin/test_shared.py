@@ -69,20 +69,8 @@ def test_split_args_no_args_attribute():
 
 
 @pytest.mark.unit
-def test_colored_panel_returns_panel():
-    panel = _colored_panel("msg", "title", "blue")
-    assert isinstance(panel, Panel)
-
-
-@pytest.mark.unit
 def test_colored_panel_none_title():
     panel = _colored_panel("msg", None, "red")
-    assert isinstance(panel, Panel)
-
-
-@pytest.mark.unit
-def test_error_panel_returns_panel():
-    panel = error_panel("something went wrong")
     assert isinstance(panel, Panel)
 
 
@@ -100,21 +88,9 @@ def test_error_panel_custom_title():
 
 
 @pytest.mark.unit
-def test_warning_panel_returns_panel():
-    panel = warning_panel("watch out")
-    assert isinstance(panel, Panel)
-
-
-@pytest.mark.unit
 def test_warning_panel_default_title_aviso():
     panel = warning_panel("watch out")
     assert panel.title == "Aviso"
-
-
-@pytest.mark.unit
-def test_success_panel_returns_panel():
-    panel = success_panel("all good")
-    assert isinstance(panel, Panel)
 
 
 @pytest.mark.unit
@@ -153,17 +129,11 @@ def test_export_timestamp_is_utc():
 
 
 @pytest.mark.unit
-def test_get_memory_manager_no_agent():
-    ctx = _make_context()
-    # context without agent attribute
-    result = get_memory_manager(ctx)
-    assert result is None
-
-
-@pytest.mark.unit
-def test_get_memory_manager_with_none_agent():
-    ctx = _make_context()
-    ctx.agent = None
+@pytest.mark.parametrize("set_agent_none", [False, True], ids=["attr-absent", "agent-none"])
+def test_get_memory_manager_no_agent(set_agent_none):
+    ctx = _make_context()  # sem atributo agent
+    if set_agent_none:
+        ctx.agent = None  # mesmo ramo falsy de get_agent → None
     result = get_memory_manager(ctx)
     assert result is None
 
@@ -193,16 +163,13 @@ def test_get_memory_manager_agent_without_memory_manager():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.unit
-def test_get_session_id_no_session_returns_default():
-    ctx = _make_context()  # no session attribute
+@pytest.mark.parametrize("set_session_none", [False, True], ids=["attr-absent", "session-none"])
+def test_get_session_id_no_session_returns_default(set_session_none):
+    ctx = _make_context()  # sem atributo session
+    if set_session_none:
+        ctx.session = None  # mesmo ramo falsy de get_session → default
     assert get_session_id(ctx) is None
     assert get_session_id(ctx, "default") == "default"
-
-
-@pytest.mark.unit
-def test_get_session_id_none_session_returns_default():
-    ctx = _make_context()
-    ctx.session = None
     assert get_session_id(ctx, "desconhecido") == "desconhecido"
 
 

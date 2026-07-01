@@ -186,12 +186,14 @@ class TestIssueGC:
         assert result == "success"
         assert "~prioridade:1" in forge._labels
 
-    def test_preserves_project_type_labels(self):
-        for label in ("bug", "feature", "intent", "refactor", "enhancement",
-                      "infra", "observability"):
-            forge, result = self._run([WORKFLOW_NEW, label])
-            assert result == "success", f"expected success stripping {label!r}"
-            assert label in forge._labels, f"expected {label!r} to be preserved"
+    @pytest.mark.parametrize(
+        "label",
+        ["bug", "feature", "intent", "refactor", "enhancement", "infra", "observability"],
+    )
+    def test_preserves_project_type_labels(self, label):
+        forge, result = self._run([WORKFLOW_NEW, label])
+        assert result == "success", f"expected success stripping {label!r}"
+        assert label in forge._labels, f"expected {label!r} to be preserved"
 
     def test_applies_concluded_even_when_no_strip_needed(self):
         """Issue with no transitional labels still gets ~workflow:concluida."""

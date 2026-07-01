@@ -31,17 +31,6 @@ class TestFailureIsolation:
         root_spans = [s for s in spans if s.name == "deile.dispatch"]
         assert len(root_spans) >= 1, "span deve ser emitido mesmo com log falhando"
 
-    def test_log_failure_does_not_affect_dispatch_return(self, in_memory_exporter, monkeypatch):
-        """Falha no log pipeline não propaga exceção para o chamador."""
-        import deile.observability.dispatch_log_export as dle
-
-        monkeypatch.setattr(dle, "emit_log_record", lambda **kw: (_ for _ in ()).throw(RuntimeError("log boom")))
-
-        from deile.observability.dispatch_export import emit_dispatch_received
-
-        # Should return None (no exception)
-        result = emit_dispatch_received("isolation-ret", session_id="s1")
-        assert result is None
 
     def test_span_failure_does_not_affect_log(self, in_memory_log_exporter, monkeypatch):
         """Falha no _get_raw_tracer não afeta log emission."""

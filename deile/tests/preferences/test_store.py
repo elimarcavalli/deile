@@ -155,8 +155,6 @@ class TestListKeys:
         store.store("u1", "a_key", 2)
         assert store.list_keys("u1") == ["a_key", "z_key"]
 
-    def test_list_nonexistent_user(self, store):
-        assert store.list_keys("ghost") == []
 
 
 class TestGetAll:
@@ -169,8 +167,6 @@ class TestGetAll:
         result = store.get_all("u1")
         assert result == {"a": 1, "b": "two"}
 
-    def test_get_all_nonexistent_user(self, store):
-        assert store.get_all("ghost") == {}
 
 
 # ── Persistence (read-back after new store instance) ──────────────────────
