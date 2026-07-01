@@ -110,3 +110,29 @@ def test_auth_fail_warning():
 def test_auth_backoff_warning():
     recs = _emit_one(pl.log_auth_backoff, target="t", attempts=3, until_iso="2026T", backoff_s=480)
     assert recs and recs[0].levelname == "WARNING"
+
+
+# STRENGTHEN: a produção tem dedup por TTL (_DEDUP.seen_recently) nunca exercitada —
+# os testes acima só checam a 1ª emissão. Cobrir a supressão da 2ª chamada idêntica.
+@pytest.mark.parametrize(
+    "func,kw,level",
+    [
+        (pl.log_label_change, dict(target_kind="issue", target=7, removed=[], added=["a"]), "INFO"),
+        (pl.log_reaper_unblock, dict(target_kind="issue", target=7, attempts=1, reason="r"), "INFO"),
+        (pl.log_reaper_block, dict(target_kind="issue", target=7, attempts=3, cap=3, reason="r"), "WARNING"),
+        (pl.log_auth_fail, dict(target="t", attempts=1, threshold=3, reason="x"), "WARNING"),
+    ],
+)
+def test_emit_is_deduped_on_identical_call_within_ttl(func, kw, level):
+    """2a chamada identica dentro do TTL e suprimida por _DEDUP.seen_recently."""
+    first = _emit_one(func, **kw)
+    assert first and first[0].levelname == level
+    second = _emit_one(func, **kw)
+    assert second == []
+
+
+def test_label_change_distinct_keys_both_emit():
+    """Chaves distintas (target diferente) nao sao deduplicadas: ambas emitem."""
+    a = _emit_one(pl.log_label_change, target_kind="issue", target=1, removed=[], added=["a"])
+    b = _emit_one(pl.log_label_change, target_kind="issue", target=2, removed=[], added=["a"])
+    assert a and b

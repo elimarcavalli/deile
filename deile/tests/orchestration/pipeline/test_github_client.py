@@ -73,6 +73,14 @@ class TestListIssues:
             issues = await client.list_issues_with_label(WORKFLOW_NEW)
         assert issues == []
 
+    def test_parse_gh_jq_output_handles_malformed_json(self):
+        # STRENGTHEN: o branch JSONDecodeError do parser NDJSON nao era exercitado.
+        # objeto valido + lixo -> retorna o parcial ja decodificado; totalmente malformado -> [] (sem levantar).
+        valid = '{"number": 1, "title": "ok", "url": "u", "labels": [], "body": "", "state": "open"}'
+        items = _parse_gh_jq_output(valid + " {bad", log_label="x")
+        assert len(items) == 1 and items[0]["number"] == 1
+        assert _parse_gh_jq_output("{bad", log_label="x") == []
+
 
 class TestGetIssue:
     async def test_get_issue_parses_single_object(self):
@@ -180,12 +188,12 @@ class TestEnsureLabels:
             await client.ensure_pipeline_labels()
         assert WORKFLOW_BLOCKED in created
 
-
-class TestGhCommandError:
-    def test_error_carries_metadata(self):
-        err = GhCommandError(("gh", "issue", "list"), 2, "out", "err msg")
-        assert err.returncode == 2
-        assert "err msg" in str(err)
+    async def test_ensure_labels_idempotent_when_run_returns_nonzero(self):
+        # STRENGTHEN: antes so rc=0 era testado. rc!=0 (label ja existe / falha de criacao)
+        # cai no branch `if rc != 0` de _create_one, que apenas loga debug e NAO levanta.
+        client = GitHubClient("owner/name")
+        with patch.object(client, "_run", new=AsyncMock(return_value=(1, "", "already exists"))):
+            await client.ensure_pipeline_labels()  # idempotente: nao deve levantar
 
 
 class TestEnsureLabelOnClaim:

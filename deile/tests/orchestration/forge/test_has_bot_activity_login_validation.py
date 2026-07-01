@@ -68,3 +68,30 @@ async def test_valid_login_with_activity_returns_true(forge):
     with patch.object(forge, "_run", new_callable=AsyncMock, side_effect=_run_side_effect):
         result = await forge._has_bot_activity_impl("issue", 42, "deile-one", since)
     assert result is True
+
+
+# STRENGTHEN: para kind="pr" a produção checa 3 fontes extra além de comments —
+# reviews, merge_status e commits (linhas 902-926). Antes só o caminho "issue"
+# (comments) era exercitado. Cobrir cada branch de PR isoladamente.
+# Ordem das chamadas _run em kind="pr": [comments, reviews, merge, commits].
+@pytest.mark.parametrize("active_idx,branch", [
+    (1, "reviews"),
+    (2, "merge"),
+    (3, "commits"),
+])
+async def test_pr_activity_branches_return_true(forge, active_idx, branch):
+    import datetime
+    recent = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Todas as fontes "vazias" (null) exceto a do branch sob teste, que é recente.
+    returns = [(0, "null", "")] * 4
+    returns[active_idx] = (0, recent, "")
+    with patch.object(forge, "_run", new_callable=AsyncMock, side_effect=returns):
+        result = await forge._has_bot_activity_impl("pr", 7, "deile-one", 0)
+    assert result is True, f"atividade via {branch} deveria retornar True"
+
+
+async def test_pr_no_activity_returns_false(forge):
+    # Nenhuma das 4 fontes tem timestamp posterior ao since → False (bottom-out).
+    with patch.object(forge, "_run", new_callable=AsyncMock, return_value=(0, "null", "")):
+        result = await forge._has_bot_activity_impl("pr", 7, "deile-one", 0)
+    assert result is False

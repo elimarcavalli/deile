@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from deile.orchestration.forge import (CommentRef, IssueRef, MentionTrigger,
                                        PrRef, compute_batch_id_for_number)
 
@@ -60,38 +62,20 @@ def test_pr_ref_from_gh_json():
     assert pr.is_draft is False
 
 
-def test_pr_ref_from_gl_json_normalises_draft_signals():
-    # The MR has the draft boolean explicitly true.
-    explicit = PrRef.from_gl_json({
-        "iid": 5,
-        "title": "feat: y",
+# SIMPLIFY: 3 subcasos com setup duplicado -> parametrize (mesmos 3 casos, asserts intactos).
+@pytest.mark.parametrize("extra,title,expected", [
+    ({"draft": True}, "feat: y", True),              # boolean draft explícito
+    ({}, "Draft: refactor that thing", True),         # sem flag, prefixo "Draft:" no título
+    ({}, "feat: ready", False),                       # nenhum sinal de draft -> False
+])
+def test_pr_ref_from_gl_json_normalises_draft_signals(extra, title, expected):
+    mr = {
+        "iid": 5, "title": title,
         "web_url": "https://gitlab.com/g/p/-/merge_requests/5",
-        "labels": [],
-        "source_branch": "feat/y",
-        "target_branch": "main",
-        "state": "opened",
-        "draft": True,
-    })
-    assert explicit.is_draft is True
-
-    # No draft flag, but title prefixed with "Draft:" — same outcome.
-    title_only = PrRef.from_gl_json({
-        "iid": 6,
-        "title": "Draft: refactor that thing",
-        "web_url": "https://gitlab.com/g/p/-/merge_requests/6",
-        "labels": [],
-        "source_branch": "refactor/thing",
-        "target_branch": "main",
-        "state": "opened",
-    })
-    assert title_only.is_draft is True
-
-    # No draft signal at all → False.
-    clean = PrRef.from_gl_json({
-        "iid": 8, "title": "feat: ready", "web_url": "x", "labels": [],
-        "source_branch": "feat", "target_branch": "main", "state": "opened",
-    })
-    assert clean.is_draft is False
+        "labels": [], "source_branch": "b", "target_branch": "main",
+        "state": "opened", **extra,
+    }
+    assert PrRef.from_gl_json(mr).is_draft is expected
 
 
 def test_pr_ref_gl_state_normalisation():
@@ -117,10 +101,19 @@ def test_mention_trigger_dedup_key_consistent_across_role():
     assert by_assignee.dedup_key == by_comment.dedup_key == "issue:42"
 
 
-def test_mention_trigger_target_number_from_comment_url():
+# STRENGTHEN: a regex de target_number (/(\d+)(?:#|$)) extrai o número de URLs
+# /issues/, /pull/ (GH) e /merge_requests/ (GL). Antes só /issues/ era coberto —
+# uma regressão p/ /issues/(\d+) passaria. Cobrir os 3 formatos + sem fragmento.
+@pytest.mark.parametrize("html_url", [
+    "https://github.com/o/r/issues/77#issuecomment-1",        # GH issue
+    "https://github.com/o/r/pull/77#issuecomment-1",          # GH PR
+    "https://gitlab.com/o/r/-/merge_requests/77#note_1",      # GL MR
+    "https://github.com/o/r/issues/77",                       # sem fragmento (#)
+])
+def test_mention_trigger_target_number_from_comment_url(html_url):
     comment = CommentRef(
         comment_id=99, body="x",
-        html_url="https://github.com/o/r/issues/77#issuecomment-1",
+        html_url=html_url,
         issue_url="x", author="bob", kind="issue",
     )
     trigger = MentionTrigger(trigger_type="comment", comment=comment)
