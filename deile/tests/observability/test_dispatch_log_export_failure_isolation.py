@@ -15,10 +15,15 @@ pytestmark = pytest.mark.unit
 class TestFailureIsolation:
     def test_log_failure_does_not_affect_span(self, in_memory_exporter, monkeypatch):
         """Exporter de log que raise → span ainda é emitido completo."""
-        import deile.observability.dispatch_log_export as dle
+        import deile.observability.dispatch_export as dep
 
-        # Make emit_log_record always raise
-        monkeypatch.setattr(dle, "emit_log_record", lambda **kw: (_ for _ in ()).throw(RuntimeError("log boom")))
+        # `emit_log_record` foi importado para o namespace de dispatch_export (L33)
+        # e `_try_emit_log` usa essa referência local — logo o patch precisa mirar
+        # dispatch_export.emit_log_record para a falha realmente atingir o path.
+        def _raise_log_boom(**kw):
+            raise RuntimeError("log boom")
+
+        monkeypatch.setattr(dep, "emit_log_record", _raise_log_boom)
 
         from deile.observability.dispatch_export import (
             emit_dispatch_completed, emit_dispatch_received)

@@ -342,15 +342,49 @@ Creates a new user.
             assert "Features" in result.data
 
     @pytest.mark.asyncio
-    async def test_autonomous_config_reading(self, test_project):
-        """Test autonomous configuration file reading"""
-        test_inputs = [
-            "read the config file",
-            "show me the configuration",
-            "examine config.yaml",
-            "read config",
-        ]
+    @pytest.mark.parametrize(
+        "test_inputs,content_check",
+        [
+            (
+                ["read the config file", "show me the configuration",
+                 "examine config.yaml", "read config"],
+                lambda d: ("database:" in d or "DATABASE_URL" in d or
+                           "build-system" in d),
+            ),
+            (
+                ["read the requirements", "show me the requirements",
+                 "examine requirements.txt", "read requirements.txt"],
+                lambda d: ("pytest" in d or "setuptools" in d or "click" in d),
+            ),
+            (
+                ["read the main python file", "show me main.py",
+                 "read main.py", "open the main application code"],
+                lambda d: ("def main" in d or "class App" in d or
+                           "__main__" in d),
+            ),
+            (
+                ["read the license", "show me the LICENSE file",
+                 "examine the license terms", "read LICENSE"],
+                lambda d: "MIT License" in d,
+            ),
+            (
+                ["read the Dockerfile", "show me the docker file",
+                 "examine the Dockerfile", "read Dockerfile"],
+                lambda d: ("FROM python" in d or "version:" in d or
+                           "services:" in d),
+            ),
+        ],
+        ids=["config", "requirements", "main_code", "license", "dockerfile"],
+    )
+    async def test_autonomous_root_level_reading(self, test_project,
+                                                 test_inputs, content_check):
+        """Autonomous root-level file reading by pattern/fuzzy resolution.
 
+        One case per canonical file type (config, requirements, main code,
+        license, Dockerfile): every original phrasing is resolved without an
+        explicit path and the exact per-type content check is preserved.
+        Shares the fallback branch of ``test_autonomous_readme_reading``.
+        """
         for user_input in test_inputs:
             tool = ReadFileTool()
 
@@ -362,118 +396,9 @@ Creates a new user.
 
             result = tool.execute_sync(context)
 
-            # Should successfully read a config file
+            # Should successfully read the expected file type
             assert result.status.name == "SUCCESS"
-            # Should contain config content
-            assert ("database:" in result.data or
-                   "DATABASE_URL" in result.data or
-                   "build-system" in result.data)
-
-    @pytest.mark.asyncio
-    async def test_autonomous_requirements_reading(self, test_project):
-        """Test autonomous requirements file reading"""
-        test_inputs = [
-            "read the requirements",
-            "show me the requirements",
-            "examine requirements.txt",
-            "read requirements.txt",
-        ]
-
-        for user_input in test_inputs:
-            tool = ReadFileTool()
-
-            context = Mock()
-            context.working_directory = str(test_project)
-            context.user_input = user_input
-            context.parsed_args = {}
-            context.file_list = []
-
-            result = tool.execute_sync(context)
-
-            # Should successfully read requirements or setup files
-            assert result.status.name == "SUCCESS"
-            assert ("pytest" in result.data or
-                   "setuptools" in result.data or
-                   "click" in result.data)
-
-    @pytest.mark.asyncio
-    async def test_autonomous_main_code_reading(self, test_project):
-        """Test autonomous main code file reading"""
-        test_inputs = [
-            "read the main python file",
-            "show me main.py",
-            "read main.py",
-            "open the main application code",
-        ]
-
-        for user_input in test_inputs:
-            tool = ReadFileTool()
-
-            context = Mock()
-            context.working_directory = str(test_project)
-            context.user_input = user_input
-            context.parsed_args = {}
-            context.file_list = []
-
-            result = tool.execute_sync(context)
-
-            # Should successfully read main.py or app.py
-            assert result.status.name == "SUCCESS"
-            assert ("def main" in result.data or
-                   "class App" in result.data or
-                   "__main__" in result.data)
-
-    @pytest.mark.asyncio
-    async def test_autonomous_license_reading(self, test_project):
-        """Test autonomous license file reading"""
-        test_inputs = [
-            "read the license",
-            "show me the LICENSE file",
-            "examine the license terms",
-            "read LICENSE",
-        ]
-
-        for user_input in test_inputs:
-            tool = ReadFileTool()
-
-            context = Mock()
-            context.working_directory = str(test_project)
-            context.user_input = user_input
-            context.parsed_args = {}
-            context.file_list = []
-
-            result = tool.execute_sync(context)
-
-            # Should successfully read LICENSE
-            assert result.status.name == "SUCCESS"
-            assert "MIT License" in result.data
-
-    @pytest.mark.asyncio
-    async def test_autonomous_dockerfile_reading(self, test_project):
-        """Test autonomous Dockerfile reading"""
-        test_inputs = [
-            "read the Dockerfile",
-            "show me the docker file",
-            "examine the Dockerfile",
-            "read Dockerfile",
-        ]
-
-        for user_input in test_inputs:
-            tool = ReadFileTool()
-
-            context = Mock()
-            context.working_directory = str(test_project)
-            context.user_input = user_input
-            context.parsed_args = {}
-            context.file_list = []
-
-            result = tool.execute_sync(context)
-
-            # Should successfully read Dockerfile or docker-compose.yml
-            assert result.status.name == "SUCCESS"
-            assert ("FROM python" in result.data or
-                   "version:" in result.data or
-                   "services:" in result.data)
+            assert content_check(result.data)
 
     @pytest.mark.asyncio
     async def test_autonomous_source_code_reading(self, test_project):
@@ -504,16 +429,33 @@ Creates a new user.
                    "dataclass" in result.data)
 
     @pytest.mark.asyncio
-    async def test_autonomous_test_code_reading(self, test_project):
-        """Test autonomous test code reading. Files inside ``tests/`` need an
-        explicit path; the resolver only scans the working directory root."""
-        test_inputs = [
-            "read tests/test_app.py",
-            "show me tests/test_app.py",
-            "examine tests/test_app.py",
-            "open tests/conftest.py",
-        ]
+    @pytest.mark.parametrize(
+        "test_inputs,content_check",
+        [
+            (
+                ["read tests/test_app.py", "show me tests/test_app.py",
+                 "examine tests/test_app.py", "open tests/conftest.py"],
+                lambda d: ("test_" in d or "pytest" in d or
+                           "@pytest.fixture" in d),
+            ),
+            (
+                ["read docs/api.md", "show me docs/api.md",
+                 "examine docs/deployment.md", "open docs/deployment.md"],
+                lambda d: ("API" in d or "Deployment" in d or
+                           "Endpoints" in d or "docker" in d.lower()),
+            ),
+        ],
+        ids=["test_code", "documentation"],
+    )
+    async def test_autonomous_subpath_reading(self, test_project,
+                                              test_inputs, content_check):
+        """Autonomous reading of files addressed by an explicit sub-path.
 
+        One case for ``tests/`` files, one for ``docs/`` files: both need a
+        relative path because the resolver only scans the working directory
+        root. Same explicit-path branch as ``test_autonomous_source_code_reading``;
+        every original input and per-type content check is preserved.
+        """
         for user_input in test_inputs:
             tool = ReadFileTool()
 
@@ -525,40 +467,9 @@ Creates a new user.
 
             result = tool.execute_sync(context)
 
-            # Should successfully read test files
+            # Should successfully read the expected sub-path file
             assert result.status.name == "SUCCESS"
-            assert ("test_" in result.data or
-                   "pytest" in result.data or
-                   "@pytest.fixture" in result.data)
-
-    @pytest.mark.asyncio
-    async def test_autonomous_documentation_reading(self, test_project):
-        """Test autonomous documentation reading. Files inside ``docs/`` need
-        an explicit path; the resolver only scans the working directory root."""
-        test_inputs = [
-            "read docs/api.md",
-            "show me docs/api.md",
-            "examine docs/deployment.md",
-            "open docs/deployment.md",
-        ]
-
-        for user_input in test_inputs:
-            tool = ReadFileTool()
-
-            context = Mock()
-            context.working_directory = str(test_project)
-            context.user_input = user_input
-            context.parsed_args = {}
-            context.file_list = []
-
-            result = tool.execute_sync(context)
-
-            # Should successfully read documentation files
-            assert result.status.name == "SUCCESS"
-            assert ("API" in result.data or
-                   "Deployment" in result.data or
-                   "Endpoints" in result.data or
-                   "docker" in result.data.lower())
+            assert content_check(result.data)
 
     @pytest.mark.asyncio
     async def test_autonomous_file_suggestions(self, test_project):

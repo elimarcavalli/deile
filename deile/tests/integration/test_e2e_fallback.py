@@ -1,4 +1,4 @@
-"""Integration: cascade fallback (fake Anthropic → real OpenAI) — skipped without OPENAI_API_KEY."""
+"""Integration: real OpenAI generate smoke test — skipped without OPENAI_API_KEY."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ pytestmark = [
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_cascade_falls_back_to_openai():
-    """Real OpenAI call using gpt-4o-mini — independent of catalog (which uses speculative IDs)."""
+async def test_openai_generate_smoke():
+    """Real OpenAI generate call using gpt-4o-mini — independent of catalog (which uses speculative IDs)."""
     from deile.core.models.base import ModelMessage
     from deile.core.models.catalog import ModelHandle, ModelPricing
     from deile.core.models.openai_provider import OpenAIProvider

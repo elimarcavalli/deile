@@ -33,16 +33,16 @@ def test_os_environ_used_exactly_once():
 
 
 
-def test_module_exports():
+def test_shutdown_dispatch_metrics_callable_and_idempotent():
+    """``shutdown_dispatch_metrics`` é o único símbolo não exercitado
+    comportamentalmente nos testes vizinhos — os demais exports
+    (``record_*`` e ``reset_dispatch_metrics``) já são CHAMADOS diretamente em
+    ``test_dispatch_metrics_instruments``/``_cardinality``/``conftest``, o que
+    garante sua existência de forma mais forte que ``hasattr``. Aqui exercitamos
+    o shutdown de fato: existe, é chamável, never-raises e é idempotente
+    (cobre o early-return quando não há provider)."""
     from deile.observability import dispatch_metrics as dm
-    for name in (
-        "record_dispatch_total",
-        "record_dispatch_failed_total",
-        "record_dispatch_duration_ms",
-        "record_dispatch_tool_burst_total",
-        "record_git_push_total",
-        "record_forge_pr_review_total",
-        "shutdown_dispatch_metrics",
-        "reset_dispatch_metrics",
-    ):
-        assert hasattr(dm, name), f"missing export: {name}"
+
+    assert callable(dm.shutdown_dispatch_metrics)
+    dm.shutdown_dispatch_metrics()
+    dm.shutdown_dispatch_metrics()

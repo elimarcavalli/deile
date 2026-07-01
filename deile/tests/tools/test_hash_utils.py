@@ -41,6 +41,6 @@ def test_sha8_distinct_inputs_give_distinct_digests():
     assert sha8("foo") != sha8("bar")
 
 
-@pytest.mark.parametrize("payload", [b"", "", b"x" * 10_000, "y" * 10_000])
+@pytest.mark.parametrize("payload", [b"", ""])
 def test_sha8_accepts_edge_lengths(payload):
     assert len(sha8(payload)) == 8

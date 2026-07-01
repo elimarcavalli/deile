@@ -9,41 +9,51 @@ self._tag_index.setdefault(tag, set()).add(entry_id).
 
 from __future__ import annotations
 
+import pytest
+
 from deile.memory.working_memory import WorkingMemory
 
 
-async def test_positive_feedback_tag_searchable() -> None:
+@pytest.mark.parametrize(
+    "feedback_type, feedback_tag, query",
+    [
+        ("positive", "positive_feedback", "hello positive world"),
+        ("negative", "negative_feedback", "hello negative world"),
+    ],
+)
+async def test_feedback_tag_searchable_excludes_untagged(
+    feedback_type: str, feedback_tag: str, query: str
+) -> None:
+    """search by the feedback tag must return ONLY the entry given feedback.
+
+    A control entry sharing the same searchable text but WITHOUT feedback must
+    be excluded. search() filters candidates via _tag_index and SKIPS the tag
+    filter when the tag is absent from the index — so with the bug (tag added to
+    entry.tags but never to _tag_index) the filter is bypassed and the untagged
+    control leaks in. Only correct _tag_index sync excludes it, making the index
+    load-bearing for this assertion.
+    """
     wm = WorkingMemory(max_size=100_000, ttl=3600)
     wm._is_initialized = True
 
-    entry_id = await wm.store("hello positive world", entry_type="context")
-    ok = await wm.update_with_feedback(entry_id, "positive", {})
+    entry_id = await wm.store(f"{query} (feedback)", entry_type="context")
+    control_id = await wm.store(f"{query} (control)", entry_type="context")
+
+    ok = await wm.update_with_feedback(entry_id, feedback_type, {})
     assert ok is True
 
-    results = await wm.search("hello positive world", tags={"positive_feedback"})
-    assert len(results) >= 1, (
-        "search by 'positive_feedback' tag returned no results — "
+    results = await wm.search(query, tags={feedback_tag})
+    ids = [r["entry_id"] for r in results]
+
+    assert entry_id in ids, (
+        f"search by '{feedback_tag}' tag did not return the entry given feedback — "
         "_tag_index was not updated by update_with_feedback"
     )
-    ids = [r["entry_id"] for r in results]
-    assert entry_id in ids
-
-
-async def test_negative_feedback_tag_searchable() -> None:
-    wm = WorkingMemory(max_size=100_000, ttl=3600)
-    wm._is_initialized = True
-
-    entry_id = await wm.store("hello negative world", entry_type="context")
-    ok = await wm.update_with_feedback(entry_id, "negative", {})
-    assert ok is True
-
-    results = await wm.search("hello negative world", tags={"negative_feedback"})
-    assert len(results) >= 1, (
-        "search by 'negative_feedback' tag returned no results — "
-        "_tag_index was not updated by update_with_feedback"
+    assert control_id not in ids, (
+        f"search by '{feedback_tag}' tag returned an entry WITHOUT that feedback — "
+        "the tag filter was skipped because _tag_index lacks the tag"
     )
-    ids = [r["entry_id"] for r in results]
-    assert entry_id in ids
+    assert len(results) == 1
 
 
 async def test_positive_feedback_tag_index_updated_directly() -> None:

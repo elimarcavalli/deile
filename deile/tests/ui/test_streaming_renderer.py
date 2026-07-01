@@ -793,24 +793,65 @@ async def test_legacy_path_renders_markdown_headings():
 async def test_live_path_refresh_is_driven_from_async_loop():
     """Regression: with auto_refresh=True the Rich background thread can be
     starved by the asyncio loop, leaving the screen blank until the stream
-    ends. The renderer must drive Live.refresh() from the async loop so
-    every event produces output deterministically.
+    ends. The renderer must drive the redraw from the async loop so every
+    event produces output deterministically.
 
-    We assert via the public Live API that the renderer disables Rich's
-    auto-refresh thread (so refresh is OUR responsibility, not theirs).
+    Behavioral check (replaces a brittle ``inspect.getsource`` string-grep
+    for ``auto_refresh=False`` / ``live.refresh()``): on the Live path,
+    every text delta AND the tool block reach the captured console by
+    stream end, in emit order — proving the async loop drove the repaint
+    per event rather than relying on a starvable background thread. The
+    per-event determinism is further guarded by
+    ``test_live_path_renders_progressively_without_thread_starvation`` and
+    ``test_completed_blocks_commit_to_scrollback_in_order``.
     """
-    import inspect
-
-    from deile.ui import streaming_renderer as sr_module
-
-    src = inspect.getsource(sr_module.StreamingRenderer._render_live)
-    assert "auto_refresh=False" in src, (
-        "Live must be opened with auto_refresh=False so the async loop "
-        "controls redraws — otherwise output is buffered until stream end."
+    console = _capture_console()
+    renderer = StreamingRenderer(
+        console=console, legacy_windows=False, markdown=False, refresh_per_second=30.0
     )
-    assert "live.refresh()" in src, (
-        "Renderer must call live.refresh() explicitly from the async loop."
+    events = [
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="PRE_MARKER "),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="t1",
+            tool_name="list_files",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t1",
+            tool_name="list_files",
+            arguments={"path": "."},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t1",
+            tool_name="list_files",
+            tool_status="success",
+            tool_result_summary="7 files",
+        ),
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="POST_MARKER"),
+        UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+        ),
+    ]
+    result = await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # Every event produced output — none was swallowed by a starved
+    # background-refresh thread (the auto_refresh=True failure mode).
+    assert "PRE_MARKER" in output
+    assert "list_files" in output
+    assert "7 files" in output
+    assert "POST_MARKER" in output
+    # Emit order preserved in the captured stream: the async loop drove
+    # commit-to-scrollback + refresh per event, not one group buffered at
+    # exit. Text before the tool appears before it; text after appears after.
+    assert (
+        output.index("PRE_MARKER")
+        < output.index("list_files")
+        < output.index("POST_MARKER")
     )
+    assert result.tool_invocations == 1
 
 
 @pytest.mark.asyncio

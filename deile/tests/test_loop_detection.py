@@ -356,17 +356,53 @@ def test_make_loop_break_result_builds_typed_error_and_payload():
 
 def test_guard_repeat_idempotent_on_same_hash():
     """If we hit the same loop signature twice in a row (e.g. the caller
-    forgot to break), the guard must keep returning the same reason — but
-    the audit log must NOT re-fire. This is checked indirectly: we just
-    verify .check returns abort consistently."""
+    forgot to break), the guard must keep returning an abort — and, crucially,
+    ``_record_abort`` must NOT re-fire the SUSPICIOUS_ACTIVITY audit event for a
+    (hash, kind) pair it has already recorded. We prove the non-refire the
+    docstring promises directly, by counting audit events keyed on this test's
+    own args_hash: kind escalation (IDENTICAL_REPEAT → HARD_STOP) is recorded,
+    but a repeated HARD_STOP on the same hash must be suppressed."""
+    audit = get_audit_logger()
+
+    # Unique (tool, args) so the args_hash is exclusive to this test — this
+    # keeps the audit-count assertions order-independent under pytest-randomly.
+    tool = "idempotent_refire_probe"
+    args = {"marker": "repeat_idempotent_on_same_hash"}
+
+    def _audit_count_for(args_hash: str) -> int:
+        return sum(
+            1
+            for e in audit.recent_events
+            if e.event_type is AuditEventType.SUSPICIOUS_ACTIVITY
+            and e.details.get("args_hash") == args_hash
+        )
+
     guard = ToolLoopGuard()
     for _ in range(2):
-        guard.check("x", {})
-    abort1 = guard.check("x", {})
-    abort2 = guard.check("x", {})
+        guard.check(tool, args)
+    abort1 = guard.check(tool, args)  # 3rd call -> IDENTICAL_REPEAT (threshold 3)
+    abort2 = guard.check(tool, args)  # 4th call -> HARD_STOP (same hash, escalation)
     assert abort1 is not None
     assert abort2 is not None
     assert abort1.args_hash == abort2.args_hash
+
+    our_hash = abort1.args_hash
+    # Two DISTINCT (hash, kind) records fired: IDENTICAL_REPEAT + HARD_STOP.
+    fired_after_escalation = _audit_count_for(our_hash)
+    assert fired_after_escalation == 2, (
+        f"expected exactly 2 SUSPICIOUS_ACTIVITY events for hash {our_hash} "
+        f"(IDENTICAL_REPEAT then HARD_STOP escalation), got {fired_after_escalation}"
+    )
+
+    # 5th call: same hash AND same HARD_STOP kind -> _record_abort must suppress
+    # the duplicate audit event (the non-refire the docstring promises).
+    abort3 = guard.check(tool, args)
+    assert abort3 is not None
+    assert abort3.args_hash == our_hash
+    assert _audit_count_for(our_hash) == fired_after_escalation, (
+        "audit re-fired for an already-recorded (hash, kind) pair — "
+        "_record_abort idempotency is broken"
+    )
 
 
 # ---------------------------------------------------------------------------

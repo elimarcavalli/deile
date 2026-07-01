@@ -95,6 +95,10 @@ class TestStoreAndRetrieve:
         assert store.get("u1", "theme") == "dark"
 
     def test_get_nonexistent_key(self, store):
+        # User exists but the requested key is absent — this exercises the
+        # populated-user-dict branch of ``get``, distinct from the
+        # user-absent branch covered by ``test_get_nonexistent_user``.
+        store.store("u1", "theme", "dark")
         assert store.get("u1", "missing") is None
 
     def test_get_nonexistent_user(self, store):

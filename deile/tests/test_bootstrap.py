@@ -47,28 +47,10 @@ class TestBootstrapAnthropicOnly:
 
             registered = bootstrap_providers(yaml_path=_YAML_PATH)
 
-        assert "anthropic" in registered
-        assert "openai" not in registered
-        assert "deepseek" not in registered
-
-    def test_anthropic_only_no_openai(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-
-        from deile.core.models.tier_router import reset_tier_router
-        reset_tier_router()
-
-        with patch("deile.core.models.bootstrap._import_provider_class") as mock_cls_factory:
-            mock_provider = MagicMock()
-            mock_cls = MagicMock(return_value=mock_provider)
-            mock_cls_factory.return_value = mock_cls
-
-            registered = bootstrap_providers(yaml_path=_YAML_PATH)
-
-        assert len(registered) == 1
-        assert registered[0] == "anthropic"
+        # Merged from test_anthropic_only_no_openai (SIMPLIFY): a exact-list
+        # equality subsumes every original assertion — membership de anthropic,
+        # ausência de openai/deepseek, len==1 e registered[0]=="anthropic".
+        assert registered == ["anthropic"]
 
 
 # ---------------------------------------------------------------------------
@@ -110,23 +92,8 @@ class TestBootstrapAllProviders:
         assert "anthropic" in registered
         assert "openai" in registered
         assert "deepseek" in registered
-
-    def test_three_providers_count(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-test")
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds-test")
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-
-        from deile.core.models.tier_router import reset_tier_router
-        reset_tier_router()
-
-        with patch("deile.core.models.bootstrap._import_provider_class") as mock_cls_factory:
-            mock_provider = MagicMock()
-            mock_cls = MagicMock(return_value=mock_provider)
-            mock_cls_factory.return_value = mock_cls
-
-            registered = bootstrap_providers(yaml_path=_YAML_PATH)
-
+        # Folded from test_three_providers_count (SIMPLIFY): garante que
+        # nenhum provider extra (gemini/openrouter) foi registrado sem chave.
         assert len(registered) == 3
 
 

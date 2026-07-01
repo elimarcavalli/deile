@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from deile.log_mgmt.log_analyzer import Anomaly
 from deile.log_mgmt.log_dispatcher import (_build_investigation_brief,
                                            _get_worker_bearer,
@@ -131,12 +133,9 @@ class TestAutoDispatchEnabled:
         monkeypatch.delenv("DEILE_LOG_AUTO_DISPATCH", raising=False)
         assert is_auto_dispatch_enabled() is False
 
-    def test_true_when_set(self, monkeypatch):
-        monkeypatch.setenv("DEILE_LOG_AUTO_DISPATCH", "true")
-        assert is_auto_dispatch_enabled() is True
-
-    def test_case_insensitive(self, monkeypatch):
-        monkeypatch.setenv("DEILE_LOG_AUTO_DISPATCH", "TRUE")
+    @pytest.mark.parametrize("value", ["true", "TRUE"])
+    def test_true_when_set(self, monkeypatch, value):
+        monkeypatch.setenv("DEILE_LOG_AUTO_DISPATCH", value)
         assert is_auto_dispatch_enabled() is True
 
     def test_other_values_false(self, monkeypatch):

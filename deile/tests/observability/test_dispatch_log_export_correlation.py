@@ -77,59 +77,45 @@ class TestLogSpanCorrelation:
         for lr in logs:
             assert lr.log_record.trace_id != 0, "trace_id should not be 0"
 
-    def test_git_child_span_log_has_parent_trace_id(
-        self, in_memory_exporter, in_memory_log_exporter
+    @pytest.mark.parametrize(
+        "child_kind, body_marker",
+        [
+            ("git", "git.commit"),
+            ("forge", "forge.pr_open"),
+        ],
+    )
+    def test_child_span_log_has_parent_trace_id(
+        self, in_memory_exporter, in_memory_log_exporter, child_kind, body_marker
     ):
-        """LogRecord de git.commit tem o mesmo trace_id do root span."""
-        from deile.observability.dispatch_export import (
-            emit_dispatch_completed, emit_dispatch_received, emit_git_commit)
-
-        emit_dispatch_received("corr-git", session_id="s1")
-        emit_git_commit("corr-git", repo="owner/repo", sha="abc123", status="ok")
-        emit_dispatch_completed("corr-git", elapsed_s=2.0)
-
-        spans = in_memory_exporter.get_finished_spans()
-        root_spans = [s for s in spans if s.name == "deile.dispatch"]
-        assert len(root_spans) >= 1
-
-        root_trace_id = root_spans[0].get_span_context().trace_id
-
-        logs = in_memory_log_exporter.get_finished_logs()
-        git_logs = [
-            lr for lr in logs if "git.commit" in str(lr.log_record.body)
-        ]
-        assert len(git_logs) >= 1, "expected git.commit log record"
-
-        for lr in git_logs:
-            assert lr.log_record.trace_id == root_trace_id, (
-                "git.commit log should have same trace_id as root span"
-            )
-
-    def test_forge_child_span_log_correlation(
-        self, in_memory_exporter, in_memory_log_exporter
-    ):
-        """LogRecord de forge.pr_open correlaciona com o root span."""
+        """LogRecord de child span (git.commit/forge.pr_open) tem o mesmo trace_id do root span."""
         from deile.observability.dispatch_export import (
             emit_dispatch_completed, emit_dispatch_received,
-            emit_forge_pr_open)
+            emit_forge_pr_open, emit_git_commit)
 
-        emit_dispatch_received("corr-forge", session_id="s1")
-        emit_forge_pr_open("corr-forge", repo="owner/repo", pr_number=42, status="ok")
-        emit_dispatch_completed("corr-forge", elapsed_s=3.0)
+        task_id = f"corr-{child_kind}"
+        emit_dispatch_received(task_id, session_id="s1")
+        if child_kind == "git":
+            emit_git_commit(task_id, repo="owner/repo", sha="abc123", status="ok")
+        else:
+            emit_forge_pr_open(task_id, repo="owner/repo", pr_number=42, status="ok")
+        emit_dispatch_completed(task_id, elapsed_s=2.0)
 
         spans = in_memory_exporter.get_finished_spans()
         root_spans = [s for s in spans if s.name == "deile.dispatch"]
         assert len(root_spans) >= 1
 
         root_trace_id = root_spans[0].get_span_context().trace_id
-        logs = in_memory_log_exporter.get_finished_logs()
-        forge_logs = [
-            lr for lr in logs if "forge.pr_open" in str(lr.log_record.body)
-        ]
-        assert len(forge_logs) >= 1
 
-        for lr in forge_logs:
-            assert lr.log_record.trace_id == root_trace_id
+        logs = in_memory_log_exporter.get_finished_logs()
+        child_logs = [
+            lr for lr in logs if body_marker in str(lr.log_record.body)
+        ]
+        assert len(child_logs) >= 1, f"expected {body_marker} log record"
+
+        for lr in child_logs:
+            assert lr.log_record.trace_id == root_trace_id, (
+                f"{body_marker} log should have same trace_id as root span"
+            )
 
     def test_failed_dispatch_log_correlation(
         self, in_memory_exporter, in_memory_log_exporter

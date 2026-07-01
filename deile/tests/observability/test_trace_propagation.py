@@ -1,54 +1,125 @@
 """Testes de propagação W3C traceparent cross-pod — issue #457.
 
-ACs verificados:
-- AC1/D1: _dispatch() abre span ``pipeline.dispatch_request`` via get_tracer("deile.pipeline").
-- AC2/D2: propagate.inject injeta traceparent no dict de headers HTTP antes do POST.
-- AC3/D3: dispatch_handler extrai traceparent e abre ``deile.dispatch`` como filho.
+ACs verificados (agora dirigindo a PRODUÇÃO real, não reimplementando o OTel
+cru inline — assim o teste fica vermelho se a fiação de produção quebrar):
+- AC1/D1: ``WorkerImplementer._dispatch()`` abre o span ``pipeline.dispatch_request``.
+- AC2/D2: ``DeileWorkerClient._dispatch_once`` injeta traceparent nos headers HTTP.
+- AC3/D3: ``activate_traceparent_from_env`` extrai o traceparent e ``deile.dispatch``
+         vira filho.
 - AC4: span ``pipeline.dispatch_request`` (trace_id=X, span_id=Y) →
          span ``deile.dispatch`` (trace_id=X, parent_span_id=Y).
-- AC5: header ausente → ``deile.dispatch`` é raiz (parent_span_id ausente). Sem exceção.
+- AC5: env sem TRACEPARENT → ``activate_traceparent_from_env`` retorna ``None`` e
+         ``deile.dispatch`` é raiz (parent_span_id ausente). Sem exceção.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Dict
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
 
-def otel_sdk_available() -> bool:
-    try:
-        import opentelemetry.sdk.trace  # noqa: F401
-        return True
-    except ImportError:
-        return False
+async def _inject_via_worker_client(monkeypatch) -> Dict[str, Any]:
+    """Dirige o REAL ``DeileWorkerClient._dispatch_once`` sob um span ativo.
 
-
-# ---------------------------------------------------------------------------
-# AC1 + AC2: pipeline side — span opens and traceparent is injected
-# ---------------------------------------------------------------------------
-
-
-def test_pipeline_dispatch_request_span_opened(in_memory_exporter):
-    """_dispatch() abre span pipeline.dispatch_request antes de chamar _post_dispatch."""
+    Substitui apenas o transporte (``_resolve_auth_and_httpx`` → token fake +
+    httpx fake que captura a requisição). A injeção do traceparent nos headers
+    é 100% produção (``propagate.inject`` dentro de ``_dispatch_once``). Abre e
+    fecha o span pai ``pipeline.dispatch_request`` — que fica disponível no
+    exporter para os asserts de hierarquia — e devolve os headers HTTP
+    capturados da requisição real.
+    """
     from opentelemetry import trace
 
-    # Simula o tracer "deile.pipeline" usando o mesmo TracerProvider do fixture.
+    from deile.infrastructure import deile_worker_client as dwc
+
+    captured: Dict[str, Any] = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self) -> Dict[str, Any]:
+            return {"task_id": "t1", "ok": True}
+
+    class _FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "_FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: Any) -> bool:
+            return False
+
+        async def post(self, endpoint, *, json=None, headers=None) -> _FakeResp:
+            captured["headers"] = dict(headers or {})
+            captured["endpoint"] = endpoint
+            return _FakeResp()
+
+    class _FakeTimeoutException(Exception):
+        pass
+
+    class _FakeHTTPError(Exception):
+        pass
+
+    fake_httpx = SimpleNamespace(
+        Timeout=lambda *a, **k: object(),
+        AsyncClient=_FakeAsyncClient,
+        TimeoutException=_FakeTimeoutException,
+        HTTPError=_FakeHTTPError,
+    )
+    monkeypatch.setattr(
+        dwc, "_resolve_auth_and_httpx",
+        AsyncMock(return_value=("tok", fake_httpx)),
+    )
+
+    client = dwc.DeileWorkerClient()
     tracer = trace.get_tracer("deile.pipeline")
-    with tracer.start_as_current_span("pipeline.dispatch_request") as span:
-        span_ctx = span.get_span_context()
-        assert span_ctx.is_valid, "span context deve ser válido dentro do contexto"
+    with tracer.start_as_current_span("pipeline.dispatch_request"):
+        await client._dispatch_once(
+            {"brief": "x"}, wait=False, endpoint_url="http://worker:8766",
+        )
+    return captured["headers"]
+
+
+# ---------------------------------------------------------------------------
+# AC1: pipeline side — a produção abre o span pipeline.dispatch_request
+# ---------------------------------------------------------------------------
+
+
+async def test_pipeline_dispatch_request_span_opened(in_memory_exporter):
+    """AC1/D1: ``WorkerImplementer._dispatch()`` abre o span pela produção.
+
+    Dirige o método real (com o seam HTTP ``_post_dispatch`` mockado) em vez de
+    reabrir o span via OTel cru — assim o teste falha se a produção parar de
+    instrumentar o dispatch (o antigo reimplementava e ficava falso-verde).
+    """
+    from deile.orchestration.pipeline.implementer import WorkerImplementer
+
+    impl = WorkerImplementer(endpoint_override="http://worker:8766", ledger=Mock())
+    with patch.object(impl, "_post_dispatch", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = {"task_id": "t1"}
+        outcome = await impl._dispatch(
+            brief="do it",
+            channel_id="pipeline-issue-1",
+            stage=None,
+            nowait=True,
+            ledger_key=None,
+        )
+
+    # A produção realmente atravessou o dispatch (o span embrulha o POST).
+    assert mock_post.await_count == 1
+    assert outcome.ok is True
 
     finished = in_memory_exporter.get_finished_spans()
     names = [s.name for s in finished]
     assert "pipeline.dispatch_request" in names, (
-        f"span pipeline.dispatch_request não encontrado; spans: {names}"
+        f"span pipeline.dispatch_request não aberto pela produção; spans: {names}"
     )
-
-
 
 
 def test_propagate_inject_no_op_without_span(in_memory_exporter):
@@ -62,32 +133,44 @@ def test_propagate_inject_no_op_without_span(in_memory_exporter):
 
 
 # ---------------------------------------------------------------------------
-# AC3: worker side — extract context and deile.dispatch becomes child
+# AC3/AC4: worker side — produção extrai o context e deile.dispatch vira filho
 # ---------------------------------------------------------------------------
 
 
-def test_deile_dispatch_is_child_of_pipeline_span(in_memory_exporter):
-    """AC4: pipeline.dispatch_request → deile.dispatch com mesmo trace_id e parent correto."""
-    from opentelemetry import context, propagate, trace
+async def test_deile_dispatch_is_child_of_pipeline_span(in_memory_exporter, monkeypatch):
+    """AC4: pipeline.dispatch_request → deile.dispatch com mesmo trace_id e parent correto.
 
-    # 1. Simula o pipeline abrindo o span pai
-    pipeline_tracer = trace.get_tracer("deile.pipeline")
+    Fim-a-fim pela produção: ``_dispatch_once`` injeta o traceparent (via
+    ``propagate.inject``) e ``activate_traceparent_from_env`` o extrai/ativa —
+    sem reimplementar inject/extract cru.
+    """
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace
+
+    from deile.observability.tracer import activate_traceparent_from_env
+
+    # 1. Produção do lado pipeline: abre span pai e injeta traceparent nos headers.
+    headers = await _inject_via_worker_client(monkeypatch)
+    traceparent = headers.get("traceparent")
+    assert traceparent, f"traceparent deveria ter sido injetado; headers={headers}"
+
+    # 2. Produção do lado worker: extrai o context do env e o ativa.
+    monkeypatch.setenv("TRACEPARENT", traceparent)
+    tracestate = headers.get("tracestate")
+    if tracestate:
+        monkeypatch.setenv("TRACESTATE", tracestate)
+    token = activate_traceparent_from_env()
+    assert token is not None, "activate_traceparent_from_env deveria anexar o context"
+
     worker_tracer = trace.get_tracer("deile.worker")
+    try:
+        with worker_tracer.start_as_current_span("deile.dispatch"):
+            pass  # span abre e fecha sob o context extraído
+    finally:
+        otel_context.detach(token)
 
-    with pipeline_tracer.start_as_current_span("pipeline.dispatch_request") as pipeline_span:
-        # 2. Injeta traceparent nos headers HTTP
-        headers: Dict[str, str] = {}
-        propagate.inject(headers)
-
-        # 3. Simula o worker: extrai context dos headers e abre deile.dispatch
-        parent_ctx = propagate.extract(headers)
-        with worker_tracer.start_as_current_span("deile.dispatch", context=parent_ctx):
-            pass  # span abre e fecha
-
-    # 4. Verifica hierarquia
+    # 3. Verifica hierarquia sobre os spans reais gravados no exporter.
     finished = in_memory_exporter.get_finished_spans()
-    names_by_id = {s.context.span_id: s for s in finished}
-
     pipeline_spans = [s for s in finished if s.name == "pipeline.dispatch_request"]
     worker_spans = [s for s in finished if s.name == "deile.dispatch"]
 
@@ -112,15 +195,23 @@ def test_deile_dispatch_is_child_of_pipeline_span(in_memory_exporter):
     )
 
 
-def test_deile_dispatch_is_root_when_no_traceparent(in_memory_exporter):
-    """AC5: header traceparent ausente → deile.dispatch é raiz, sem exceção."""
-    from opentelemetry import propagate, trace
+def test_deile_dispatch_is_root_when_no_traceparent(in_memory_exporter, monkeypatch):
+    """AC5: env sem TRACEPARENT → activate_traceparent_from_env=None, deile.dispatch é raiz."""
+    from opentelemetry import trace
+
+    from deile.observability.tracer import activate_traceparent_from_env
+
+    monkeypatch.delenv("TRACEPARENT", raising=False)
+    monkeypatch.delenv("traceparent", raising=False)
+
+    # Ramo real do projeto: sem header, o helper de produção retorna None.
+    token = activate_traceparent_from_env()
+    assert token is None, (
+        "activate_traceparent_from_env deve retornar None quando TRACEPARENT ausente"
+    )
 
     worker_tracer = trace.get_tracer("deile.worker")
-
-    # Extrai de headers VAZIOS — context resultante é root/inválido
-    parent_ctx = propagate.extract({})
-    with worker_tracer.start_as_current_span("deile.dispatch", context=parent_ctx):
+    with worker_tracer.start_as_current_span("deile.dispatch"):
         pass
 
     finished = in_memory_exporter.get_finished_spans()
@@ -141,27 +232,18 @@ def test_deile_dispatch_is_root_when_no_traceparent(in_memory_exporter):
 
 
 # ---------------------------------------------------------------------------
-# AC2: implementer._dispatch injeta traceparent via deile_worker_client
+# AC2: DeileWorkerClient._dispatch_once injeta traceparent nos headers reais
 # ---------------------------------------------------------------------------
 
 
-def test_worker_client_injects_traceparent_in_headers(in_memory_exporter):
-    """D2: deile_worker_client._dispatch_once injeta traceparent no dict de headers."""
-    from opentelemetry import propagate, trace
+async def test_worker_client_injects_traceparent_in_headers(in_memory_exporter, monkeypatch):
+    """D2: ``DeileWorkerClient._dispatch_once`` injeta traceparent no dict de headers.
 
-    captured_headers: Dict[str, Any] = {}
+    Chama o worker client REAL com httpx mockado e inspeciona os headers da
+    requisição capturada — não reimplementa o inject inline.
+    """
+    headers = await _inject_via_worker_client(monkeypatch)
 
-    tracer = trace.get_tracer("deile.pipeline")
-
-    with tracer.start_as_current_span("pipeline.dispatch_request"):
-        # Simula o que _dispatch_once faz: cria headers e chama propagate.inject
-        headers = {
-            "Authorization": "Bearer test-token",
-            "Content-Type": "application/json",
-        }
-        propagate.inject(headers)
-        captured_headers.update(headers)
-
-    assert "traceparent" in captured_headers, (
-        f"traceparent deveria estar nos headers HTTP; headers={captured_headers}"
+    assert "traceparent" in headers, (
+        f"traceparent deveria estar nos headers HTTP; headers={headers}"
     )

@@ -204,22 +204,14 @@ class TestModelUse:
 
 class TestModelStrategy:
     @pytest.mark.asyncio
-    async def test_strategy_task_optimized(self):
+    @pytest.mark.parametrize("strategy", ["task_optimized", "cost_optimized"])
+    async def test_strategy_valid(self, strategy):
         cmd = ModelCommand()
         with patch("deile.commands.builtin.model_command.get_tier_router"), \
              patch("deile.commands.builtin.model_command.reset_tier_router"):
-            result = await cmd.execute(_make_context("strategy task_optimized"))
+            result = await cmd.execute(_make_context(f"strategy {strategy}"))
         assert result.success
-        assert result.metadata.get("strategy") == "task_optimized"
-
-    @pytest.mark.asyncio
-    async def test_strategy_cost_optimized(self):
-        cmd = ModelCommand()
-        with patch("deile.commands.builtin.model_command.get_tier_router"), \
-             patch("deile.commands.builtin.model_command.reset_tier_router"):
-            result = await cmd.execute(_make_context("strategy cost_optimized"))
-        assert result.success
-        assert result.metadata.get("strategy") == "cost_optimized"
+        assert result.metadata.get("strategy") == strategy
 
     @pytest.mark.asyncio
     async def test_strategy_invalid_fails(self):

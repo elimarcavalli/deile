@@ -617,25 +617,19 @@ async def test_magic_byte_mismatch_emits_blocked_audit(tool, ctx_factory, monkey
 # ---- operator model env-var allowlist enforcement ---------------------------
 
 
-async def test_operator_model_env_var_invalid_falls_back_to_default(
-    tool, ctx_factory, monkeypatch
-):
-    """An invalid DEILE_VISION_MODEL env-var must fall back to the default model."""
-    captured = {}
+def test_operator_model_env_var_invalid_falls_back_to_default(monkeypatch):
+    """An invalid DEILE_VISION_MODEL must fall back to the default model.
 
-    async def fake(image_bytes, mime, prompt, model):
-        captured["model"] = model
-        return "ok"
-
-    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
-    # Simulate settings returning an invalid model name
+    Drives the real allowlist gate in ``_resolve_vision_model`` (a value outside
+    ``_ALLOWED_VISION_MODELS`` is rejected and replaced by the default) instead of
+    stubbing the resolver under test.
+    """
     import deile.tools.vision_tool as vt
-    monkeypatch.setattr(vt, "_resolve_vision_model", lambda: vt._DEFAULT_VISION_MODEL)
-    import base64
-    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
-    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
-    assert res.is_success
-    assert captured["model"] == vt._DEFAULT_VISION_MODEL
+    from deile.config.settings import get_settings
+
+    # settings.vision_model outside the allowlist -> resolver returns the default.
+    monkeypatch.setattr(get_settings(), "vision_model", "bad-model-not-in-allowlist")
+    assert vt._resolve_vision_model() == vt._DEFAULT_VISION_MODEL
 
 
 # ---- asyncio.TimeoutError on DNS (Python 3.9/3.10 compat) ------------------

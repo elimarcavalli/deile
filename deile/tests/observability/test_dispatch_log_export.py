@@ -111,7 +111,7 @@ class TestSeverityFor:
 
     def test_forge_pr_review_changes_requested_info(self):
         """forge.pr_review decision=CHANGES_REQUESTED is operationally successful."""
-        assert self._sev("forge.pr_review", {"deile.forge.status": "ok"}) == ("INFO", 9)
+        assert self._sev("forge.pr_review", {"deile.forge.status": "changes_requested"}) == ("INFO", 9)
 
     # Rule 6: all others → INFO/9
     def test_dispatch_received_info(self):

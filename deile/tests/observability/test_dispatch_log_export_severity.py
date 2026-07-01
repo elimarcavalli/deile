@@ -64,47 +64,45 @@ def test_severity_matrix(event_name, attrs, expected_text, expected_number):
 class TestSeverityInEmittedRecords:
     """Verify severity ends up in emitted LogRecords."""
 
-    def test_error_severity_in_record(self, in_memory_log_exporter):
+    @pytest.mark.parametrize(
+        "event_name,attrs,expected_text,expected_number",
+        [
+            # ERROR/17: dispatch.failed reason=auth_expired
+            (
+                "dispatch.failed",
+                {"deile.dispatch.reason": "auth_expired"},
+                "ERROR",
+                17,
+            ),
+            # WARN/13: dispatch.tool_burst count>50
+            (
+                "dispatch.tool_burst",
+                {"deile.dispatch.tool_count": 51},
+                "WARN",
+                13,
+            ),
+            # INFO/9: dispatch.received (default rule)
+            ("dispatch.received", {}, "INFO", 9),
+        ],
+    )
+    def test_severity_in_record(
+        self,
+        in_memory_log_exporter,
+        event_name,
+        attrs,
+        expected_text,
+        expected_number,
+    ):
         from deile.observability.dispatch_log_export import emit_log_record
 
         emit_log_record(
-            "dispatch.failed",
+            event_name,
             trace_id=1,
             span_id=1,
             trace_flags=1,
-            attributes={"deile.dispatch.reason": "auth_expired"},
+            attributes=attrs,
         )
         logs = in_memory_log_exporter.get_finished_logs()
         assert len(logs) == 1
-        assert logs[0].log_record.severity_text == "ERROR"
-        assert logs[0].log_record.severity_number.value == 17
-
-    def test_warn_severity_in_record(self, in_memory_log_exporter):
-        from deile.observability.dispatch_log_export import emit_log_record
-
-        emit_log_record(
-            "dispatch.tool_burst",
-            trace_id=1,
-            span_id=1,
-            trace_flags=1,
-            attributes={"deile.dispatch.tool_count": 51},
-        )
-        logs = in_memory_log_exporter.get_finished_logs()
-        assert len(logs) == 1
-        assert logs[0].log_record.severity_text == "WARN"
-        assert logs[0].log_record.severity_number.value == 13
-
-    def test_info_severity_in_record(self, in_memory_log_exporter):
-        from deile.observability.dispatch_log_export import emit_log_record
-
-        emit_log_record(
-            "dispatch.received",
-            trace_id=1,
-            span_id=1,
-            trace_flags=1,
-            attributes={},
-        )
-        logs = in_memory_log_exporter.get_finished_logs()
-        assert len(logs) == 1
-        assert logs[0].log_record.severity_text == "INFO"
-        assert logs[0].log_record.severity_number.value == 9
+        assert logs[0].log_record.severity_text == expected_text
+        assert logs[0].log_record.severity_number.value == expected_number

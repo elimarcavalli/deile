@@ -334,40 +334,28 @@ class TestEnsureScriptsDirOnPath:
 class TestPromptInstallMode:
     """_prompt_install_mode() — interactive choice."""
 
-    @patch("builtins.input", return_value="")
-    def test_default_is_global(self, mock_input):
-        """Empty choice (ENTER) -> 'global'."""
+    @pytest.mark.parametrize("choice,expected", [
+        ("", "global"),        # empty (ENTER) -> default
+        ("g", "global"),       # short alias
+        ("global", "global"),  # long alias
+    ])
+    def test_global_aliases_return_global(self, choice, expected):
+        """Empty/'g'/'global' all hit the same branch -> 'global'."""
         from deile.cli_install import _prompt_install_mode
 
-        assert _prompt_install_mode() == "global"
+        with patch("builtins.input", return_value=choice):
+            assert _prompt_install_mode() == expected
 
-    @patch("builtins.input", return_value="g")
-    def test_g_returns_global(self, mock_input):
-        """'g' -> 'global'."""
+    @pytest.mark.parametrize("choice,expected", [
+        ("l", "local"),        # short alias
+        ("local", "local"),    # long alias
+    ])
+    def test_local_aliases_return_local(self, choice, expected):
+        """'l'/'local' both hit the same branch -> 'local'."""
         from deile.cli_install import _prompt_install_mode
 
-        assert _prompt_install_mode() == "global"
-
-    @patch("builtins.input", return_value="global")
-    def test_global_returns_global(self, mock_input):
-        """'global' -> 'global'."""
-        from deile.cli_install import _prompt_install_mode
-
-        assert _prompt_install_mode() == "global"
-
-    @patch("builtins.input", return_value="l")
-    def test_l_returns_local(self, mock_input):
-        """'l' -> 'local'."""
-        from deile.cli_install import _prompt_install_mode
-
-        assert _prompt_install_mode() == "local"
-
-    @patch("builtins.input", return_value="local")
-    def test_local_returns_local(self, mock_input):
-        """'local' -> 'local'."""
-        from deile.cli_install import _prompt_install_mode
-
-        assert _prompt_install_mode() == "local"
+        with patch("builtins.input", return_value=choice):
+            assert _prompt_install_mode() == expected
 
     @patch("builtins.input", return_value="q")
     def test_q_returns_none(self, mock_input):

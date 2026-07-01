@@ -696,13 +696,10 @@ def test_python_launcher_is_python_on_windows():
     assert module._PYTHON_LAUNCHER == "python"
 
 
-def test_python_launcher_is_python3_on_linux():
-    module = _reload_path_resolution_with_platform("linux")
-    assert module._PYTHON_LAUNCHER == "python3"
-
-
-def test_python_launcher_is_python3_on_macos():
-    module = _reload_path_resolution_with_platform("darwin")
+@pytest.mark.parametrize("target_platform", ["linux", "darwin"])
+def test_python_launcher_is_python3_on_non_windows(target_platform):
+    """Both Linux and macOS (darwin) hit the same else-branch → `python3`."""
+    module = _reload_path_resolution_with_platform(target_platform)
     assert module._PYTHON_LAUNCHER == "python3"
 
 

@@ -161,14 +161,15 @@ def _build_registry(*schemas: ToolSchema) -> ToolRegistry:
     return registry
 
 
-def test_registry_anthropic_equals_gemini_count(simple_schema, complex_schema):
+@pytest.mark.parametrize(
+    "format_method",
+    ["get_anthropic_tools", "get_openai_functions"],
+)
+def test_registry_format_count_equals_gemini(simple_schema, complex_schema, format_method):
+    """Each provider format yields the same tool count as gemini (== 2 for 2 schemas)."""
     registry = _build_registry(simple_schema, complex_schema)
-    assert len(registry.get_anthropic_tools()) == len(registry.get_gemini_functions())
-
-
-def test_registry_openai_equals_gemini_count(simple_schema, complex_schema):
-    registry = _build_registry(simple_schema, complex_schema)
-    assert len(registry.get_openai_functions()) == len(registry.get_gemini_functions())
+    count = len(getattr(registry, format_method)())
+    assert count == len(registry.get_gemini_functions()) == 2
 
 
 def test_registry_anthropic_format(simple_schema):

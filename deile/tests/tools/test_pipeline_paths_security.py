@@ -48,15 +48,10 @@ def _ctx_factory():
 
 
 @pytest.mark.security
-def test_assert_safe_root_rejects_etc():
+@pytest.mark.parametrize("bad_path", ["/etc/passwd", "/proc/self/environ"])
+def test_assert_safe_root_rejects_system_path(bad_path):
     with pytest.raises(PathContainmentError):
-        _assert_safe_root(Path("/etc/passwd"))
-
-
-@pytest.mark.security
-def test_assert_safe_root_rejects_proc():
-    with pytest.raises(PathContainmentError):
-        _assert_safe_root(Path("/proc/self/environ"))
+        _assert_safe_root(Path(bad_path))
 
 
 @pytest.mark.security

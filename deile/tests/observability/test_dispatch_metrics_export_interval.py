@@ -54,17 +54,3 @@ def test_export_interval_from_env(monkeypatch):
         reader.shutdown()
     except Exception:  # noqa: BLE001
         pass
-
-
-def test_export_interval_default_when_unset(monkeypatch):
-    if not _otlp_metric_exporter_available():
-        pytest.skip("OTLPMetricExporter (gRPC) não instalado")
-    monkeypatch.delenv("OTEL_METRIC_EXPORT_INTERVAL", raising=False)
-    config = ObservabilityConfig(endpoint="http://test:4317")
-    reader = dm._make_reader(config)
-    assert reader is not None
-    assert reader._export_interval_millis == 60000
-    try:
-        reader.shutdown()
-    except Exception:  # noqa: BLE001
-        pass

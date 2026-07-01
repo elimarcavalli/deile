@@ -231,23 +231,34 @@ def _read(rel: str) -> str:
 
 
 def test_resolver_does_not_hardcode_valid_dispatchers_literal():
-    """``VALID_DISPATCHERS`` não pode ser um ``frozenset({...})`` literal.
+    """``VALID_DISPATCHERS`` deve ser DERIVADO de :func:`get_valid_dispatchers`.
 
-    Deve ser atribuído a partir de :func:`get_valid_dispatchers` (derivação).
-    Um literal com os dois workers escritos à mão é exatamente o anti-padrão
-    que este teste barra.
+    Duas frentes, robustas a formatação (a estática compara o fonte sem espaços,
+    em vez de casar a linha-fonte exata — que era frágil a reformatação):
+
+    1. **Comportamental:** o snapshot de import ``VALID_DISPATCHERS`` é igual ao
+       valor re-derivado ``get_valid_dispatchers()`` (baseline, sem adapter
+       sintético) — prova que o snapshot não virou uma lista fixa divergente.
+    2. **Anti-hardcode (estático):** a atribuição final usa a função e o único
+       ``frozenset`` literal de workers é o do núcleo (``BUILTIN_DISPATCHERS``);
+       um 2º literal de lista-de-workers é o anti-padrão que este teste barra.
     """
-    src = _read("deile/orchestration/pipeline/dispatch_resolver.py")
-    # A linha de atribuição final de VALID_DISPATCHERS deve usar a função.
-    assert "VALID_DISPATCHERS: FrozenSet[str] = get_valid_dispatchers()" in src, (
+    # 1. Comportamental: o snapshot casa a derivação viva.
+    assert dr.VALID_DISPATCHERS == dr.get_valid_dispatchers()
+
+    # 2. Anti-hardcode estático, normalizado (sem espaços) → robusto a formatação.
+    src_nospace = "".join(
+        _read("deile/orchestration/pipeline/dispatch_resolver.py").split()
+    )
+    # A atribuição final de VALID_DISPATCHERS deve usar a função (derivação).
+    assert "VALID_DISPATCHERS:FrozenSet[str]=get_valid_dispatchers()" in src_nospace, (
         "VALID_DISPATCHERS deve ser derivado de get_valid_dispatchers(), "
         "não de um frozenset literal"
     )
-    # E não pode haver um frozenset literal com claude-worker fora do conjunto
-    # NÚCLEO declarado (BUILTIN_DISPATCHERS). O único literal permitido é o do
-    # BUILTIN_DISPATCHERS (os dois workers núcleo têm server dedicado).
-    builtin_literal = 'frozenset({"deile-worker", "claude-worker"})'
-    occurrences = src.count(builtin_literal)
+    # E o único frozenset literal de workers permitido é o do conjunto NÚCLEO
+    # (BUILTIN_DISPATCHERS); um segundo é lista-de-workers hardcodada.
+    builtin_literal = 'frozenset({"deile-worker","claude-worker"})'
+    occurrences = src_nospace.count(builtin_literal)
     assert occurrences == 1, (
         f"esperado exatamente 1 literal de workers núcleo (BUILTIN_DISPATCHERS), "
         f"achei {occurrences} — uma lista-de-workers extra foi hardcodada"

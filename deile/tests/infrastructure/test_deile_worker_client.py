@@ -532,34 +532,27 @@ async def test_retry_http_500_three_attempts(monkeypatch):
     assert calls["n"] == 3
 
 
-async def test_no_retry_http_409(monkeypatch):
-    """HTTP 409 (duplicate in-flight) é 4xx → 0 retry, falha na 1ª (AC4)."""
+@pytest.mark.parametrize(
+    "status,code",
+    [
+        (409, "duplicate_in_flight"),  # duplicate in-flight
+        (429, "rate_limited"),         # rate-limited
+    ],
+)
+async def test_no_retry_http_4xx(monkeypatch, status: int, code: str):
+    """HTTP 4xx (409 duplicate in-flight / 429 rate-limited) é não-retryable
+    → 0 retry, falha na 1ª tentativa propagando o code (AC4)."""
     calls = {"n": 0}
 
     def handler(request):
         calls["n"] += 1
         return httpx.Response(
-            409, json={"error": {"code": "duplicate_in_flight", "message": "x"}}
+            status, json={"error": {"code": code, "message": "x"}}
         )
 
     with pytest.raises(WorkerDispatchError) as ei:
         await _run_with_transport(monkeypatch, handler)
-    assert ei.value.error_code == "duplicate_in_flight"
-    assert calls["n"] == 1
-
-
-async def test_no_retry_http_429(monkeypatch):
-    """HTTP 429 (rate-limited) é 4xx → 0 retry (AC4)."""
-    calls = {"n": 0}
-
-    def handler(request):
-        calls["n"] += 1
-        return httpx.Response(
-            429, json={"error": {"code": "rate_limited", "message": "slow down"}}
-        )
-
-    with pytest.raises(WorkerDispatchError):
-        await _run_with_transport(monkeypatch, handler)
+    assert ei.value.error_code == code
     assert calls["n"] == 1
 
 
