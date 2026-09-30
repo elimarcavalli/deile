@@ -7,6 +7,6 @@ pytest-benchmark==5.2.3
 pip-audit==2.10.1
 bandit==1.9.4
 coverage==7.16.2
-isort==6.1.0
+isort==9.0.1
 radon==6.0.1
 black==26.3.1
