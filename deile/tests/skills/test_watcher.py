@@ -12,6 +12,10 @@ import time
 from pathlib import Path
 
 import pytest
+from watchdog.events import (DirModifiedEvent, FileClosedEvent,
+                             FileClosedNoWriteEvent, FileCreatedEvent,
+                             FileDeletedEvent, FileModifiedEvent,
+                             FileMovedEvent, FileOpenedEvent)
 
 from deile.skills.registry import get_skill_registry, reset_skill_registry
 from deile.skills.watcher import (SkillsWatcher, _DebounceWorker,
@@ -121,11 +125,6 @@ class TestSkillsWatcher:
     # Injetam o callback do watcher diretamente (mesmo padrão de test_hot_loader),
     # sem depender de FSEvents reais nem de poll — determinístico e instantâneo.
 
-    @staticmethod
-    def _md_event_is_relevant(src_path: str) -> bool:
-        """Replica o filtro do _Handler.on_any_event: só .md (não-diretório)."""
-        return src_path.endswith(".md")
-
     def test_creating_md_file_triggers_reload(self, tmp_path: Path) -> None:
         paths = _isolated(tmp_path)
         user_skills_dir = paths["user_home"] / ".deile" / "skills"
@@ -162,28 +161,6 @@ class TestSkillsWatcher:
 
         assert get_skill_registry().get("mutable").body == "new body"
 
-    def test_non_md_files_are_ignored(self, tmp_path: Path) -> None:
-        paths = _isolated(tmp_path)
-        user_skills_dir = paths["user_home"] / ".deile" / "skills"
-        user_skills_dir.mkdir(parents=True)
-        reload_registry(**paths)
-        baseline = set(get_skill_registry().list_names())
-
-        reloads: list = []
-        watcher = SkillsWatcher(
-            debounce_seconds=0.1,
-            on_reload=lambda count: reloads.append(count),
-            **paths,
-        )
-        # Um .txt é filtrado pelo handler antes de chegar ao debounce: simula a
-        # decisão do filtro e confirma que nenhum reload é disparado.
-        (user_skills_dir / "notes.txt").write_text("nope", encoding="utf-8")
-        if self._md_event_is_relevant(str(user_skills_dir / "notes.txt")):
-            watcher._on_event(str(user_skills_dir / "notes.txt"))
-            watcher._trigger_reload()
-        assert reloads == [], f"reload fired for non-.md file: {reloads}"
-        assert set(get_skill_registry().list_names()) == baseline
-
     @pytest.mark.integration
     def test_stop_is_idempotent(self, tmp_path: Path) -> None:
         pytest.importorskip("watchdog")
@@ -194,6 +171,71 @@ class TestSkillsWatcher:
         watcher.stop()
         watcher.stop()  # second stop should not raise
         assert watcher.is_active is False
+
+
+@pytest.mark.unit
+class TestWatcherEventFilter:
+    # Handler REAL capturado de um Observer falso: determinístico em qualquer SO.
+
+    @pytest.fixture
+    def fire(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import watchdog.observers
+
+        handlers: list = []
+
+        class _FakeObserver:
+            def schedule(self, handler, path, recursive=False):
+                handlers.append(handler)
+
+            def start(self): ...
+
+            def stop(self): ...
+
+            def join(self, timeout=None): ...
+
+        monkeypatch.setattr(watchdog.observers, "Observer", _FakeObserver)
+        watcher = SkillsWatcher(debounce_seconds=0.1, **_isolated(tmp_path))
+        signals: list = []
+        monkeypatch.setattr(watcher, "_on_event", signals.append)
+        assert watcher.start()
+
+        def _fire(event) -> list:
+            handlers[0].on_any_event(event)
+            return signals
+
+        yield _fire
+        watcher.stop()
+
+    @pytest.mark.parametrize(
+        "event",
+        [FileOpenedEvent("/s/skill.md"), FileClosedNoWriteEvent("/s/skill.md")],
+        ids=lambda e: e.event_type,
+    )
+    def test_read_only_events_do_not_reload(self, fire, event) -> None:
+        # inotify emite abertura/leitura; como o reload LÊ os .md, reagir a elas o realimenta sem fim.
+        assert fire(event) == []
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            FileCreatedEvent("/s/skill.md"),
+            FileModifiedEvent("/s/skill.md"),
+            FileDeletedEvent("/s/skill.md"),
+            FileMovedEvent("/s/skill.md", "/s/renamed.md"),
+            FileClosedEvent("/s/skill.md"),
+        ],
+        ids=lambda e: e.event_type,
+    )
+    def test_write_events_on_md_reload(self, fire, event) -> None:
+        assert fire(event) == ["/s/skill.md"]
+
+    def test_atomic_save_renaming_onto_md_reloads(self, fire) -> None:
+        # sed -i e editores gravam num temporário e o renomeiam SOBRE o .md.
+        assert fire(FileMovedEvent("/s/.skill.md.tmp", "/s/skill.md")) == ["/s/skill.md"]
+
+    def test_non_md_and_directory_events_are_ignored(self, fire) -> None:
+        fire(FileModifiedEvent("/s/notes.txt"))
+        assert fire(DirModifiedEvent("/s/dir.md")) == []
 
 
 @pytest.mark.unit

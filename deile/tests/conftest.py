@@ -225,13 +225,9 @@ def _reset_global_singletons():
     registrada, excluída por estar ativa) mas encontrava typescript+tdd residuais →
     "## Available Skills" aparecia no prompt.
 
-    Solução: ``reset_skill_registry()`` é idempotente e segura aqui porque:
-    (a) nenhum daemon SkillsWatcher está rodando durante os testes (test_watcher.py
-    usa watchers inline sem background threads, ou para-os explicitamente antes de
-    retornar); (b) test_watcher.py já tem seu próprio ``_reset_registry`` autouse —
-    dois resets consecutivos são idempotentes; (c) nenhum teste chama
-    ``bootstrap_skills_with_handle(hot_reload=True)`` que criaria um watcher de
-    longa duração.
+    Solução: ``reset_skill_registry()`` é idempotente (test_watcher.py tem o próprio
+    reset autouse). O reset só é hermético porque nenhum ``SkillsWatcher`` sobrevive
+    ao teste que o iniciou — garantia de ``_stop_skills_watchers`` abaixo.
     """
     from deile.core.models.tier_router import reset_tier_router
     from deile.events.event_bus import reset_event_bus
@@ -249,6 +245,28 @@ def _reset_global_singletons():
     _reset_all()
     yield
     _reset_all()
+
+
+@pytest.fixture(autouse=True)
+def _stop_skills_watchers(monkeypatch):
+    """Para todo ``SkillsWatcher`` iniciado no teste (o ``DeileAgent`` sobe um real).
+
+    Vazado, ele segue vivo no worker do xdist e, a cada evento de FS nos diretórios
+    de skills, faz ``replace_all`` no ``SkillRegistry`` do teste que estiver rodando.
+    """
+    from deile.skills.watcher import SkillsWatcher
+
+    started = []
+    original_start = SkillsWatcher.start
+
+    def _tracking_start(self):
+        started.append(self)
+        return original_start(self)
+
+    monkeypatch.setattr(SkillsWatcher, "start", _tracking_start)
+    yield
+    for watcher in started:
+        watcher.stop()
 
 
 @pytest.fixture(autouse=True, scope="session")
