@@ -729,7 +729,7 @@ python3 -m pytest deile/tests/path/test_x.py -v   # um arquivo
 
 ### 🚦 Gates de CI (`.github/workflows/ci.yml`)
 
-O CI virou gate real (hardening em 3 etapas) — todas as Actions são **SHA-pinadas** e cada job tem `permissions: contents: read`:
+O CI virou gate real (hardening em 3 etapas) — todas as Actions são **SHA-pinadas** e cada job tem `permissions: contents: read`. Roda em push/PR para `main` e sob demanda (`workflow_dispatch`, que varre o histórico inteiro no gitleaks); **não há execução agendada** — CVE nova em dependência inalterada chega pelos alertas e PRs de correção do Dependabot. Na `main`, os 7 jobs gating são checks obrigatórios (ruleset sem bypass):
 
 **Etapa 1/3 — segurança & supply-chain (#732):**
 - **`test`** — roda a **suíte real** `deile/tests/` paralela (`pytest-xdist -n auto`) com **`--cov-fail-under=85`** (cobertura medida: 87%). Antes apontava para `tests/` (inexistente) e mascarava o exit code — CI verde era teatro (corrigido em #724).

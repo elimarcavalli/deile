@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependabot passa a atualizar também as GitHub Actions fixadas por SHA.
 - **CI sem PAT** — o `deilebot` é público: `ci.yml` e `install-smoke.yml` clonam/instalam anonimamente. O `BOT_REPO_TOKEN` deixou de ser usado; antes, o `install-smoke` o gravava no `~/.gitconfig` antes de rodar o build da própria PR, e as PRs do Dependabot (sem acesso ao secret) quebravam.
 
+### Removed
+- **Execução diária agendada do CI** (`schedule`) — a varredura completa do gitleaks fica sob demanda (`workflow_dispatch`); CVE nova em dependência inalterada é coberta pelos alertas e PRs de correção do Dependabot, e segredo é barrado no push/PR (gitleaks + push protection). Sem `schedule`, o GitHub também deixa de desativar o workflow por inatividade.
+
 ### Dependencies
 - **Python mínimo 3.10** (`requires-python`, launcher `deile.py`, `setup_environment.py`) — o 3.9 já não instalava (`py7zr` exige ≥ 3.10) e está fora de suporte.
 - `pytest>=9.0.3` (extra `[test]`), `setuptools>=83` (`[build-system]`) e pisos corrigidos: `GitPython>=3.1.60`, `urllib3>=2.8.0`, `requests>=2.33.0`, `httplib2>=0.32.0`, `pyasn1>=0.6.4`, `python-dotenv>=1.2.2`, `py7zr>=1.1.3`.
