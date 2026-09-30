@@ -88,7 +88,7 @@ DEILE **pensa, decide e resolve**: aciona ferramentas reais (function calling) p
 
 ## ⚡ Quick start
 
-**Pré-requisitos:** Python **3.9+** e ao menos uma chave de API entre Anthropic, OpenAI, DeepSeek e Gemini.
+**Pré-requisitos:** Python **3.10+** e ao menos uma chave de API entre Anthropic, OpenAI, DeepSeek e Gemini.
 
 > 🧭 **Cobertura por chave:** `OPENAI_API_KEY` ou `DEEPSEEK_API_KEY` cobrem todas as tiers (1–4). `GOOGLE_API_KEY` cobre tiers 1–3. `ANTHROPIC_API_KEY` cobre tiers 1–3. Para cobertura plena e fallback entre provedores, use pelo menos duas chaves.
 
@@ -707,7 +707,7 @@ A referência canônica é o [`.env.example`](.env.example) (~540 linhas, seçõ
 | `scheduler` · `webhook` · `test` | APScheduler · FastAPI/uvicorn · pytest & cia. |
 
 ### 🧪 Dependências de desenvolvimento (`dev-requirements.txt`)
-Testes (`pytest`, `pytest-asyncio`, `pytest-mock`, `pytest-cov`, `pytest-xdist`, `pytest-benchmark`), qualidade (`coverage`, `isort`, `radon`, `black`) e segurança (`safety`, `bandit`). *(o `pytest-timeout` usado pelo `pytest.ini` vem do extra `[test]` do `pyproject.toml`.)*
+Testes (`pytest`, `pytest-asyncio`, `pytest-mock`, `pytest-cov`, `pytest-xdist`, `pytest-benchmark`), qualidade (`coverage`, `isort`, `radon`, `black`) e segurança (`pip-audit`, `bandit` — os mesmos gates do CI). *(o `pytest-timeout` usado pelo `pytest.ini` vem do extra `[test]` do `pyproject.toml`.)*
 
 ---
 
@@ -733,8 +733,8 @@ O CI virou gate real (hardening em 3 etapas) — todas as Actions são **SHA-pin
 
 **Etapa 1/3 — segurança & supply-chain (#732):**
 - **`test`** — roda a **suíte real** `deile/tests/` paralela (`pytest-xdist -n auto`) com **`--cov-fail-under=85`** (cobertura medida: 87%). Antes apontava para `tests/` (inexistente) e mascarava o exit code — CI verde era teatro (corrigido em #724).
-- **`secret-scan`** — `gitleaks` (full-history) com allowlist de FPs em `.gitleaks.toml` (restrita aos arquivos de teste que usam segredos fake).
-- **`security-scan`** — `bandit -lll` (só HIGH, zero achados legados) + `pip-audit` sem mascarar.
+- **`secret-scan`** — binário oficial do `gitleaks` com **SHA-256 fixado no workflow** (sem a `gitleaks-action`, que baixava sem verificar). Escopo por evento: push → commits do push; PR → commits da PR; `workflow_dispatch` → histórico inteiro — sempre com `--remerge-diff` (pega segredo inserido no próprio commit de merge). Intervalo inválido ou vazio **falha** (o gitleaks sai 0 quando o git falha — o passo detecta e reprova); em PR, `.gitleaks.toml` e `.gitleaksignore` vêm **da base**, então a PR não afrouxa a própria varredura. **Sem allowlist por arquivo**: os tokens fake históricos dos testes do scanner são ignorados pela impressão digital exata em `.gitleaksignore` (auditados um a um); linha **nova ou editada** com token fake em teste exige `# gitleaks:allow` — qualquer outro segredo, em qualquer arquivo, bloqueia.
+- **`security-scan`** — `bandit -lll` (só HIGH, zero achados legados) + `pip-audit` **sem nenhum `--ignore-vuln`**, sobre o ambiente do projeto **e** sobre os pins de `requirements.txt` (o que vai para a imagem) e `dev-requirements.txt` (o `setuptools` pré-instalado no runner é atualizado antes).
 
 **Etapa 2/3 — build, artefato & smoke (#733):**
 - **`functional-tests`** (advisory → **gating**) — builda o wheel, instala em venv limpo e valida `deile --version`/`--help` (exit 0) + import dos registries core.
@@ -742,7 +742,7 @@ O CI virou gate real (hardening em 3 etapas) — todas as Actions são **SHA-pin
 - **`deployment-ready`** passa a **exigir** `secret-scan`, `security-scan`, `functional-tests`, `build-and-package`, `code-quality` e `documentation`.
 
 **Etapa 3/3 — qualidade de código (#736):**
-- **`code-quality`** (advisory → **gating**) — dois gates sem reformatação (formatação/mypy ficam para a issue #735 de pós-reformat): `interrogate deile/ --fail-under=39` (cobertura de docstrings ≥ 39%; baseline 39,9% em 2026-06-16; ratchet: só pode aumentar) + `radon cc deile/ -a` com falha se a complexidade ciclomática média ≥ 10,0 (nota B→C; baseline A/3,24 em 2026-06-16). `mypy` corre em modo advisory (`continue-on-error: true`) até o gate real no #735.
+- **`code-quality`** (advisory → **gating**) — dois gates sem reformatação (formatação/mypy ficam para a issue #735 de pós-reformat): `interrogate deile/ --fail-under=39` (cobertura de docstrings ≥ 39%; baseline 39,9% em 2026-06-16; ratchet: só pode aumentar) + `radon cc deile/ -a` com falha se a complexidade ciclomática média ≥ 10,0 (nota B→C; baseline A/3,24 em 2026-06-16). `mypy` e `ruff` correm em modo advisory, **rotulados** "NÃO gateia", até o gate real no #735.
 - **`documentation`** (sempre presente) — `scripts/validate_doc_consistency.py` verifica invariantes doc↔código (`--cov-fail-under` no `ci.yml` e não no `pytest.ini`, cross-refs de `docs/system_design/` para arquivos existentes, presença do gate de testes); `pymarkdown` corre em modo advisory (~40 violações legadas, gate real após limpeza sistemática).
 
 ---

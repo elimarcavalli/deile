@@ -5,6 +5,25 @@ All notable changes to the DEILE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Hot-reload de skills em laço infinito no Linux** — no inotify o watchdog também emite abertura/fechamento em *leitura*; o `SkillsWatcher` reagia a elas e, como o próprio reload lê todos os `.md`, se realimentava a cada janela de debounce (12 reloads em 4 s após UMA leitura, medido em container Linux). O handler agora só reage a eventos de escrita — e passa a reconhecer o save atômico (temporário renomeado **sobre** o `.md`, como `sed -i` e editores), que antes nunca recarregava. Medido em Linux: leitura 0, escrita 1, `sed -i` 1, `os.replace` 1. Hipótese (não comprovada): pode ser a origem do `can't start new thread` no `deile-monitor`, antes tratado só com o debounce de thread única.
+- **`cli_worker_scaler` com cooldown falso em host recém-bootado** — a sentinela `0.0` comparada com `time.monotonic()` (que conta desde o boot) fazia o primeiro scale responder `COOLDOWN` sem ter escalado nada quando o uptime era < 120 s, adiando o dispatch com log enganoso.
+- **Testes intermitentes no CI** — o `DeileAgent` sobe um `SkillsWatcher` real, que vazava entre testes e sobrescrevia o `SkillRegistry` do teste em curso; o `conftest` agora para todo watcher iniciado no teste. Os testes de rotação de log deixaram de depender da data.
+
+### Security
+- **CI: gitleaks realmente gateando** — a `gitleaks-action` usava por padrão o 8.24.3, que ignora `[[allowlists]]` (allowlist inerte: todo run agendado vermelho), e baixava o binário sem verificação. Agora: binário 8.30.1 com SHA-256 fixado no workflow; a allowlist por arquivo foi substituída por uma baseline de impressões digitais auditadas (`.gitleaksignore`) — segredo novo em qualquer arquivo bloqueia. Intervalo inválido/vazio falha em vez de passar com 0 commits varridos; `--remerge-diff` cobre segredo inserido em commit de merge; em PR, config e baseline vêm da base (a PR não consegue se auto-ignorar).
+- **CI: `pip-audit` sem exceções e sobre o que vai para produção** — além do ambiente do projeto, audita os pins de `requirements.txt` (imagem `deile-stack`) e `dev-requirements.txt`, que carregavam 10 pacotes vulneráveis (GitPython 3.1.46 com 38 vulnerabilidades, urllib3, requests, httplib2, pyasn1, python-dotenv, py7zr, pytest, black, e `nltk` sem correção via `safety`). Removido o `--ignore-vuln`.
+- **CI: etapas que mascaravam falha removidas** — ruff/mypy com `|| echo` + `continue-on-error` sem rótulo saíram do job `test` (ruff virou advisory rotulado no `code-quality`); o job `Notify on failure`, que só fazia `echo`, foi removido.
+- Dependabot passa a atualizar também as GitHub Actions fixadas por SHA.
+- **CI sem PAT** — o `deilebot` é público: `ci.yml` e `install-smoke.yml` clonam/instalam anonimamente. O `BOT_REPO_TOKEN` deixou de ser usado; antes, o `install-smoke` o gravava no `~/.gitconfig` antes de rodar o build da própria PR, e as PRs do Dependabot (sem acesso ao secret) quebravam.
+
+### Dependencies
+- **Python mínimo 3.10** (`requires-python`, launcher `deile.py`, `setup_environment.py`) — o 3.9 já não instalava (`py7zr` exige ≥ 3.10) e está fora de suporte.
+- `pytest>=9.0.3` (extra `[test]`), `setuptools>=83` (`[build-system]`) e pisos corrigidos: `GitPython>=3.1.60`, `urllib3>=2.8.0`, `requests>=2.33.0`, `httplib2>=0.32.0`, `pyasn1>=0.6.4`, `python-dotenv>=1.2.2`, `py7zr>=1.1.3`.
+- `requirements.txt` e o toolchain de teste da imagem (`pytest==9.1.1`) nas versões validadas pela suíte; `dev-requirements.txt`: `safety` (sem uso, trazia `nltk` vulnerável) trocado por `pip-audit`.
+
 ## [1.1.0] - 2026-06-16 — DEILE-One (frota multi-CLI + endurecimento de CI + produção)
 
 > Sucede a `1.0.0` (linha de base clássica). Entrega a **frota multi-CLI** plugável,
