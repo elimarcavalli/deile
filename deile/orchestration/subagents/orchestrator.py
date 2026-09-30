@@ -414,8 +414,8 @@ class SubAgentOrchestrator:
                     )
                 # NT6 (iter-3 review): Python 3.11+ aliases
                 # ``asyncio.TimeoutError`` para o ``TimeoutError`` built-in;
-                # ambos são capturados pra manter compat com 3.9-3.10
-                # (per pyproject.toml ``requires-python = ">=3.9"``), onde
+                # ambos são capturados pra manter compat com 3.10
+                # (per pyproject.toml ``requires-python = ">=3.10"``), onde
                 # são classes distintas.
                 except (asyncio.TimeoutError, TimeoutError):
                     pending = [t for t in runner_tasks if not t.done()]
@@ -431,7 +431,7 @@ class SubAgentOrchestrator:
                             timeout=2.0,
                         )
                     # NT6 (iter-3): mesmo motivo do bloco acima — manter
-                    # compat com Python 3.9-3.10 onde ``asyncio.TimeoutError``
+                    # compat com Python 3.10 onde ``asyncio.TimeoutError``
                     # ≠ ``TimeoutError``.
                     except (asyncio.TimeoutError, TimeoutError):
                         logger.warning(

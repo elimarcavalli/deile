@@ -5,7 +5,7 @@ Responsabilidade única: **preparar a máquina**. Não configura o bot
 (isso é o `deilebot setup`) nem sobe a stack (isso é o `deploy.py`).
 
 O que ele garante:
-  1. Python 3.9+.
+  1. Python 3.10+.
   2. O repositório `deilebot` clonado dentro de `deile/`.
   3. As dependências Python instaladas (`pip install -e .` + o bot).
   4. (Modo container) um runtime de container + Kubernetes:
@@ -114,14 +114,14 @@ def _confirm_and_run(
 # ----- checagens -------------------------------------------------------------
 
 def check_python() -> bool:
-    """Confere Python 3.9+. Não há auto-fix — só reporta."""
+    """Confere Python 3.10+. Não há auto-fix — só reporta."""
     v = sys.version_info
-    if v >= (3, 9):
+    if v >= (3, 10):
         ui.ok(f"Python {v.major}.{v.minor}.{v.micro}")
         return True
     ui.err(
         f"Python {v.major}.{v.minor} é antigo demais — o DEILE precisa de "
-        "3.9+. Instale uma versão mais nova e rode este script de novo."
+        "3.10+. Instale uma versão mais nova e rode este script de novo."
     )
     return False
 
