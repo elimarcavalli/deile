@@ -149,8 +149,9 @@ async def ensure_replica(dispatcher: str) -> EnsureReplicaOutcome:
         return EnsureReplicaOutcome(ScaleResult.READY, f"{deploy} já com {replicas} réplica(s)")
 
     now = time.monotonic()
-    last = _last_scale_at.get(deploy, 0.0)
-    if (now - last) < _SCALE_COOLDOWN_S:
+    # Sem sentinela 0.0: monotonic() conta desde o boot e, em host recém-bootado, fica < cooldown.
+    last = _last_scale_at.get(deploy)
+    if last is not None and (now - last) < _SCALE_COOLDOWN_S:
         return EnsureReplicaOutcome(
             ScaleResult.COOLDOWN,
             f"{deploy} escalado há {int(now - last)}s (< cooldown {int(_SCALE_COOLDOWN_S)}s); "

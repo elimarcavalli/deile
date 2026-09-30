@@ -15,6 +15,7 @@ com 0 réplicas dispara o ensure-replica ANTES do POST; falha de scale devolve
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -85,18 +86,27 @@ class TestEnsureReplica:
         assert out.ok_to_dispatch is False
         assert "k8s scale --opencode-worker 1" in out.detail
 
-    async def test_cooldown_skips_second_scale(self, monkeypatch):
-        # 1º ensure: get 0 → scale ok (SCALED, grava cooldown).
-        mock = _kubectl_seq((0, "0", ""), (0, "", ""), (0, "0", ""))
+    async def test_cooldown_counts_from_last_scale_not_clock_origin(self, monkeypatch):
+        # monotonic() conta desde o boot: em host recém-bootado (VM de CI) vale < cooldown.
+        clock = SimpleNamespace(now=5.0)
+        monkeypatch.setattr(scaler, "time", SimpleNamespace(monotonic=lambda: clock.now))
+        mock = _kubectl_seq(
+            (0, "0", ""), (0, "", ""),  # get 0 → scale
+            (0, "0", ""),               # get 0 dentro da janela → sem scale
+            (0, "0", ""), (0, "", ""),  # get 0 com a janela vencida → scale
+        )
         monkeypatch.setattr(scaler, "_kubectl", mock)
-        first = await ensure_replica("opencode-worker")
-        assert first.result == ScaleResult.SCALED
-        # 2º ensure logo em seguida: get 0 mas dentro do cooldown → não re-scale.
+
+        assert (await ensure_replica("opencode-worker")).result == ScaleResult.SCALED
+        clock.now += scaler._SCALE_COOLDOWN_S - 1
         second = await ensure_replica("opencode-worker")
         assert second.result == ScaleResult.COOLDOWN
         assert second.ok_to_dispatch is True
-        # Só 3 chamadas kubectl (get, scale, get) — nenhum 2º scale.
-        assert mock.await_count == 3
+        clock.now += 1
+        assert (await ensure_replica("opencode-worker")).result == ScaleResult.SCALED
+        assert [c.args[0] for c in mock.await_args_list] == [
+            "get", "scale", "get", "get", "scale",
+        ]
 
 
 class TestImplementerWiringScaleToZero:

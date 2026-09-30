@@ -8,6 +8,8 @@ on:
   schedule:
     # Run tests daily at 2 AM UTC
     - cron: "0 2 * * *"
+  # Execução manual: varredura do histórico INTEIRO no gitleaks sob demanda.
+  workflow_dispatch:
 
 # Permissões mínimas por padrão (princípio do menor privilégio).
 # Jobs que precisam de mais declaram localmente via permissions:.
@@ -16,34 +18,75 @@ permissions:
 
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
-  # SECRET SCANNING — gating; bloqueia em segredo novo fora da allowlist
+  # SECRET SCANNING — gating; bloqueia qualquer segredo fora da baseline auditada
   # ──────────────────────────────────────────────────────────────────────────
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # Binário oficial com SHA-256 fixado aqui (a gitleaks-action baixava sem
+      # verificar e usava por padrão a 8.24.3, que ignora o [[allowlists]] do
+      # .gitleaks.toml). Ao subir a versão, copie o hash de
+      # gitleaks_<versão>_checksums.txt da release.
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
     steps:
       - name: Checkout
         # actions/checkout v4
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          # Histórico completo para varredura full-history
+          # Histórico completo: os intervalos de push/PR e a varredura manual precisam dele
           fetch-depth: 0
 
+      - name: Instalar gitleaks (SHA-256 verificado)
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks version
+
+      # Escopo: push → commits do push; PR → commits da PR; manual/agendado → histórico
+      # inteiro. --remerge-diff inclui o que um merge introduz. Em PR, config e baseline
+      # vêm da BASE: a própria PR não consegue afrouxar a varredura.
       - name: Gitleaks — varredura de segredos (GATING)
-        # gitleaks/gitleaks-action v2
-        # SHA do commit apontado pela tag anotada v2 (resolvido em 2026-06-15):
-        #   tag object: dcedce43c6f43de0b836d1fe38946645c9c638dc
-        #   commit:     ff98106e4c7b2bc287b24eaf42907196329070c7
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # .gitleaks.toml na raiz do repo define a allowlist de FPs em arquivos
-          # de teste — veja o arquivo para a lista e justificativa por arquivo.
-          GITLEAKS_CONFIG: .gitleaks.toml
-          # exit-code=1 garante que o job falhe se houver achado fora da allowlist
-          GITLEAKS_EXIT_CODE: 1
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          RANGE="--full-history --all"
+          case "$EVENT_NAME" in
+            push)
+              # before inalcançável (1º push, force-push) → histórico inteiro, nunca intervalo vazio.
+              if git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+                RANGE="${PUSH_BEFORE}..${GITHUB_SHA}"
+              fi
+              ;;
+            pull_request)
+              RANGE="${PR_BASE}..${PR_HEAD}"
+              [ "$(git rev-list --count "$RANGE")" -gt 0 ] || { echo "::error::PR sem commits em $RANGE"; exit 1; }
+              # Sobrescreve na árvore: o gitleaks também carrega sozinho o .gitleaksignore dela.
+              git show "${PR_BASE}:.gitleaks.toml" > .gitleaks.toml
+              if git cat-file -e "${PR_BASE}:.gitleaksignore" 2>/dev/null; then
+                git show "${PR_BASE}:.gitleaksignore" > .gitleaksignore
+              else
+                : > .gitleaksignore
+              fi
+              ;;
+          esac
+          echo "Escopo da varredura: $RANGE"
+          ./gitleaks git --config .gitleaks.toml --gitleaks-ignore-path .gitleaksignore --redact --verbose \
+            --exit-code 1 --log-opts="--remerge-diff $RANGE" . 2>&1 | tee gitleaks.log
+          # O gitleaks sai 0 mesmo quando o git falha (0 commits varridos): trata como falha.
+          if grep -qE 'fatal:|stderr is not empty' gitleaks.log; then
+            echo "::error::o git falhou dentro do gitleaks — varredura não confiável"
+            exit 1
+          fi
 
   # ──────────────────────────────────────────────────────────────────────────
   # SECURITY SCAN — gating: bandit HIGH + pip-audit CVE
@@ -66,7 +109,8 @@ jobs:
 
       - name: Install project + security tools
         run: |
-          python -m pip install --upgrade pip
+          # O setuptools pré-instalado no Python do runner tem CVE (PYSEC-2026-3447).
+          python -m pip install --upgrade pip "setuptools>=83"
           # Instala o projeto para que pip-audit veja as deps reais (pyproject.toml)
           pip install -e ".[test,otel]"
           pip install bandit pip-audit
@@ -78,15 +122,12 @@ jobs:
         run: |
           bandit -r deile/ -lll
 
-      # PIP-AUDIT — CVE gating
-      # Achado legado allowlistado (2026-06-15):
-      #   CVE-2025-71176 / GHSA-6w46-j5rx-g56g — pytest 8.4.2
-      #   Descrição: local DoS/privilege escalation via /tmp/pytest-of-{user}
-      #   Risco prático: nulo em CI (runner descartável, sem usuários concorrentes)
-      #   Fix disponível: pytest >=9.0.3 — allowlistar até atualização planejada
+      # PIP-AUDIT — CVE gating, sem nenhuma exceção (--ignore-vuln).
       - name: pip-audit — CVE check (GATING)
         run: |
-          pip-audit --ignore-vuln GHSA-6w46-j5rx-g56g
+          pip-audit
+          # Pins da imagem de produção e das ferramentas de dev: o ambiente acima não os cobre.
+          pip-audit -r requirements.txt -r dev-requirements.txt
 
   # ──────────────────────────────────────────────────────────────────────────
   # TESTES — gating: suíte completa + cobertura ≥85%
@@ -126,7 +167,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -140,18 +181,6 @@ jobs:
           # observability). ZERO TEATRO: a suíte tem que COLETAR e rodar de verdade.
           pip install -e ".[test,otel]"
           pip install pytest-cov pytest-xdist pytest-mock coverage
-
-      - name: Lint with ruff (if available)
-        run: |
-          pip install ruff || echo "Ruff not available, skipping lint"
-          ruff check . || echo "Ruff check completed with issues"
-        continue-on-error: true
-
-      - name: Type check with mypy (if available)
-        run: |
-          pip install mypy || echo "mypy not available, skipping type check"
-          mypy deile/ || echo "mypy check completed with issues"
-        continue-on-error: true
 
       # Gate de cobertura: medido 87% em 2026-06-15; gate em 85% com margem.
       # --cov-fail-under=85 é o gate real — o CI falha se a cobertura cair abaixo.
@@ -195,7 +224,7 @@ jobs:
 
       - name: Install quality tools
         run: |
-          pip install interrogate radon mypy
+          pip install interrogate radon mypy ruff
 
       # GATE: cobertura de docstrings ≥ 39% (baseline 39.9% medido em 2026-06-16).
       # Configurado via [tool.interrogate] em pyproject.toml.
@@ -232,6 +261,11 @@ jobs:
         run: |
           mypy deile/ --ignore-missing-imports || true
         continue-on-error: true
+
+      # ADVISORY — ruff. NÃO gateia: ~150 violações legadas; gate real no #735.
+      - name: ruff — lint (advisory — NÃO gateia; gate real no #735)
+        run: |
+          ruff check . --exit-zero
 
   # ──────────────────────────────────────────────────────────────────────────
   # TESTES FUNCIONAIS — GATING (issue #730)
@@ -302,8 +336,8 @@ jobs:
   #   3. Smoke de install-from-wheel em venv limpo.
   #   4. Cada extra offline ([test], [otel], [scheduler], [webhook], [ui])
   #      resolve em venv limpo (princípio arquitetural #14).
-  #      A extra [bot] depende de git URL externa (elimarcavalli/deilebot) e
-  #      requer BOT_REPO_TOKEN — testada no workflow install-smoke.yml dedicado.
+  #      A extra [bot] depende de git URL externa (elimarcavalli/deilebot) —
+  #      testada no workflow install-smoke.yml dedicado.
   #   5. Docker build da imagem REAL deile-stack:local (clone do deilebot +
   #      WITH_BOT=1, espelhando a produção) + smoke de import dos módulos dos
   #      pods. Cache de layers via type=gha.
@@ -349,7 +383,7 @@ jobs:
 
       # Testa resolução de cada extra offline em venv isolado.
       # [bot] é propositalmente excluído: depende de git URL externa
-      # (elimarcavalli/deilebot) e requer BOT_REPO_TOKEN — cobre o install-smoke.yml.
+      # (elimarcavalli/deilebot) — cobre o install-smoke.yml.
       # Usa $(ls dist/*.whl) para obter o path exato antes de concatenar o sufixo
       # de extra — `dist/*.whl[extra]` em bash trata [...] como glob char-class.
       - name: Extras offline — [test] (GATE)
@@ -403,15 +437,10 @@ jobs:
       # produção (deploy.py:397 usa WITH_BOT=1 quando deilebot/ existe). O bind
       # mount do Dockerfile exige deilebot/ presente; o COPY final de
       # /build/deilebot só existe com WITH_BOT=1.
+      # deilebot é público: clone anônimo (sem PAT no CI; PRs do Dependabot não têm o secret).
       - name: Clona deilebot/ no contexto (imagem real, WITH_BOT=1)
-        env:
-          BOT_REPO_TOKEN: ${{ secrets.BOT_REPO_TOKEN }}
         run: |
-          if [ -z "$BOT_REPO_TOKEN" ]; then
-            echo "::error::BOT_REPO_TOKEN ausente — necessário para clonar deilebot e buildar a imagem real (WITH_BOT=1)"
-            exit 1
-          fi
-          git clone --depth 1 "https://x-access-token:${BOT_REPO_TOKEN}@github.com/elimarcavalli/deilebot.git" deilebot
+          git clone --depth 1 https://github.com/elimarcavalli/deilebot.git deilebot
           test -d deilebot/deilebot || { echo "::error::clone do deilebot incompleto"; exit 1; }
 
       - name: Set up Docker Buildx
@@ -492,22 +521,6 @@ jobs:
         run: |
           pymarkdown scan docs/ || true
         continue-on-error: true
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # NOTIFICAÇÃO DE FALHA
-  # ──────────────────────────────────────────────────────────────────────────
-  notify-on-failure:
-    name: Notify on failure
-    runs-on: ubuntu-latest
-    needs: [test, secret-scan, security-scan, code-quality, documentation, functional-tests]
-    if: failure()
-    permissions:
-      contents: read
-    steps:
-      - name: Notify on failure
-        run: |
-          echo "CI Pipeline failed. Check the logs for details."
-          echo "Failed jobs need attention before merging."
 
   # ──────────────────────────────────────────────────────────────────────────
   # DEPLOYMENT READY — só em main; requer gates de segurança passando

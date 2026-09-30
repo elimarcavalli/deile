@@ -188,7 +188,9 @@ class SkillsWatcher:
             return True
 
         try:
-            from watchdog.events import FileSystemEventHandler
+            from watchdog.events import (EVENT_TYPE_CLOSED, EVENT_TYPE_CREATED,
+                                         EVENT_TYPE_DELETED, EVENT_TYPE_MODIFIED,
+                                         EVENT_TYPE_MOVED, FileSystemEventHandler)
             from watchdog.observers import Observer
         except ImportError:
             logger.warning(
@@ -222,12 +224,21 @@ class SkillsWatcher:
         self._debounce_worker = worker
 
         callback = self._on_event
+        # Só escrita: o inotify também emite leitura, e o reload lê os .md — reagir a ela o realimenta.
+        write_events = {
+            EVENT_TYPE_CREATED, EVENT_TYPE_MODIFIED, EVENT_TYPE_DELETED,
+            EVENT_TYPE_MOVED, EVENT_TYPE_CLOSED,
+        }
 
         class _Handler(FileSystemEventHandler):
             def on_any_event(self, event):
-                if event.is_directory or not str(event.src_path).endswith(".md"):
+                if event.event_type not in write_events or event.is_directory:
                     return
-                callback(event.src_path)
+                # Save atômico (sed -i, editores) renomeia um temporário SOBRE o .md: ele vem no destino.
+                for path in (event.src_path, getattr(event, "dest_path", "")):
+                    if str(path).endswith(".md"):
+                        callback(path)
+                        return
 
         handler = _Handler()
         observer = Observer()

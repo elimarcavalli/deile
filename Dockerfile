@@ -65,16 +65,15 @@ RUN --mount=type=bind,source=deilebot,target=/tmp/deilebot-ctx \
     && /venv/bin/pip install . \
     && find /venv -type d -name __pycache__ -exec rm -rf {} +
 
-# Test toolchain — baked in so the deile-worker can run a cloned repo's
-# pytest suite at runtime WITHOUT `pip install` (the Pod rootfs is
-# read-only). Versions pinned to match the repo's dev-requirements.txt so
-# the worker's runs mirror CI. Kept to the pytest runner stack (no
-# black/isort/radon/safety/bandit) to limit image growth.
+# Toolchain de teste embutido: o deile-worker roda a suíte pytest de um repo
+# clonado SEM `pip install` (rootfs do Pod é read-only). Pins = versões que o CI
+# resolve para o extra [test] (pytest>=9.0.3 corrige o CVE-2025-71176); só o
+# stack do runner pytest, para não inflar a imagem.
 RUN /venv/bin/pip install \
-        pytest==8.4.2 \
-        pytest-asyncio==1.2.0 \
-        pytest-mock==3.15.1 \
-        pytest-cov==6.3.0 \
+        pytest==9.1.1 \
+        pytest-asyncio==1.4.0 \
+        pytest-mock==3.16.0 \
+        pytest-cov==7.1.0 \
         pytest-xdist==3.8.0 \
         pytest-timeout==2.4.0 \
     && find /venv -type d -name __pycache__ -exec rm -rf {} +

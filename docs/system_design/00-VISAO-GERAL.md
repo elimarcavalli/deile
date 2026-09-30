@@ -8,7 +8,7 @@
 |---|---|
 | Nome | DEILE |
 | Tipo | Agente autônomo de desenvolvimento, modo CLI |
-| Linguagem principal | Python 3.9+ |
+| Linguagem principal | Python 3.10+ |
 | Ponto de entrada | `python3 deile.py` (raiz) |
 | Classe-bootstrap | `DeileAgentCLI` (em `deile.py`) |
 | Configuração de testes | `pytest.ini` (raiz) |

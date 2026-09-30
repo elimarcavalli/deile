@@ -1,0 +1,51 @@
+# Baseline do gitleaks: impressões digitais (commit:arquivo:regra:linha) de tokens FAKE
+# históricos em testes do scanner de segredos — auditados um a um em 2026-09-30.
+# Só estas ocorrências exatas são ignoradas; token fake NOVO em teste leva
+# `# gitleaks:allow` na própria linha. Nunca adicione fingerprint de segredo real.
+015f5475bb9fec3d8ea8c6aa3fe77d429fdcf7d5:deile/tests/infra/test_dispatch_logger.py:generic-api-key:476
+015f5475bb9fec3d8ea8c6aa3fe77d429fdcf7d5:deile/tests/infra/test_dispatch_logger.py:gitlab-pat:482
+015f5475bb9fec3d8ea8c6aa3fe77d429fdcf7d5:deile/tests/infra/test_k8s_setup.py:generic-api-key:166
+015f5475bb9fec3d8ea8c6aa3fe77d429fdcf7d5:deile/tests/security/test_secrets_scanner_bot.py:generic-api-key:10
+015f5475bb9fec3d8ea8c6aa3fe77d429fdcf7d5:deile/tests/security/test_secrets_scanner_bot.py:generic-api-key:17
+015f5475bb9fec3d8ea8c6aa3fe77d429fdcf7d5:deile/tests/security/test_secrets_scanner_bot.py:generic-api-key:25
+015f5475bb9fec3d8ea8c6aa3fe77d429fdcf7d5:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-deploy-token:19
+015f5475bb9fec3d8ea8c6aa3fe77d429fdcf7d5:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-pat:18
+015f5475bb9fec3d8ea8c6aa3fe77d429fdcf7d5:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-scim-token:21
+08fbb65e20c834a4435b37599b4226dbe98e86a7:deile/tests/observability/test_dispatch_export.py:generic-api-key:218
+14517aa7d0727a9ddee7cb071ef9448e0d7dc780:deile/tests/infra/test_dispatch_logger.py:generic-api-key:443
+14517aa7d0727a9ddee7cb071ef9448e0d7dc780:deile/tests/infra/test_dispatch_logger.py:gitlab-pat:446
+15fa5050ca9b2c315ea5cc765c3c43b7f7de39f5:deile/tests/test_autonomy_integration.py:generic-api-key:106
+1ebec51c55be9a379214a533dbcedcc40863fed6:deile/tests/observability/test_tracer.py:generic-api-key:127
+766bd473843afcbd8a72af08f9c1436c511204b5:deile/tests/infra/test_dispatch_logger.py:generic-api-key:443
+766bd473843afcbd8a72af08f9c1436c511204b5:deile/tests/infra/test_dispatch_logger.py:gitlab-pat:446
+7926e76a7c1ca611ceefb2d027cb7a01f725e706:deile/tests/infra/test_k8s_setup.py:generic-api-key:138
+7a375e7744e8e7c496b8b1d38518719f1343b00f:deile/tests/observability/test_tracer.py:generic-api-key:127
+99d05009ed6181b43a2f5c3cf924d35a99ba3947:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:104
+99d05009ed6181b43a2f5c3cf924d35a99ba3947:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:118
+99d05009ed6181b43a2f5c3cf924d35a99ba3947:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:73
+99d05009ed6181b43a2f5c3cf924d35a99ba3947:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:79
+99d05009ed6181b43a2f5c3cf924d35a99ba3947:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:87
+99d05009ed6181b43a2f5c3cf924d35a99ba3947:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-deploy-token:17
+99d05009ed6181b43a2f5c3cf924d35a99ba3947:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-pat:16
+99d05009ed6181b43a2f5c3cf924d35a99ba3947:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-scim-token:19
+9b34ab0dad8eebddd009f4e7eb683ad7b13cfd29:deile/tests/infra/test_claude_install.py:generic-api-key:537
+9dc153aea84bdab418255b3422121cde7406d59e:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:104
+9dc153aea84bdab418255b3422121cde7406d59e:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:118
+9dc153aea84bdab418255b3422121cde7406d59e:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:73
+9dc153aea84bdab418255b3422121cde7406d59e:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:79
+9dc153aea84bdab418255b3422121cde7406d59e:deile/tests/infra/test_wrapper_dual_forge.py:gitlab-pat:87
+9dc153aea84bdab418255b3422121cde7406d59e:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-deploy-token:17
+9dc153aea84bdab418255b3422121cde7406d59e:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-pat:16
+9dc153aea84bdab418255b3422121cde7406d59e:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-scim-token:19
+9eea6a6cc241650b9142b77a2867d591dd2eb9a2:deile/tests/security/test_secrets_scanner_bot.py:generic-api-key:10
+9eea6a6cc241650b9142b77a2867d591dd2eb9a2:deile/tests/security/test_secrets_scanner_bot.py:generic-api-key:17
+9eea6a6cc241650b9142b77a2867d591dd2eb9a2:deile/tests/security/test_secrets_scanner_bot.py:generic-api-key:24
+e90494705ae5600b3e138c909fe23a5c4fb4560e:deile/tests/infra/test_dispatch_logger.py:generic-api-key:476
+e90494705ae5600b3e138c909fe23a5c4fb4560e:deile/tests/infra/test_dispatch_logger.py:gitlab-pat:482
+e90494705ae5600b3e138c909fe23a5c4fb4560e:deile/tests/infra/test_k8s_setup.py:generic-api-key:166
+e90494705ae5600b3e138c909fe23a5c4fb4560e:deile/tests/security/test_secrets_scanner_bot.py:generic-api-key:10
+e90494705ae5600b3e138c909fe23a5c4fb4560e:deile/tests/security/test_secrets_scanner_bot.py:generic-api-key:17
+e90494705ae5600b3e138c909fe23a5c4fb4560e:deile/tests/security/test_secrets_scanner_bot.py:generic-api-key:25
+e90494705ae5600b3e138c909fe23a5c4fb4560e:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-deploy-token:19
+e90494705ae5600b3e138c909fe23a5c4fb4560e:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-pat:18
+e90494705ae5600b3e138c909fe23a5c4fb4560e:deile/tests/security/test_secrets_scanner_gitlab.py:gitlab-scim-token:21

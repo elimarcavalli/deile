@@ -71,7 +71,10 @@ class TestRotator:
     def test_creates_subdir_and_moves_source(self, tmp_path):
         base = tmp_path / "deile.log"
         base.write_text("hora atual\n")
-        h = HourlyDailyDirRotatingHandler(filename=str(base))
+        # retention_days=0 desliga o GC: este teste exercita só o rotator (mover),
+        # não o _purge_old_dirs. Sem isso, a data fixa 2026-05-25 vira time-bomb —
+        # o GC (default 30d) apaga a subpasta recém-criada quando "hoje" > 2026-06-24.
+        h = HourlyDailyDirRotatingHandler(filename=str(base), retention_days=0)
         try:
             dest = str(tmp_path / "2026-05-25" / "14.log")
             h.rotator(str(base), dest)
@@ -88,7 +91,9 @@ class TestRotator:
         existing = tmp_path / "2026-05-25" / "14.log"
         existing.parent.mkdir(parents=True)
         existing.write_text("hora anterior já existente\n")
-        h = HourlyDailyDirRotatingHandler(filename=str(base))
+        # retention_days=0: testa append na colisão, não o GC (evita o mesmo
+        # time-bomb de data da subpasta 2026-05-25 ser purgada pelo GC default).
+        h = HourlyDailyDirRotatingHandler(filename=str(base), retention_days=0)
         try:
             h.rotator(str(base), str(existing))
             content = existing.read_text()

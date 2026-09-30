@@ -27,7 +27,7 @@ VENV_DIR = PROJECT_ROOT / ".venv"
 ENV_FILE = PROJECT_ROOT / ".env"
 REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
 DEPS_MARKER = VENV_DIR / ".deile-deps-installed"
-MIN_PYTHON = (3, 9)
+MIN_PYTHON = (3, 10)
 _API_KEY_NAMES = frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY"})
 
 
@@ -307,7 +307,7 @@ def _fast_version() -> None:
         )
         try:
             ans = input(
-                f"  Instalar dependências e mostrar painel completo? [y/N]: "
+                "  Instalar dependências e mostrar painel completo? [y/N]: "
             ).strip().lower()
         except (KeyboardInterrupt, EOFError):
             ans = "n"
