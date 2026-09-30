@@ -146,41 +146,25 @@ async def test_cooldown_blocks_immediate_second_dispatch():
     assert len(stub.calls) == 1  # second never reached the client
 
 
-async def test_cooldown_rollback_on_auth_missing():
+@pytest.mark.parametrize(
+    "message, error_code",
+    [
+        ("no token", "WORKER_AUTH_MISSING"),
+        ("no httpx", "WORKER_TRANSPORT_MISSING"),
+        ("bad chars", "WORKER_AUTH_MALFORMED"),
+    ],
+)
+async def test_cooldown_rollback_on_auth_missing(message, error_code):
+    # All three are pre-network failures sharing the rollback branch
+    # (_ROLLBACK_ERROR_CODES); each frees the channel slot for retry.
     stub = _StubClient(
-        raises=WorkerDispatchError(
-            "no token", error_code="WORKER_AUTH_MISSING"
-        )
+        raises=WorkerDispatchError(message, error_code=error_code)
     )
     tool = DispatchDeileTaskTool(worker_client=stub)
     result = await tool.execute(_ctx(brief="b", channel_id="c"))
     assert not result.is_success
-    assert _code(result) == "WORKER_AUTH_MISSING"
+    assert _code(result) == error_code
     # Pre-network failure: cooldown rolled back so user can fix env and retry.
-    assert "c" not in DispatchDeileTaskTool._LAST_DISPATCH
-
-
-async def test_cooldown_rollback_on_transport_missing():
-    stub = _StubClient(
-        raises=WorkerDispatchError(
-            "no httpx", error_code="WORKER_TRANSPORT_MISSING"
-        )
-    )
-    tool = DispatchDeileTaskTool(worker_client=stub)
-    result = await tool.execute(_ctx(brief="b", channel_id="c"))
-    assert _code(result) == "WORKER_TRANSPORT_MISSING"
-    assert "c" not in DispatchDeileTaskTool._LAST_DISPATCH
-
-
-async def test_cooldown_rollback_on_auth_malformed():
-    stub = _StubClient(
-        raises=WorkerDispatchError(
-            "bad chars", error_code="WORKER_AUTH_MALFORMED"
-        )
-    )
-    tool = DispatchDeileTaskTool(worker_client=stub)
-    result = await tool.execute(_ctx(brief="b", channel_id="c"))
-    assert _code(result) == "WORKER_AUTH_MALFORMED"
     assert "c" not in DispatchDeileTaskTool._LAST_DISPATCH
 
 

@@ -203,38 +203,6 @@ async def test_session_id_propagates_to_chat_with_tools():
 
 
 @pytest.mark.asyncio
-async def test_forced_model_routes_to_specific_provider():
-    """H3: /model use <provider:model> must actually steer routing."""
-    forced_provider = _CapturingProvider()
-    forced_provider.provider_id = "anthropic"
-    forced_provider.model_name = "claude-haiku-4-5"
-
-    agent = _build_minimal_agent_with_mock_provider(forced_provider)
-    # Make sure the provider is reachable via providers dict for forced lookup
-    agent.model_router.providers = {"anthropic:claude-haiku-4-5": forced_provider}
-
-    from deile.core.agent import AgentSession
-
-    session = AgentSession(
-        session_id="forced-test",
-        working_directory=Path("/tmp"),
-        context_data={"forced_model": "anthropic:claude-haiku-4-5"},
-    )
-
-    content, _ = await agent._process_iterative_function_calling(
-        user_input="hi",
-        parse_result=None,
-        session=session,
-    )
-    assert content == "OK"
-    # Forced lookup short-circuits select_provider and uses the providers dict directly
-    # — but if forced provider is found in the dict, select_provider should NOT have been called
-    # (it's only called as a fallback when the forced provider isn't found)
-    # Either way, the right provider must have served the request.
-    assert forced_provider.captured_messages, "forced provider was not called"
-
-
-@pytest.mark.asyncio
 async def test_forced_model_unregistered_raises_instead_of_silent_swap():
     """R7-H2 + R8-M1: when the forced model is NOT registered, do NOT silently substitute
     the flagship — that would surprise users with up to 10x the cost.

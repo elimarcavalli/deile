@@ -147,6 +147,3 @@ def test_estimate_cost_with_cached_tokens(priced):
     assert abs(cost - 0.30) < 1e-6
 
 
-def test_model_usage_has_cached_tokens_field():
-    u = ModelUsage(cached_tokens=42)
-    assert u.cached_tokens == 42

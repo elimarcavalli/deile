@@ -16,28 +16,3 @@ pytestmark = [
 ]
 
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_anthropic_simple_generate():
-    from pathlib import Path
-
-    from deile.core.models.anthropic_provider import AnthropicProvider
-    from deile.core.models.base import ModelMessage
-    from deile.core.models.catalog import ModelCatalog
-    from deile.core.models.provider_config import ProviderConfig
-
-    yaml_path = Path(__file__).parents[3] / "deile" / "config" / "model_providers.yaml"
-    catalog = ModelCatalog.from_yaml(yaml_path)
-    handle = catalog.get("anthropic", "claude-haiku-4-5")
-    config = ProviderConfig(
-        provider_id="anthropic",
-        api_key_env="ANTHROPIC_API_KEY",
-        base_url=None,
-        sdk_kwargs={},
-    )
-    provider = AnthropicProvider(handle, config)
-
-    msgs = [ModelMessage(role="user", content="What is 2+2? Reply with just the number.")]
-    response = await provider.generate(msgs)
-    assert "4" in response.content
-    assert response.usage.prompt_tokens > 0

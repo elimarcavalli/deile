@@ -5,37 +5,19 @@ from deile.orchestration.pipeline.notifier import DiscordNotifier
 
 
 class TestPrAutoClassified:
-    async def test_sends_dm_with_pr_number(self):
+    async def test_sends_dm_with_pr_number_title_and_url(self):
+        # Consolidated: one DM carries the PR number, title and URL together.
         sent = []
 
         async def fake_dm(uid, text):
             sent.append((uid, text))
 
         n = DiscordNotifier(user_id="42", dm_fn=fake_dm)
-        await n.pr_auto_classified(7, "My PR title", "https://github.com/o/r/pull/7")
+        url = "https://github.com/o/r/pull/7"
+        await n.pr_auto_classified(7, "My Feature PR", url)
         assert len(sent) == 1
         assert "#7" in sent[0][1] or "7" in sent[0][1]
-
-    async def test_sends_dm_with_title(self):
-        sent = []
-
-        async def fake_dm(uid, text):
-            sent.append((uid, text))
-
-        n = DiscordNotifier(user_id="42", dm_fn=fake_dm)
-        await n.pr_auto_classified(3, "My Feature PR", "https://github.com/o/r/pull/3")
-        assert len(sent) == 1
         assert "My Feature PR" in sent[0][1]
-
-    async def test_sends_dm_with_url(self):
-        sent = []
-
-        async def fake_dm(uid, text):
-            sent.append((uid, text))
-
-        n = DiscordNotifier(user_id="42", dm_fn=fake_dm)
-        url = "https://github.com/o/r/pull/5"
-        await n.pr_auto_classified(5, "title", url)
         assert url in sent[0][1]
 
     async def test_noop_when_disabled(self):
@@ -64,18 +46,8 @@ class TestPrAutoClassified:
 
 
 class TestMentionProcessed:
-    async def test_sends_dm_with_author(self):
-        sent = []
-
-        async def fake_dm(uid, text):
-            sent.append((uid, text))
-
-        n = DiscordNotifier(user_id="42", dm_fn=fake_dm)
-        await n.mention_processed("https://github.com/o/r/issues/3#c1", "alice")
-        assert len(sent) == 1
-        assert "alice" in sent[0][1]
-
-    async def test_sends_dm_with_context_url(self):
+    async def test_sends_dm_with_author_and_context_url(self):
+        # Consolidated: one DM carries both the author and the context URL.
         sent = []
 
         async def fake_dm(uid, text):
@@ -84,6 +56,8 @@ class TestMentionProcessed:
         n = DiscordNotifier(user_id="42", dm_fn=fake_dm)
         url = "https://github.com/o/r/issues/3#c1"
         await n.mention_processed(url, "alice")
+        assert len(sent) == 1
+        assert "alice" in sent[0][1]
         assert url in sent[0][1]
 
     async def test_noop_when_disabled(self):

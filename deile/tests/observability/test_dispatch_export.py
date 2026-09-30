@@ -56,11 +56,6 @@ def _event_names(span) -> List[str]:
 # ── AC: endpoint vazio → 0 spans ─────────────────────────────────────────
 
 
-def test_no_spans_when_endpoint_empty(in_memory_exporter):
-    """DEILE_OTLP_ENDPOINT vazio → InMemorySpanExporter registra 0 spans."""
-    # Nota: in_memory_exporter fixture LIGA o endpoint. Para testar sem endpoint,
-    # precisamos de um cenário sem a fixture. Usamos o estado padrão do conftest.
-    pass  # test abaixo usa estado padrão (sem in_memory_exporter)
 
 
 def test_no_spans_without_endpoint():
@@ -128,54 +123,27 @@ def test_completed_sets_status_ok(in_memory_exporter):
 # ── AC: child spans com parent_span_id == root span_id ───────────────────
 
 
-def test_git_commit_child_span_has_root_as_parent(in_memory_exporter):
-    """git.commit → child span com parent_span_id == root span_id."""
-    tid = "task-git-1"
+@pytest.mark.parametrize(
+    "child_name, emit_child",
+    [
+        ("git.commit", lambda tid: emit_git_commit(tid, repo="elimarcavalli/deile", sha="abc123", status="ok")),
+        ("git.push", lambda tid: emit_git_push(tid, repo="r/repo", branch="main", status="ok")),
+        ("forge.pr_open", lambda tid: emit_forge_pr_open(tid, repo="r/repo", pr_number=42, status="opened")),
+        ("forge.pr_review", lambda tid: emit_forge_pr_review(tid, repo="r/repo", pr_number=7, status="approved")),
+    ],
+)
+def test_child_span_has_root_as_parent(in_memory_exporter, child_name, emit_child):
+    """git.*/forge.* → child span com parent_span_id == root span_id."""
+    tid = f"task-parent-{child_name}"
     emit_dispatch_received(tid, session_id="s1")
-    emit_git_commit(tid, repo="elimarcavalli/deile", sha="abc123", status="ok")
+    emit_child(tid)
     emit_dispatch_completed(tid)
 
     spans = in_memory_exporter.get_finished_spans()
     root = next(s for s in spans if s.name == "deile.dispatch")
-    child = next(s for s in spans if s.name == "git.commit")
+    child = next(s for s in spans if s.name == child_name)
 
     assert child.parent is not None
-    assert child.parent.span_id == root.context.span_id
-
-
-def test_git_push_child_span_has_root_as_parent(in_memory_exporter):
-    tid = "task-git-push-1"
-    emit_dispatch_received(tid)
-    emit_git_push(tid, repo="r/repo", branch="main", status="ok")
-    emit_dispatch_completed(tid)
-
-    spans = in_memory_exporter.get_finished_spans()
-    root = next(s for s in spans if s.name == "deile.dispatch")
-    child = next(s for s in spans if s.name == "git.push")
-    assert child.parent.span_id == root.context.span_id
-
-
-def test_forge_pr_open_child_span(in_memory_exporter):
-    tid = "task-forge-1"
-    emit_dispatch_received(tid)
-    emit_forge_pr_open(tid, repo="r/repo", pr_number=42, status="opened")
-    emit_dispatch_completed(tid)
-
-    spans = in_memory_exporter.get_finished_spans()
-    root = next(s for s in spans if s.name == "deile.dispatch")
-    child = next(s for s in spans if s.name == "forge.pr_open")
-    assert child.parent.span_id == root.context.span_id
-
-
-def test_forge_pr_review_child_span(in_memory_exporter):
-    tid = "task-forge-2"
-    emit_dispatch_received(tid)
-    emit_forge_pr_review(tid, repo="r/repo", pr_number=7, status="approved")
-    emit_dispatch_completed(tid)
-
-    spans = in_memory_exporter.get_finished_spans()
-    root = next(s for s in spans if s.name == "deile.dispatch")
-    child = next(s for s in spans if s.name == "forge.pr_review")
     assert child.parent.span_id == root.context.span_id
 
 
@@ -199,33 +167,24 @@ def test_all_four_child_span_types(in_memory_exporter):
 # ── AC: redact — nenhum attr com ghp_* ───────────────────────────────────
 
 
-def test_redact_github_token_in_branch(in_memory_exporter):
-    """branch contendo ghp_* é redactado antes de set_attribute."""
-    tid = "task-redact-1"
-    # GitHub PATs têm 36+ chars após o prefixo ghp_ (40 no total é o formato real)
-    token = "ghp_" + "A" * 40
-    emit_dispatch_received(
-        tid,
-        session_id="s1",
-        model="m",
-        branch=f"export GH_TOKEN={token}",
-    )
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        # branch contendo ghp_* (40 chars após o prefixo — formato real do PAT)
+        {"session_id": "s1", "model": "m", "branch": "export GH_TOKEN=ghp_" + "A" * 40},
+        # model contendo ghp_* (36+ chars após o prefixo)
+        {"model": "ghp_" + "A" * 36},
+    ],
+)
+def test_redact_github_token_in_span_attr(in_memory_exporter, kwargs):
+    """ghp_* token em branch ou model é redactado antes de set_attribute."""
+    tid = "task-redact"
+    emit_dispatch_received(tid, **kwargs)
     emit_dispatch_completed(tid)
 
     root = _root_span(in_memory_exporter)
     for val in root.attributes.values():
         assert "ghp_AAAA" not in str(val), f"token vazou: {val}"
-
-
-def test_redact_github_token_in_model(in_memory_exporter):
-    tid = "task-redact-2"
-    # GitHub PATs têm 36+ chars após o prefixo ghp_
-    emit_dispatch_received(tid, model="ghp_" + "A" * 36)
-    emit_dispatch_completed(tid)
-
-    root = _root_span(in_memory_exporter)
-    for val in root.attributes.values():
-        assert "ghp_AAAA" not in str(val)
 
 
 def test_redact_in_event_attrs(in_memory_exporter):
@@ -281,17 +240,7 @@ def test_pod_metadata_in_child_span(in_memory_exporter, monkeypatch):
     child = next(s for s in spans if s.name == "git.commit")
     assert child.attributes.get(ATTR_ROLE) == "worker"
     assert child.attributes.get(ATTR_POD) == "worker-abc12"
-
-
-def test_schema_version_in_child_span(in_memory_exporter):
-    """Child spans também carregam deile.dispatch.schema_version."""
-    tid = "task-schema-child"
-    emit_dispatch_received(tid)
-    emit_forge_pr_open(tid, repo="r", pr_number=1)
-    emit_dispatch_completed(tid)
-
-    spans = in_memory_exporter.get_finished_spans()
-    child = next(s for s in spans if s.name == "forge.pr_open")
+    # Child span também carrega deile.dispatch.schema_version (common-attrs-no-child).
     assert child.attributes.get(ATTR_SCHEMA_VERSION) == SCHEMA_VERSION
 
 
@@ -416,24 +365,7 @@ def test_drop_log_throttled_to_once_per_60s(monkeypatch, caplog):
         drop_logs = [r for r in caplog.records if "dispatch.otlp_drop" in r.message]
         assert len(drop_logs) == 1, f"esperado 1 log, got {len(drop_logs)}"
         assert "count=3" in drop_logs[0].message
-
-
-def test_drop_log_contains_reason(monkeypatch, caplog):
-    """Log de drop inclui reason=emit_error."""
-    import deile.observability.dispatch_export as de
-
-    mock_time = [0.0]
-    monkeypatch.setattr(de, "_time_fn", lambda: mock_time[0])
-    monkeypatch.setattr(de, "_get_raw_tracer", lambda: _FailingTracer())
-    reset_dispatch_export()
-
-    with caplog.at_level(logging.INFO, logger="deile.observability.dispatch_export"):
-        emit_dispatch_received("tx")
-        mock_time[0] = 61.0
-        emit_dispatch_received("ty")
-
-        logs = [r for r in caplog.records if "dispatch.otlp_drop" in r.message]
-        assert any("reason=emit_error" in r.message for r in logs)
+        assert "reason=emit_error" in drop_logs[0].message
 
 
 # ── AC: os.environ não aparece em dispatch_export.py ──────────────────────

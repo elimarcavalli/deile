@@ -28,9 +28,10 @@ class TestClaudeWorkerEffortCoercion:
 
     def test_valid_set_excludes_auto_and_ultracode(self):
         import claude_worker_server as cw
+        # Allowlist exata aceita por `claude --effort`. A igualdade já garante que
+        # auto/ultracode ficam de fora; o coercion comportamental desses dois está
+        # coberto por test_coerce_auto_omits / test_coerce_ultracode_to_xhigh.
         assert cw._VALID_CLAUDE_EFFORTS == {"low", "medium", "high", "xhigh", "max"}
-        assert "auto" not in cw._VALID_CLAUDE_EFFORTS
-        assert "ultracode" not in cw._VALID_CLAUDE_EFFORTS
 
     def test_coerce_auto_omits(self):
         import claude_worker_server as cw
@@ -78,12 +79,6 @@ class TestClaudeWorkerUltracode:
         import claude_worker_server as cw
         for lvl in ("xhigh", "max", "high", "auto", None, "", "workflow"):
             assert cw._is_ultracode(lvl) is False
-
-    def test_ultracode_coerces_effort_to_xhigh(self):
-        # A primeira metade do preset: ultracode → --effort xhigh (Sonnet 4.6
-        # está na allowlist xhigh do binário claude; funciona nativamente).
-        import claude_worker_server as cw
-        assert cw._coerce_claude_effort("ultracode") == "xhigh"
 
     def test_preamble_carries_workflow_keyword(self):
         # O keyword "workflow" no prompt é o que o CLI usa pra opt-in no

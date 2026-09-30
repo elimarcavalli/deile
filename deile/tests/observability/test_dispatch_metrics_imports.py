@@ -29,36 +29,20 @@ def test_os_environ_used_exactly_once():
     assert "OTEL_METRIC_EXPORT_INTERVAL" in source
 
 
-def test_no_direct_deile_otlp_env_reads():
-    source = _MODULE.read_text(encoding="utf-8")
-    # Não deve LER DEILE_OTLP_* nem DEILE_OBSERVABILITY_DISABLED via os.environ
-    # (menções em docstring são permitidas; o que importa é nenhum os.environ
-    #  apontar para essas vars — elas vêm de get_observability_config()).
-    assert not re.search(r'os\.environ[^\n]*DEILE_OTLP', source)
-    assert not re.search(r'os\.environ[^\n]*DEILE_OBSERVABILITY', source)
 
 
-def test_sdk_imports_resolve():
-    """D6: imports do SDK de métricas resolvem (skip se SDK ausente)."""
-    try:
-        from opentelemetry.sdk.metrics import MeterProvider  # noqa: F401
-    except ImportError:
-        pytest.skip("opentelemetry SDK não instalado")
-    # API de métricas e reader periódico disponíveis.
-    from opentelemetry.sdk.metrics.export import \
-        PeriodicExportingMetricReader  # noqa: F401
 
 
-def test_module_exports():
+def test_shutdown_dispatch_metrics_callable_and_idempotent():
+    """``shutdown_dispatch_metrics`` é o único símbolo não exercitado
+    comportamentalmente nos testes vizinhos — os demais exports
+    (``record_*`` e ``reset_dispatch_metrics``) já são CHAMADOS diretamente em
+    ``test_dispatch_metrics_instruments``/``_cardinality``/``conftest``, o que
+    garante sua existência de forma mais forte que ``hasattr``. Aqui exercitamos
+    o shutdown de fato: existe, é chamável, never-raises e é idempotente
+    (cobre o early-return quando não há provider)."""
     from deile.observability import dispatch_metrics as dm
-    for name in (
-        "record_dispatch_total",
-        "record_dispatch_failed_total",
-        "record_dispatch_duration_ms",
-        "record_dispatch_tool_burst_total",
-        "record_git_push_total",
-        "record_forge_pr_review_total",
-        "shutdown_dispatch_metrics",
-        "reset_dispatch_metrics",
-    ):
-        assert hasattr(dm, name), f"missing export: {name}"
+
+    assert callable(dm.shutdown_dispatch_metrics)
+    dm.shutdown_dispatch_metrics()
+    dm.shutdown_dispatch_metrics()

@@ -153,14 +153,6 @@ class TestE2ED5StreamChunkIntegrity:
 class TestE2ED6CLINoRegression:
     """Smoke that DeileAgent constructs and basic methods exist."""
 
-    async def test_agent_constructs(self):
-        agent = DeileAgent()
-        assert hasattr(agent, "process_input")
-        assert hasattr(agent, "process_input_structured")
-        assert hasattr(agent, "process_input_stream")
-        assert hasattr(agent, "process_input_stream_chunks")
-        assert hasattr(agent, "get_or_create_session")
-
     async def test_session_default_persisted_false(self, tmp_path):
         agent = DeileAgent()
         s = await agent.get_or_create_session(

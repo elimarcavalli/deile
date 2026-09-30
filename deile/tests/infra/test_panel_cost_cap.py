@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _INFRA_K8S = Path(__file__).resolve().parents[3] / "infra" / "k8s"
 if str(_INFRA_K8S) not in sys.path:
     sys.path.insert(0, str(_INFRA_K8S))
@@ -37,12 +39,9 @@ class TestSetStageCostCapUsd:
         assert ok is False
         assert "inválido" in msg.lower() or "invalid" in msg.lower()
 
-    def test_invalid_value_negative(self):
-        ok, msg = pd_mod.set_stage_cost_cap_usd("implement", "-1.00")
-        assert ok is False
-
-    def test_invalid_value_non_numeric(self):
-        ok, msg = pd_mod.set_stage_cost_cap_usd("implement", "abc")
+    @pytest.mark.parametrize("bad_value", ["-1.00", "abc"])
+    def test_invalid_value(self, bad_value):
+        ok, msg = pd_mod.set_stage_cost_cap_usd("implement", bad_value)
         assert ok is False
 
     def test_kubectl_not_found(self):

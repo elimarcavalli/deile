@@ -231,7 +231,7 @@ async def test_judgment_file_carries_injected_repo(tick, tmp_path, monkeypatch):
     """Phase-B judgment payload reports the repo the tick actually ran against
     (the value resolved in main() and threaded through run_tick), not an
     independent env re-read."""
-    monkeypatch.setenv("DEILE_PIPELINE_REPO", "acme/neutral-project")
+    monkeypatch.setenv("DEILE_PIPELINE_REPO", "stale/legacy")
     sd = _state_dir(tmp_path)
     closed = [{"number": 50, "title": "X", "body": "vou abrir uma issue para o resto",
                "closed_at": "2026-06-02T09:00:00Z", "user": {"login": "human"}}]

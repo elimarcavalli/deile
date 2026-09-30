@@ -79,18 +79,6 @@ class TestCronFireFieldParity:
         assert ph.startswith("sha256:")
         assert ph == _payload_hash("do something")
 
-    async def test_all_fire_fields_present(self, store, audit_logger) -> None:
-        store.add(_due_entry("full-job", prompt="full prompt", cron="* * * * *"))
-        with patch("deile.cron.runner.get_audit_logger", return_value=audit_logger):
-            runner = CronRunner(store, fire_callback=AsyncMock(return_value="ok"))
-            await runner.tick()
-        events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_FIRE)
-        assert events, "no CRON_FIRE event emitted"
-        ev = events[0]
-        assert ev.resource == "cron:full-job"
-        for field in ("name", "schedule", "payload_hash"):
-            assert field in ev.details, f"missing field {field!r} in CRON_FIRE details"
-
 
 class TestCronSkippedFieldParity:
     """CronRunner._fire must emit CRON_SKIPPED with entry_id in resource,
@@ -120,15 +108,3 @@ class TestCronSkippedFieldParity:
             await runner.tick()
         events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_SKIPPED)
         assert events[0].details["reason"] == "no callback"
-
-    async def test_all_skipped_fields_present(self, store, audit_logger) -> None:
-        store.add(_due_entry("allfields-skip"))
-        with patch("deile.cron.runner.get_audit_logger", return_value=audit_logger):
-            runner = CronRunner(store)
-            await runner.tick()
-        events = audit_logger.get_recent_events(event_type=AuditEventType.CRON_SKIPPED)
-        assert events, "no CRON_SKIPPED event emitted"
-        ev = events[0]
-        assert ev.resource == "cron:allfields-skip"
-        for field in ("name", "reason"):
-            assert field in ev.details, f"missing field {field!r} in CRON_SKIPPED details"

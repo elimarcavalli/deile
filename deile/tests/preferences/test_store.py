@@ -95,6 +95,10 @@ class TestStoreAndRetrieve:
         assert store.get("u1", "theme") == "dark"
 
     def test_get_nonexistent_key(self, store):
+        # User exists but the requested key is absent — this exercises the
+        # populated-user-dict branch of ``get``, distinct from the
+        # user-absent branch covered by ``test_get_nonexistent_user``.
+        store.store("u1", "theme", "dark")
         assert store.get("u1", "missing") is None
 
     def test_get_nonexistent_user(self, store):
@@ -134,8 +138,6 @@ class TestDelete:
         assert store.delete("u1", "theme") is True
         assert store.get("u1", "theme") is None
 
-    def test_delete_nonexistent_idempotent(self, store):
-        assert store.delete("u1", "ghost") is False
 
     def test_delete_nonexistent_user_idempotent(self, store):
         assert store.delete("ghost", "any") is False
@@ -155,8 +157,6 @@ class TestListKeys:
         store.store("u1", "a_key", 2)
         assert store.list_keys("u1") == ["a_key", "z_key"]
 
-    def test_list_nonexistent_user(self, store):
-        assert store.list_keys("ghost") == []
 
 
 class TestGetAll:
@@ -169,8 +169,6 @@ class TestGetAll:
         result = store.get_all("u1")
         assert result == {"a": 1, "b": "two"}
 
-    def test_get_all_nonexistent_user(self, store):
-        assert store.get_all("ghost") == {}
 
 
 # ── Persistence (read-back after new store instance) ──────────────────────

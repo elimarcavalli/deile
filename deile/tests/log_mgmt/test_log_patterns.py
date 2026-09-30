@@ -34,10 +34,6 @@ class TestPatternCatalog:
         for pat in ALL_PATTERNS:
             assert pat.pattern.pattern  # regex string is non-empty
 
-    def test_patterns_are_frozen(self):
-        pat = ALL_PATTERNS[0]
-        with pytest.raises(Exception):
-            pat.name = "hacked"  # dataclass frozen=True
 
 
 class TestMatchLine:

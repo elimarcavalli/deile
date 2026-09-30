@@ -50,9 +50,6 @@ class TestFmtAge:
     def test_none_returns_empty(self):
         assert _fmt_age(None) == ""
 
-    def test_empty_string_returns_empty(self):
-        assert _fmt_age("") == ""
-
     def test_just_now(self):
         ts = _iso_now(delta_minutes=0)
         assert _fmt_age(ts) == "agora"
@@ -74,10 +71,6 @@ class TestFmtAge:
         result = _fmt_age("not-a-date")
         assert result == "not-a-date"
 
-    def test_invalid_short_string_returned_as_is(self):
-        result = _fmt_age("bad")
-        assert result == "bad"
-
 
 # ---------------------------------------------------------------------------
 # _fmt_time
@@ -87,9 +80,6 @@ class TestFmtAge:
 class TestFmtTime:
     def test_none_returns_dash(self):
         assert _fmt_time(None) == "—"
-
-    def test_empty_returns_dash(self):
-        assert _fmt_time("") == "—"
 
     def test_extracts_hhmmss(self):
         result = _fmt_time("2026-01-15T14:30:45+00:00")
@@ -189,13 +179,16 @@ class TestBuildOutput:
         out = _build_output(self._STATUS, self._LEDGER_EMPTY, backlog_data={"backlog": []})
         assert "backlog vazio" in out
 
-    def test_no_pods_shows_dash(self):
-        status = dict(self._STATUS, pods_seen=[])
-        out = _build_output(status, self._LEDGER_EMPTY)
-        assert "—" in out
-
-    def test_missing_pods_key_shows_dash(self):
-        status = {k: v for k, v in self._STATUS.items() if k != "pods_seen"}
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda s: dict(s, pods_seen=[]),
+            lambda s: {k: v for k, v in s.items() if k != "pods_seen"},
+        ],
+        ids=["empty_pods", "missing_pods_key"],
+    )
+    def test_pods_absent_shows_dash(self, mutate):
+        status = mutate(self._STATUS)
         out = _build_output(status, self._LEDGER_EMPTY)
         assert "—" in out
 

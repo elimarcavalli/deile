@@ -94,16 +94,7 @@ def test_claude_login_no_interactive_fails_without_creds(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_parse_claude_login_flags_in_pod():
-    """``--in-pod`` é parseado em ``in_pod=True``."""
-    mod = _deploy_module()
-    result = mod._parse_claude_login_flags(["--in-pod"])
-    assert result.get("in_pod") is True
-    assert "_error" not in result
-
-
-def test_parse_claude_login_flags_in_pod_with_others():
-    """``--in-pod`` coexiste com outros flags (switch não faz sentido junto,
-    mas o parser não valida combinações — isso fica na função que chama)."""
+    """``--in-pod`` é parseado em ``in_pod=True`` (e não liga ``force_relogin``)."""
     mod = _deploy_module()
     result = mod._parse_claude_login_flags(["--in-pod"])
     assert result.get("in_pod") is True

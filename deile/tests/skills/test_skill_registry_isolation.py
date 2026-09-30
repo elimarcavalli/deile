@@ -79,11 +79,17 @@ class TestSourceLevelIsolationFix:
     que vazaram.
     """
 
+    @pytest.mark.parametrize("path", ["fallback", "persona"])
     async def test_patched_polluter_does_not_leak_into_global_registry(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, path: str
     ) -> None:
         """Com o patch fonte, bootstrap_skills usa registry isolado → singleton global
-        permanece com 0 skills após chamada ao padrão poluidor."""
+        permanece com 0 skills após chamada ao padrão poluidor.
+
+        Cobre os dois caminhos que exercem a mesma fonte de vazamento
+        compartilhada: ``_build_fallback_system_instruction`` (``fallback``) e
+        ``_build_system_instruction`` com ``PersonaManager`` (``persona``).
+        """
         # Pré-condição: registry global vazio (garantido pelo autouse _reset_registry)
         assert len(get_skill_registry()) == 0, "pre-condition: global registry must start empty"
 
@@ -96,59 +102,42 @@ class TestSourceLevelIsolationFix:
 
         monkeypatch.setattr("deile.core.context_manager.bootstrap_skills", _fake_bootstrap)
 
-        # Executa o padrão poluidor: ContextManager._build_fallback_system_instruction
-        ctx = ContextManager(persona_manager=None)
-        ctx.instruction_loader = MagicMock()
-        ctx.instruction_loader.load_fallback_instruction = MagicMock(
-            return_value="FALLBACK_BODY"
-        )
-        await ctx._build_fallback_system_instruction(
-            session=None,
-            working_directory="/tmp/test_isolation",
-        )
+        # Executa o padrão poluidor pelo caminho parametrizado.
+        if path == "fallback":
+            # ContextManager._build_fallback_system_instruction
+            ctx = ContextManager(persona_manager=None)
+            ctx.instruction_loader = MagicMock()
+            ctx.instruction_loader.load_fallback_instruction = MagicMock(
+                return_value="FALLBACK_BODY"
+            )
+            await ctx._build_fallback_system_instruction(
+                session=None,
+                working_directory="/tmp/test_isolation",
+            )
+        else:
+            # _build_system_instruction com PersonaManager.
+            # build_system_instruction é async e chamada com await — usar AsyncMock
+            persona = MagicMock()
+            persona.name = "test_persona"
+            persona.build_system_instruction = AsyncMock(return_value="PERSONA_BODY")
+
+            persona_manager = MagicMock()
+            persona_manager.get_active_persona = MagicMock(return_value=persona)
+
+            ctx = ContextManager(persona_manager=persona_manager)
+            await ctx._build_system_instruction(
+                parse_result=None,
+                session=None,
+                working_directory="/tmp/test_isolation_persona",
+            )
 
         # Pós-condição: singleton global ainda tem 0 skills — o bootstrap isolado
         # nunca tocou no singleton global.
         leaked = get_skill_registry().list_names()
         assert len(leaked) == 0, (
-            f"Vazamento detectado! O padrão poluidor populou o singleton global com: {leaked}. "
-            "O fixture _isolate_bootstrap_skills NÃO está sendo aplicado corretamente."
-        )
-
-    async def test_patched_polluter_does_not_leak_via_persona_path(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Mesmo teste pelo caminho da persona (_build_system_instruction com PersonaManager)."""
-        assert len(get_skill_registry()) == 0
-
-        _isolated_registry = SkillRegistry()
-        _isolated_router = SkillRouter(_isolated_registry, language_detector=LanguageDetector())
-
-        async def _fake_bootstrap(config=None, **kwargs):
-            return _isolated_router
-
-        monkeypatch.setattr("deile.core.context_manager.bootstrap_skills", _fake_bootstrap)
-
-        persona = MagicMock()
-        persona.name = "test_persona"
-        persona.build_system_instruction = MagicMock(return_value="PERSONA_BODY")
-
-        # build_system_instruction é async e chamada com await — usar AsyncMock
-        persona.build_system_instruction = AsyncMock(return_value="PERSONA_BODY")
-
-        persona_manager = MagicMock()
-        persona_manager.get_active_persona = MagicMock(return_value=persona)
-
-        ctx = ContextManager(persona_manager=persona_manager)
-        await ctx._build_system_instruction(
-            parse_result=None,
-            session=None,
-            working_directory="/tmp/test_isolation_persona",
-        )
-
-        leaked = get_skill_registry().list_names()
-        assert len(leaked) == 0, (
-            f"Vazamento via persona path: {leaked}"
+            f"Vazamento detectado (path={path})! O padrão poluidor populou o singleton "
+            f"global com: {leaked}. O fixture _isolate_bootstrap_skills NÃO está sendo "
+            "aplicado corretamente."
         )
 
 

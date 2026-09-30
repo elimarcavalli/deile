@@ -48,33 +48,25 @@ def _make_pricing_provider(input_price: str = "0.000003",
 class TestStageCostEstimatorFallback:
     """When no history exists, estimator uses fallback token counts."""
 
-    def test_no_history_uses_fallback_implement(self):
+    @pytest.mark.parametrize(
+        "stage,model,input_price,output_price",
+        [
+            ("implement", "anthropic:claude-opus-4-8", "0.000003", "0.000015"),
+            ("classify", "anthropic:claude-haiku-4-5", "0.000001", "0.000005"),
+        ],
+    )
+    def test_no_history_uses_fallback(self, stage, model, input_price, output_price):
         repo = MagicMock()
         repo.records_for_stage_model.return_value = []
-        pp = _make_pricing_provider("0.000003", "0.000015")
+        pp = _make_pricing_provider(input_price, output_price)
         estimator = StageCostEstimator(repo, pp)
 
-        cost = estimator.estimate_run_cost("implement", "anthropic:claude-opus-4-8")
+        cost = estimator.estimate_run_cost(stage, model)
 
-        fallback_in, fallback_out = _FALLBACK_TOKENS["implement"]
+        fallback_in, fallback_out = _FALLBACK_TOKENS[stage]
         expected = (
-            Decimal(fallback_in) * Decimal("0.000003")
-            + Decimal(fallback_out) * Decimal("0.000015")
-        )
-        assert cost == expected
-
-    def test_no_history_uses_fallback_classify(self):
-        repo = MagicMock()
-        repo.records_for_stage_model.return_value = []
-        pp = _make_pricing_provider("0.000001", "0.000005")
-        estimator = StageCostEstimator(repo, pp)
-
-        cost = estimator.estimate_run_cost("classify", "anthropic:claude-haiku-4-5")
-
-        fallback_in, fallback_out = _FALLBACK_TOKENS["classify"]
-        expected = (
-            Decimal(fallback_in) * Decimal("0.000001")
-            + Decimal(fallback_out) * Decimal("0.000005")
+            Decimal(fallback_in) * Decimal(input_price)
+            + Decimal(fallback_out) * Decimal(output_price)
         )
         assert cost == expected
 

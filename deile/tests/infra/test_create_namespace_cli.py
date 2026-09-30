@@ -120,7 +120,8 @@ def test_parse_flags_unknown_flag_warns_but_continues(capsys):
     # Ainda pega o anthropic-key mesmo após flag desconhecida
     assert cfg.anthropic_key == "sk-x"
     captured = capsys.readouterr()
-    assert "desconhec" in captured.out or "ignore" in captured.out.lower() or True
+    # O aviso da flag desconhecida deve sair no stdout (ui.warn → print)
+    assert "desconhec" in captured.out
 
 
 def test_parse_flags_int_invalid_falls_back(capsys):

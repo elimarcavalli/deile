@@ -15,63 +15,56 @@ pytestmark = pytest.mark.unit
 
 
 class TestEmission:
-    def test_dispatch_total_one_point(self, in_memory_dispatch_metrics_reader):
-        dm.record_dispatch_total(role="worker", outcome="completed")
+    # AC1: cada recorder emite exatamente 1 data point com value + attrs
+    # corretos. Um caso por métrica (counter ou histogram) — funde 6 métodos
+    # quase-idênticos preservando value/attrs esperados de cada um. No caso do
+    # histograma (duration), o value esperado é o ``value_ms`` da medição (não
+    # um label), por isso value/attrs viajam separados nos params.
+    @pytest.mark.parametrize(
+        "fn,kwargs,metric_name,expected_value,expected_attrs",
+        [
+            (dm.record_dispatch_total,
+             {"role": "worker", "outcome": "completed"},
+             dm.METRIC_DISPATCH_TOTAL, 1,
+             {"role": "worker", "outcome": "completed"}),
+            (dm.record_dispatch_failed_total,
+             {"role": "worker", "reason": "auth_expired"},
+             dm.METRIC_DISPATCH_FAILED_TOTAL, 1,
+             {"role": "worker", "reason": "auth_expired"}),
+            (dm.record_dispatch_duration_ms,
+             {"role": "worker", "outcome": "completed", "value_ms": 5432},
+             dm.METRIC_DISPATCH_DURATION_MS, 5432,
+             {"role": "worker", "outcome": "completed"}),
+            (dm.record_dispatch_tool_burst_total,
+             {"role": "worker", "bucket": "100-"},
+             dm.METRIC_DISPATCH_TOOL_BURST_TOTAL, 1,
+             {"role": "worker", "bucket": "100-"}),
+            (dm.record_git_push_total,
+             {"outcome": "ok"},
+             dm.METRIC_GIT_PUSH_TOTAL, 1,
+             {"outcome": "ok"}),
+            (dm.record_forge_pr_review_total,
+             {"decision": "APPROVED"},
+             dm.METRIC_FORGE_PR_REVIEW_TOTAL, 1,
+             {"decision": "APPROVED"}),
+        ],
+        ids=[
+            "dispatch_total", "dispatch_failed", "dispatch_duration",
+            "tool_burst", "git_push", "forge_pr_review",
+        ],
+    )
+    def test_recorder_one_point(
+        self, in_memory_dispatch_metrics_reader, fn, kwargs, metric_name,
+        expected_value, expected_attrs,
+    ):
+        fn(**kwargs)
         points = dispatch_metric_points(
-            in_memory_dispatch_metrics_reader, dm.METRIC_DISPATCH_TOTAL
+            in_memory_dispatch_metrics_reader, metric_name
         )
         assert len(points) >= 1
         value, attrs = points[0]
-        assert value == 1
-        assert attrs == {"role": "worker", "outcome": "completed"}
-
-    def test_dispatch_failed_one_point(self, in_memory_dispatch_metrics_reader):
-        dm.record_dispatch_failed_total(role="worker", reason="auth_expired")
-        points = dispatch_metric_points(
-            in_memory_dispatch_metrics_reader, dm.METRIC_DISPATCH_FAILED_TOTAL
-        )
-        value, attrs = points[0]
-        assert value == 1
-        assert attrs == {"role": "worker", "reason": "auth_expired"}
-
-    def test_dispatch_duration_one_point(self, in_memory_dispatch_metrics_reader):
-        dm.record_dispatch_duration_ms(
-            role="worker", outcome="completed", value_ms=5432
-        )
-        points = dispatch_metric_points(
-            in_memory_dispatch_metrics_reader, dm.METRIC_DISPATCH_DURATION_MS
-        )
-        value, attrs = points[0]
-        assert value == 5432
-        assert attrs == {"role": "worker", "outcome": "completed"}
-
-    def test_tool_burst_one_point(self, in_memory_dispatch_metrics_reader):
-        dm.record_dispatch_tool_burst_total(role="worker", bucket="100-")
-        points = dispatch_metric_points(
-            in_memory_dispatch_metrics_reader,
-            dm.METRIC_DISPATCH_TOOL_BURST_TOTAL,
-        )
-        value, attrs = points[0]
-        assert value == 1
-        assert attrs == {"role": "worker", "bucket": "100-"}
-
-    def test_git_push_one_point(self, in_memory_dispatch_metrics_reader):
-        dm.record_git_push_total(outcome="ok")
-        points = dispatch_metric_points(
-            in_memory_dispatch_metrics_reader, dm.METRIC_GIT_PUSH_TOTAL
-        )
-        value, attrs = points[0]
-        assert value == 1
-        assert attrs == {"outcome": "ok"}
-
-    def test_forge_pr_review_one_point(self, in_memory_dispatch_metrics_reader):
-        dm.record_forge_pr_review_total(decision="APPROVED")
-        points = dispatch_metric_points(
-            in_memory_dispatch_metrics_reader, dm.METRIC_FORGE_PR_REVIEW_TOTAL
-        )
-        value, attrs = points[0]
-        assert value == 1
-        assert attrs == {"decision": "APPROVED"}
+        assert value == expected_value
+        assert attrs == expected_attrs
 
     def test_otlp_drop_emitted_via_drop_loop(
         self, in_memory_dispatch_metrics_reader, monkeypatch

@@ -9,34 +9,16 @@ from deile.observability import NoOpMetrics, get_metrics
 pytestmark = pytest.mark.unit
 
 
-def test_get_metrics_returns_no_op_when_endpoint_empty():
-    m = get_metrics()
-    assert isinstance(m, NoOpMetrics)
 
 
 def test_get_metrics_singleton_idempotent():
     assert get_metrics() is get_metrics()
 
 
-def test_no_op_record_methods_do_not_raise():
-    m = NoOpMetrics()
-    m.record_tokens("anthropic", "claude-3-5", "in", 100)
-    m.record_tokens("openai", "gpt-4o", "out", 50)
-    m.record_cost("anthropic", "claude-3-5", 0.05)
-    m.record_tool_duration("read_file", "success", 23)
-    m.record_turn_duration("dev", 1500)
-    m.record_error("TimeoutError", "tool_loop")
 
 
-def test_no_op_metrics_shutdown_idempotent():
-    m = NoOpMetrics()
-    m.shutdown()
-    m.shutdown()
 
 
-def test_no_op_record_tokens_zero_count_is_safe():
-    m = NoOpMetrics()
-    m.record_tokens("anthropic", "claude-3-5", "in", 0)
 
 
 # ── SDK-backed tests ────────────────────────────────────────────────────

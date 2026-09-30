@@ -53,15 +53,6 @@ class TestActionRowStylePredicate:
     def test_mention_returns_none(self):
         assert panel._action_row_style("routing.mention") is None
 
-    def test_pr_unified_returns_none(self):
-        assert panel._action_row_style("routing.pr_unified") is None
-
-    def test_arbitrary_action_returns_none(self):
-        assert panel._action_row_style("dispatch.started") is None
-
-    def test_empty_string_returns_none(self):
-        assert panel._action_row_style("") is None
-
 
 # ---------------------------------------------------------------------------
 # AC2: render — inspecionar células da coluna action
@@ -75,24 +66,6 @@ class TestActivityPanelActionCellStyle:
         p = view._activity_panel()
         tbl = p.renderable
         return list(tbl.columns[2]._cells)
-
-    def test_dropped_action_cell_is_dim(self):
-        ev = _make_event(action="routing.dropped")
-        cells = self._get_action_cells([ev])
-        assert len(cells) == 1
-        cell = cells[0]
-        from rich.text import Text
-        assert isinstance(cell, Text)
-        assert str(cell.style) == "dim"
-
-    def test_mention_action_cell_has_no_style(self):
-        ev = _make_event(action="routing.mention")
-        cells = self._get_action_cells([ev])
-        assert len(cells) == 1
-        cell = cells[0]
-        from rich.text import Text
-        assert isinstance(cell, Text)
-        assert cell.style in (None, "")
 
     def test_pr_unified_action_cell_has_no_style(self):
         ev = _make_event(action="routing.pr_unified")

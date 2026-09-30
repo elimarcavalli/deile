@@ -89,10 +89,6 @@ class TestBuildDispatchPayload:
                                    preferred_model=None)
         assert "preferred_model" not in p
 
-    def test_omits_preferred_model_when_default(self):
-        # Default kwarg None — same as explicitly passing None.
-        p = build_dispatch_payload(brief="x", channel_id="c")
-        assert "preferred_model" not in p
 
     def test_omits_when_empty_string(self):
         # Builder uses ``if preferred_model:`` so empty string is also dropped.

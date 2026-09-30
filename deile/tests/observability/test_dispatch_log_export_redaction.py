@@ -19,9 +19,24 @@ SENSITIVE_PATTERNS = [
 
 
 class TestRedactionInLogRecords:
-    @pytest.mark.parametrize("label,secret", SENSITIVE_PATTERNS)
-    def test_secret_in_attr_is_redacted(self, in_memory_log_exporter, label, secret):
-        """Segredo em attr string → [REDACTED] no LogRecord emitido."""
+    @pytest.mark.parametrize(
+        "attrs,secrets",
+        [
+            pytest.param({"deile.dispatch.token": secret}, [secret], id=label)
+            for label, secret in SENSITIVE_PATTERNS
+        ]
+        + [
+            # Caso multi-chave: múltiplos segredos em attrs distintos → todos
+            # redactados pelo mesmo loop de _safe_attrs/body_for.
+            pytest.param(
+                {"token_a": "ghp_" + "A" * 40, "token_b": "sk-" + "B" * 30},
+                ["ghp_" + "A" * 40, "sk-" + "B" * 30],
+                id="multiple_secrets",
+            )
+        ],
+    )
+    def test_secret_in_attr_is_redacted(self, in_memory_log_exporter, attrs, secrets):
+        """Segredo(s) em attr string → nenhum vaza no LogRecord (body nem attrs)."""
         from deile.observability.dispatch_log_export import emit_log_record
 
         emit_log_record(
@@ -29,17 +44,20 @@ class TestRedactionInLogRecords:
             trace_id=1,
             span_id=1,
             trace_flags=1,
-            attributes={"deile.dispatch.token": secret},
+            attributes=attrs,
         )
         logs = in_memory_log_exporter.get_finished_logs()
         assert len(logs) == 1
         record = logs[0].log_record
 
-        # Check attributes
-        for k, v in (record.attributes or {}).items():
-            assert secret not in str(v), (
-                f"secret leaked in attribute {k!r}: {v!r}"
-            )
+        body = str(record.body)
+        for secret in secrets:
+            assert secret not in body, f"secret leaked in body: {body!r}"
+            # Check attributes
+            for k, v in (record.attributes or {}).items():
+                assert secret not in str(v), (
+                    f"secret leaked in attribute {k!r}: {v!r}"
+                )
 
     @pytest.mark.parametrize("label,secret", SENSITIVE_PATTERNS)
     def test_secret_in_body_is_redacted(self, in_memory_log_exporter, label, secret):
@@ -58,32 +76,6 @@ class TestRedactionInLogRecords:
         body = str(logs[0].log_record.body)
         assert secret not in body, f"secret leaked in body: {body!r}"
         assert "[REDACTED]" in body
-
-    def test_multiple_secrets_in_attrs_all_redacted(self, in_memory_log_exporter):
-        """Múltiplos segredos em attrs diferentes → todos redactados."""
-        from deile.observability.dispatch_log_export import emit_log_record
-
-        secrets = {
-            "token_a": "ghp_" + "A" * 40,
-            "token_b": "sk-" + "B" * 30,
-        }
-
-        emit_log_record(
-            event_name="dispatch.received",
-            trace_id=1,
-            span_id=1,
-            trace_flags=1,
-            attributes={k: v for k, v in secrets.items()},
-        )
-        logs = in_memory_log_exporter.get_finished_logs()
-        assert len(logs) == 1
-        record = logs[0].log_record
-
-        full_text = str(record.body) + " ".join(
-            str(v) for v in (record.attributes or {}).values()
-        )
-        for secret in secrets.values():
-            assert secret not in full_text, f"secret leaked: {secret[:10]}..."
 
     def test_safe_values_not_altered(self, in_memory_log_exporter):
         """Valores sem segredos não são alterados."""

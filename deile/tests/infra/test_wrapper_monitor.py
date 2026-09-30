@@ -168,41 +168,6 @@ def test_run_monitor_starts_with_monitor_persona(wrapper_mod, tmp_path, monkeypa
 # _install_monitor_negative_whitelist
 # ---------------------------------------------------------------------------
 
-def test_install_monitor_whitelist_drops_only_dispatch(wrapper_mod):
-    """Only dispatch_deile_task is dropped from the monitor's DROP set.
-
-    Tests the DROP constant directly — the patching mechanism is shared with
-    _install_worker_negative_whitelist (already tested in other tests). We
-    verify that the monitor's DROP set is exactly {"dispatch_deile_task"} and
-    that bash/file tools are NOT in it.
-    """
-    import inspect
-    src = inspect.getsource(wrapper_mod._install_monitor_negative_whitelist)
-    # The DROP set must contain dispatch_deile_task
-    assert "dispatch_deile_task" in src
-    # The DROP set must NOT contain bash or file tools (those are kept)
-    assert "bash_execute" not in src
-    assert "read_file" not in src
-    assert "write_file" not in src
-    # Verify by extracting the DROP set from the function
-    # (it's defined as a literal set in the function body)
-    import ast
-    tree = ast.parse(src)
-    drop_values = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "DROP":
-                    if isinstance(node.value, ast.Set):
-                        # ast.Constant é a API moderna (Python 3.8+); .value substitui o .s
-                        # de ast.Str (deprecated em 3.12 e removido em 3.14).
-                        drop_values = {
-                            elt.value for elt in node.value.elts
-                            if isinstance(elt, ast.Constant)
-                        }
-    assert drop_values == {"dispatch_deile_task"}, (
-        f"monitor DROP set should be exactly {{dispatch_deile_task}}, got {drop_values}"
-    )
 
 
 # ---------------------------------------------------------------------------

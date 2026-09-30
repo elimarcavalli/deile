@@ -25,35 +25,9 @@ class TestOtelImports:
         except ImportError as e:
             pytest.skip(f"opentelemetry.sdk._logs não disponível: {e}")
 
-    def test_otel_sdk_logs_logger_provider_importable(self):
-        """opentelemetry.sdk._logs.LoggerProvider é importável."""
-        try:
-            from opentelemetry.sdk._logs import LoggerProvider  # noqa: F401
-        except ImportError as e:
-            pytest.skip(f"LoggerProvider não disponível: {e}")
 
-    def test_otel_sdk_logs_batch_processor_importable(self):
-        """opentelemetry.sdk._logs.export.BatchLogRecordProcessor é importável."""
-        try:
-            from opentelemetry.sdk._logs.export import \
-                BatchLogRecordProcessor  # noqa: F401
-        except ImportError as e:
-            pytest.skip(f"BatchLogRecordProcessor não disponível: {e}")
 
-    def test_in_memory_log_exporter_importable(self):
-        """opentelemetry.sdk._logs.export.InMemoryLogExporter é importável."""
-        try:
-            from opentelemetry.sdk._logs.export import \
-                InMemoryLogExporter  # noqa: F401
-        except ImportError as e:
-            pytest.skip(f"InMemoryLogExporter não disponível: {e}")
 
-    def test_severity_number_importable(self):
-        """opentelemetry._logs.SeverityNumber é importável."""
-        try:
-            from opentelemetry._logs import SeverityNumber  # noqa: F401
-        except ImportError as e:
-            pytest.skip(f"SeverityNumber não disponível: {e}")
 
     def test_no_direct_env_reads_in_module(self):
         """dispatch_log_export.py não lê os.environ diretamente."""

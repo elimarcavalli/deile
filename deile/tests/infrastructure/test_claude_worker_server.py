@@ -1915,21 +1915,6 @@ async def test_pod_status_endpoint_returns_disk_usage_via_shutil(
     assert "mount" in disk
 
 
-async def test_pod_status_endpoint_counts_claude_processes_via_psutil(
-    claude_worker_module, monkeypatch, tmp_path,
-):
-    """claude_processes reflects the value returned by _count_claude_processes."""
-    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
-    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
-    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 3)
-
-    app = claude_worker_module.build_app(auth_token="test-token")
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
-        assert resp.status == 200
-        body = await resp.json()
-
-    assert body["claude_processes"] == 3
 
 
 def test_anthropic_quota_capture_middleware_stores_latest_header(

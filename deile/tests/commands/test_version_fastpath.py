@@ -64,16 +64,6 @@ class TestShortVersionFormat:
         expected = f"DEILE v{version_mod.__version__} (build {version_mod.__build_number__})"
         assert out == expected, f"Esperado {expected!r}, obtido {out!r}"
 
-    def test_build_number_is_eight_digits(self, version_run):
-        """O build number deve ter exatamente 8 dígitos."""
-        match = _VERSION_RE.match(version_run.stdout.strip())
-        assert match is not None
-        assert len(match.group(2)) == 8
-
-    def test_exit_code_zero(self, version_run):
-        """Fast-path deve sair com 0."""
-        assert version_run.returncode == 0
-
     def test_single_line_output(self, version_run):
         """A saída deve ser exatamente 1 linha."""
         lines = version_run.stdout.strip().split("\n")
@@ -164,11 +154,6 @@ class TestZeroSideEffects:
             ".env foi criado — fast-path não deve ter side-effects"
         )
 
-    def test_no_env_touched(self, version_run):
-        """Rodar --version não deve modificar .env existente."""
-        assert version_run.returncode == 0
-        # Não há assertions sobre .env — só garantimos que não crashou
-
 
 # ---------------------------------------------------------------------------
 # Comportamento não-TTY
@@ -233,17 +218,34 @@ class TestSubprocessSmoke:
         """A saída curta não deve conter markup Rich."""
         assert "[" not in version_run.stdout  # Rich usa [bold], [cyan], etc.
 
-    def test_version_response_time_under_200ms(self):
-        """Fast-path deve responder em < 200ms (não faz bootstrap)."""
-        import time
-        t0 = time.monotonic()
+    def test_version_does_no_heavy_imports(self):
+        """Fast-path não faz bootstrap: roda sem importar `rich` nem o pacote
+        `deile` completo.
+
+        Proxy robusto da propriedade que o wall-clock <200ms tentava aferir
+        (latência baixa = sem bootstrap), porém determinístico — sem flutuar
+        com a carga da máquina. Inspeciona `sys.modules` num subprocess isolado
+        (evita poluição por outros testes que já importaram `rich`).
+        """
+        deile_py = str(REPO_ROOT / "deile.py")
+        probe = (
+            "import runpy, sys\n"
+            "sys.argv = [{p!r}, '--version']\n"
+            "try:\n"
+            "    runpy.run_path({p!r}, run_name='__main__')\n"
+            "except SystemExit:\n"
+            "    pass\n"
+            "heavy = [m for m in ('rich', 'deile.cli', 'deile.core.agent')\n"
+            "         if m in sys.modules]\n"
+            "assert not heavy, 'fast-path importou módulos pesados (bootstrap): '"
+            " + repr(heavy)\n"
+        ).format(p=deile_py)
         result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "deile.py"), "--version"],
-            capture_output=True, cwd=str(REPO_ROOT),
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
         )
-        elapsed = time.monotonic() - t0
-        assert result.returncode == 0
-        assert elapsed < 0.5, f"Fast-path demorou {elapsed:.2f}s (limite 0.5s)"
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "DEILE v" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -274,20 +276,6 @@ class TestInteractiveTTYPrompt:
     é patchado diretamente para evitar interferência com outras operações
     de Path no carregamento.
     """
-
-    def test_tty_prompt_shows_when_no_venv(self):
-        """Em TTY sem venv, o prompt para painel completo deve aparecer."""
-        from unittest.mock import MagicMock, patch
-
-        fake_venv = MagicMock()
-        fake_venv.exists.return_value = False
-        with patch("sys.stdout.isatty", return_value=True), \
-             patch("builtins.input", return_value="n"):
-            mod = _load_deile_script()
-            with patch.object(mod, "_venv_python", return_value=fake_venv):
-                with pytest.raises(SystemExit) as exc_info:
-                    mod._fast_version()
-                assert exc_info.value.code == 0
 
     def test_tty_prompt_no_shows_short_line(self):
         """TTY com resposta 'não' → sai com linha curta e exit 0."""

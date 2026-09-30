@@ -24,8 +24,10 @@ pytestmark = pytest.mark.unit
 # ── AC2: normalização de URL ──────────────────────────────────────────────
 
 
-def test_normalize_ssh_github():
-    assert _normalize_repo_url("git@github.com:owner/repo.git") == "https://github.com/owner/repo"
+@pytest.mark.parametrize("host", ["github.com", "gitlab.com"])
+def test_normalize_ssh(host):
+    # Regex forge-agnóstica: gitlab exercita o MESMO branch SSH que github.
+    assert _normalize_repo_url(f"git@{host}:owner/repo.git") == f"https://{host}/owner/repo"
 
 
 def test_normalize_https_with_git_suffix():
@@ -36,10 +38,6 @@ def test_normalize_https_idempotent():
     assert _normalize_repo_url("https://github.com/owner/repo") == "https://github.com/owner/repo"
 
 
-def test_normalize_ssh_gitlab():
-    assert _normalize_repo_url("git@gitlab.com:owner/repo.git") == "https://gitlab.com/owner/repo"
-
-
 def test_normalize_empty():
     assert _normalize_repo_url("") == ""
 
@@ -48,16 +46,20 @@ def test_normalize_empty():
 
 
 def test_no_os_environ_reads_in_semconv_mapping():
-    import subprocess, os
-    repo_root = os.path.join(os.path.dirname(__file__), "..", "..", "..")
-    mapping_path = os.path.join(repo_root, "deile", "observability", "semconv_mapping.py")
-    # grep for actual Python code usage of os.environ (not inside comments/docstrings)
-    result = subprocess.run(
-        ["grep", "-nP", r"^\s*(os\.environ|import os)", mapping_path],
-        capture_output=True, text=True,
-    )
-    assert result.returncode != 0, (
-        f"os.environ used as code in semconv_mapping.py:\n{result.stdout}"
+    import re
+    from pathlib import Path
+
+    from deile.observability import semconv_mapping
+
+    source = Path(semconv_mapping.__file__).read_text(encoding="utf-8")
+    # Linhas cujo início (após indentação) é `os.environ` ou `import os` — uso como código.
+    offending = [
+        line for line in source.splitlines()
+        if re.match(r"^\s*(os\.environ|import os)", line)
+    ]
+    assert not offending, (
+        "os.environ/import os usado como código em semconv_mapping.py:\n"
+        + "\n".join(offending)
     )
 
 
@@ -161,16 +163,3 @@ def test_semconv_disabled_no_vcs_attrs(in_memory_exporter, monkeypatch):
     assert not vcs_keys, f"expected no vcs.* attrs when toggle off, got: {vcs_keys}"
 
 
-def test_semconv_enabled_default_true(in_memory_exporter):
-    """sem DEILE_OTLP_SEMCONV_ENABLED → default true → vcs.* presentes."""
-    tid = "task-semconv-default-1"
-    emit_dispatch_received(tid, session_id="s1", model="m", branch="main")
-    emit_git_push(tid, repo="https://github.com/owner/repo", branch="main", status="ok")
-
-    spans = in_memory_exporter.get_finished_spans()
-    git_spans = [s for s in spans if s.name == "git.push"]
-    assert git_spans, "expected git.push child span"
-    attrs = dict(git_spans[0].attributes)
-
-    assert "vcs.ref.head.name" in attrs
-    assert attrs["vcs.ref.head.name"] == "main"

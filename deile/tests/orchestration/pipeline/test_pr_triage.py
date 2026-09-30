@@ -203,14 +203,13 @@ class TestClassifyNewPrs:
         notifier.error.assert_not_called()
 
     async def test_pr_triage_disabled_skips_all(self):
-        """When enable_pr_triage=False, _classify_new_prs is not called on tick."""
+        """When enable_pr_triage=False, _classify_new_prs is not called on tick.
+
+        Only ``enable_pr_triage`` gates ``list_unclassified_prs`` (no other stage
+        calls it), so the remaining stages stay enabled — this proves the gate in
+        isolation instead of silencing the whole tick."""
         pr = _pr(50)
         monitor, github, notifier = _make_monitor(unclassified_prs=[pr])
         monitor.config.enable_pr_triage = False
-        monitor.config.enable_classify = False
-        monitor.config.enable_review = False
-        monitor.config.enable_implement = False
-        monitor.config.enable_pr_review = False
-        monitor.config.enable_mention_handling = False
         await monitor.tick()
         github.list_unclassified_prs.assert_not_called()

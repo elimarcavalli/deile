@@ -8,8 +8,6 @@ Prova que:
 
 from __future__ import annotations
 
-import logging
-import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -23,27 +21,15 @@ def _make_stub_module(name: str) -> MagicMock:
 
 
 class TestImportWithoutDeilebot:
-    def test_register_messaging_tools_returns_zero_without_deilebot(self, monkeypatch, caplog):
-        """BOT_CLIENT_AVAILABLE=False path — returns 0, logs skip."""
+    def test_register_messaging_tools_returns_zero_without_deilebot(self):
+        """BOT_CLIENT_AVAILABLE=False path — returns 0."""
         import deile.tools.messaging.auto_discover as ad
 
-        with patch.object(
-            sys.modules.get("deile.integrations.bot", MagicMock()),
-            "BOT_CLIENT_AVAILABLE",
-            False,
-            create=True,
-        ):
-            # Patch the import inside auto_discover
-            fake_bot = MagicMock()
-            fake_bot.BOT_CLIENT_AVAILABLE = False
-            fake_bot.get_bot_settings = MagicMock()
+        fake_bot = MagicMock()
+        fake_bot.BOT_CLIENT_AVAILABLE = False
 
-            with patch.dict("sys.modules", {"deile.integrations.bot": fake_bot}):
-                mock_registry = MagicMock()
-                mock_registry.__contains__ = MagicMock(return_value=False)
-
-                with caplog.at_level(logging.DEBUG, logger="deile.tools.messaging.auto_discover"):
-                    result = ad.register_messaging_tools(mock_registry)
+        with patch.dict("sys.modules", {"deile.integrations.bot": fake_bot}):
+            result = ad.register_messaging_tools(MagicMock())
 
         assert result == 0
 

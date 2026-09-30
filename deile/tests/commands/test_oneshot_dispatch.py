@@ -71,31 +71,6 @@ class TestAllBuiltinsRegistered:
             "Add its module to the builtin_modules list in registry.py."
         )
 
-    def test_pipeline_was_previously_missing(self):
-        """/pipeline was the primary bug in #106 — belt-and-suspenders check."""
-        registry = self._make_registry()
-        assert registry.has_command("pipeline"), "/pipeline must be registered"
-
-    def test_plan_was_previously_missing(self):
-        registry = self._make_registry()
-        assert registry.has_command("plan"), "/plan must be registered"
-
-    def test_approve_was_previously_missing(self):
-        registry = self._make_registry()
-        assert registry.has_command("approve"), "/approve must be registered"
-
-    def test_compact_was_previously_missing(self):
-        registry = self._make_registry()
-        assert registry.has_command("compact"), "/compact must be registered"
-
-    def test_run_was_previously_missing(self):
-        registry = self._make_registry()
-        assert registry.has_command("run"), "/run must be registered"
-
-    def test_welcome_was_previously_missing(self):
-        registry = self._make_registry()
-        assert registry.has_command("welcome"), "/welcome must be registered"
-
 
 # ---------------------------------------------------------------------------
 # _print_oneshot_content — Rich rendering (second bug in #106)
@@ -119,22 +94,27 @@ class TestPrintOneshotContent:
         out = self._capture(None)
         assert out == ""
 
-    def test_rich_table_not_repr(self):
-        from rich.table import Table
+    @pytest.mark.parametrize("kind", ["table", "panel"])
+    def test_rich_renderable_not_repr(self, kind):
+        if kind == "table":
+            from rich.table import Table
 
-        t = Table(title="Test")
-        t.add_column("Col")
-        t.add_row("val")
-        out = self._capture(t)
-        assert "<rich.table.Table" not in out, "Should render table, not print repr"
-        assert "Col" in out or "val" in out or "Test" in out
+            renderable = Table(title="Test")
+            renderable.add_column("Col")
+            renderable.add_row("val")
+            repr_marker = "<rich.table.Table"
+            content_substrings = ("Col", "val", "Test")
+        else:
+            from rich.panel import Panel
 
-    def test_rich_panel_not_repr(self):
-        from rich.panel import Panel
+            renderable = Panel("content", title="Title")
+            repr_marker = "<rich.panel.Panel"
+            content_substrings = ()
 
-        p = Panel("content", title="Title")
-        out = self._capture(p)
-        assert "<rich.panel.Panel" not in out
+        out = self._capture(renderable)
+        assert repr_marker not in out, "Should render renderable, not print repr"
+        if content_substrings:
+            assert any(s in out for s in content_substrings)
 
     def test_list_of_tables_rendered(self):
         from rich.table import Table

@@ -935,15 +935,11 @@ class TestStage4FollowUps:
 class TestForgeErrorCounter:
     """Testa o renomeamento gh_errors → forge_errors e o alias deprecated."""
 
-    def test_forge_errors_starts_at_zero(self):
-        """O campo forge_errors deve existir e iniciar em 0."""
+    def test_forge_errors_starts_at_zero_and_increments(self):
+        """O campo forge_errors deve existir, iniciar em 0 e ser incrementável."""
         from deile.orchestration.pipeline.monitor import _Stats
         s = _Stats()
         assert s.forge_errors == 0
-
-    def test_forge_errors_can_be_incremented(self):
-        from deile.orchestration.pipeline.monitor import _Stats
-        s = _Stats()
         s.forge_errors += 1
         assert s.forge_errors == 1
 
@@ -960,17 +956,6 @@ class TestForgeErrorCounter:
             assert len(w) == 1
             assert issubclass(w[0].category, DeprecationWarning)
             assert "forge_errors" in str(w[0].message)
-
-    def test_gh_errors_alias_emits_deprecation_warning(self):
-        """Ler ``gh_errors`` deve emitir DeprecationWarning."""
-        import warnings
-
-        from deile.orchestration.pipeline.monitor import _Stats
-        s = _Stats()
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            _ = s.gh_errors
-        assert any(issubclass(x.category, DeprecationWarning) for x in w)
 
 
 def test_publish_status_state_integrates_with_real_state(monkeypatch):

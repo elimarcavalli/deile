@@ -151,7 +151,7 @@ async def test_anthropic_tool_calling():
     ]
 
     with patch(
-        "deile.core.models.anthropic_provider.get_tool_registry",
+        "deile.tools.registry.get_tool_registry",
         return_value=fake_registry,
     ):
         _text, tool_results, usage = await provider.chat_with_tools(

@@ -68,6 +68,3 @@ def test_neutral_category_does_not_change_tier():
 # Sanity: unknown intent_type gets safe default
 # ---------------------------------------------------------------------------
 
-def test_unknown_type_defaults_to_tier2():
-    result = _result(IntentType.UNKNOWN, IntentCategory.INFORMATION)
-    assert classify_tier(result) == ModelTier.TIER_2

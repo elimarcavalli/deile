@@ -7,8 +7,9 @@ operator's ability to see what tools just did.
 
 from __future__ import annotations
 
-from deile.core.tool_result_summary import (SUMMARY_MAX_CHARS,
-                                            semantic_summary, summarize)
+import pytest
+
+from deile.core.tool_result_summary import SUMMARY_MAX_CHARS, summarize
 from deile.tools.base import ToolResult, ToolStatus
 
 
@@ -169,12 +170,6 @@ def test_no_function_name_falls_back_to_default():
     assert "payload" in out
 
 
-def test_semantic_summary_returns_none_for_unknown_tool():
-    """The semantic helper itself returns None for unknown tools (no fallback)."""
-    result = _ok("__nope__", data="x")
-    assert semantic_summary("__nope__", result) is None
-
-
 # ── Lock-in tests for truncation, error fallback, and edge cases ─────────────
 
 
@@ -223,25 +218,13 @@ def test_error_collapses_newlines_from_error_attribute():
     assert out.startswith("error: ")
 
 
-def test_error_fallback_uses_error_when_message_empty():
-    """Empty ``message`` falls through to ``error`` text on the ERROR path."""
+@pytest.mark.parametrize("message", ["", None], ids=["empty", "none"])
+def test_error_fallback_uses_error_when_message_falsy(message):
+    """A falsy ``message`` (empty or None) falls through to ``error`` text."""
     result = ToolResult(
         status=ToolStatus.ERROR,
         data=None,
-        message="",
-        error="boom",
-        metadata={},
-    )
-    out = summarize(result)
-    assert out == "error: boom"
-
-
-def test_error_fallback_uses_error_when_message_none():
-    """``message=None`` (falsy) also falls through to ``error``."""
-    result = ToolResult(
-        status=ToolStatus.ERROR,
-        data=None,
-        message=None,
+        message=message,
         error="boom",
         metadata={},
     )

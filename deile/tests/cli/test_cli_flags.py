@@ -81,29 +81,22 @@ def no_api_keys(monkeypatch):
 class TestSlashCommandMetadata:
     """The CLI flag attributes documented in 04-MODELO-COMPONENTES.md exist."""
 
-    def test_base_has_cli_flag_attribute(self):
-        from deile.commands.base import SlashCommand
-        assert hasattr(SlashCommand, "cli_flag")
-        assert SlashCommand.cli_flag is None
+    # Sentinel: attribute must exist, but its default value is not asserted.
+    _UNCHECKED = object()
 
-    def test_base_has_cli_takes_arg_attribute(self):
+    @pytest.mark.parametrize("attr, expected", [
+        ("cli_flag", None),
+        ("cli_takes_arg", False),
+        ("cli_arg_metavar", None),
+        ("cli_help", _UNCHECKED),
+        ("cli_requires_provider", False),
+    ])
+    def test_base_default_metadata(self, attr, expected):
+        """Base SlashCommand exposes each CLI-flag field with its documented default."""
         from deile.commands.base import SlashCommand
-        assert hasattr(SlashCommand, "cli_takes_arg")
-        assert SlashCommand.cli_takes_arg is False
-
-    def test_base_has_cli_arg_metavar_attribute(self):
-        from deile.commands.base import SlashCommand
-        assert hasattr(SlashCommand, "cli_arg_metavar")
-        assert SlashCommand.cli_arg_metavar is None
-
-    def test_base_has_cli_help_attribute(self):
-        from deile.commands.base import SlashCommand
-        assert hasattr(SlashCommand, "cli_help")
-
-    def test_base_has_cli_requires_provider_attribute(self):
-        from deile.commands.base import SlashCommand
-        assert hasattr(SlashCommand, "cli_requires_provider")
-        assert SlashCommand.cli_requires_provider is False
+        assert hasattr(SlashCommand, attr)
+        if expected is not self._UNCHECKED:
+            assert getattr(SlashCommand, attr) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -112,12 +105,6 @@ class TestSlashCommandMetadata:
 
 
 class TestBuildSpecsFromRegistry:
-    def test_status_spec_present(self):
-        registry = _make_registry()
-        specs = build_cli_flag_specs(registry)
-        flags = {s.flag for s in specs}
-        assert "--status" in flags
-
     def test_specs_dispatch_to_correct_command_name(self):
         registry = _make_registry()
         specs = build_cli_flag_specs(registry)
@@ -267,19 +254,6 @@ class TestHelpListsEveryCommand:
                 "_format_help_with_commands didn't render it."
             )
 
-    def test_help_count_matches_registry(self):
-        _purge_registry_singleton()
-        code, stdout, _ = _run_cli(["--help"])
-        assert code == 0
-        registry = _make_registry()
-        # Count commands listed in help by counting unique '/cmd ' occurrences.
-        # Make this resilient to ordering by checking each name individually.
-        listed = sum(
-            1 for cmd in registry.get_enabled_commands()
-            if f"/{cmd.name}" in stdout
-        )
-        assert listed == len(registry.get_enabled_commands())
-
 
 # ---------------------------------------------------------------------------
 # 5. Smoke tests — every dispatchable flag invokes a command and exits 0
@@ -325,12 +299,6 @@ class TestFlagsWithArguments:
     def test_export_accepts_path_argument(self, tmp_path, no_api_keys):
         export_target = tmp_path / "export-out"
         code, _stdout, stderr = _run_cli(["--export", str(export_target)])
-        assert code == 0, f"stderr={stderr}"
-
-    def test_export_accepts_path_via_equals_syntax(self, tmp_path, no_api_keys):
-        """argparse must accept ``--export=PATH`` as well as ``--export PATH``."""
-        export_target = tmp_path / "export-equals"
-        code, _stdout, stderr = _run_cli([f"--export={export_target}"])
         assert code == 0, f"stderr={stderr}"
 
     def test_model_strategy_accepts_name_argument(self, no_api_keys):

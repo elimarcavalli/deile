@@ -301,7 +301,7 @@ def activate_traceparent_from_env() -> Any:
     if not traceparent:
         return None
     try:
-        from opentelemetry.propagators.textmap import \
+        from opentelemetry.trace.propagation.tracecontext import \
             TraceContextTextMapPropagator  # pylint: disable=import-outside-toplevel
         carrier = {"traceparent": traceparent}
         tracestate = os.environ.get("TRACESTATE") or os.environ.get("tracestate")

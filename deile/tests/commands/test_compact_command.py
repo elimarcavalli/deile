@@ -132,18 +132,12 @@ class TestCompactSummary:
     async def test_summary_no_agent_returns_success(self):
         result = await _cmd().execute(_ctx("summary"))
         assert result.success
-
-    async def test_summary_content_type_is_rich(self):
-        result = await _cmd().execute(_ctx("summary"))
         assert result.content_type == "rich"
+        assert _render(result.content).strip()
 
     async def test_summary_default_action_no_args(self):
         result = await _cmd().execute(_ctx(""))
         assert result.success
-
-    async def test_summary_renders_non_empty(self):
-        result = await _cmd().execute(_ctx("summary"))
-        assert _render(result.content).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -165,11 +159,6 @@ class TestCompactCompress:
         result = await _cmd().execute(_ctx("compress 7", agent))
         assert result.success
         assert result.metadata.get("entries_processed") == 3
-
-    async def test_compress_entries_before_is_real(self):
-        mm = _mock_memory_manager(entries=10, cleaned=3)
-        agent = _mock_agent(memory_manager=mm)
-        result = await _cmd().execute(_ctx("compress 7", agent))
         assert result.metadata.get("entries_before") == 10
 
     async def test_compress_no_memory_manager_returns_error(self):
@@ -210,6 +199,7 @@ class TestCompactPurge:
         result = await _cmd().execute(_ctx("purge 30", agent))
         assert result.success
         assert result.metadata.get("purged_count") == 0
+        assert result.metadata.get("confirmed") is False
         ss.delete_sessions_before.assert_not_awaited()
 
     async def test_purge_with_confirmation_deletes_real_sessions(self):
@@ -218,6 +208,7 @@ class TestCompactPurge:
         result = await _cmd().execute(_ctx("purge 30 --confirm", agent))
         assert result.success
         assert result.metadata.get("purged_count") == 4
+        assert result.metadata.get("confirmed") is True
         ss.delete_sessions_before.assert_awaited_once()
 
     async def test_purge_no_session_store_returns_error(self):
@@ -231,19 +222,6 @@ class TestCompactPurge:
         assert result.success
         assert result.metadata.get("purged_count") == 2
         ss.delete_sessions_before.assert_awaited_once()
-
-    async def test_purge_confirmed_shows_deleted_count_in_metadata(self):
-        ss = _mock_session_store(count_before=7)
-        agent = _mock_agent(session_store=ss)
-        result = await _cmd().execute(_ctx("purge 30 --confirm", agent))
-        assert result.metadata.get("confirmed") is True
-        assert result.metadata.get("purged_count") == 7
-
-    async def test_purge_unconfirmed_shows_confirmed_false(self):
-        ss = _mock_session_store(count_before=1)
-        agent = _mock_agent(session_store=ss)
-        result = await _cmd().execute(_ctx("purge 30", agent))
-        assert result.metadata.get("confirmed") is False
 
 
 # ---------------------------------------------------------------------------
@@ -289,12 +267,13 @@ class TestCompactAnalyze:
         result = await _cmd().execute(_ctx("analyze"))
         assert not result.success
 
-    async def test_analyze_renders_non_empty(self):
+    async def test_analyze_under_5_sessions_topics_insufficient(self):
         sessions = [{"session_id": "s1", "last_used_at": "2026-01-01T10:00:00.000000Z"}]
         ss = _mock_session_store(sessions=sessions, count=1)
         agent = _mock_agent(session_store=ss)
         result = await _cmd().execute(_ctx("analyze", agent))
-        assert _render(result.content).strip()
+        assert result.success
+        assert "dados insuficientes" in _render(result.content)
 
 
 # ---------------------------------------------------------------------------

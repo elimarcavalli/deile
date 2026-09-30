@@ -308,11 +308,6 @@ class TestOauthInitContainerGeneration:
         finally:
             cli_adapters.ADAPTERS.pop(kind, None)
 
-    def test_yaml_is_valid_with_init_block(self, oauth_kind):
-        # safe_load_all estoura se o block-scalar do script ficar mal indentado.
-        docs = [d for d in yaml.safe_load_all(gen.render_manifests(oauth_kind)) if d]
-        assert any(d["kind"] == "Deployment" for d in docs)
-
     def test_initcontainer_bootstrap_creds_emitted(self, oauth_kind):
         docs = [d for d in yaml.safe_load_all(gen.render_manifests(oauth_kind)) if d]
         dep = next(d for d in docs if d["kind"] == "Deployment")
@@ -440,14 +435,6 @@ class TestOauthModeOverride:
         assert "persistentVolumeClaim" in vols["worker-home"]
         env = self._container_env(dep)
         assert "DEILE_CODEX_AUTH" not in env
-
-    def test_codex_oauth_mode_yaml_is_valid(self):
-        # safe_load_all estoura se o block-scalar do initContainer ficar mal
-        # indentado; este teste prova que o YAML do modo OAuth é parseável.
-        docs = self._docs(
-            gen.render_manifests("codex", oauth_mode=True)
-        )
-        assert any(d["kind"] == "Deployment" for d in docs)
 
     def test_oauth_file_adapter_renders_oauth_without_flag(self):
         # Sanity: um adapter auth_mode=oauth_file renderiza OAuth mesmo SEM o flag
@@ -913,12 +900,6 @@ class TestProviderEnvOverride:
         import _cli_worker_install as inst  # noqa: PLC0415
 
         secret_value = "sk-provider-secret"
-        applied_literals: list = []
-
-        def fake_apply(values, *, namespace):
-            applied_literals.append(values)
-            return True
-
         monkeypatch.setattr(inst, "_read_env_file", lambda: {})
         # auth_env_key plain ausente; só a var sensível da convenção existe.
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)

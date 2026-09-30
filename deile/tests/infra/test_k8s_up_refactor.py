@@ -419,31 +419,6 @@ class TestK8sUpGitLabToken:
 
 
 class TestK8sUpPipelineStatusBearer:
-    def test_pipeline_status_bearer_always_created(self, tmp_path, monkeypatch):
-        env_file = tmp_path / ".env"
-        env_file.write_text(
-            "ANTHROPIC_API_KEY=sk-ant-test\n"
-            "DEILE_BOT_AUTH_TOKEN=tok\n"
-            "DEILE_WORKER_BEARER_TOKEN=tok-w\n"
-            "PIPELINE_STATUS_BEARER_TOKEN=tok-ps\n"
-        )
-        monkeypatch.setattr(deploy, "ENV_FILE", env_file)
-        monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
-        monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
-        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
-        applied, fake_secret = _make_fake_apply_secret()
-        monkeypatch.setattr(deploy, "_apply_secret", fake_secret)
-        monkeypatch.setattr(deploy, "_run", lambda *a, **kw: 0)
-        monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
-        monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
-
-        deploy.k8s_up({
-            "yes": True, "dry_run": False,
-            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
-        })
-        secret_names = [name for name, _ in applied]
-        assert "pipeline-status-bearer" in secret_names
-
     def test_pipeline_status_bearer_has_correct_key(self, tmp_path, monkeypatch):
         """pipeline-status-bearer must use PIPELINE_STATUS_BEARER_TOKEN as key.
 
@@ -508,10 +483,10 @@ class TestK8sUpTokenPersistence:
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
         monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
-        applied_runs = []
+        applied = []
 
         def capturing_secret(kubectl, name, kv, ns=""):
-            applied_runs.append((name, dict(kv)))
+            applied.append((name, dict(kv)))
             return True
 
         monkeypatch.setattr(deploy, "_apply_secret", capturing_secret)
@@ -523,17 +498,16 @@ class TestK8sUpTokenPersistence:
             "yes": True, "dry_run": False,
             "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
         }
+        # Reset the capture list between runs so the worker-bearer is matched
+        # by name (robust to how many secrets each run applies).
         deploy.k8s_up(args)
-        deploy.k8s_up(args)
-
-        # Extract worker-bearer tokens from both runs
         run1_worker = next(
-            kv["AUTH_TOKEN"] for name, kv in applied_runs[:3]
-            if name == "worker-bearer"
+            kv["AUTH_TOKEN"] for name, kv in applied if name == "worker-bearer"
         )
+        applied.clear()
+        deploy.k8s_up(args)
         run2_worker = next(
-            kv["AUTH_TOKEN"] for name, kv in applied_runs[3:]
-            if name == "worker-bearer"
+            kv["AUTH_TOKEN"] for name, kv in applied if name == "worker-bearer"
         )
         assert run1_worker == run2_worker
 

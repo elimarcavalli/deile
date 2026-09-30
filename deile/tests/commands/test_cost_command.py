@@ -210,9 +210,16 @@ async def test_export_json_writes_valid_file(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-async def test_export_json_no_entries_skips_file_creation(tmp_path, monkeypatch):
-    """Issue #301: don't create dead `{"entries": []}` files when there's
-    no data to export."""
+@pytest.mark.parametrize("fmt", ["json", "csv"])
+async def test_export_no_entries_skips_file_creation(fmt, tmp_path, monkeypatch):
+    """Issue #301: o gate de entry_count cobre TODO formato — não criar
+    arquivos mortos (`{"entries": []}` no JSON) quando não há dados.
+
+    CSV é particularmente sutil porque ``cost_tracker.export_costs`` sempre
+    retorna pelo menos a linha de header — string truthy que não seria
+    capturada por um ``if not data:``. O gate certo é o ``entry_count`` (não o
+    payload), então ``export_costs`` nem deve ser chamado em nenhum formato.
+    """
     monkeypatch.chdir(tmp_path)
     summary = _make_summary(entry_count=0)
     cmd = CostCommand()
@@ -220,30 +227,10 @@ async def test_export_json_no_entries_skips_file_creation(tmp_path, monkeypatch)
         # export_costs should NOT be called when entry_count is 0 — gate is
         # the summary check, not the payload check.
         with patch.object(cmd.cost_tracker, "export_costs") as mock_export:
-            result = await cmd.execute(_make_context("export json 30"))
+            result = await cmd.execute(_make_context(f"export {fmt} 30"))
     assert result.success
-    json_files = list(tmp_path.glob("costs_export_*.json"))
-    assert len(json_files) == 0, f"Expected no files, got {json_files}"
-    mock_export.assert_not_called()
-
-
-@pytest.mark.unit
-async def test_export_csv_no_entries_skips_file_creation(tmp_path, monkeypatch):
-    """Issue #301: o gate de entry_count também precisa cobrir CSV.
-
-    CSV é particularmente sutil porque ``cost_tracker.export_costs`` sempre
-    retorna pelo menos a linha de header — string truthy que não seria
-    capturada por um ``if not data:``.
-    """
-    monkeypatch.chdir(tmp_path)
-    summary = _make_summary(entry_count=0)
-    cmd = CostCommand()
-    with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
-        with patch.object(cmd.cost_tracker, "export_costs") as mock_export:
-            result = await cmd.execute(_make_context("export csv 30"))
-    assert result.success
-    csv_files = list(tmp_path.glob("costs_export_*.csv"))
-    assert csv_files == [], f"Esperado nenhum arquivo CSV, achei {csv_files}"
+    files = list(tmp_path.glob(f"costs_export_*.{fmt}"))
+    assert files == [], f"Esperado nenhum arquivo {fmt}, achei {files}"
     mock_export.assert_not_called()
 
 

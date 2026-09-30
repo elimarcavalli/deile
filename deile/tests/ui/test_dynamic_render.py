@@ -68,13 +68,17 @@ def test_live_for_accepts_callable_renderable() -> None:
 
 
 @pytest.mark.unit
-def test_turn_separator_writes_rule_to_console() -> None:
-    """``turn_separator`` imprime um Rule horizontal — adapta a console.width."""
-    console = Console(file=io.StringIO(), width=60, force_terminal=True, color_system=None)
+@pytest.mark.parametrize("w", (40, 60, 80, 120))
+def test_turn_separator_writes_rule_to_console(w: int) -> None:
+    """``turn_separator`` imprime um Rule horizontal que respeita ``console.width``."""
+    console = Console(file=io.StringIO(), width=w, force_terminal=True, color_system=None)
     turn_separator(console)
     out = console.file.getvalue()
     # Rule renderiza com `─` (light) ou `━` (heavy) dependendo do estilo
     assert any(ch in out for ch in ("─", "━", "-"))
+    # Cada linha do output não pode ultrapassar a largura corrente do console
+    for line in out.splitlines():
+        assert len(line) <= w, f"linha estourou width={w}: {line!r}"
 
 
 @pytest.mark.unit
@@ -83,15 +87,3 @@ def test_live_for_duration_zero_does_not_hang() -> None:
     console = Console(file=io.StringIO(), width=80, force_terminal=False, color_system=None)
     with patch("deile.ui.dynamic_render.is_interactive_tty", return_value=False):
         live_for(Panel(Text("x")), console=console, duration_s=0.0)
-
-
-@pytest.mark.unit
-def test_turn_separator_adapts_to_console_width() -> None:
-    """O separador respeita ``console.width`` em renders diferentes."""
-    for w in (40, 80, 120):
-        console = Console(file=io.StringIO(), width=w, force_terminal=True, color_system=None)
-        turn_separator(console)
-        out = console.file.getvalue()
-        # Cada linha do output não pode ultrapassar w
-        for line in out.splitlines():
-            assert len(line) <= w, f"linha estourou width={w}: {line!r}"

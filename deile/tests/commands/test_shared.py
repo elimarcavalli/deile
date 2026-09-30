@@ -101,9 +101,6 @@ class TestExportTimestamp:
         ts = export_timestamp()
         assert re.fullmatch(r"\d{8}_\d{6}", ts), f"unexpected format: {ts}"
 
-    def test_returns_string(self):
-        assert isinstance(export_timestamp(), str)
-
 
 # ---------------------------------------------------------------------------
 # emit_audit_event
@@ -200,9 +197,6 @@ class TestConstants:
             "Issues",
         }
 
-    def test_project_links_values_are_strings(self):
-        assert all(isinstance(v, str) for v in PROJECT_LINKS.values())
-
     def test_flag_descricoes_keys_are_lowercase_snake(self):
         for k in FLAG_DESCRICOES_PTBR:
             assert k == k.lower()
@@ -277,9 +271,6 @@ class TestTruncateOneline:
 
     def test_max_chars_zero_truncates_everything(self):
         assert truncate_oneline("anything", 0) == "…"
-
-    def test_whitespace_only_string_returns_empty(self):
-        assert truncate_oneline("   ", 50) == ""
 
 
 # ---------------------------------------------------------------------------

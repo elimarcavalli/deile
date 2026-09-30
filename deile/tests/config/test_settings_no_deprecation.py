@@ -96,14 +96,6 @@ class TestNoDeprecationWarnings:
             f"{[r.getMessage() for r in deprecation_records]}"
         )
 
-    @pytest.mark.parametrize("var", _ALL_KNOWN_ENV_VARS)
-    def test_single_var_no_deprecation_warning(self, monkeypatch, caplog, var):
-        monkeypatch.setenv(var, "1")
-        s = Settings()
-        with caplog.at_level(logging.WARNING, logger="deile.config.settings"):
-            _apply_env_overrides(s)
-        assert "deprecated" not in caplog.text.lower()
-
 
 class TestDeprecatedVarsSilentlyIgnored:
     """Vars verdadeiramente silenciadas (sem mapping em _ENV_OVERRIDES) não

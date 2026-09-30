@@ -13,8 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from deile.orchestration.pipeline.stages import (_assert_review_proof_of_work,
-                                                 _resolve_bot_login)
+from deile.orchestration.pipeline.stages import _assert_review_proof_of_work
 
 
 @pytest.mark.asyncio
@@ -63,13 +62,6 @@ async def test_proof_of_work_fail_open_when_forge_missing_method(monkeypatch):
         forge, "pr", 100, "deile-one", since_ts=1716000000,
     )
     assert result is True
-
-
-@pytest.mark.asyncio
-async def test_resolve_bot_login_default():
-    """V1 hardcoded — sempre 'deile-one'."""
-    monitor = MagicMock()
-    assert await _resolve_bot_login(monitor) == "deile-one"
 
 
 @pytest.mark.asyncio

@@ -487,22 +487,8 @@ class TestPipelineClassifierCanonical:
         assert "backoff_s=120" in ev.detail
         assert "until=2026-05-31T11:00:00Z" in ev.detail
 
-    # ── AC10: legacy patterns (mention retired, others unchanged) ─────────
-    def test_legacy_mention_issue_stages_fallback(self):
-        # _MENTION_RE retired — line with full module prefix matches _STAGES_RE.
-        ev = pd._classify_pipeline_line(self._line(
-            "deile.orchestration.pipeline.stages mention group issue:278: triggers=['assignee']"
-        ))
-        assert ev is not None
-        assert ev.action == "stages"
-
-    def test_legacy_mention_pr_returns_none(self):
-        # _MENTION_RE retired — short form without module prefix returns None.
-        ev = pd._classify_pipeline_line(self._line(
-            "stages mention group pr:291: triggers=['reviewer']"
-        ))
-        assert ev is None
-
+    # ── AC10: legacy patterns (others unchanged; mention regression in
+    #          TestPipelineClassifier) ────────────────────────────────────
     def test_legacy_dispatch_starting(self):
         ev = pd._classify_pipeline_line(self._line(
             "INFO deile.infrastructure.deile_worker_client worker dispatch starting"
@@ -592,23 +578,16 @@ class TestPipelineStateDropCounters:
 # ===== _redact_canonical_detail (unit) ======================================
 
 class TestCanonicalHelpers:
-    def test_redact_token(self):
-        assert "<redacted>" in pd._redact_canonical_detail("token=abc123")
-
-    def test_redact_bearer(self):
-        assert "<redacted>" in pd._redact_canonical_detail("bearer=xyz")
-
-    def test_redact_api_key(self):
-        assert "<redacted>" in pd._redact_canonical_detail("api_key=secret")
-
-    def test_redact_password(self):
-        assert "<redacted>" in pd._redact_canonical_detail("password=hunter2")
-
-    def test_redact_secret(self):
-        assert "<redacted>" in pd._redact_canonical_detail("secret=mysecret")
-
-    def test_redact_authorization(self):
-        assert "<redacted>" in pd._redact_canonical_detail("authorization=Bearer_xyz")
+    @pytest.mark.parametrize("secret_kv", [
+        "token=abc123",
+        "bearer=xyz",
+        "api_key=secret",
+        "password=hunter2",
+        "secret=mysecret",
+        "authorization=Bearer_xyz",
+    ])
+    def test_redact_secret_patterns(self, secret_kv):
+        assert "<redacted>" in pd._redact_canonical_detail(secret_kv)
 
     def test_non_secret_not_redacted(self):
         result = pd._redact_canonical_detail("persona=architect verdict=claro")
@@ -2721,16 +2700,13 @@ class TestNoiseFilter:
     def test_health_check_get_v1_health_is_noise(self):
         assert pd._is_noise_line("GET /v1/health HTTP/1.1") is True
 
-    def test_kube_probe_user_agent_is_noise(self):
-        assert pd._is_noise_line(
-            'aiohttp.access "GET /v1/health HTTP/1.1" 200 237 "-" "kube-probe/1.29"'
-        ) is True
-
-    def test_aiohttp_access_kube_probe_pattern_is_noise(self):
-        # Padrão completo do kube-probe na access log do aiohttp
-        assert pd._is_noise_line(
-            'aiohttp.access "GET /v1/health HTTP/1.1" 200 15 "-" "kube-probe"'
-        ) is True
+    @pytest.mark.parametrize("body", [
+        'aiohttp.access "GET /v1/health HTTP/1.1" 200 237 "-" "kube-probe/1.29"',
+        'aiohttp.access "GET /v1/health HTTP/1.1" 200 15 "-" "kube-probe"',
+    ])
+    def test_kube_probe_user_agent_is_noise(self, body):
+        # Cobre o user-agent kube-probe completo e curto na access log do aiohttp.
+        assert pd._is_noise_line(body) is True
 
     def test_wrapper_prefix_is_noise(self):
         assert pd._is_noise_line("wrapper(claude-worker): bearer not mounted") is True

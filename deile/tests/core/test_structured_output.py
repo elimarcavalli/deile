@@ -7,21 +7,6 @@ from deile.core.agent import AgentResponse, AgentStatus, DeileAgent
 from deile.core.bot_streaming import StructuredResponse
 
 
-class TestStructuredResponse:
-    def test_dto_roundtrip(self):
-        from deile.common.markup_ast import MarkupAST
-
-        sr = StructuredResponse(
-            text="hello",
-            markup=MarkupAST.from_plain("hello"),
-            tool_calls=[],
-            elapsed_ms=10,
-            model_used="fake",
-        )
-        assert sr.text == "hello"
-        assert len(sr.markup) == 1
-
-
 class TestStructuredCallsProcessInput:
     async def test_returns_parsed_ast(self, tmp_path, monkeypatch):
         agent = DeileAgent()

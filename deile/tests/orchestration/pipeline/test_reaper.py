@@ -286,15 +286,13 @@ async def test_reaper_called_in_tick():
     # Nenhum PR/issue para reapear, mas as listas devem ser consultadas.
     github.list_open_prs = AsyncMock(return_value=[])
     github.list_issues_with_label = AsyncMock(return_value=[])
-    # Skip outros stages (mock).
-    monitor.config.enable_classify = False
-    monitor.config.enable_review = False
-    monitor.config.enable_implement = False
-    monitor.config.enable_pr_review = False
-    monitor.config.enable_pr_triage = False
-    monitor.config.enable_mention_handling = False
-    monitor.config.enable_resume = False
-    monitor.config.enable_refinement_gate = False
+    # Skip outros stages (mock) — isola o reaper, que roda primeiro no tick.
+    for _flag in (
+        "enable_classify", "enable_review", "enable_implement",
+        "enable_pr_review", "enable_pr_triage", "enable_mention_handling",
+        "enable_resume", "enable_refinement_gate",
+    ):
+        setattr(monitor.config, _flag, False)
 
     await monitor.tick()
 
@@ -640,11 +638,8 @@ async def test_reaper_arquitetura_no_ledger_fires_when_ledger_is_none():
     )
     own = monitor.identity.ownership_label()
     issue = _make_issue(2004, labels=[WORKFLOW_ARCHITECTURE, own])
-    # Garante ledger=None no implementer (explicitamente).
-    if hasattr(monitor.implementer, "_ledger"):
-        monitor.implementer._ledger = None
-    else:
-        monitor.implementer._ledger = None
+    # Garante ledger=None no implementer (modo sem DispatchLedger disponível).
+    monitor.implementer._ledger = None
 
     github.list_issues_with_label = AsyncMock(
         side_effect=lambda label, **_: [issue] if label == WORKFLOW_ARCHITECTURE else [],

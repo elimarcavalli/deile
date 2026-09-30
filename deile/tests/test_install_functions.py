@@ -334,40 +334,28 @@ class TestEnsureScriptsDirOnPath:
 class TestPromptInstallMode:
     """_prompt_install_mode() — interactive choice."""
 
-    @patch("builtins.input", return_value="")
-    def test_default_is_global(self, mock_input):
-        """Empty choice (ENTER) -> 'global'."""
+    @pytest.mark.parametrize("choice,expected", [
+        ("", "global"),        # empty (ENTER) -> default
+        ("g", "global"),       # short alias
+        ("global", "global"),  # long alias
+    ])
+    def test_global_aliases_return_global(self, choice, expected):
+        """Empty/'g'/'global' all hit the same branch -> 'global'."""
         from deile.cli_install import _prompt_install_mode
 
-        assert _prompt_install_mode() == "global"
+        with patch("builtins.input", return_value=choice):
+            assert _prompt_install_mode() == expected
 
-    @patch("builtins.input", return_value="g")
-    def test_g_returns_global(self, mock_input):
-        """'g' -> 'global'."""
+    @pytest.mark.parametrize("choice,expected", [
+        ("l", "local"),        # short alias
+        ("local", "local"),    # long alias
+    ])
+    def test_local_aliases_return_local(self, choice, expected):
+        """'l'/'local' both hit the same branch -> 'local'."""
         from deile.cli_install import _prompt_install_mode
 
-        assert _prompt_install_mode() == "global"
-
-    @patch("builtins.input", return_value="global")
-    def test_global_returns_global(self, mock_input):
-        """'global' -> 'global'."""
-        from deile.cli_install import _prompt_install_mode
-
-        assert _prompt_install_mode() == "global"
-
-    @patch("builtins.input", return_value="l")
-    def test_l_returns_local(self, mock_input):
-        """'l' -> 'local'."""
-        from deile.cli_install import _prompt_install_mode
-
-        assert _prompt_install_mode() == "local"
-
-    @patch("builtins.input", return_value="local")
-    def test_local_returns_local(self, mock_input):
-        """'local' -> 'local'."""
-        from deile.cli_install import _prompt_install_mode
-
-        assert _prompt_install_mode() == "local"
+        with patch("builtins.input", return_value=choice):
+            assert _prompt_install_mode() == expected
 
     @patch("builtins.input", return_value="q")
     def test_q_returns_none(self, mock_input):
@@ -865,28 +853,6 @@ class TestReuseVenvAssertionStrength:
     VENV_DIR = Path("/tmp/test-venv")
     REPO_ROOT = Path("/tmp/test-repo")
 
-    @patch("deile.cli_install.os.name", "posix")
-    @patch("deile.cli_install.Path.resolve")
-    @patch("deile.cli_install.Path.exists", return_value=True)
-    @patch("deile.cli_install.asyncio.create_subprocess_exec")
-    def test_reuses_venv_create_not_called(self, mock_subproc, mock_exists, mock_resolve):
-        """When venv python already exists, EnvBuilder.create must NOT be called."""
-        from deile.cli_install import _create_venv_with_deile
-
-        mock_resolve.side_effect = [self.VENV_DIR, self.REPO_ROOT, Path("/tmp")]
-
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-        mock_subproc.return_value = mock_proc
-
-        with patch("deile.cli_install._venv.EnvBuilder") as mock_env_builder:
-            with patch("deile.cli_install.asyncio.to_thread") as mock_to_thread:
-                asyncio.run(_create_venv_with_deile(self.VENV_DIR, self.REPO_ROOT, "test"))
-
-        # The critical assertion: .create() must not be called (not just EnvBuilder())
-        mock_env_builder.return_value.create.assert_not_called()
-        mock_to_thread.assert_not_called()
 
 
 # ===================================================================

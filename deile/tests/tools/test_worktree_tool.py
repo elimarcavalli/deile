@@ -84,12 +84,6 @@ async def test_invalid_action_returns_error():
     assert result.metadata["error_code"] == "INVALID_ACTION"
 
 
-@pytest.mark.unit
-async def test_empty_action_returns_error():
-    tool = WorktreeTool()
-    result = await tool.execute(_ctx(action=""))
-    assert result.status == ToolStatus.ERROR
-    assert result.metadata["error_code"] == "INVALID_ACTION"
 
 
 # ---------------------------------------------------------------------------

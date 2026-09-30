@@ -253,16 +253,3 @@ class TestLiveStreamWidthAdaptation:
             assert len(line) <= console_width, (
                 f"Linha estourou console_width={console_width} (len={len(line)}): {line!r}"
             )
-
-    @pytest.mark.parametrize("width", [40, 80, 120, 200])
-    async def test_multiple_widths_all_return_same_lines(self, width: int):
-        """live_stream retorna as mesmas linhas independente da largura do console."""
-        from deile.ui.dynamic_render import live_stream
-
-        lines = ["line one", "line two", "line three"]
-        buf = io.StringIO()
-        console = Console(file=buf, no_color=True, width=width)
-
-        result = await live_stream(_aiter(lines), console=console)
-
-        assert result == lines

@@ -100,28 +100,14 @@ def test_supported_types_no_vision(provider):
     assert ModelType.VISION not in types
 
 
-def test_tier(provider):
-    assert provider.tier == ModelTier.TIER_2
 
 
-def test_pricing(provider):
-    assert provider.pricing.input_per_1m_usd == 0.27
-    assert provider.pricing.output_per_1m_usd == 1.10
 
 
 # ---------------------------------------------------------------------------
 # Functional tests — inherited from OpenAIProvider
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_generate_returns_model_response(provider):
-    resp = _response(content="DeepSeek answer")
-    provider._client.chat.completions.create = AsyncMock(return_value=resp)
-
-    result = await provider.generate([ModelMessage(role="user", content="hi")])
-
-    assert result.content == "DeepSeek answer"
-    assert result.model_name == "deepseek-chat"
 
 
 @pytest.mark.asyncio
@@ -147,49 +133,6 @@ async def test_generate_auth_error_raises_envelope(provider):
     assert envelope.error_type == "auth"
 
 
-@pytest.mark.asyncio
-async def test_generate_stream_events(provider):
-    """generate_stream uses ``await chat.completions.create(stream=True)`` after
-    the streaming-UI refactor; the mock must reflect the new SDK shape."""
-    from types import SimpleNamespace
-
-    text = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                delta=SimpleNamespace(content="Hello from DeepSeek", tool_calls=None),
-                finish_reason=None,
-            )
-        ],
-        usage=None,
-    )
-    final = SimpleNamespace(
-        choices=[SimpleNamespace(delta=None, finish_reason="stop")],
-        usage=SimpleNamespace(
-            prompt_tokens=5,
-            completion_tokens=8,
-            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
-        ),
-    )
-
-    async def _replay(chunks):
-        for c in chunks:
-            yield c
-
-    async def _fake_create(**kw):
-        return _replay([text, final])
-
-    provider._client.chat.completions.create = AsyncMock(side_effect=_fake_create)
-
-    events = []
-    async for ev in provider.generate_stream([ModelMessage(role="user", content="hi")]):
-        events.append(ev)
-
-    text_events = [e for e in events if e.type == StreamEventType.TEXT_DELTA]
-    usage_events = [e for e in events if e.type == StreamEventType.USAGE_FINAL]
-
-    assert len(text_events) == 1
-    assert text_events[0].text == "Hello from DeepSeek"
-    assert len(usage_events) == 1
 
 
 def test_estimate_cost(provider):

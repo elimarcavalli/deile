@@ -196,30 +196,19 @@ class TestRunEnvRecovery:
 
         assert _run_env_recovery() is False
 
-    # -- 2. KeyboardInterrupt --
+    # -- 2/3. KeyboardInterrupt / EOFError (mesmo handler except) --
 
+    @pytest.mark.parametrize("exc", [KeyboardInterrupt, EOFError])
     @patch("deile.cli.sys.stdin.isatty", return_value=True)
-    @patch("getpass.getpass", side_effect=KeyboardInterrupt)
+    @patch("getpass.getpass")
     @patch("builtins.print")
-    def test_keyboard_interrupt_returns_false(
-        self, mock_print, mock_getpass, mock_isatty,
+    def test_cancel_returns_false(
+        self, mock_print, mock_getpass, mock_isatty, exc,
     ):
-        """Case 2: usuário cancela com KeyboardInterrupt → False."""
+        """Cases 2-3: usuário cancela com KeyboardInterrupt/EOFError → False."""
         from deile.cli import _run_env_recovery
 
-        assert _run_env_recovery() is False
-
-    # -- 3. EOFError --
-
-    @patch("deile.cli.sys.stdin.isatty", return_value=True)
-    @patch("getpass.getpass", side_effect=EOFError)
-    @patch("builtins.print")
-    def test_eof_error_returns_false(
-        self, mock_print, mock_getpass, mock_isatty,
-    ):
-        """Case 3: usuário cancela com EOFError → False."""
-        from deile.cli import _run_env_recovery
-
+        mock_getpass.side_effect = exc
         assert _run_env_recovery() is False
 
     # -- 4. zero keys inserted --

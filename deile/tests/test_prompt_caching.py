@@ -111,7 +111,7 @@ class TestAnthropicPromptCaching:
         msgs = [ModelMessage(role="user", content="hi")]
         result = await provider.generate(msgs)
         # generate() only reads cache_read_input_tokens, not creation tokens
-        assert result.usage.cached_tokens >= 0
+        assert result.usage.cached_tokens == 0
 
     @pytest.mark.asyncio
     async def test_chat_with_tools_sums_both_cache_fields(self):

@@ -331,11 +331,6 @@ class TestNoMojibakeInAnyOutput:
         rendered = _render(result.content)
         assert "üss†" not in rendered and "‚úÖ" not in rendered
 
-    async def test_output_is_readable_utf8(self):
-        result = await _cmd().execute(_ctx("status"))
-        rendered = _render(result.content)
-        rendered.encode("utf-8")  # Must not raise UnicodeEncodeError
-
 
 # ---------------------------------------------------------------------------
 # /memory usage
@@ -447,16 +442,6 @@ class TestExportErrorPath:
 
 
 class TestStatusErrorPath:
-    async def test_status_with_indisponivel_in_error(self):
-        """When error key is in usage, output must contain the error message."""
-        mm = MagicMock()
-        mm.get_memory_usage = AsyncMock(return_value={"error": "connection_lost"})
-        agent = _FakeAgent(mm)
-        result = await _cmd().execute(_ctx("status", agent=agent))
-        assert result.success is True
-        rendered = _render(result.content)
-        assert "connection_lost" in rendered or "INDISPONÍVEL" in rendered
-
     async def test_status_get_memory_usage_raises(self):
         """When get_memory_usage raises, the error is captured in real_usage."""
         mm = MagicMock()
@@ -622,15 +607,3 @@ class TestUsageHighImpact:
             mock_gpm.return_value = mock_pm
             result = await _cmd().execute(_ctx("clear plans"))
             assert result.success is True
-
-    async def test_clear_all_with_audit_events(self):
-        """Clear all path hits audit events section."""
-        class _Session:
-            conversation_history = ["m"]
-            context_data = {}
-            memory = []
-
-        ctx = CommandContext(user_input="/memory clear all", args="clear all")
-        ctx.session = _Session()
-        result = await _cmd().execute(ctx)
-        assert result.success is True

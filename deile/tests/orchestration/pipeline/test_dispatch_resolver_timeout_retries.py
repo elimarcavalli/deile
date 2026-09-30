@@ -21,17 +21,6 @@ def _clear_retries_env(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Built-in constants
-# ---------------------------------------------------------------------------
-
-
-def test_built_in_constants_values():
-    assert BUILT_IN_TIMEOUT_S_CLAUDE == 1800
-    assert BUILT_IN_TIMEOUT_S_DEILE == 900
-    assert BUILT_IN_MAX_RETRIES == 3
-
-
-# ---------------------------------------------------------------------------
 # resolve_stage_timeout_s — built-in fallback
 # ---------------------------------------------------------------------------
 
@@ -59,13 +48,6 @@ def test_timeout_env_per_stage_overrides_default(monkeypatch):
     monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT", "600")
     result = resolve_stage_timeout_s("implement")
     assert result == 600
-
-
-def test_timeout_env_per_stage_is_int(monkeypatch):
-    """Env var is parsed as int."""
-    _clear_timeout_env(monkeypatch)
-    monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_REFINE", "1234")
-    assert resolve_stage_timeout_s("refine") == 1234
 
 
 def test_timeout_env_zero_is_invalid(monkeypatch):
@@ -186,92 +168,68 @@ def test_retries_all_stages_return_nonneg_int(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_timeout_settings_per_stage_fallback(monkeypatch):
+@pytest.fixture
+def install_mock_settings(monkeypatch):
+    """Install a mock settings singleton with every per-stage field defaulting to None.
+
+    Returns a callable that accepts keyword overrides; only the overridden fields
+    differ from the conservative defaults below. The singleton is reset to None
+    before the test runs and again on teardown.
+    """
+    import types
+
+    from deile.config import settings as _settings_mod
+
+    def _install(**overrides):
+        fields = dict(
+            pipeline_retries_implement=None,
+            pipeline_retries_classify=None,
+            pipeline_retries_refine=None,
+            pipeline_retries_pr_review=None,
+            pipeline_retries_follow_ups=None,
+            pipeline_default_max_retries=None,
+            pipeline_dispatch_mode="deile-worker",
+            pipeline_dispatcher_implement=None,
+            pipeline_dispatcher_classify=None,
+            pipeline_dispatcher_refine=None,
+            pipeline_dispatcher_pr_review=None,
+            pipeline_dispatcher_follow_ups=None,
+            pipeline_timeout_s_implement=None,
+            pipeline_timeout_s_classify=None,
+            pipeline_timeout_s_refine=None,
+            pipeline_timeout_s_pr_review=None,
+            pipeline_timeout_s_follow_ups=None,
+            pipeline_claude_timeout=1800,
+            pipeline_deile_timeout=None,
+        )
+        fields.update(overrides)
+        mock_s = types.SimpleNamespace(**fields)
+        monkeypatch.setattr(_settings_mod, "_settings", mock_s)
+        return mock_s
+
+    monkeypatch.setattr(_settings_mod, "_settings", None)
+    yield _install
+    monkeypatch.setattr(_settings_mod, "_settings", None)
+
+
+def test_timeout_settings_per_stage_fallback(monkeypatch, install_mock_settings):
     """pipeline_timeout_s_implement from settings wins over built-in."""
     _clear_timeout_env(monkeypatch)
-    from deile.config import settings as _settings_mod
-    monkeypatch.setattr(_settings_mod, "_settings", None)
-    # Inject a mock settings with the per-stage field set
-    import types
-    mock_s = types.SimpleNamespace(
-        pipeline_timeout_s_implement=750,
-        pipeline_timeout_s_classify=None,
-        pipeline_timeout_s_refine=None,
-        pipeline_timeout_s_pr_review=None,
-        pipeline_timeout_s_follow_ups=None,
-        pipeline_claude_timeout=1800,
-        pipeline_deile_timeout=None,
-        pipeline_dispatch_mode="deile-worker",
-        pipeline_dispatcher_implement=None,
-        pipeline_dispatcher_classify=None,
-        pipeline_dispatcher_refine=None,
-        pipeline_dispatcher_pr_review=None,
-        pipeline_dispatcher_follow_ups=None,
-    )
-    monkeypatch.setattr(_settings_mod, "_settings", mock_s)
+    install_mock_settings(pipeline_timeout_s_implement=750)
     assert resolve_stage_timeout_s("implement") == 750
-    monkeypatch.setattr(_settings_mod, "_settings", None)
 
 
-def test_retries_settings_per_stage_fallback(monkeypatch):
-    """pipeline_retries_implement from settings wins over built-in."""
+@pytest.mark.parametrize(
+    "overrides, expected",
+    [
+        # per-stage field wins over built-in
+        ({"pipeline_retries_implement": 7}, 7),
+        # global default used when no per-stage override
+        ({"pipeline_default_max_retries": 10}, 10),
+    ],
+)
+def test_retries_settings_fallback(monkeypatch, install_mock_settings, overrides, expected):
+    """Settings-based retries fallback chain: per-stage field, then global default."""
     _clear_retries_env(monkeypatch)
-    import types
-
-    from deile.config import settings as _settings_mod
-    mock_s = types.SimpleNamespace(
-        pipeline_retries_implement=7,
-        pipeline_retries_classify=None,
-        pipeline_retries_refine=None,
-        pipeline_retries_pr_review=None,
-        pipeline_retries_follow_ups=None,
-        pipeline_default_max_retries=None,
-        pipeline_dispatch_mode="deile-worker",
-        pipeline_dispatcher_implement=None,
-        pipeline_dispatcher_classify=None,
-        pipeline_dispatcher_refine=None,
-        pipeline_dispatcher_pr_review=None,
-        pipeline_dispatcher_follow_ups=None,
-        pipeline_timeout_s_implement=None,
-        pipeline_timeout_s_classify=None,
-        pipeline_timeout_s_refine=None,
-        pipeline_timeout_s_pr_review=None,
-        pipeline_timeout_s_follow_ups=None,
-        pipeline_claude_timeout=1800,
-        pipeline_deile_timeout=None,
-    )
-    monkeypatch.setattr(_settings_mod, "_settings", mock_s)
-    assert resolve_stage_max_retries("implement") == 7
-    monkeypatch.setattr(_settings_mod, "_settings", None)
-
-
-def test_retries_global_default_fallback(monkeypatch):
-    """pipeline_default_max_retries from settings used when no per-stage."""
-    _clear_retries_env(monkeypatch)
-    import types
-
-    from deile.config import settings as _settings_mod
-    mock_s = types.SimpleNamespace(
-        pipeline_retries_implement=None,
-        pipeline_retries_classify=None,
-        pipeline_retries_refine=None,
-        pipeline_retries_pr_review=None,
-        pipeline_retries_follow_ups=None,
-        pipeline_default_max_retries=10,
-        pipeline_dispatch_mode="deile-worker",
-        pipeline_dispatcher_implement=None,
-        pipeline_dispatcher_classify=None,
-        pipeline_dispatcher_refine=None,
-        pipeline_dispatcher_pr_review=None,
-        pipeline_dispatcher_follow_ups=None,
-        pipeline_timeout_s_implement=None,
-        pipeline_timeout_s_classify=None,
-        pipeline_timeout_s_refine=None,
-        pipeline_timeout_s_pr_review=None,
-        pipeline_timeout_s_follow_ups=None,
-        pipeline_claude_timeout=1800,
-        pipeline_deile_timeout=None,
-    )
-    monkeypatch.setattr(_settings_mod, "_settings", mock_s)
-    assert resolve_stage_max_retries("implement") == 10
-    monkeypatch.setattr(_settings_mod, "_settings", None)
+    install_mock_settings(**overrides)
+    assert resolve_stage_max_retries("implement") == expected

@@ -36,12 +36,9 @@ class TestDeployKeyPropagation:
 
     def test_create_namespace_flag_mapping(self):
         # The CLI flag must map onto the cfg field (parity with the other keys).
-        import inspect
-
         import deploy  # noqa: PLC0415
-        src = inspect.getsource(deploy)
-        assert '"--openrouter-key":' in src
-        assert '"openrouter_key"' in src
+        cfg = deploy._parse_create_namespace_flags(["--openrouter-key", "x"])
+        assert cfg.openrouter_key == "x"
 
     def test_wrapper_strips_openrouter_after_bootstrap(self):
         import wrapper  # noqa: PLC0415

@@ -139,11 +139,44 @@ class TestPipelineDeploymentLogsMount:
 
 
 class TestDoCreateNamespaceManifestsOrder:
-    """do_create_namespace must apply 42b before deployments."""
+    """do_create_namespace must apply 42b before the deployments that mount its PVCs."""
+
+    @staticmethod
+    def _manifests_order() -> list[str]:
+        """Extrai a tupla literal ``manifests_order`` do corpo de do_create_namespace.
+
+        Usa AST (não substring) para validar a ORDEM real de aplicação — um 42b
+        solto num comentário não satisfaz, e a posição relativa é verificável.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        src = textwrap.dedent(inspect.getsource(deploy.do_create_namespace))
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "manifests_order"
+                for t in node.targets
+            ) and isinstance(node.value, (ast.Tuple, ast.List)):
+                return [
+                    elt.value
+                    for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+        raise AssertionError("manifests_order não encontrado em do_create_namespace")
 
     def test_logs_pvc_in_create_namespace_order(self):
-        import inspect
-        src = inspect.getsource(deploy.do_create_namespace)
-        assert "42b-deile-logs-pvc.yaml" in src, (
+        order = self._manifests_order()
+        assert "42b-deile-logs-pvc.yaml" in order, (
             "do_create_namespace must include 42b-deile-logs-pvc.yaml in manifests_order"
         )
+        idx_pvc = order.index("42b-deile-logs-pvc.yaml")
+        for dep in ("45-deile-worker-deployment.yaml", "46-deile-pipeline-deployment.yaml"):
+            assert dep in order, f"{dep} missing from manifests_order"
+            idx_dep = order.index(dep)
+            assert idx_pvc < idx_dep, (
+                f"do_create_namespace.manifests_order: 42b-deile-logs-pvc.yaml "
+                f"(idx {idx_pvc}) must come before {dep} (idx {idx_dep}) — the PVC "
+                f"must exist before the Deployment that mounts it (issue #404)"
+            )

@@ -16,13 +16,6 @@ def test_same_provider_twice(in_memory_dispatch_metrics_reader):
     assert dm._init_count == 1
 
 
-def test_instruments_created_once(in_memory_dispatch_metrics_reader):
-    dm._get_dispatch_meter_provider()
-    first = dm._instruments
-    dm._get_dispatch_meter_provider()
-    # Mesmo dict de instruments (não recriado).
-    assert dm._instruments is first
-    assert dm._init_count == 1
 
 
 def test_reset_clears_singleton(in_memory_dispatch_metrics_reader):

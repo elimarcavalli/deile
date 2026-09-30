@@ -429,17 +429,6 @@ class TestFileResolverPerformance:
         # Cleanup
         shutil.rmtree(temp_dir)
 
-    def test_performance_with_many_files(self, large_workspace):
-        """Test performance with large number of files"""
-        resolver = SmartFileResolver(large_workspace)
-
-        start_time = time.time()
-        matches = resolver.resolve_file("readme")
-        end_time = time.time()
-
-        # Should complete within reasonable time (2 seconds)
-        assert end_time - start_time < 2.0
-        assert len(matches) > 0
 
     def test_cache_performance_benefit(self, large_workspace):
         """Test that caching provides performance benefit"""

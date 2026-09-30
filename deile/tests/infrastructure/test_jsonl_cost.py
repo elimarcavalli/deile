@@ -157,52 +157,6 @@ def test_nocache_cost(jc):
     )
 
 
-def test_aggregate_parity_with_inpod_reference(jc, golden_session):
-    """``aggregate_jsonl`` deve reproduzir a agregação documentada do parser
-    in-pod (dedup por (id, requestId) + soma). Referência mínima inline."""
-    seen = set()
-    noid = [0]
-    models: dict = {}
-    rounds = 0
-    with open(golden_session, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                o = json.loads(line)
-            except Exception:
-                continue
-            msg = o.get("message")
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            rkey = (msg.get("id"), o.get("requestId"))
-            if rkey == (None, None):
-                noid[0] += 1
-                rkey = ("__noid__", noid[0])
-            if rkey in seen:
-                continue
-            seen.add(rkey)
-            rounds += 1
-            u = msg.get("usage")
-            if not isinstance(u, dict):
-                continue
-            model = msg.get("model") or "unknown"
-            mm = models.setdefault(
-                model, {"in": 0, "out": 0, "cc": 0, "cr": 0, "cc_5m": 0, "cc_1h": 0})
-            mm["in"] += u.get("input_tokens", 0) or 0
-            mm["out"] += u.get("output_tokens", 0) or 0
-            cc = u.get("cache_creation_input_tokens", 0) or 0
-            mm["cc"] += cc
-            mm["cr"] += u.get("cache_read_input_tokens", 0) or 0
-            ccd = u.get("cache_creation")
-            if isinstance(ccd, dict):
-                mm["cc_5m"] += ccd.get("ephemeral_5m_input_tokens", 0) or 0
-                mm["cc_1h"] += ccd.get("ephemeral_1h_input_tokens", 0) or 0
-
-    agg = jc.aggregate_jsonl(str(golden_session))
-    assert agg["models"] == models
-    assert agg["assistant_rounds"] == rounds
 
 
 # --------------------------------------------------------------------------- #

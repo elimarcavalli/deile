@@ -42,17 +42,15 @@ class TestPipelineStages:
     def test_canonical_set_matches_settings_field_names(self):
         # The settings.py fields are `pipeline_model_<stage>`. PIPELINE_STAGES
         # must match exactly — a drift breaks the resolver silently.
+        # Sanity: exactly 5 stages. If this fails, the panel TUI's `[1]-[5]`
+        # picker shortcuts and StageModelsView fallback list also need updating.
         from deile.config.settings import Settings
+        assert len(PIPELINE_STAGES) == 5
         for stage in PIPELINE_STAGES:
             assert hasattr(Settings(), f"pipeline_model_{stage}"), (
                 f"PIPELINE_STAGES has {stage!r} but Settings lacks "
                 f"pipeline_model_{stage}"
             )
-
-    def test_canonical_set_size(self):
-        # Sanity: exactly 5 stages. If this fails, the panel TUI's `[1]-[5]`
-        # picker shortcuts and StageModelsView fallback list also need updating.
-        assert len(PIPELINE_STAGES) == 5
 
 
 class TestResolveStageModel:

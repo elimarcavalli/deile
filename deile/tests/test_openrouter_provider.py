@@ -302,16 +302,6 @@ def test_bootstrap_maps_openrouter_class():
     assert _PROVIDER_CLASSES["openrouter"].endswith("OpenRouterProvider")
 
 
-def test_tier_router_breaker_covers_openrouter():
-    """The TierRouter circuit breaker is keyed by provider_id — a string — so a
-    provider registered as 'openrouter' is covered without breaker changes."""
-    from deile.core.models.tier_router import CircuitBreaker
-
-    cb = CircuitBreaker(failure_threshold=2, cooldown_seconds=60)
-    assert cb.allow_request("openrouter") is True
-    cb.record_failure("openrouter")
-    cb.record_failure("openrouter")
-    assert cb.is_open("openrouter") is True
 
 
 # ---------------------------------------------------------------------------

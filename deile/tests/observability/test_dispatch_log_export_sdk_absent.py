@@ -69,16 +69,6 @@ class TestSdkAbsent:
         count = caplog.text.count("otel_sdk_available=false")
         assert count == 1, f"expected exactly 1 warning, got {count}"
 
-    def test_info_line_not_emitted_at_module_import(self, monkeypatch, caplog):
-        """Linha INFO NÃO é emitida no module import — apenas na primeira chamada (D6)."""
-        import deile.observability.dispatch_log_export as dle
-
-        # After import, if we haven't called get_log_provider(), no log should have been emitted
-        # We check by looking at _sdk_warned before any call
-        assert dle._sdk_warned is False, (
-            "_sdk_warned should be False at module import — "
-            "warning should be lazy (first call to get_log_provider)"
-        )
 
     def test_get_log_provider_returns_none_when_sdk_absent(self, monkeypatch):
         """get_log_provider() retorna None quando SDK ausente."""

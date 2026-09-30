@@ -294,44 +294,27 @@ async def test_unknown_action_type_raises():
 @pytest.mark.orchestration
 async def test_wait_exits_promptly_on_infrastructure_error():
     """AC-4a/4b: Exception no loop → wait retorna em < 5s com has_failures=True."""
-    import asyncio
     from datetime import timedelta
-
-    infra_error = RuntimeError("db disk full")
 
     task = _make_task(task_id="t1", status=TaskStatus.TODO)
     task_list = _make_task_list(list_id="wf1", total=1)
+    infra_error = RuntimeError("db disk full")
 
-    # Status cycle: primeiro TODO (loop pega a task), depois FAILED (loop termina)
-    call_count = [0]
-
-    async def _get_status(wf_id):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return {"is_completed": False, "has_failures": False}
-        return {"is_completed": False, "has_failures": True}
-
-    mgr = MagicMock()
-    mgr.create_task_list = AsyncMock(return_value=task_list)
-    mgr.add_task_to_list = AsyncMock(side_effect=lambda **kw: _make_task(
-        task_id="t1", title=kw.get("title", "step"), metadata=kw.get("metadata", {}),
-    ))
-    mgr.activate_task_list = AsyncMock()
-    mgr.load_task_list = AsyncMock(return_value=task_list)
-    mgr.get_task_list_status = AsyncMock(side_effect=_get_status)
-    mgr.get_next_tasks = AsyncMock(side_effect=[[task], infra_error])
-    mgr.mark_task_completed = AsyncMock()
+    # get_next_tasks: 1ª chamada entrega a task, 2ª estoura o erro de infraestrutura.
+    mgr = _make_task_manager(task_list=task_list, tasks_sequence=[[task], infra_error])
+    # Status pré-calculado: 1º poll ainda sem falha, 2º poll já detecta has_failures
+    # (substitui o counter + sleep mágico — o resultado final é o que importa).
+    mgr.get_task_list_status = AsyncMock(side_effect=[
+        {"is_completed": False, "has_failures": False},
+        {"is_completed": False, "has_failures": True},
+    ])
 
     executor = WorkflowExecutor(task_manager=mgr)
-
-    # Inicia workflow sem esperar — apenas cria o loop em background
     info = await executor.start_workflow_execution("do stuff")
-    wf_id = info["workflow_id"]
 
-    # Aguarda o loop interno propagar o erro
-    await asyncio.sleep(0.1)
-
-    result = await executor.wait_for_workflow_completion(wf_id, timeout=timedelta(seconds=5))
+    result = await executor.wait_for_workflow_completion(
+        info["workflow_id"], timeout=timedelta(seconds=5)
+    )
     assert result.get("success") is False
 
 

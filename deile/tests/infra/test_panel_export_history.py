@@ -72,18 +72,9 @@ class TestHistoryRingBuffer:
         assert obj["history"] == []
 
     def test_default_no_history_is_v1(self):
-        """AC14: default export (no include_history) must be v1 snapshot without history."""
+        """AC14: default export (no include_history) is a v1 snapshot with payload, no history."""
         data = LiveSessionData(
             session=None, command=None, chat=None, api_errors=[], stdout=None
-        )
-        obj = panel._build_live_session_json(data, [], redactor=None)
-        assert obj["schema_version"] == "deile.export.v1"
-        assert "history" not in obj
-
-    def test_default_no_history_v1_with_payload(self):
-        """AC14: v1 snapshot still includes the payload field."""
-        data = LiveSessionData(
-            session={"task_id": "t1"}, command=None, chat=None, api_errors=[], stdout=None
         )
         obj = panel._build_live_session_json(data, [], redactor=None)
         assert obj["schema_version"] == "deile.export.v1"

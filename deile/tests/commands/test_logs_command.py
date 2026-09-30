@@ -82,16 +82,6 @@ class TestClearUsesPublicMethod:
         assert result.success is True
         assert called, "clear_events() was never called — direct attribute access detected"
 
-    async def test_clear_does_not_access_recent_events_clear_directly(self):
-        """Verify implementation uses the encapsulated method."""
-        import inspect
-
-        from deile.commands.builtin.logs_command import LogsCommand as LC
-        source = inspect.getsource(LC._clear_logs)
-        assert "recent_events.clear()" not in source, (
-            "Found recent_events.clear() in _clear_logs — must use audit_logger.clear_events()"
-        )
-
 
 # ---------------------------------------------------------------------------
 # Test: clear returns real count
@@ -112,18 +102,6 @@ class TestClearReturnsRealCount:
         result = await cmd.execute(_ctx("clear"))
         rendered = _render(result.content)
         assert str(expected) in rendered, f"Expected count {expected} in output: {rendered}"
-
-    async def test_clear_count_matches_clear_events_return(self):
-        al = _fresh_audit_logger()
-        for _ in range(3):
-            _log(al, SeverityLevel.INFO)
-        total_before = len(al.recent_events)
-
-        cmd = _cmd_with_logger(al)
-        result = await cmd.execute(_ctx("clear"))
-        assert result.success is True
-        rendered = _render(result.content)
-        assert str(total_before) in rendered
 
     async def test_clear_empties_logger(self):
         al = _fresh_audit_logger()
@@ -234,7 +212,12 @@ class TestOverviewNoCrashWithZeroEvents:
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx(""))
         rendered = _render(result.content)
-        assert "0" in rendered
+        total_line = next(
+            (line for line in rendered.splitlines() if "Total de Eventos" in line),
+            None,
+        )
+        assert total_line is not None, f"'Total de Eventos' row missing in overview: {rendered}"
+        assert "0" in total_line, f"Expected zero total in overview row: {total_line!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +473,7 @@ class TestAuditLoggerClearEvents:
 
 
 # ---------------------------------------------------------------------------
-# Test: AuditLogger.event_count() and max_events property
+# Test: AuditLogger.event_count()
 # ---------------------------------------------------------------------------
 
 
@@ -509,28 +492,23 @@ class TestAuditLoggerEventCount:
         al.clear_events()
         assert al.event_count() == 0
 
-    def test_max_events_property_equals_max_memory_events(self):
+    async def test_show_summary_caps_limit_at_max_safe(self):
+        """_show_summary must request at most MAX_SAFE_LIMIT events (bounded memory read)."""
         al = _fresh_audit_logger()
-        assert al.max_events == al.max_memory_events
+        cmd = _cmd_with_logger(al)
+        captured_limit: list = []
+        original_get = al.get_recent_events
 
-    def test_export_uses_event_count_not_direct_access(self):
-        """_export_logs must use event_count() — not len(recent_events)."""
-        import inspect
+        def _spy(limit=100, **kwargs):
+            captured_limit.append(limit)
+            return original_get(limit=limit, **kwargs)
 
-        from deile.commands.builtin.logs_command import LogsCommand as LC
-        source = inspect.getsource(LC._export_logs)
-        assert "recent_events" not in source, (
-            "Found recent_events in _export_logs — must use event_count()"
-        )
+        al.get_recent_events = _spy  # type: ignore[method-assign]
 
-    def test_show_summary_uses_max_safe_limit(self):
-        """_show_summary must not access max_memory_events directly."""
-        import inspect
-
-        from deile.commands.builtin.logs_command import LogsCommand as LC
-        source = inspect.getsource(LC._show_summary)
-        assert "max_memory_events" not in source, (
-            "Found max_memory_events in _show_summary — must use MAX_SAFE_LIMIT or max_events property"
+        await cmd.execute(_ctx("summary"))
+        assert captured_limit, "get_recent_events was not called by _show_summary"
+        assert captured_limit[0] <= MAX_SAFE_LIMIT, (
+            f"Limit {captured_limit[0]} exceeds MAX_SAFE_LIMIT={MAX_SAFE_LIMIT}"
         )
 
 
@@ -573,59 +551,33 @@ class TestGetSecuritySummaryZeroEvents:
 
 @pytest.mark.unit
 class TestLogsCommandSmoke:
-    async def test_no_args_returns_success(self):
-        result = await LogsCommand().execute(_ctx(""))
+    @pytest.mark.parametrize("action", [
+        "",
+        "recent 10",
+        "security",
+        "permissions",
+        "secrets",
+        "tools",
+        "plans",
+        "errors",
+        "summary",
+        "clear",
+    ])
+    async def test_action_returns_success(self, action):
+        # Smoke + thin contract for every action path: success, rich content type,
+        # and no leaked Rich repr in the rendered output. Subsumes the former
+        # test_content_type_is_rich / test_renders_without_repr_artifacts and
+        # asserts both for ALL actions instead of just the overview.
+        result = await LogsCommand().execute(_ctx(action))
         assert result.success is True
-
-    async def test_recent_returns_success(self):
-        result = await LogsCommand().execute(_ctx("recent 10"))
-        assert result.success is True
-
-    async def test_security_returns_success(self):
-        result = await LogsCommand().execute(_ctx("security"))
-        assert result.success is True
-
-    async def test_permissions_returns_success(self):
-        result = await LogsCommand().execute(_ctx("permissions"))
-        assert result.success is True
-
-    async def test_secrets_returns_success(self):
-        result = await LogsCommand().execute(_ctx("secrets"))
-        assert result.success is True
-
-    async def test_tools_returns_success(self):
-        result = await LogsCommand().execute(_ctx("tools"))
-        assert result.success is True
-
-    async def test_plans_returns_success(self):
-        result = await LogsCommand().execute(_ctx("plans"))
-        assert result.success is True
-
-    async def test_errors_returns_success(self):
-        result = await LogsCommand().execute(_ctx("errors"))
-        assert result.success is True
-
-    async def test_summary_returns_success(self):
-        result = await LogsCommand().execute(_ctx("summary"))
-        assert result.success is True
-
-    async def test_clear_returns_success(self):
-        result = await LogsCommand().execute(_ctx("clear"))
-        assert result.success is True
+        assert result.content_type == "rich"
+        rendered = _render(result.content)
+        assert "<rich." not in rendered
 
     async def test_unknown_action_raises_command_error(self):
         from deile.core.exceptions import CommandError
         with pytest.raises(CommandError):
             await LogsCommand().execute(_ctx("nonexistent_xyz"))
-
-    async def test_content_type_is_rich(self):
-        result = await LogsCommand().execute(_ctx(""))
-        assert result.content_type == "rich"
-
-    async def test_renders_without_repr_artifacts(self):
-        result = await LogsCommand().execute(_ctx(""))
-        rendered = _render(result.content)
-        assert "<rich." not in rendered
 
     async def test_get_help_returns_string(self):
         help_text = LogsCommand().get_help()
@@ -667,7 +619,12 @@ class TestSummaryZeroEvents:
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("summary"))
         rendered = _render(result.content)
-        assert "0" in rendered
+        total_line = next(
+            (line for line in rendered.splitlines() if "Total de Eventos" in line),
+            None,
+        )
+        assert total_line is not None, f"'Total de Eventos' row missing in summary: {rendered}"
+        assert "0" in total_line, f"Expected zero total in summary row: {total_line!r}"
 
 
 # ---------------------------------------------------------------------------

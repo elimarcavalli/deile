@@ -76,26 +76,15 @@ class TestSkillsMenu:
         cmd = _make_cmd()
         result = await cmd.execute(_ctx(""))
         assert result.success is True
-
-    async def test_no_args_content_type_rich(self):
-        cmd = _make_cmd()
-        result = await cmd.execute(_ctx(""))
         assert result.content_type == "rich"
 
-    async def test_menu_mentions_list(self):
+    async def test_menu_mentions_actions(self):
         cmd = _make_cmd()
         result = await cmd.execute(_ctx(""))
-        assert "list" in _render(result.content).lower()
-
-    async def test_menu_mentions_add(self):
-        cmd = _make_cmd()
-        result = await cmd.execute(_ctx(""))
-        assert "add" in _render(result.content).lower()
-
-    async def test_menu_mentions_remove(self):
-        cmd = _make_cmd()
-        result = await cmd.execute(_ctx(""))
-        assert "remove" in _render(result.content).lower()
+        rendered = _render(result.content).lower()
+        assert "list" in rendered
+        assert "add" in rendered
+        assert "remove" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -133,24 +122,20 @@ class TestSkillsList:
         mgr = _make_manager(tmp_path)
         with patch.object(cmd, "_manager", return_value=mgr):
             result = await cmd.execute(_ctx("list"))
-        assert "no skill" in str(result.content).lower() or result.content_type == "rich"
+        assert "No skill paths" in _render(result.content)
 
-    async def test_list_shows_global_path(self, tmp_path):
+    async def test_list_shows_global_and_project_paths(self, tmp_path):
         cmd = _make_cmd()
         mgr = _make_manager(tmp_path)
         mgr.add_skills_path("/my/global/skills", scope="global")
-        with patch.object(cmd, "_manager", return_value=mgr):
-            result = await cmd.execute(_ctx("list"))
-        assert result.success is True
-        assert result.content_type == "rich"
-
-    async def test_list_shows_project_path(self, tmp_path):
-        cmd = _make_cmd()
-        mgr = _make_manager(tmp_path)
         mgr.add_skills_path("/team/skills", scope="project")
         with patch.object(cmd, "_manager", return_value=mgr):
             result = await cmd.execute(_ctx("list"))
         assert result.success is True
+        assert result.content_type == "rich"
+        rendered = _render(result.content)
+        assert "/my/global/skills" in rendered
+        assert "/team/skills" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +158,7 @@ class TestSkillsAdd:
             result = await cmd.execute(_ctx("add /my/skills"))
         assert result.success is True
         assert "/my/skills" in mgr.list_skills_paths("global")
+        assert result.content_type == "rich"
 
     async def test_add_path_project_scope(self, tmp_path):
         cmd = _make_cmd()
@@ -198,13 +184,6 @@ class TestSkillsAdd:
             result = await cmd.execute(_ctx("add /foo --scope badscope"))
         assert result.success is False
 
-    async def test_add_returns_rich_panel(self, tmp_path):
-        cmd = _make_cmd()
-        mgr = _make_manager(tmp_path)
-        with patch.object(cmd, "_manager", return_value=mgr):
-            result = await cmd.execute(_ctx("add /path"))
-        assert result.content_type == "rich"
-
 
 # ---------------------------------------------------------------------------
 # /skills remove
@@ -227,6 +206,7 @@ class TestSkillsRemove:
             result = await cmd.execute(_ctx("remove /old/skills"))
         assert result.success is True
         assert "/old/skills" not in mgr.list_skills_paths("global")
+        assert result.content_type == "rich"
 
     async def test_remove_nonexistent_path_still_succeeds_with_not_found_msg(self, tmp_path):
         cmd = _make_cmd()
@@ -251,13 +231,6 @@ class TestSkillsRemove:
         with patch.object(cmd, "_manager", return_value=mgr):
             result = await cmd.execute(_ctx("remove /foo --scope bad"))
         assert result.success is False
-
-    async def test_remove_returns_rich_panel(self, tmp_path):
-        cmd = _make_cmd()
-        mgr = _make_manager(tmp_path)
-        with patch.object(cmd, "_manager", return_value=mgr):
-            result = await cmd.execute(_ctx("remove /whatever"))
-        assert result.content_type == "rich"
 
 
 # ---------------------------------------------------------------------------

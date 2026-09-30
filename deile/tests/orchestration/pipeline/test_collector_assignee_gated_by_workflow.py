@@ -69,20 +69,17 @@ class TestAssigneeIssueGatedByWorkflow:
         assert triggers == []
 
     async def test_issue_with_arbitrary_workflow_label_is_skipped(self):
-        """Any ``~workflow:*`` variant must suppress the trigger."""
-        for label in (
-            "~workflow:em_revisao",
-            "~workflow:revisada",
-            "~workflow:decomposta",
-            "~workflow:em_pr",
-            "~workflow:bloqueada",
-            "~workflow:em_refinamento",
-            "~workflow:em_arquitetura",
-            "~workflow:aguardando_stakeholder",
-        ):
-            monitor = _make_monitor(assigned_issues=[_issue(12, labels=(label,))])
-            triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
-            assert triggers == [], f"Expected no trigger for issue with label {label!r}"
+        """ANY ``~workflow:*`` variant must suppress the trigger.
+
+        The gate is a generic prefix check (``stages.py``:
+        ``any(lb.startswith("~workflow:") ...)``), not an enumerated allowlist,
+        so a single deliberately-unknown variant exercises the same path and
+        proves new/future states are covered without listing every value.
+        """
+        label = "~workflow:some_unenumerated_future_state"
+        monitor = _make_monitor(assigned_issues=[_issue(12, labels=(label,))])
+        triggers = await _collect_mention_triggers(monitor, "@deile-one", "deile-one")
+        assert triggers == [], f"Expected no trigger for issue with label {label!r}"
 
     async def test_issue_without_workflow_label_produces_trigger(self):
         """An issue with no ``~workflow:*`` label MUST produce a trigger."""

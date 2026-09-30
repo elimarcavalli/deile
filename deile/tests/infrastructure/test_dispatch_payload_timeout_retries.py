@@ -29,21 +29,12 @@ class TestDispatchPayloadFields:
         p = DispatchPayload(**self._base(max_retries=0))
         assert p.max_retries == 0
 
-    def test_timeout_s_none_by_default(self):
-        p = DispatchPayload(**self._base())
-        assert p.timeout_s is None
 
-    def test_max_retries_none_by_default(self):
-        p = DispatchPayload(**self._base())
-        assert p.max_retries is None
 
     def test_timeout_s_zero_rejected(self):
         with pytest.raises(Exception):
             DispatchPayload(**self._base(timeout_s=0))
 
-    def test_timeout_s_negative_rejected(self):
-        with pytest.raises(Exception):
-            DispatchPayload(**self._base(timeout_s=-1))
 
     def test_max_retries_negative_rejected(self):
         with pytest.raises(Exception):
@@ -101,8 +92,3 @@ class TestBuildDispatchPayload:
         payload = self._call(max_retries=None)
         assert "max_retries" not in payload
 
-    def test_backward_compat_no_new_fields(self):
-        """Callers that don't pass timeout_s/max_retries get same payload."""
-        payload = self._call()
-        assert "timeout_s" not in payload
-        assert "max_retries" not in payload

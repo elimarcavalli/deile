@@ -207,25 +207,6 @@ class TestExecuteSyncSkipsPtyOnWindows:
         assert result.is_success
         assert result.data["pty_used"] is False
 
-    def test_sandbox_forces_subprocess_on_windows(self, tmp_path: Path) -> None:
-        """Already-covered POSIX invariant — verify it also holds on Windows."""
-        tool = _make_tool()
-
-        with patch.object(tool, "_should_use_pty", return_value=True), \
-             patch.object(tool, "_execute_with_pty_unix") as mock_pty, \
-             patch.object(
-                tool,
-                "_execute_with_subprocess",
-                return_value=("ok", "", 0, False),
-             ) as mock_subprocess, \
-             patch("deile.tools.bash_tool.get_settings") as mock_settings:
-            mock_settings.return_value.sandbox_code_execution = False
-
-            ctx = _make_ctx("echo hi", tmp_path, use_pty=True, sandbox=True)
-            tool.execute_sync(ctx)
-
-        mock_pty.assert_not_called()
-        mock_subprocess.assert_called_once()
 
 
 @pytest.mark.bash

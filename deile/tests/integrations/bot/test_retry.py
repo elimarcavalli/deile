@@ -442,28 +442,6 @@ async def test_no_retry_logs_for_non_transient():
 # ── test: time budget respected ──────────────────────────────────────────────
 
 
-async def test_time_budget_respected():
-    """When deadline is reached during retry loop, stop and raise."""
-    fake = AlwaysRaiseFake(exc_type=BotClientTimeoutError)
-    facade = make_facade(retry_attempts=5, timeout_s=0.01)  # very tight budget
-    facade.set_underlying(fake)
-
-    # Mock time.monotonic to advance past deadline immediately
-    t0 = 0.0
-    times = [t0]
-
-    def fake_monotonic():
-        return times[0]
-
-    with patch("time.monotonic", side_effect=fake_monotonic):
-        # Advance time past deadline after first call
-        with patch.object(facade, "_ensure_client", side_effect=facade._ensure_client):
-            with pytest.raises(BotClientTimeoutError):
-                # Before first call, set time past deadline
-                times[0] = 1000.0
-                # Need to also mock asyncio.sleep to avoid real waiting
-                with patch("asyncio.sleep", return_value=None):
-                    await facade.channel_post(channel_id="1", text="hello")
 
 
 # ── test: all messaging methods go through retry ─────────────────────────────

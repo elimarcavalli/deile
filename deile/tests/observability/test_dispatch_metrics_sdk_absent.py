@@ -61,9 +61,6 @@ class TestSdkAbsent:
         count = caplog.text.count("otel_sdk_available=false")
         assert count == 1, f"expected exactly 1 warning, got {count}"
 
-    def test_sdk_warned_false_at_import(self):
-        import deile.observability.dispatch_metrics as dm
-        assert dm._sdk_warned is False
 
     def test_provider_none_when_sdk_absent(self, monkeypatch):
         monkeypatch.setenv("DEILE_OTLP_ENDPOINT", "http://collector:4317")

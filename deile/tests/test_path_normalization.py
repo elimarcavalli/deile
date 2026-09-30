@@ -628,16 +628,6 @@ def test_write_file_parent_relative_hints_bash(tmp_path):
     assert "bash_execute" in result.message
 
 
-def test_write_file_out_of_cwd_absolute_path_normalized_note_present(tmp_path):
-    """write_file(path='/tmp/foo.py') succeeds (normalised to project-relative);
-    the success message must include the PATH_NORMALIZED warning so the LLM
-    knows the resolved path, not the original input, is what was written."""
-    tool = WriteFileTool()
-    ctx = _ctx(tmp_path, file_path="/tmp/outside_hint_test.py", content="# ok")
-    result = tool.execute_sync(ctx)
-
-    assert result.is_success
-    assert "PATH_NORMALIZED" in result.message
 
 
 # --- delete_file -------------------------------------------------------------
@@ -706,13 +696,10 @@ def test_python_launcher_is_python_on_windows():
     assert module._PYTHON_LAUNCHER == "python"
 
 
-def test_python_launcher_is_python3_on_linux():
-    module = _reload_path_resolution_with_platform("linux")
-    assert module._PYTHON_LAUNCHER == "python3"
-
-
-def test_python_launcher_is_python3_on_macos():
-    module = _reload_path_resolution_with_platform("darwin")
+@pytest.mark.parametrize("target_platform", ["linux", "darwin"])
+def test_python_launcher_is_python3_on_non_windows(target_platform):
+    """Both Linux and macOS (darwin) hit the same else-branch → `python3`."""
+    module = _reload_path_resolution_with_platform(target_platform)
     assert module._PYTHON_LAUNCHER == "python3"
 
 

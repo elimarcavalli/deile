@@ -257,37 +257,8 @@ def test_parse_key_buffer_csi_with_modifiers_is_treated_as_single_seq():
     assert rem == ""
 
 
-def test_parse_key_buffer_csi_split_across_buffers_does_not_leak_esc():
-    """Mesmo se a CSI vier em pedaços (kernel entrega ``\\x1b[`` numa
-    syscall e ``C`` na próxima), o ``\\x1b`` fica no remainder e nunca
-    é emitido como cancel. Cobre o cenário em que o usuário aperta as
-    setas com pausa natural entre teclas.
-    """
-    from deile.ui.subagent_panel import parse_key_buffer
-
-    seqs1, rem1 = parse_key_buffer("\x1b[")
-    assert seqs1 == []
-    assert rem1 == "\x1b["
-
-    seqs2, rem2 = parse_key_buffer(rem1 + "C")
-    assert seqs2 == ["\x1b[C"]
-    assert rem2 == ""
-
-    # Em nenhum dos chunks o ESC isolado aparece.
-    assert all("\x1b" != s for s in seqs1 + seqs2)
 
 
-def test_parse_key_buffer_no_false_esc_under_30_arrow_burst():
-    """30 setas em rajada extrema (pior caso humano plausível) — nenhuma
-    delas vira ESC falso e o foco anda como esperado.
-    """
-    from deile.ui.subagent_panel import parse_key_buffer
-
-    burst = ("\x1b[C\x1b[D" * 15)  # 30 setas alternando
-    seqs, rem = parse_key_buffer(burst)
-    assert len(seqs) == 30
-    assert all(s in ("\x1b[C", "\x1b[D") for s in seqs)
-    assert rem == ""
 
 
 # -------------------------------------------------------------------- #

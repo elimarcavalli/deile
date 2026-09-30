@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from deile.commands.base import CommandContext
@@ -22,23 +21,20 @@ class TestCronRunnerStart:
         ctx, agent = _make_context("start")
         cmd = PipelineCommand()
 
-        cron_store_mock = MagicMock()
-        cron_store_mock.db_path = Path("/tmp/cron.db")
+        monitor_instance = MagicMock()
+        monitor_instance.start = AsyncMock()
+        cron_runner_instance = MagicMock()
+        cron_runner_instance.start = AsyncMock()
+
         with patch("deile.commands.builtin.pipeline_command.build_default_pipeline_config", return_value=MagicMock()), \
-             patch("deile.commands.builtin.pipeline_command.PipelineMonitor") as MockMonitor, \
-             patch("deile.orchestration.pipeline.review_callback.make_review_callback", return_value=AsyncMock()), \
-             patch("deile.cron.store.CronStore", return_value=cron_store_mock), \
-             patch("deile.cron.store.resolve_db_path", return_value=Path("/tmp/cron.db")), \
-             patch("deile.cron.runner.CronRunner.start", new_callable=AsyncMock), \
-             patch("deile.cron.runner.CronRunner.is_running", new_callable=lambda: property(lambda self: True)):
-            monitor_instance = MagicMock()
-            monitor_instance.start = AsyncMock()
-            monitor_instance.config.repo = "o/r"
-            monitor_instance.config.poll_interval_seconds = 60
-            monitor_instance.identity.monitor_id = "default"
-            MockMonitor.return_value = monitor_instance
+             patch("deile.commands.builtin.pipeline_command.PipelineMonitor", return_value=monitor_instance), \
+             patch("deile.cron.store.CronStore", return_value=MagicMock()), \
+             patch("deile.cron.agent_bridge.make_fire_callback", return_value=MagicMock()), \
+             patch("deile.cron.runner.CronRunner", return_value=cron_runner_instance):
             result = await cmd.execute(ctx)
 
+        cron_runner_instance.start.assert_awaited_once()
+        assert agent.cron_runner is cron_runner_instance
         assert result.success
         assert "cron" in result.content.lower()
 

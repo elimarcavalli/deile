@@ -69,13 +69,6 @@ def test_no_warning_with_both_tokens(caplog, monkeypatch):
     assert records == []
 
 
-def test_warning_does_not_raise(monkeypatch):
-    """_warn_if_no_forge_token must never raise — warning only, not fatal."""
-    for key in ("GITHUB_TOKEN", "GITLAB_TOKEN", "GL_TOKEN"):
-        monkeypatch.delenv(key, raising=False)
-    _warn_if_no_forge_token()  # must not raise
-
-
 def test_warns_even_after_environ_leak(caplog, monkeypatch):
     """WARNING fires even when os.environ was mutated via direct assignment.
 

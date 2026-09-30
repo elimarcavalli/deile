@@ -221,34 +221,79 @@ async def test_result_400_when_task_id_invalid_format(client):
 # ── Regression tests para PR #295 review ──────────────────────────────────
 
 
-async def test_bg_dispatch_tasks_set_keeps_strong_ref():
-    """B2 (PR #295 review): tasks geradas em wait=False com create_task DEVEM
-    ser referenciadas em ``_BG_DISPATCH_TASKS`` para evitar coleta pelo GC.
-    Verifica que o set existe e tem o pattern add_done_callback(discard).
+
+
+async def test_event_bus_unsubscribed_at_dispatch_end(monkeypatch, tmp_path, _clean_tasks):
+    """B3 (PR #295 review): o handler wildcard registrado por ``_run_task`` no
+    EventBus singleton deve ser removido no ``finally`` quando a task termina.
+
+    Prova COMPORTAMENTAL (substitui o antigo grep de source, que não provava
+    nem que ``unsubscribe_all`` era chamado no ``finally`` nem que surtia
+    efeito): roda ``_run_task`` com o agente e o post HTTP mockados contra o
+    EventBus real e verifica que (a) ``subscribe_all``/``unsubscribe_all`` foram
+    de fato invocados e (b) a lista de wildcard handlers volta ao estado
+    inicial — sem resíduo pinando estado da task morta.
     """
-    import inspect
+    import types
 
-    src = inspect.getsource(worker_server.dispatch_handler)
-    # Pattern do fix: add ao set + add_done_callback(_BG_DISPATCH_TASKS.discard)
-    assert "_BG_DISPATCH_TASKS.add(" in src
-    assert "_BG_DISPATCH_TASKS.discard" in src
-    # E a estrutura existe:
-    assert isinstance(worker_server._BG_DISPATCH_TASKS, set)
+    from deile.events.event_bus import get_event_bus
 
+    # Agente falso: SEM ``process_input_stream`` (força o caminho
+    # ``process_input``), retorna conteúdo trivial e uma sessão inócua.
+    class _FakeAgent:
+        async def get_or_create_session(self, session_id, persisted=False):
+            return types.SimpleNamespace(context_data={})
 
-async def test_event_bus_unsubscribed_at_dispatch_end():
-    """B3 (PR #295 review): handler subscribe_all deve ser unsubscribed
-    quando a task termina. Verifica via leitura do source code que existe
-    o pattern correto no ``finally``.
-    """
-    import inspect
+        async def process_input(self, prompt, **kwargs):
+            return types.SimpleNamespace(content="done")
 
-    src = inspect.getsource(worker_server._run_task)
-    # O fix garante unsubscribe_all no finally do dispatch.
-    assert "unsubscribe_all" in src, (
+    async def _fake_get_agent():
+        return _FakeAgent()
+
+    async def _fake_post_status(channel_id, text):
+        return None
+
+    monkeypatch.setattr(worker_server, "WORK_ROOT", tmp_path)
+    monkeypatch.setattr(worker_server, "_get_agent", _fake_get_agent)
+    monkeypatch.setattr(worker_server, "_post_status_message", _fake_post_status)
+
+    bus = get_event_bus()  # mesmo singleton que ``_run_task`` resolve internamente
+    baseline = list(bus._wildcard_handlers)
+
+    # Spy: confirma que o ciclo subscribe/unsubscribe realmente aconteceu,
+    # preservando o comportamento real (delega às implementações originais).
+    calls = {"sub": 0, "unsub": 0}
+    _real_sub = bus.subscribe_all
+    _real_unsub = bus.unsubscribe_all
+
+    def _spy_sub(handler):
+        calls["sub"] += 1
+        return _real_sub(handler)
+
+    def _spy_unsub(handler):
+        calls["unsub"] += 1
+        return _real_unsub(handler)
+
+    monkeypatch.setattr(bus, "subscribe_all", _spy_sub)
+    monkeypatch.setattr(bus, "unsubscribe_all", _spy_unsub)
+
+    result = await worker_server._run_task(
+        task_id="abcdef123456",
+        brief="test brief",
+        channel_id="chan-1",
+        user_message_id=None,
+        persona=None,
+    )
+
+    assert result["ok"] is True
+    # (a) o handler foi de fato inscrito e o ``finally`` o desinscreveu.
+    assert calls["sub"] == 1, "_run_task deveria inscrever _on_event no EventBus"
+    assert calls["unsub"] == 1, (
         "B3 regression: _run_task deve chamar bus.unsubscribe_all(_on_event) "
         "no finally para evitar handler leak no EventBus singleton"
     )
+    # (b) sem resíduo: a lista de wildcard handlers voltou ao estado inicial.
+    assert list(bus._wildcard_handlers) == baseline
 
 
 async def test_event_bus_unsubscribe_all_removes_handler():

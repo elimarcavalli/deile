@@ -25,6 +25,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
@@ -276,20 +278,9 @@ class TestIssuesPRsViewSort:
 
     def test_sort_is_independent_per_view_instance(self):
         # Two views with different sort_modes must not interfere.
+        # #10 updated 1h ago, #2 updated 10s ago → unambiguous:
+        # recent sort returns #2 (newest) first; number sort returns #2 (lowest) first.
         now = _utc_now()
-        issues = [_make_issue(3, updated_at=now - timedelta(hours=1)),
-                  _make_issue(1, updated_at=now - timedelta(seconds=10))]
-        data = _FakePanelData(issues, [])
-        view_recent = panel.IssuesPRsView(data=data)
-        view_recent.sort_mode = "recent"
-        view_number = panel.IssuesPRsView(data=data)
-        view_number.sort_mode = "number"
-        recent_issues, _ = view_recent._rows()
-        number_issues, _ = view_number._rows()
-        assert recent_issues[0].number == 1   # most recent first
-        assert number_issues[0].number == 1   # lowest number first (also 1 here)
-        # Make it unambiguous: recent sort returns #1 first, number sort returns #1 first too.
-        # Redo with clearer numbers.
         issues2 = [_make_issue(10, updated_at=now - timedelta(hours=1)),
                    _make_issue(2, updated_at=now - timedelta(seconds=10))]
         data2 = _FakePanelData(issues2, [])
@@ -370,19 +361,11 @@ class TestSortHotkey:
 # ---------------------------------------------------------------------------
 
 class TestHotkeysProperty:
-    def test_dashboard_hotkeys_reflects_sort_mode_recent(self):
+    @pytest.mark.parametrize("mode", ["recent", "number", "status"])
+    def test_dashboard_hotkeys_reflects_sort_mode(self, mode):
         view = panel.DashboardView(data=None)
-        assert "[s]ort:recent" in view.HOTKEYS
-
-    def test_dashboard_hotkeys_reflects_sort_mode_number(self):
-        view = panel.DashboardView(data=None)
-        view.sort_mode = "number"
-        assert "[s]ort:number" in view.HOTKEYS
-
-    def test_dashboard_hotkeys_reflects_sort_mode_status(self):
-        view = panel.DashboardView(data=None)
-        view.sort_mode = "status"
-        assert "[s]ort:status" in view.HOTKEYS
+        view.sort_mode = mode
+        assert f"[s]ort:{mode}" in view.HOTKEYS
 
     def test_issues_prs_hotkeys_reflects_sort_mode(self):
         view = panel.IssuesPRsView(data=None)
@@ -479,5 +462,4 @@ class TestFooterPanel:
 
     def test_footer_with_none_last_activity_same_as_without(self):
         out_none = self._render_footer("[q]uit", None)
-        out_empty = self._render_footer("[q]uit")
-        assert out_none == out_empty
+        assert "Last activity:" not in out_none

@@ -556,7 +556,7 @@ class TestCommentMentionGateIntegration:
             labels=(WORKFLOW_ARCHITECTURE, WORKFLOW_WAITING, "refinar"),
         ))
         await monitor._process_mentions()
-        github.remove_labels.assert_any_await("issue", 1, [WORKFLOW_WAITING])
+        github.remove_labels.assert_called_with("issue", 1, [WORKFLOW_WAITING])
         monitor.claude.run.assert_not_called()
 
     async def test_comment_on_ungated_issue_still_one_shot(self):

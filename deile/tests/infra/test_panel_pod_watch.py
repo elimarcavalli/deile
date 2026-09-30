@@ -661,6 +661,11 @@ class TestPodWatchViewCurrentTask:
         assert "WORK:" in out
         assert "#309" in out
         assert "auto/issue-309" in out  # branch
+        # Forge-agnóstico (Decisão #42): vocabulário unificado ``#N``, nunca
+        # o ``!N``/``MR`` do GitLab — PR↔MR é abstraído upstream na camada
+        # forge, então o renderer jamais vaza terminologia forge-specific.
+        assert "!309" not in out  # GitLab MR prefix
+        assert "MR" not in out    # GitLab MR vocab
 
     def test_busy_worker_with_pr_shows_pr_prefix(self):
         ct = pd.CurrentTask(
@@ -700,22 +705,6 @@ class TestPodWatchViewCurrentTask:
         view.data.claude_workers = None
         out = self._render_to_text(view)
         assert "WORK:" not in out
-
-    def test_target_label_is_forge_agnostic(self):
-        """O renderer não distingue GitHub de GitLab — usa o vocabulário
-        unificado ``#N`` / ``PR#N`` / ``mention …`` (Decisão #42).
-        Forge-specific PR↔MR é abstraído upstream na camada forge."""
-        # Mesma fixture pra dois forge "kinds" — o output é idêntico.
-        ct = pd.CurrentTask(
-            task_id="abc", channel_id="pipeline-issue-309",
-            started_ts=datetime.now(timezone.utc), issue_number=309,
-        )
-        view = self._setup_view_with_pod(current_task=ct, busy=True)
-        out = self._render_to_text(view)
-        # Não deve aparecer terminologia GitLab nem GitHub específica.
-        assert "!309" not in out  # GitLab MR prefix
-        assert "MR" not in out    # GitLab MR vocab
-        assert "#309" in out      # vocabulário unificado
 
 
 class TestPodWatchViewRenderSize:

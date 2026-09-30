@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
@@ -243,12 +245,6 @@ class TestPodPickerHotkeys:
         assert v.confirm_action == "x"
         assert result.kind.name == "REFRESH"
 
-    def test_x_on_local_pid_opens_confirmation(self):
-        rows = [_row("local-deile#1234", "local-deile")]
-        v = self._view_with_rows(rows)
-        v.handle_key("x", app=MagicMock())
-        assert v.confirm_action == "x"
-
     def test_r_on_local_pid_rejects_immediately(self):
         rows = [_row("local-deile#1234", "local-deile")]
         v = self._view_with_rows(rows)
@@ -355,40 +351,32 @@ class TestPodPickerHotkeys:
 
     # --- double-tap (x+x / r+r / R+R) confirms without `y` -----------------
 
-    def test_x_double_tap_applies(self):
-        """Apertar `x` duas vezes confirma a ação (sem precisar do `y`)."""
+    @pytest.mark.parametrize(
+        "key, target, return_value, expected_args, expected_kwargs",
+        [
+            ("x", "delete_pod", (True, "deleted"),
+             ("deile-worker-abc",), {"namespace": "deile"}),
+            ("r", "rollout_restart_deployment", (True, "restarted"),
+             ("deile-worker",), {"namespace": "deile"}),
+            ("R", "rollout_restart_all",
+             [("deilebot", True, "ok"), ("deile-pipeline", True, "ok"),
+              ("deile-shell", True, "ok"), ("deile-worker", True, "ok")],
+             (), {"namespace": "deile"}),
+        ],
+    )
+    def test_double_tap_applies(self, key, target, return_value,
+                                expected_args, expected_kwargs):
+        """Apertar a mesma tecla (`x`/`r`/`R`) duas vezes confirma a ação
+        sem precisar do `y` (double-tap muscle-memory)."""
         v = self._view_with_rows([_row("deile-worker-abc", "worker")])
-        v.handle_key("x", app=MagicMock())   # abre confirmação
-        assert v.confirm_action == "x"
-        with patch.object(pd, "delete_pod",
-                          return_value=(True, "deleted")) as dp:
-            v.handle_key("x", app=MagicMock())  # confirma via double-tap
+        v.handle_key(key, app=MagicMock())   # abre confirmação
+        assert v.confirm_action == key
+        with patch.object(pd, target, return_value=return_value) as m:
+            v.handle_key(key, app=MagicMock())  # confirma via double-tap
         # PR #297: NS é propagado do RuntimeContext via kwarg.
-        dp.assert_called_once_with("deile-worker-abc", namespace="deile")
+        m.assert_called_once_with(*expected_args, **expected_kwargs)
         assert v.last_ok is True
         assert v.confirm_action is None
-
-    def test_r_double_tap_applies(self):
-        v = self._view_with_rows([_row("deile-worker-abc", "worker")])
-        v.handle_key("r", app=MagicMock())
-        assert v.confirm_action == "r"
-        with patch.object(pd, "rollout_restart_deployment",
-                          return_value=(True, "restarted")) as rr:
-            v.handle_key("r", app=MagicMock())
-        rr.assert_called_once_with("deile-worker", namespace="deile")
-        assert v.last_ok is True
-
-    def test_R_double_tap_applies(self):
-        v = self._view_with_rows([_row("deile-worker-abc", "worker")])
-        v.handle_key("R", app=MagicMock())
-        assert v.confirm_action == "R"
-        fake = [("deilebot", True, "ok"), ("deile-pipeline", True, "ok"),
-                ("deile-shell", True, "ok"), ("deile-worker", True, "ok")]
-        with patch.object(pd, "rollout_restart_all",
-                          return_value=fake) as ra:
-            v.handle_key("R", app=MagicMock())
-        ra.assert_called_once_with(namespace="deile")
-        assert v.last_ok is True
 
     def test_y_still_works_as_universal_confirm(self):
         """`y` continua funcionando — não quebra muscle-memory antigo."""
