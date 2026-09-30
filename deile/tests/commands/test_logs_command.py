@@ -473,7 +473,7 @@ class TestAuditLoggerClearEvents:
 
 
 # ---------------------------------------------------------------------------
-# Test: AuditLogger.event_count() and max_events property
+# Test: AuditLogger.event_count()
 # ---------------------------------------------------------------------------
 
 
