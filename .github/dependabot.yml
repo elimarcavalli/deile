@@ -5,7 +5,12 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
-    reviewers:
+    assignees:
       - "elimarcavalli"
+  # Actions fixadas por SHA não se atualizam sozinhas (runtime Node depreciado, CVEs).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
     assignees:
       - "elimarcavalli"
