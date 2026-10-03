@@ -33,7 +33,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # Histórico completo: os intervalos de push/PR e a varredura manual precisam dele
           fetch-depth: 0
@@ -97,7 +97,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Python
         # actions/setup-python v5
@@ -144,7 +144,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       # Testes de infra (cli_worker_repo_cycle) fazem `git commit` REAL em repos
       # temporários; o runner não tem identidade git global, causando
@@ -212,7 +212,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Python
         # actions/setup-python v5
@@ -285,7 +285,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Python
         # actions/setup-python v5
@@ -350,7 +350,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Python
         # actions/setup-python v5
@@ -494,7 +494,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v4
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Python
         # actions/setup-python v5
