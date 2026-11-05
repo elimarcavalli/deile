@@ -31,7 +31,7 @@ pluggy==1.6.0
 prompt_toolkit==3.0.52
 proto-plus==1.27.2
 protobuf==6.33.6
-pyasn1==0.6.4
+pyasn1==0.6.5
 pyasn1_modules==0.4.2
 pydantic==2.13.4
 pydantic_core==2.46.4
